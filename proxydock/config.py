@@ -65,6 +65,7 @@ GLOBAL_DEFAULTS = {
     "close_exits": False,
     "log_to_file": False,
     "engine": "sing-box",       # "sing-box" (one sing-box process per card) or "python" (built-in engine)
+    "run_as_admin": False,      # Windows: restart ProxyDock elevated (UAC) at startup, so TUN cards need no prompt
     "singbox_path": "",         # "" = bundled sing-box (bin/ folder), then PATH
     "hysteria_path": "",        # "" = bundled official Hysteria2 core (bin/ folder), then PATH
     # proxy defaults (a proxy's local settings take precedence)
@@ -88,6 +89,8 @@ INBOUND_DEFAULTS = {
     "ss_method": "2022-blake3-aes-256-gcm",
     "ss_password": "",
     "hy2_password": "",
+    "tun_stack": "mixed",       # TUN: sing-box network stack (mixed / system / gvisor)
+    "tun_strict_route": False,  # TUN: block traffic that would bypass the TUN (can break IPv6 on Windows)
 }
 OUTBOUND_DEFAULTS = {
     "type": "direct",
@@ -178,6 +181,9 @@ def validate_proxy(raw):
             d["ss_method"] = INBOUND_DEFAULTS["ss_method"]
     if not 1 <= ib["port"] <= 65535:
         ib["port"] = INBOUND_DEFAULTS["port"]
+    from .common import TUN_STACKS
+    if ib["tun_stack"] not in TUN_STACKS:
+        ib["tun_stack"] = "mixed"
     if not 0 <= ob["port"] <= 65535:
         ob["port"] = 0
     ov = raw.get("overrides") if isinstance(raw.get("overrides"), dict) else {}
@@ -296,9 +302,10 @@ def check_proxy(p, proxies):
         errs.append(_t("Enter a name"))
     if p.get("unlinked"):
         errs.append(_t("Not connected to an outbound - connect it on the canvas or choose one in the editor"))
-    if not _valid_listen_host(ib["host"]):
+    tun = ib["type"] == "tun"
+    if not tun and not _valid_listen_host(ib["host"]):
         errs.append(_t("The inbound address must be an IP (e.g. 127.0.0.1, 0.0.0.0, ::)"))
-    if not 1 <= ib["port"] <= 65535:
+    if not tun and not 1 <= ib["port"] <= 65535:
         errs.append(_t("Invalid inbound port"))
     if ib["auth_enabled"] and ib["type"] in ("socks5", "http", "https"):
         if not (0 < len(ib["username"].encode()) <= 255 and 0 < len(ib["password"].encode()) <= 255):
@@ -323,6 +330,8 @@ def check_proxy(p, proxies):
         if other["id"] == p["id"]:
             continue
         oi = other["inbound"]
+        if tun or oi["type"] == "tun":     # a TUN card has no port
+            continue
         shared = mine & _transports(oi["type"])
         if oi["port"] != ib["port"] or not shared:
             continue

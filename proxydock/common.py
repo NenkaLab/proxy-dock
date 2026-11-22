@@ -55,8 +55,28 @@ INBOUND_TYPES = {           # inbound
     "https": "HTTPS",
     "shadowsocks": "Shadowsocks",
     "hysteria2": "Hysteria2",
+    "tun": "TUN",
 }
 OUTBOUND_TYPES = {}
+TUN_STACKS = ("mixed", "system", "gvisor")
+
+
+def inbound_where(ib):
+    """Where an inbound accepts traffic: "127.0.0.1:1080", or "all apps (TUN)" for the virtual network card."""
+    if ib["type"] == "tun":
+        return _t("all apps") + f" · {ib.get('tun_stack', 'mixed')}"
+    return host_port(ib["host"], ib["port"])
+
+
+def is_admin():
+    """True if this process may create a TUN device (Windows: elevated, elsewhere: root)."""
+    if IS_WIN:
+        import ctypes
+        try:
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except OSError:
+            return False
+    return os.geteuid() == 0
 
 
 @on_language_change

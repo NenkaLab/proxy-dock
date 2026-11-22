@@ -593,6 +593,11 @@ class Controller:
         kind, n = graph_mod.find(self.graph, iid)
         if kind != "inbound" or n["target"] == tid:
             return True
+        tkind, t = graph_mod.find(self.graph, tid) if tid else (None, None)
+        if tkind == "inbound" and t["inbound"]["type"] == "tun":
+            info(self.window, "error", _t("Cannot connect"), _t("A TUN card takes traffic from apps; another inbound cannot relay into it"), 5000)
+            self.refresh_lists()
+            return False
         old = n["target"]
         n["target"] = tid
         p = next(x for x in graph_mod.compile(self.graph) if x["id"] == iid)
@@ -1105,16 +1110,33 @@ def become_primary(wait=False):
         time.sleep(0.25)
 
 
+def relaunch_elevated(glob, args):
+    """Settings 'Run as administrator': start an elevated copy (UAC) and exit this one.
+    Returns a note to log when it stays unelevated (prompt cancelled), else None."""
+    from ..common import is_admin
+    if not IS_WIN or not glob.get("run_as_admin") or args.elevated or is_admin():
+        return None
+    from ..singbox.helper import app_command, runas
+    extra = ["--elevated"] + (["--hidden"] if args.hidden else []) + (["--restart"] if args.restart else [])
+    try:
+        runas(app_command(*extra), show=True)
+    except RuntimeError as e:
+        return _t("Not running as administrator: {e}").format(e=e)
+    sys.exit(0)
+
+
 def main():
     parser = argparse.ArgumentParser(prog="ProxyDock")
     parser.add_argument("--hidden", action="store_true", help=_t("Start in the tray without a notification"))
     parser.add_argument("--restart", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--elevated", action="store_true", help=argparse.SUPPRESS)     # started by run_as_admin
     from .. import __version__
     parser.add_argument("--version", action="version", version=f"ProxyDock {__version__}")
     args = parser.parse_args()
 
     glob, graph = config.load()
     migrate_autostart()
+    elevation_note = relaunch_elevated(glob, args)
 
     if IS_WIN:
         try:
@@ -1146,6 +1168,8 @@ def main():
     if single is None:
         sys.exit(0)
     log(LOG_INFO, _t("{APP_NAME} started - {len} proxies").format(APP_NAME=APP_NAME, len=len(graph["inbounds"])))
+    if elevation_note:
+        log(LOG_WARN, elevation_note)
     controller = Controller(single, show_start_notice=not args.hidden, glob=glob, graph=graph)
     _ = controller
     sys.exit(app.exec())

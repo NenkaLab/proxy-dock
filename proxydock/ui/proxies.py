@@ -35,6 +35,8 @@ def client_url(p):
     if host in ("0.0.0.0", "::"):
         host = local_lan_ip()
     t = ib["type"]
+    if t == "tun":
+        return ""
     if t == "shadowsocks":
         return ss_link(host, ib["port"], ib["ss_method"], ib["ss_password"], p["name"])
     if t == "hysteria2":
@@ -48,7 +50,8 @@ def client_url(p):
 
 def summary(p):
     ib, ob = p["inbound"], p["outbound"]
-    left = f"{INBOUND_TYPES[ib['type']]} {host_port(ib['host'], ib['port'])}"
+    from ..common import inbound_where
+    left = f"{INBOUND_TYPES[ib['type']]} {inbound_where(ib)}"
     if "target_name" in p:
         right = p["target_name"]
     else:
@@ -394,6 +397,10 @@ class ProxiesInterface(ScrollArea):
         if p is None:
             return
         url = client_url(p)
+        if not url:
+            info(self.window(), "info", _t("Nothing to copy"),
+                 _t("A TUN card captures apps on this PC directly; there is no address for clients"), 3500)
+            return
         QApplication.clipboard().setText(url)
         shown = url if len(url) < 70 else url[:67] + "…"
         info(self.window(), "success", _t("Copied"), shown, 2500)
@@ -516,8 +523,18 @@ class EditorInterface(ScrollArea):
         self.sp_in_port.setFixedWidth(150)
         btn_check = PushButton(_t("Check availability"), v, FIF.SEARCH)
         btn_check.clicked.connect(self._check_port)
-        s_in.add(Row(_t("Listen address · port"), _t("127.0.0.1 = this PC only, 0.0.0.0 = allow other PCs (check authentication and firewall)"), v)
-                 .right(self.ed_in_host, self.sp_in_port, btn_check))
+        self.r_in_listen = s_in.add(Row(_t("Listen address · port"), _t("127.0.0.1 = this PC only, 0.0.0.0 = allow other PCs (check authentication and firewall)"), v)
+                                    .right(self.ed_in_host, self.sp_in_port, btn_check))
+        from ..common import TUN_STACKS
+        self.tun_stacks = list(TUN_STACKS)
+        self.cb_tun_stack = ComboBox(v)
+        self.cb_tun_stack.addItems([_t("mixed (recommended)"), "system", "gvisor"])
+        self.cb_tun_stack.setFixedWidth(200)
+        self.r_tun_stack = s_in.add(Row(_t("Network stack"), _t("How sing-box handles the captured packets. Try another one if some apps misbehave"), v)
+                                    .right(self.cb_tun_stack))
+        self.sw_tun_strict = _switch(v)
+        self.r_tun_strict = s_in.add(Row(_t("Strict route"), _t("Also stops traffic that tries to go around the TUN. Can break IPv6 on Windows; leave off unless needed"), v)
+                                     .right(self.sw_tun_strict))
         self.sw_in_auth = _switch(v)
         self.r_in_auth = s_in.add(Row(_t("User authentication"), "", v).right(self.sw_in_auth))
         self.ed_in_user = LineEdit(v)
@@ -768,6 +785,8 @@ class EditorInterface(ScrollArea):
         self.cb_in_ss.setCurrentIndex(self.ss_methods.index(ib["ss_method"]))
         self.ed_in_ss_pw.setText(ib["ss_password"])
         self.ed_in_hy.setText(ib["hy2_password"])
+        self.cb_tun_stack.setCurrentIndex(self.tun_stacks.index(ib["tun_stack"]))
+        self.sw_tun_strict.setChecked(ib["tun_strict_route"])
         self.cb_out.setCurrentIndex(self.out_types.index(ob["type"]))
         self.ed_out_host.setText(ob["host"])
         self.sp_out_port.setValue(ob["port"])
@@ -902,6 +921,9 @@ class EditorInterface(ScrollArea):
         it = self.in_types[max(self.cb_in.currentIndex(), 0)]
         ot = self.out_types[max(self.cb_out.currentIndex(), 0)]
         can_auth = it in ("socks5", "http", "https")
+        self.r_in_listen.setVisible(it != "tun")
+        self.r_tun_stack.setVisible(it == "tun")
+        self.r_tun_strict.setVisible(it == "tun")
         self.r_in_auth.setVisible(can_auth)
         self.r_in_cred.setVisible(can_auth and self.sw_in_auth.isChecked())
         self.r_cert.setVisible(it in ("https", "hysteria2"))
@@ -915,7 +937,8 @@ class EditorInterface(ScrollArea):
             "http": _t("For the 'HTTP proxy' setting of browsers and the OS. HTTPS sites are tunnelled with CONNECT. TCP only."),
             "https": _t("Wraps the HTTP proxy in TLS. Set it as an 'HTTPS proxy' in the client (e.g. curl -x https://…)."),
             "shadowsocks": _t("Encrypted tunnel server for Shadowsocks apps on other devices. TCP+UDP. Copy the ss:// link with the button on the card."),
-            "hysteria2": _t("Encrypted tunnel server over QUIC (UDP). TCP+UDP. Copy the hysteria2:// link with the button on the card. Python implementation, about 100 Mbps."),
+            "hysteria2": _t("Encrypted tunnel server over QUIC (UDP). TCP+UDP. Copy the hysteria2:// link with the button on the card."),
+            "tun": _t("A virtual network card that captures the traffic of every app on this PC, including apps without proxy settings, so router rules on programs work for all of them. Starting it asks for administrator permission (UAC) unless ProxyDock runs as administrator. One TUN card at a time. Needs the sing-box engine."),
         }
         self.in_note.setText(notes[it])
         remote = ot not in ("direct", "block")
@@ -1054,7 +1077,9 @@ class EditorInterface(ScrollArea):
                       username=self.ed_in_user.text(), password=self.ed_in_pass.text(),
                       tls_cert=self.ed_cert.text().strip(), tls_key=self.ed_key.text().strip(),
                       ss_method=self.ss_methods[self.cb_in_ss.currentIndex()], ss_password=self.ed_in_ss_pw.text().strip(),
-                      hy2_password=self.ed_in_hy.text())
+                      hy2_password=self.ed_in_hy.text(),
+                      tun_stack=self.tun_stacks[max(self.cb_tun_stack.currentIndex(), 0)],
+                      tun_strict_route=self.sw_tun_strict.isChecked())
             if ib["type"] not in ("socks5", "http", "https"):
                 ib["auth_enabled"] = False
             for key, (follow, _w) in self.ov.items():
@@ -1159,6 +1184,8 @@ def _tr_check_desc():
 def _check_inbound(p, running):
     """Inbound check (on a worker thread). (ok, description)."""
     ib = p["inbound"]
+    if ib["type"] == "tun":
+        return True, _t("TUN: checked when it starts (needs administrator permission)")
     if running:
         return True, _t("Running on {host_port}").format(host_port=host_port(ib['host'], ib['port']))
     ok, msg = check_port(ib["host"], ib["port"], udp=ib["type"] == "hysteria2")

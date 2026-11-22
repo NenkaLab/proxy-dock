@@ -20,7 +20,7 @@ Shadowsocks server" is a single card.
 
 | | Supported |
 |---|---|
-| Inbound | SOCKS5 · SOCKS4/4a · HTTP · HTTPS (TLS) · Shadowsocks server · Hysteria2 server |
+| Inbound | SOCKS5 · SOCKS4/4a · HTTP · HTTPS (TLS) · Shadowsocks server · Hysteria2 server · TUN (all apps) |
 | Outbound | Direct · upstream HTTP / HTTPS / SOCKS4 / SOCKS5 proxy · Shadowsocks tunnel · Hysteria2 (QUIC) tunnel · WireGuard |
 | UDP | inbound SOCKS5 · Shadowsocks · Hysteria2, outbound Direct · Shadowsocks · Hysteria2 · WireGuard |
 
@@ -32,6 +32,7 @@ Shadowsocks server" is a single card.
   default. Rules can lead to any outbound, to the **Block** outbound (refuse) or to another router
 - **Network interface**: any outbound can leave through a chosen network card - Tailscale, WireGuard, a VPN app, Wi-Fi - without changing the PC's routes, so only the traffic you link there uses it (sing-box engine)
 - **WireGuard**: a WireGuard tunnel block run inside ProxyDock - no VPN app, so several countries can be up at once for different apps; import a provider's `.conf`; put one WireGuard block 'via' another for a double VPN (sing-box engine)
+- **TUN**: a virtual network card that captures every app on this PC, also those without proxy settings - link it to a router and program rules (game.exe, chrome.exe) apply to all apps. Asks for administrator permission (UAC) when it starts, unless ProxyDock already runs as administrator (sing-box engine)
 - **Engine**: sing-box (default) runs each proxy in its own process - multi-core, UDP through chains, Hysteria2 through other outbounds. The built-in Python engine is the fallback (Settings → Proxy engine)
 - **Shadowsocks**: AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) and 2022 (SIP022, blake3), TCP+UDP, copy `ss://` links
 - **Hysteria2**: interoperates both ways with the official implementation (TCP and UDP), certificate pinning, copy `hysteria2://` links
@@ -97,6 +98,8 @@ The macOS build has not been tried on a real Mac yet.
 
 ## Known limitations
 
+- TUN has not been tried on real setups yet. One TUN card at a time; DNS of the captured apps is answered by ProxyDock
+  on this PC; strict route can break IPv6 on Windows (off by default). On macOS/Linux ProxyDock itself must run as root.
 - Router and Block blocks need the sing-box engine. IP and GeoIP rules resolve the domain on this PC first, so a tunnel
   behind them connects to the IP instead of resolving the domain remotely. Program rules only see connections from this PC.
 - sing-box engine: a Hysteria2 server open to other PCs runs on the official Hysteria2 core, which asks ProxyDock about every

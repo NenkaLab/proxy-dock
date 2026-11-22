@@ -64,7 +64,7 @@ def needs_singbox(proxy):
     """Router rules and the Block outbound only exist as sing-box route rules; binding to a network interface is
     a sing-box dial option."""
     chains = [proxy["outbound"]] + [r["outbound"] for r in proxy.get("routes") or []]
-    return (bool(proxy.get("routes")) or proxy["outbound"]["type"] == "block"
+    return (bool(proxy.get("routes")) or proxy["outbound"]["type"] == "block" or proxy["inbound"]["type"] == "tun"
             or any(ob.get("interface") or ob["type"] == "wireguard" for c in chains for ob in _chain(c)))
 
 

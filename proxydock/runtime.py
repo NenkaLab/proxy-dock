@@ -70,7 +70,8 @@ class ProxyInstance:
     @property
     def summary(self):
         ib = self.inbound
-        return f"{INBOUND_TYPES[ib['type']]} {host_port(ib['host'], ib['port'])} → {self.outbound_label}"
+        from .common import inbound_where
+        return f"{INBOUND_TYPES[ib['type']]} {inbound_where(ib)} → {self.outbound_label}"
 
     def log(self, level, message):
         log(level, message, self)
@@ -258,7 +259,7 @@ class ProxyManager:
         self._set(pid, "running")
         inst.log(LOG_INFO, _t("Started: {summary}").format(summary=inst.summary))
         ib = inst.inbound
-        if not is_loopback_host(ib["host"]):
+        if ib["type"] != "tun" and not is_loopback_host(ib["host"]):
             if ib["type"] == "socks4":
                 inst.log(LOG_WARN, _t("SOCKS4 has no password authentication; anyone can use it if it is exposed"))
             elif ib["type"] in ("socks5", "http", "https") and not ib["auth_enabled"]:

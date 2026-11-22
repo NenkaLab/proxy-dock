@@ -46,6 +46,9 @@ def auth_failure(ip, inst):
 def report_connections(inst, conns):
     """conns: Clash API connection list of one process. Returns connection ids to close (over the per-IP limit)."""
     by_ip = {}
+    if inst.inbound["type"] == "tun":       # every app of this PC shares the TUN address: no per-IP limit
+        _conns.pop(inst, None)
+        return []
     for c in conns:
         ip = c.get("metadata", {}).get("sourceIP", "")
         if ip and not is_loopback_ip(ip):

@@ -111,6 +111,10 @@ class SettingsInterface(ScrollArea):
         s_start.add(Row(_t("Hide startup notification"), _t("Do not show the 'running' notification when started automatically"), v).right(self.sw_hidden))
         self.sw_startup.checkedChanged.connect(ctl.set_startup)
         self.sw_hidden.checkedChanged.connect(ctl.set_hidden)
+        self.sw_admin = _switch(v)
+        self.r_admin = s_start.add(Row(_t("Run as administrator"), _t("ProxyDock restarts itself with administrator rights (UAC prompt) when it starts, so TUN cards start without asking. Applies from the next start."), v)
+                                  .right(self.sw_admin))
+        self.r_admin.setVisible(IS_WIN)
 
         sections = [s_def, s_eng, s_log, s_view, s_font, s_start]
         if IS_WIN:
@@ -153,6 +157,7 @@ class SettingsInterface(ScrollArea):
         self.cb_monofont.setCurrentIndex(self.mono_fonts.index(g["mono_font"]) if g["mono_font"] in self.mono_fonts else 0)
         self.sw_liga.setChecked(g["disable_ligatures"])
         self.cb_engine.setCurrentIndex(config.ENGINES.index(g["engine"]))
+        self.sw_admin.setChecked(g["run_as_admin"])
 
     def apply(self):
         domains = [d.strip() for d in self.ed_allow.text().replace(";", ",").split(",") if d.strip()]
@@ -172,6 +177,7 @@ class SettingsInterface(ScrollArea):
             mono_font=self.mono_fonts[max(self.cb_monofont.currentIndex(), 0)],
             disable_ligatures=self.sw_liga.isChecked(),
             engine=config.ENGINES[max(self.cb_engine.currentIndex(), 0)],
+            run_as_admin=self.sw_admin.isChecked(),
         )
         self.ctl.apply_global(config.validate_global(g))
 

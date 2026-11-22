@@ -306,6 +306,21 @@ def test_ui():
           and w.editor.cb_out_iface.count() >= 1)
     w.editor.cancel()
     wait(300)
+    t = ctl.new_inbound("TUN", {"type": "tun"}, None, None, edit=False)
+    ctl.edit_node(t["id"])
+    wait(300)
+    check("ui: TUN editor hides the port and shows TUN options", w.editor.r_tun_stack.isVisible()
+          and not w.editor.r_in_listen.isVisible())
+    w.editor.cancel()
+    wait(300)
+    ctl.delete_node(t["id"])
+    w.switchTo(w.settings_page)
+    wait(200)
+    w.settings_page.sw_admin.setChecked(True)
+    w.settings_page.apply()
+    check("ui: settings keep 'Run as administrator'", ctl.glob["run_as_admin"] is True)
+    w.settings_page.sw_admin.setChecked(False)
+    w.settings_page.apply()
     ctl.set_target(graph["inbounds"][0]["id"], d["id"])
     ctl.change_language("ko")
     wait(600)
@@ -733,13 +748,116 @@ def test_wireguard_e2e():
         origin.shutdown()
 
 
+def test_tun():
+    """TUN cards: config, engine gate, relays, checks (no administrator rights needed)."""
+    from proxydock.singbox import compile as sbc, engine_for, guard
+    g = gm.empty()
+    d = gm.add_outbound(g, {"type": "direct"}, "Direct")
+    blk = gm.add_outbound(g, {"type": "block"})
+    r = gm.add_router(g, "R")
+    r["rules"][0].update(name="games", match={"process_name": ["game.exe"]}, target=blk["id"])
+    r["default"] = d["id"]
+    tun = gm.add_inbound(g, "TUN", {"type": "tun"}, target=r["id"])
+    relay = gm.add_inbound(g, "relay", {"type": "socks5", "port": 1080}, target=tun["id"])
+    ps = {x["id"]: x for x in gm.compile(g)}
+    p = ps[tun["id"]]
+    conf, reasons = sbc.build(p, config.resolve(p, config.validate_global({})), bans_path="b.json", api_port=1,
+                              api_secret="s", exclude_paths=["C:/x/sing-box.exe"])
+    rules = conf["route"]["rules"]
+    check("tun: inbound is a sing-box tun with auto route", conf["inbounds"][0]["type"] == "tun"
+          and conf["inbounds"][0]["auto_route"] and conf["route"].get("auto_detect_interface"))
+    check("tun: sniff + DNS hijack first, ProxyDock's own engines go Direct",
+          rules[0] == {"action": "sniff"} and rules[1] == {"protocol": "dns", "action": "hijack-dns"}
+          and rules[2] == {"process_path": ["C:/x/sing-box.exe"], "action": "route", "outbound": sbc.TUN_DIRECT}, rules[:3])
+    check("tun: no self-port rule, DNS server set", sbc.R_SELF not in reasons and conf.get("dns", {}).get("servers"))
+    check("tun: program rule kept", any(x.get("process_name") == ["game.exe"] for x in rules))
+    check("tun: needs sing-box", engine_for(p, config.validate_global({"engine": "python"}))[0] == "none")
+    check("tun: no port checks", config.check_proxy(p, list(ps.values())) == [], config.check_proxy(p, list(ps.values())))
+    check("tun: another inbound cannot relay into a TUN card", ps[relay["id"]]["unlinked"])
+
+    class Fake:
+        inbound = {"type": "tun"}
+    check("tun: no per-IP limit (all apps share the TUN address)",
+          guard.report_connections(Fake(), [{"id": str(i), "metadata": {"sourceIP": "172.19.0.1"}} for i in range(300)]) == [])
+    from proxydock.runtime import ProxyManager
+    from proxydock.singbox.process import SingBoxInstance
+    mgr = ProxyManager()
+    SingBoxInstance.tun_owner = "someone-else"
+    try:
+        ok = mgr.start(p, config.validate_global({"engine": "sing-box"})).result(15)
+    finally:
+        SingBoxInstance.tun_owner = None
+    check("tun: only one TUN card at a time", not ok and "only one" in mgr.state(p["id"])[1], mgr.state(p["id"]))
+    mgr.stop_all()
+
+
+def test_helper():
+    """The administrator helper protocol (same as for TUN, without the UAC prompt)."""
+    import proxydock.singbox.process as sp
+    from proxydock.runtime import ProxyManager
+    origin = ThreadingHTTPServer(("127.0.0.1", 0), Origin)
+    threading.Thread(target=origin.serve_forever, daemon=True).start()
+    sp.FORCE_HELPER = True
+    try:
+        mgr = ProxyManager()
+        p = config.new_proxy("helper", {"type": "socks5", "port": free_port()})
+        mgr.start(p, config.validate_global({"engine": "sing-box"})).result(30)
+        inst = mgr.instances.get(p["id"])
+        check("[helper] card runs through the helper", inst is not None and type(inst.proc).__name__ == "HelperProc",
+              mgr.state(p["id"]))
+        check("[helper] traffic through the helper's sing-box",
+              socks5_get(p["inbound"]["port"], "127.0.0.1", origin.server_address[1]) == "200")
+        time.sleep(1.2)
+        check("[helper] stats via the Clash API", mgr.stats_for(p["id"]).down > 0)
+        mgr.stop_all()
+        check("[helper] stopped", inst.proc is None)
+    finally:
+        sp.FORCE_HELPER = False
+        origin.shutdown()
+
+
+def test_run_as_admin():
+    """Settings 'Run as administrator': relaunch through UAC (the prompt itself is replaced here)."""
+    import types
+    from proxydock.ui import window as winmod
+    from proxydock.singbox import helper
+    from proxydock import common
+    args = types.SimpleNamespace(elevated=False, hidden=True, restart=False)
+    g = config.validate_global({"run_as_admin": True})
+    check("admin: setting saved", g["run_as_admin"] is True and config.validate_global({})["run_as_admin"] is False)
+    real_runas, real_admin, real_win = helper.runas, common.is_admin, winmod.IS_WIN
+    calls = []
+    try:
+        winmod.IS_WIN = True
+        common.is_admin = lambda: False
+        check("admin: off -> no relaunch", winmod.relaunch_elevated(config.validate_global({}), args) is None)
+        check("admin: already elevated copy -> no relaunch",
+              winmod.relaunch_elevated(g, types.SimpleNamespace(elevated=True, hidden=False, restart=False)) is None)
+
+        def cancelled(cmd, show=False):
+            raise RuntimeError("cancelled")
+        helper.runas = cancelled
+        note = winmod.relaunch_elevated(g, args)
+        check("admin: UAC cancelled -> keeps running with a note", note is not None and "cancelled" in note, note)
+        helper.runas = lambda cmd, show=False: calls.append(cmd)
+        try:
+            winmod.relaunch_elevated(g, args)
+            exited = False
+        except SystemExit:
+            exited = True
+        check("admin: relaunches elevated with --elevated --hidden and exits",
+              exited and calls and calls[0][-2:] == ["--elevated", "--hidden"], calls)
+    finally:
+        helper.runas, common.is_admin, winmod.IS_WIN = real_runas, real_admin, real_win
+
+
 def main():
     t0 = time.time()
     tests = [test_translations, test_graph, test_engine, test_singbox_compile, test_router_graph, test_router_singbox, test_interface,
-             test_wireguard]
+             test_wireguard, test_tun, test_run_as_admin]
     from proxydock.singbox import find_binary
     if find_binary():
-        tests += [lambda: test_engine("sing-box"), test_singbox_guard, test_router_e2e, test_interface_e2e, test_wireguard_e2e]
+        tests += [lambda: test_engine("sing-box"), test_singbox_guard, test_router_e2e, test_interface_e2e, test_wireguard_e2e, test_helper]
         from proxydock.singbox import find_hysteria
         if find_hysteria():
             tests.append(test_hysteria)

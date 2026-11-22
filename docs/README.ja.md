@@ -19,7 +19,7 @@
 
 | | 対応 |
 |---|---|
-| 受信側 | SOCKS5 · SOCKS4/4a · HTTP · HTTPS (TLS) · Shadowsocks サーバー · Hysteria2 サーバー |
+| 受信側 | SOCKS5 · SOCKS4/4a · HTTP · HTTPS (TLS) · Shadowsocks サーバー · Hysteria2 サーバー · TUN (すべてのアプリ) |
 | 送信側 | Direct · 上位 HTTP / HTTPS / SOCKS4 / SOCKS5 プロキシ · Shadowsocks トンネル · Hysteria2 (QUIC) トンネル · WireGuard |
 | UDP | 受信 SOCKS5 · Shadowsocks · Hysteria2、送信 Direct · Shadowsocks · Hysteria2 · WireGuard |
 
@@ -31,6 +31,7 @@
   **ブロック** (接続を拒否)、別の Router につなげます
 - **ネットワークインターフェース**: どの送信側も選んだネットワークカード (Tailscale、WireGuard、VPN アプリ、Wi-Fi) から出せます。PC のルートは変えないので、そこにつないだ通信だけがそのカードを使います (sing-box エンジン)
 - **WireGuard**: ProxyDock の中で動く WireGuard トンネルブロック - VPN アプリ不要なので、複数の国のトンネルを同時に使いアプリごとに分けられます。事業者の `.conf` を読み込めて、WireGuard ブロックを別の WireGuard ブロック経由にすると二重 VPN になります (sing-box エンジン)
+- **TUN**: この PC のすべてのアプリ (プロキシ設定のないアプリも) を捕まえる仮想ネットワークカード。Router につなぐとプログラムのルール (game.exe、chrome.exe) がすべてのアプリに効きます。ProxyDock が管理者でなければ起動時に管理者権限 (UAC) を求めます (sing-box エンジン)
 - **エンジン**: 既定の sing-box はプロキシごとに別プロセスで動きます - マルチコア、チェーン経由の UDP、他の送信側を経由する Hysteria2。内蔵の Python エンジンは代替用です (設定 → プロキシエンジン)
 - **Shadowsocks**: AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) と 2022 (SIP022, blake3)、TCP+UDP、`ss://` リンクのコピー
 - **Hysteria2**: 公式実装と双方向で互換性を確認 (TCP・UDP)、証明書フィンガープリントの固定、`hysteria2://` リンクのコピー
@@ -96,6 +97,8 @@ macOS ビルドはまだ実機の Mac で確認していません。
 
 ## 既知の制限
 
+- TUN はまだ実際の環境で試していません。TUN カードは同時に 1 つで、捕まえたアプリの DNS はこの PC で ProxyDock が
+  答えます。厳格なルートは Windows で IPv6 を壊すことがあるため既定でオフです。macOS/Linux では ProxyDock 自体を root で実行する必要があります。
 - Router とブロックには sing-box エンジンが必要です。IP・GeoIP のルールはこの PC で先にドメインを解決するため、その後ろの
   トンネルはドメインをリモートで解決せず IP に接続します。プログラムのルールはこの PC からの接続にだけ効きます。
 - sing-box エンジン: 他の PC に公開した Hysteria2 サーバーは公式 Hysteria2 コアで動き、コアが接続ごとに ProxyDock に認証を問い合わせます

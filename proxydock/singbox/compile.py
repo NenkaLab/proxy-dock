@@ -21,10 +21,17 @@ def _listen(host):
     return "127.0.0.1" if host.lower() == "localhost" else host
 
 
+TUN_ADDRESS = ["172.19.0.1/30", "fdfe:dcba:9876::1/126"]
+TUN_DIRECT = "tun-direct"           # a TUN card's own Direct: ProxyDock's engines leave through it, not the TUN
+
+
 def inbound(ib, cert=None):
     """cert: (cert_path, key_path) for https / hysteria2."""
-    base = {"tag": IN_TAG, "listen": _listen(ib["host"]), "listen_port": ib["port"]}
     t = ib["type"]
+    if t == "tun":
+        return {"type": "tun", "tag": IN_TAG, "address": TUN_ADDRESS, "mtu": 9000, "auto_route": True,
+                "strict_route": bool(ib.get("tun_strict_route")), "stack": ib.get("tun_stack", "mixed")}
+    base = {"tag": IN_TAG, "listen": _listen(ib["host"]), "listen_port": ib["port"]}
     if t in ("socks5", "socks4"):
         d = {"type": "socks", **base}
         if t == "socks5" and ib["auth_enabled"]:
@@ -175,7 +182,7 @@ def _allow_rule(domains):
     return rule
 
 
-def route(proxy, cfg, bans_path, rulesets=None, route_tags=None):
+def route(proxy, cfg, bans_path, rulesets=None, route_tags=None, exclude_paths=None):
     """(route dict, reasons) - reasons[i] says what rule i blocks (None for rules that do not reject).
     rulesets: {tag: path} for GeoIP/Geosite; route_tags: block id -> outbound tag prefix of router targets."""
     ib, ob = proxy["inbound"], proxy["outbound"]
@@ -185,12 +192,19 @@ def route(proxy, cfg, bans_path, rulesets=None, route_tags=None):
         rules.append(rule)
         reasons.append(reason)
 
+    tun = ib["type"] == "tun"
+    if tun:
+        # apps connect by IP: sniff TLS/HTTP/QUIC for the domain so domain rules work; answer DNS here
+        add({"action": "sniff"})
+        add({"protocol": "dns", "action": "hijack-dns"})
+        if exclude_paths:       # ProxyDock's own engines (other cards, tunnels) must not loop back into the TUN
+            add({"process_path": list(exclude_paths), "action": "route", "outbound": TUN_DIRECT})
     add({"action": "route-options", "udp_timeout": f"{cfg['timeout']}s"})
     add({"rule_set": BANS_TAG, "action": "reject"}, R_BANNED)
-    # never connect to this proxy's own port (would loop forever)
-    add({"domain": ["localhost"], "ip_cidr": ["127.0.0.0/8", "::1/128"] + (
-        [f"{ib['host']}/32"] if is_ip_literal(ib["host"]) and ":" not in ib["host"] and ib["host"] != "0.0.0.0" else []),
-         "port": [ib["port"]], "action": "reject"}, R_SELF)
+    if not tun:     # never connect to this proxy's own port (would loop forever)
+        add({"domain": ["localhost"], "ip_cidr": ["127.0.0.0/8", "::1/128"] + (
+            [f"{ib['host']}/32"] if is_ip_literal(ib["host"]) and ":" not in ib["host"] and ib["host"] != "0.0.0.0" else []),
+             "port": [ib["port"]], "action": "reject"}, R_SELF)
     doms = cfg["allowed_domains"]
     if "*" not in doms:
         add(_allow_rule(doms), R_ALLOW)
@@ -218,10 +232,13 @@ def route(proxy, cfg, bans_path, rulesets=None, route_tags=None):
     sets = [{"type": "local", "tag": BANS_TAG, "format": "source", "path": bans_path}]
     sets += [{"type": "local", "tag": t, "format": "binary", "path": p} for t, p in sorted((rulesets or {}).items())]
     r = {"rule_set": sets, "rules": rules, "final": "out0"}
+    if tun:
+        r["auto_detect_interface"] = True       # outbounds leave through the real network card, not the TUN
+        r["default_domain_resolver"] = "local"
     return r, reasons
 
 
-def build(proxy, cfg, *, bans_path, api_port, api_secret, cert=None, rulesets=None):
+def build(proxy, cfg, *, bans_path, api_port, api_secret, cert=None, rulesets=None, exclude_paths=None):
     """Full sing-box config. cfg = config.resolve(proxy, glob). Returns (config dict, route rule reasons)."""
     obs = outbounds(proxy["outbound"]) or [{"type": "direct", "tag": "out0"}]   # (Block default: never used)
     route_tags = {}
@@ -229,7 +246,10 @@ def build(proxy, cfg, *, bans_path, api_port, api_secret, cert=None, rulesets=No
         if r["outbound"]["type"] != "block" and r["block"] not in route_tags:
             route_tags[r["block"]] = prefix = f"r{len(route_tags)}_"
             obs += outbounds(r["outbound"], prefix)
-    r, reasons = route(proxy, cfg, bans_path, rulesets, route_tags)
+    tun = proxy["inbound"]["type"] == "tun"
+    if tun:
+        obs.append({"type": "direct", "tag": TUN_DIRECT})
+    r, reasons = route(proxy, cfg, bans_path, rulesets, route_tags, exclude_paths)
     endpoints = [o for o in obs if o["type"] == "wireguard"]
     conf = {
         "log": {"level": "debug", "timestamp": False},      # colors are turned off with --disable-color
@@ -240,6 +260,8 @@ def build(proxy, cfg, *, bans_path, api_port, api_secret, cert=None, rulesets=No
     }
     if endpoints:
         conf["endpoints"] = endpoints
+    if tun:
+        conf["dns"] = {"servers": [{"type": "local", "tag": "local"}]}
     return conf, reasons
 
 

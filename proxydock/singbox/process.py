@@ -12,7 +12,7 @@ import sys
 
 from .. import config
 from ..common import (
-    IS_WIN, LOG_AUTH, LOG_BLOCKED, LOG_ERROR, LOG_FAIL, LOG_TCP, LOG_UDP, LOG_WARN, host_port, log,
+    IS_WIN, LOG_AUTH, LOG_BLOCKED, LOG_ERROR, LOG_FAIL, LOG_INFO, LOG_TCP, LOG_UDP, LOG_WARN, host_port, log,
     split_host_port,
 )
 from . import compile as sbc, guard
@@ -113,8 +113,12 @@ def _start_error(text, proxy):
     return RuntimeError("sing-box: " + _SECRET.sub(r"\1=***", text))
 
 
+FORCE_HELPER = False        # tests: run through the helper protocol without UAC
+
+
 class SingBoxInstance:
     engine = "sing-box"
+    tun_owner = None            # id of the running TUN card (one TUN at a time)
 
     def __init__(self, proxy, glob, stats):
         self.stats = stats
@@ -177,8 +181,13 @@ class SingBoxInstance:
         self.api_port = _free_port()
         self.api_secret = secrets.token_hex(16)
         cert = self.server_cert_paths() if self.inbound["type"] in ("https", "hysteria2") else None
+        exclude = None
+        if self.inbound["type"] == "tun":
+            from . import find_hysteria
+            exclude = sorted({os.path.abspath(x) for x in (find_binary(self.glob), find_hysteria(self.glob), sys.executable) if x})
         conf, self.reasons = sbc.build(self.proxy, self.cfg, bans_path=guard.BANS_PATH, api_port=self.api_port,
-                                       api_secret=self.api_secret, cert=cert, rulesets=self.rulesets)
+                                       api_secret=self.api_secret, cert=cert, rulesets=self.rulesets,
+                                       exclude_paths=exclude)
         os.makedirs(guard.RUN_DIR, exist_ok=True)
         path = self.config_path
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)     # contains passwords
@@ -196,16 +205,28 @@ class SingBoxInstance:
         if need:            # GeoIP / Geosite files (downloaded or refreshed off the event loop)
             self.rulesets = await asyncio.get_running_loop().run_in_executor(
                 None, lambda: rulesets.ensure(need, lambda m: self.log(LOG_WARN, m)))
+        tun = self.inbound["type"] == "tun"
+        if tun:
+            if SingBoxInstance.tun_owner not in (None, self.id):
+                raise RuntimeError(_t("Another TUN card is already running; only one can run at a time"))
+            SingBoxInstance.tun_owner = self.id
         self._write_config()
-        kw = {}
-        if IS_WIN:
-            kw["creationflags"] = 0x08000000        # CREATE_NO_WINDOW
-        elif sys.platform.startswith("linux"):
-            kw["preexec_fn"] = _linux_parent_death
-        self.proc = await asyncio.create_subprocess_exec(
-            exe, "run", "--disable-color", "-c", self.config_path, "-D", guard.RUN_DIR,
-            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, **kw)
-        _attach_to_job(self.proc.pid)
+        from ..common import is_admin
+        if (tun and not is_admin()) or FORCE_HELPER:
+            # TUN needs administrator rights: run this card's sing-box through the UAC helper
+            from .helper import HelperProc
+            self.log(LOG_INFO, _t("Asking for administrator permission to start the TUN…"))
+            self.proc = await HelperProc.launch(self.config_path, guard.RUN_DIR, elevate=not FORCE_HELPER)
+        else:
+            kw = {}
+            if IS_WIN:
+                kw["creationflags"] = 0x08000000        # CREATE_NO_WINDOW
+            elif sys.platform.startswith("linux"):
+                kw["preexec_fn"] = _linux_parent_death
+            self.proc = await asyncio.create_subprocess_exec(
+                exe, "run", "--disable-color", "-c", self.config_path, "-D", guard.RUN_DIR,
+                stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, **kw)
+            _attach_to_job(self.proc.pid)
         started = asyncio.get_running_loop().create_future()
         self._spawn(self._read_output(started))
         try:
@@ -223,6 +244,8 @@ class SingBoxInstance:
         for t in list(self.tasks):
             t.cancel()
         guard.forget(self)
+        if SingBoxInstance.tun_owner == self.id:
+            SingBoxInstance.tun_owner = None
         p, self.proc = self.proc, None
         if p is not None and p.returncode is None:
             try:

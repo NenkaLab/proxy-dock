@@ -20,7 +20,7 @@ Shadowsocks-Server" eine einzige Karte.
 
 | | Unterstützt |
 |---|---|
-| Eingang | SOCKS5 · SOCKS4/4a · HTTP · HTTPS (TLS) · Shadowsocks-Server · Hysteria2-Server |
+| Eingang | SOCKS5 · SOCKS4/4a · HTTP · HTTPS (TLS) · Shadowsocks-Server · Hysteria2-Server · TUN (alle Apps) |
 | Ausgang | Direct · Upstream-HTTP / HTTPS / SOCKS4 / SOCKS5-Proxy · Shadowsocks-Tunnel · Hysteria2-Tunnel (QUIC) · WireGuard |
 | UDP | Eingang SOCKS5 · Shadowsocks · Hysteria2, Ausgang Direct · Shadowsocks · Hysteria2 · WireGuard |
 
@@ -32,6 +32,7 @@ Shadowsocks-Server" eine einzige Karte.
   Standard. Regeln können zu jedem Ausgang, zum **Block**-Ausgang (ablehnen) oder zu einem anderen Router führen
 - **Netzwerkschnittstelle**: Jeder Ausgang kann über eine gewählte Netzwerkkarte hinausgehen - Tailscale, WireGuard, eine VPN-App, WLAN - ohne die Routen des PCs zu ändern; nur der dorthin verbundene Verkehr nutzt sie (sing-box-Engine)
 - **WireGuard**: ein WireGuard-Tunnelblock, der in ProxyDock läuft - keine VPN-App, daher können mehrere Länder gleichzeitig für verschiedene Apps laufen; `.conf` eines Anbieters importieren; ein WireGuard-Block 'über' einen anderen ergibt ein Doppel-VPN (sing-box-Engine)
+- **TUN**: eine virtuelle Netzwerkkarte, die alle Apps auf diesem PC erfasst, auch ohne Proxy-Einstellung - mit einem Router verbunden gelten Programmregeln (game.exe, chrome.exe) für alle Apps. Fragt beim Start nach Administratorrechten (UAC), außer ProxyDock läuft schon als Administrator (sing-box-Engine)
 - **Engine**: sing-box (Standard) führt jeden Proxy in einem eigenen Prozess aus - mehrere Kerne, UDP über Ketten, Hysteria2 über andere Ausgänge. Die integrierte Python-Engine ist der Ersatz (Einstellungen → Proxy-Engine)
 - **Shadowsocks**: AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) und 2022 (SIP022, blake3), TCP+UDP, `ss://`-Links kopieren
 - **Hysteria2**: in beide Richtungen mit der offiziellen Implementierung kompatibel (TCP und UDP), Zertifikats-Pinning, `hysteria2://`-Links kopieren
@@ -98,6 +99,8 @@ Der macOS-Build wurde noch nicht auf einem echten Mac getestet.
 
 ## Bekannte Einschränkungen
 
+- TUN wurde noch nicht in echten Umgebungen getestet. Nur eine TUN-Karte gleichzeitig; DNS der erfassten Apps beantwortet
+  ProxyDock auf diesem PC; strikte Route kann unter Windows IPv6 stören (standardmäßig aus). Unter macOS/Linux muss ProxyDock selbst als Root laufen.
 - Router- und Block-Blöcke brauchen die sing-box-Engine. IP- und GeoIP-Regeln lösen die Domain zuerst auf diesem PC auf,
   ein Tunnel dahinter verbindet sich also mit der IP statt die Domain entfernt aufzulösen. Programmregeln sehen nur Verbindungen von diesem PC.
 - sing-box-Engine: Ein für andere PCs offener Hysteria2-Server läuft mit dem offiziellen Hysteria2-Kern, der ProxyDock bei jeder

@@ -332,10 +332,11 @@ def compile(graph):
                 t = None            # no default exit: cannot start
         elif kind == "outbound":
             ob = resolve_outbound(graph, t["id"])
-        elif kind == "inbound":
+        elif kind == "inbound" and t["inbound"]["type"] != "tun":
             ob = chain_outbound(t["inbound"])
         else:
             ob = {"type": "direct"}
+            t = None                # nothing to send to (a TUN card cannot be relayed into)
         p = config.validate_proxy({"id": n["id"], "name": n["name"], "autostart": n["autostart"],
                                    "inbound": copy.deepcopy(n["inbound"]), "outbound": ob,
                                    "overrides": copy.deepcopy(n["overrides"])})

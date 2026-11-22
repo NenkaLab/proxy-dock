@@ -19,7 +19,7 @@
 
 | | 支援 |
 |---|---|
-| 接收端 | SOCKS5 · SOCKS4/4a · HTTP · HTTPS (TLS) · Shadowsocks 伺服器 · Hysteria2 伺服器 |
+| 接收端 | SOCKS5 · SOCKS4/4a · HTTP · HTTPS (TLS) · Shadowsocks 伺服器 · Hysteria2 伺服器 · TUN (所有應用程式) |
 | 傳出端 | Direct · 上游 HTTP / HTTPS / SOCKS4 / SOCKS5 代理 · Shadowsocks 通道 · Hysteria2 (QUIC) 通道 · WireGuard |
 | UDP | 接收 SOCKS5 · Shadowsocks · Hysteria2，傳出 Direct · Shadowsocks · Hysteria2 · WireGuard |
 
@@ -30,6 +30,7 @@
   每條規則都有自己的輸出；沒有規則符合時走預設出口。規則可以連到任何傳出端、**封鎖**區塊 (拒絕連線) 或另一個路由
 - **網路介面**: 任何傳出端都可以從選定的網路卡 (Tailscale、WireGuard、VPN 應用程式、Wi-Fi) 送出，不變更電腦的路由，只有連到那裡的流量才使用它 (sing-box 引擎)
 - **WireGuard**: 在 ProxyDock 內執行的 WireGuard 通道區塊 - 不需要 VPN 應用程式，可同時開啟多個國家的通道並依應用程式分配；可匯入業者的 `.conf`；把一個 WireGuard 區塊經由另一個即為雙重 VPN (sing-box 引擎)
+- **TUN**: 擷取這台電腦所有應用程式 (包括沒有代理設定的程式) 的虛擬網路卡——連到路由後，程式規則 (game.exe、chrome.exe) 對所有應用程式生效。若 ProxyDock 不是以系統管理員身分執行，啟動時會要求系統管理員權限 (UAC) (sing-box 引擎)
 - **引擎**: 預設的 sing-box 為每個代理各自執行一個處理程序 - 多核心、經過鏈結的 UDP、經由其他傳出端的 Hysteria2。內建 Python 引擎作為備用 (設定 → 代理引擎)
 - **Shadowsocks**：AEAD 2018 (aes-128/256-gcm、chacha20-ietf-poly1305) 與 2022 (SIP022、blake3)，TCP+UDP，複製 `ss://` 連結
 - **Hysteria2**：已確認與官方實作雙向相容 (TCP、UDP)，憑證指紋固定，複製 `hysteria2://` 連結
@@ -94,6 +95,8 @@ macOS 建置尚未在實體 Mac 上驗證。
 
 ## 已知限制
 
+- TUN 尚未在實際環境中測試。同一時間只能有一個 TUN 卡片；被擷取程式的 DNS 由這台電腦上的 ProxyDock 回應；
+  嚴格路由在 Windows 上可能破壞 IPv6 (預設關閉)。在 macOS/Linux 上需要以 root 身分執行 ProxyDock。
 - 路由和封鎖區塊需要 sing-box 引擎。IP 和 GeoIP 規則會先在這台電腦解析網域，因此其後的通道直接連到 IP，而不是在遠端解析網域。
   程式規則只對來自這台電腦的連線有效。
 - sing-box 引擎: 對其他電腦開放的 Hysteria2 伺服器以官方 Hysteria2 核心執行，核心每次連線都向 ProxyDock 詢問驗證

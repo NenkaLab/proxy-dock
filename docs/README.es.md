@@ -20,7 +20,7 @@ es una sola tarjeta.
 
 | | Compatible |
 |---|---|
-| Entrada | SOCKS5 · SOCKS4/4a · HTTP · HTTPS (TLS) · servidor Shadowsocks · servidor Hysteria2 |
+| Entrada | SOCKS5 · SOCKS4/4a · HTTP · HTTPS (TLS) · servidor Shadowsocks · servidor Hysteria2 · TUN (todas las apps) |
 | Salida | Direct · proxy superior HTTP / HTTPS / SOCKS4 / SOCKS5 · túnel Shadowsocks · túnel Hysteria2 (QUIC) · WireGuard |
 | UDP | entrada SOCKS5 · Shadowsocks · Hysteria2, salida Direct · Shadowsocks · Hysteria2 · WireGuard |
 
@@ -32,6 +32,7 @@ es una sola tarjeta.
   Las reglas pueden ir a cualquier salida, a la salida **Bloquear** (rechazar) o a otro enrutador
 - **Interfaz de red**: cualquier salida puede salir por una tarjeta de red elegida (Tailscale, WireGuard, una app de VPN, Wi-Fi) sin cambiar las rutas del PC; solo el tráfico conectado a ella la usa (motor sing-box)
 - **WireGuard**: un bloque de túnel WireGuard que funciona dentro de ProxyDock: sin app de VPN, así que varios países pueden estar activos a la vez para apps distintas; importa el `.conf` de un proveedor; un bloque WireGuard «por» otro da una VPN doble (motor sing-box)
+- **TUN**: una tarjeta de red virtual que captura todas las apps de este PC, incluso sin ajustes de proxy; conectada a un enrutador, las reglas de programa (game.exe, chrome.exe) se aplican a todas. Pide permisos de administrador (UAC) al iniciarse, salvo que ProxyDock ya se ejecute como administrador (motor sing-box)
 - **Motor**: sing-box (predeterminado) ejecuta cada proxy en su propio proceso: varios núcleos, UDP a través de cadenas, Hysteria2 por otras salidas. El motor Python integrado queda de respaldo (Ajustes → Motor de proxy)
 - **Shadowsocks**: AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) y 2022 (SIP022, blake3), TCP+UDP, copia de enlaces `ss://`
 - **Hysteria2**: compatible en ambos sentidos con la implementación oficial (TCP y UDP), fijación del certificado, copia de enlaces `hysteria2://`
@@ -98,6 +99,8 @@ La compilación para macOS aún no se ha probado en un Mac real.
 
 ## Limitaciones conocidas
 
+- El TUN aún no se ha probado en entornos reales. Solo una tarjeta TUN a la vez; ProxyDock responde en este PC el DNS de
+  las apps capturadas; la ruta estricta puede romper IPv6 en Windows (desactivada por defecto). En macOS/Linux, ProxyDock debe ejecutarse como root.
 - Los bloques Enrutador y Bloquear requieren el motor sing-box. Las reglas de IP y GeoIP resuelven primero el dominio en este PC,
   así que un túnel detrás de ellas se conecta a la IP en lugar de resolver el dominio en remoto. Las reglas de programa solo ven conexiones de este PC.
 - Motor sing-box: un servidor Hysteria2 abierto a otros PC funciona con el núcleo oficial de Hysteria2, que consulta a ProxyDock en

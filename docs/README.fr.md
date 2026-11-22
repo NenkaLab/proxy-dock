@@ -20,7 +20,7 @@ Shadowsocks distant » tient sur une seule carte.
 
 | | Pris en charge |
 |---|---|
-| Entrée | SOCKS5 · SOCKS4/4a · HTTP · HTTPS (TLS) · serveur Shadowsocks · serveur Hysteria2 |
+| Entrée | SOCKS5 · SOCKS4/4a · HTTP · HTTPS (TLS) · serveur Shadowsocks · serveur Hysteria2 · TUN (toutes les applications) |
 | Sortie | Direct · proxy amont HTTP / HTTPS / SOCKS4 / SOCKS5 · tunnel Shadowsocks · tunnel Hysteria2 (QUIC) · WireGuard |
 | UDP | entrée SOCKS5 · Shadowsocks · Hysteria2, sortie Direct · Shadowsocks · Hysteria2 · WireGuard |
 
@@ -32,6 +32,7 @@ Shadowsocks distant » tient sur une seule carte.
   Les règles peuvent mener à n'importe quelle sortie, à la sortie **Blocage** (refus) ou à un autre routeur
 - **Interface réseau** : toute sortie peut passer par une carte réseau choisie - Tailscale, WireGuard, une application VPN, le Wi-Fi - sans modifier les routes du PC ; seul le trafic relié à elle l'utilise (moteur sing-box)
 - **WireGuard** : un bloc tunnel WireGuard exécuté dans ProxyDock - sans application VPN, plusieurs pays peuvent être actifs en même temps pour des applications différentes ; import du `.conf` d'un fournisseur ; un bloc WireGuard « par » un autre donne un double VPN (moteur sing-box)
+- **TUN** : une carte réseau virtuelle qui capture toutes les applications de ce PC, même sans réglage de proxy - reliée à un routeur, les règles de programme (game.exe, chrome.exe) s'appliquent à toutes. Demande les droits administrateur (UAC) au démarrage, sauf si ProxyDock tourne déjà en administrateur (moteur sing-box)
 - **Moteur** : sing-box (par défaut) exécute chaque proxy dans son propre processus - multicœur, UDP à travers les chaînes, Hysteria2 via d'autres sorties. Le moteur Python intégré sert de secours (Paramètres → Moteur de proxy)
 - **Shadowsocks** : AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) et 2022 (SIP022, blake3), TCP+UDP, copie des liens `ss://`
 - **Hysteria2** : interopérable dans les deux sens avec l'implémentation officielle (TCP et UDP), épinglage du certificat, copie des liens `hysteria2://`
@@ -98,6 +99,8 @@ La compilation macOS n'a pas encore été essayée sur un vrai Mac.
 
 ## Limites connues
 
+- Le TUN n'a pas encore été essayé en conditions réelles. Une seule carte TUN à la fois ; le DNS des applications capturées
+  est résolu par ProxyDock sur ce PC ; la route stricte peut casser l'IPv6 sous Windows (désactivée par défaut). Sous macOS/Linux, ProxyDock doit tourner en root.
 - Les blocs Routeur et Blocage nécessitent le moteur sing-box. Les règles IP et GeoIP résolvent d'abord le domaine sur ce PC :
   un tunnel derrière elles se connecte à l'IP au lieu de résoudre le domaine à distance. Les règles de programme ne voient que les connexions de ce PC.
 - Moteur sing-box : un serveur Hysteria2 ouvert aux autres PC tourne sur le cœur Hysteria2 officiel, qui interroge ProxyDock à chaque

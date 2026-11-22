@@ -40,7 +40,8 @@ def _tr_new_inbound():
     NEW_INBOUND[:] = [(t, label) for t, label in INBOUND_TYPES.items()]
 
 
-DEFAULT_PORTS = {"socks5": 1080, "socks4": 1084, "http": 8080, "https": 8443, "shadowsocks": 8388, "hysteria2": 8443}
+DEFAULT_PORTS = {"socks5": 1080, "socks4": 1084, "http": 8080, "https": 8443, "shadowsocks": 8388, "hysteria2": 8443,
+                 "tun": 30300}       # (a TUN card has no port; any free number keeps the port checks quiet)
 
 
 class InfoWidget(NodeBaseWidget):
@@ -395,7 +396,8 @@ class CanvasInterface(QWidget):
                 continue
             ib = p["inbound"]
             state, msg = statuses.get(p["id"], ("stopped", ""))
-            lines = [_line("#DADADA", f"{INBOUND_TYPES[ib['type']]} · {host_port(ib['host'], ib['port'])}")]
+            from ..common import inbound_where
+            lines = [_line("#DADADA", f"{INBOUND_TYPES[ib['type']]} · {inbound_where(ib)}")]
             if p["unlinked"]:
                 lines.append(_line("#E8B339", "⚠ " + _t("not connected")))
             color = {"running": "#6CCB5F", "starting": "#E8B339", "error": "#FF8A80"}.get(state, "#9A9A9A")
