@@ -70,6 +70,7 @@ def _tr_outbound_types():
         "socks5": _t("SOCKS5 proxy"),
         "shadowsocks": _t("Shadowsocks tunnel"),
         "hysteria2": _t("Hysteria2 tunnel"),
+        "block": _t("Block"),
     })
 
 

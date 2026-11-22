@@ -124,6 +124,7 @@ class SingBoxInstance:
         self.proc = None
         self.tasks = set()
         self.reasons = []
+        self.rulesets = {}
         self.glob = glob
         self._clients = {}          # sing-box connection id -> client "ip:port"
         self._targets = {}          # sing-box connection id -> destination "host:port"
@@ -144,7 +145,7 @@ class SingBoxInstance:
         """Route settings live in the sing-box config, so changing them restarts the process (only this card)."""
         new = config.resolve(proxy, glob)
         keys = ("allowed_domains", "block_private", "timeout")
-        return any(new[k] != self.cfg[k] for k in keys)
+        return any(new[k] != self.cfg[k] for k in keys) or proxy.get("routes") != self.proxy.get("routes")
 
     @property
     def outbound_label(self):
@@ -177,7 +178,7 @@ class SingBoxInstance:
         self.api_secret = secrets.token_hex(16)
         cert = self.server_cert_paths() if self.inbound["type"] in ("https", "hysteria2") else None
         conf, self.reasons = sbc.build(self.proxy, self.cfg, bans_path=guard.BANS_PATH, api_port=self.api_port,
-                                       api_secret=self.api_secret, cert=cert)
+                                       api_secret=self.api_secret, cert=cert, rulesets=self.rulesets)
         os.makedirs(guard.RUN_DIR, exist_ok=True)
         path = self.config_path
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)     # contains passwords
@@ -189,6 +190,12 @@ class SingBoxInstance:
         if exe is None:
             raise RuntimeError(_t("sing-box was not found"))
         guard.write_bans(force=True)
+        from . import rulesets
+        need = rulesets.needed(self.proxy)
+        self.rulesets = {}
+        if need:            # GeoIP / Geosite files (downloaded or refreshed off the event loop)
+            self.rulesets = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: rulesets.ensure(need, lambda m: self.log(LOG_WARN, m)))
         self._write_config()
         kw = {}
         if IS_WIN:
@@ -301,6 +308,9 @@ class SingBoxInstance:
                 self.log(LOG_BLOCKED, f"{who} -> {target} " + _t("blocked (temporarily banned IP)"))
             elif reason == sbc.R_SELF:
                 self.log(LOG_BLOCKED, f"{who} -> {target} " + _t("blocked (this proxy's own port)"))
+            elif isinstance(reason, tuple) and reason[0] == sbc.R_RULE:
+                name = _t("default") if reason[1] == "default" else reason[1]
+                self.log(LOG_BLOCKED, f"{who} -> {target} " + _t("blocked by router rule '{name}'").format(name=name))
             return
         m = _PROC_ERR.match(msg)
         if m:

@@ -8,6 +8,9 @@ BANS_TAG = "bans"
 
 # what each route rule blocks (index in route.rules -> reason code), used to explain "router: match[n] => reject" lines
 R_BANNED, R_SELF, R_ALLOW, R_PRIVATE = "banned", "self", "allow", "private"
+# a router rule that sends traffic to the Block outbound: reasons[i] = ("rule", rule name)
+R_RULE = "rule"
+IP_KEYS = ("ip_cidr", "ip_private", "geoip")      # router conditions that need the destination IP
 
 # is_internal_ip() ranges that sing-box's ip_is_private does not cover
 _EXTRA_INTERNAL = ["0.0.0.0/8", "100.64.0.0/10", "192.0.0.0/24", "198.18.0.0/15", "224.0.0.0/4", "240.0.0.0/4",
@@ -79,16 +82,64 @@ def outbound(ob, tag):
     raise ValueError(f"unsupported outbound {t}")
 
 
-def outbounds(ob):
-    """The via chain as sing-box outbounds: out0 (the card's outbound) -detour-> out1 -> ..."""
+def outbounds(ob, prefix="out"):
+    """The via chain as sing-box outbounds: out0 (the card's outbound) -detour-> out1 -> ...
+    A Block outbound has no sing-box outbound (it becomes a reject rule)."""
     out, i = [], 0
-    while ob:
-        d = outbound(ob, f"out{i}")
+    while ob and ob["type"] != "block":
+        d = outbound(ob, f"{prefix}{i}")
         if ob.get("via"):
-            d["detour"] = f"out{i + 1}"
+            d["detour"] = f"{prefix}{i + 1}"
         out.append(d)
         ob, i = ob.get("via"), i + 1
     return out
+
+
+def _cidr(x):
+    if "/" in x:
+        return str(ipaddress.ip_network(x, strict=False))
+    a = ipaddress.ip_address(strip_scope(x))
+    return f"{a}/{a.max_prefixlen}"
+
+
+def match_fields(m):
+    """One router rule's conditions -> sing-box rule fields (without the action)."""
+    from .rulesets import tag
+    d = {}
+    if m.get("domain"):
+        d["domain"] = [x.rstrip(".") for x in m["domain"]]
+    if m.get("domain_suffix"):
+        d["domain_suffix"] = [x.lstrip("*").lstrip(".").rstrip(".") for x in m["domain_suffix"]]
+    if m.get("domain_keyword"):
+        d["domain_keyword"] = list(m["domain_keyword"])
+    if m.get("ip_cidr"):
+        d["ip_cidr"] = [_cidr(x) for x in m["ip_cidr"]]
+    if m.get("ip_private"):
+        d["ip_is_private"] = True
+    sets = [tag("geoip", x) for x in m.get("geoip", [])] + [tag("geosite", x) for x in m.get("geosite", [])]
+    if sets:
+        d["rule_set"] = sets
+    ports, ranges = [], []
+    for x in m.get("port", []):
+        if "-" in x:
+            a, b = (int(v) for v in x.split("-", 1))
+            ranges.append(f"{a}:{b}")
+        else:
+            ports.append(int(x))
+    if ports:
+        d["port"] = ports
+    if ranges:
+        d["port_range"] = ranges
+    if m.get("process_name"):
+        d["process_name"] = list(m["process_name"])
+    return d
+
+
+def route_rule(conds):
+    """Conditions of every router rule on the way (all must match)."""
+    if len(conds) == 1:
+        return match_fields(conds[0])
+    return {"type": "logical", "mode": "and", "rules": [match_fields(m) for m in conds]}
 
 
 def _allow_rule(domains):
@@ -111,8 +162,9 @@ def _allow_rule(domains):
     return rule
 
 
-def route(proxy, cfg, bans_path):
-    """(route dict, reasons) - reasons[i] says what rule i blocks (None for rules that do not reject)."""
+def route(proxy, cfg, bans_path, rulesets=None, route_tags=None):
+    """(route dict, reasons) - reasons[i] says what rule i blocks (None for rules that do not reject).
+    rulesets: {tag: path} for GeoIP/Geosite; route_tags: block id -> outbound tag prefix of router targets."""
     ib, ob = proxy["inbound"], proxy["outbound"]
     rules, reasons = [], []
 
@@ -137,18 +189,38 @@ def route(proxy, cfg, bans_path):
         add({"domain_suffix": ["localhost"], "action": "reject"}, R_PRIVATE)
         add({"ip_is_private": True, "action": "reject"}, R_PRIVATE)
         add({"ip_cidr": _EXTRA_INTERNAL, "action": "reject"}, R_PRIVATE)
-    r = {"rule_set": [{"type": "local", "tag": BANS_TAG, "format": "source", "path": bans_path}],
-         "rules": rules, "final": "out0"}
+    routes = proxy.get("routes") or []
+    if any(k in m for r in routes for m in r["match"] for k in IP_KEYS):
+        # IP / GeoIP conditions need the destination address. Note: after this the outbound connects to the IP,
+        # so a tunnel no longer resolves the domain remotely.
+        add({"action": "resolve"})
+    for r in routes:
+        rule = route_rule(r["match"])
+        if r["outbound"]["type"] == "block":
+            add(dict(rule, action="reject"), (R_RULE, r["name"]))
+        else:
+            add(dict(rule, action="route", outbound=f"{route_tags[r['block']]}0"))
+    if ob["type"] == "block":          # the router's default is Block: refuse everything else
+        add({"action": "reject"}, (R_RULE, "default"))
+    sets = [{"type": "local", "tag": BANS_TAG, "format": "source", "path": bans_path}]
+    sets += [{"type": "local", "tag": t, "format": "binary", "path": p} for t, p in sorted((rulesets or {}).items())]
+    r = {"rule_set": sets, "rules": rules, "final": "out0"}
     return r, reasons
 
 
-def build(proxy, cfg, *, bans_path, api_port, api_secret, cert=None):
+def build(proxy, cfg, *, bans_path, api_port, api_secret, cert=None, rulesets=None):
     """Full sing-box config. cfg = config.resolve(proxy, glob). Returns (config dict, route rule reasons)."""
-    r, reasons = route(proxy, cfg, bans_path)
+    obs = outbounds(proxy["outbound"]) or [{"type": "direct", "tag": "out0"}]   # (Block default: never used)
+    route_tags = {}
+    for r in proxy.get("routes") or []:     # one outbound chain per target block, shared by its rules
+        if r["outbound"]["type"] != "block" and r["block"] not in route_tags:
+            route_tags[r["block"]] = prefix = f"r{len(route_tags)}_"
+            obs += outbounds(r["outbound"], prefix)
+    r, reasons = route(proxy, cfg, bans_path, rulesets, route_tags)
     conf = {
         "log": {"level": "debug", "timestamp": False},      # colors are turned off with --disable-color
         "inbounds": [inbound(proxy["inbound"], cert)],
-        "outbounds": outbounds(proxy["outbound"]),
+        "outbounds": obs,
         "route": r,
         "experimental": {"clash_api": {"external_controller": f"127.0.0.1:{api_port}", "secret": api_secret}},
     }

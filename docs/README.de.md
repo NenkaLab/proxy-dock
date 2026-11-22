@@ -27,6 +27,9 @@ Shadowsocks-Server" eine einzige Karte.
 - **Fläche**: Editor im Blueprint-Stil - Linien von Eingangsblöcken zu Ausgangsblöcken ziehen; mehrere Eingänge können einen Ausgang teilen, ein mit einem anderen Eingang verbundener Eingang leitet über diesen weiter, und Direct kann eine gewählte Quell-IP nutzen
 - **PC-Block**: einen HTTP-Eingang verbinden, um ihn als Windows-Systemproxy zu nutzen, solange er läuft; die vorherigen Einstellungen werden gesichert und beim Stoppen oder Beenden wiederhergestellt (Knöpfe Vorherige wiederherstellen / Aus)
 - **Verkettung**: der 'via'-Ausgang eines Ausgangsblocks führt dessen eigene Serververbindung über einen anderen Ausgang (z. B. Shadowsocks durch den Firmen-HTTP-Proxy, HTTPS-Upstream durch einen Hysteria2-Tunnel), beliebig viele Stufen
+- **Router**: Ein Router-Block zwischen Eingang und Ausgängen gibt Regeln für Domains, IP-Bereiche, Ports, Programme
+  (chrome.exe, ...), GeoIP-Länder und Geosite-Kategorien je einen eigenen Ausgang; nicht passender Verkehr nimmt den
+  Standard. Regeln können zu jedem Ausgang, zum **Block**-Ausgang (ablehnen) oder zu einem anderen Router führen
 - **Engine**: sing-box (Standard) führt jeden Proxy in einem eigenen Prozess aus - mehrere Kerne, UDP über Ketten, Hysteria2 über andere Ausgänge. Die integrierte Python-Engine ist der Ersatz (Einstellungen → Proxy-Engine)
 - **Shadowsocks**: AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) und 2022 (SIP022, blake3), TCP+UDP, `ss://`-Links kopieren
 - **Hysteria2**: in beide Richtungen mit der offiziellen Implementierung kompatibel (TCP und UDP), Zertifikats-Pinning, `hysteria2://`-Links kopieren
@@ -93,6 +96,8 @@ Der macOS-Build wurde noch nicht auf einem echten Mac getestet.
 
 ## Bekannte Einschränkungen
 
+- Router- und Block-Blöcke brauchen die sing-box-Engine. IP- und GeoIP-Regeln lösen die Domain zuerst auf diesem PC auf,
+  ein Tunnel dahinter verbindet sich also mit der IP statt die Domain entfernt aufzulösen. Programmregeln sehen nur Verbindungen von diesem PC.
 - sing-box-Engine: Ein für andere PCs offener Hysteria2-Server läuft mit dem offiziellen Hysteria2-Kern, der ProxyDock bei jeder
   Anmeldung fragt (sing-box meldet falsche Passwörter nicht, IP-Sperren würden also nicht greifen); der Verkehr läuft dann über
   sing-box. Zertifikat-Pinning läuft weiter mit der Python-Engine (braucht sing-box 1.15). Das Limit pro IP trennt überzählige

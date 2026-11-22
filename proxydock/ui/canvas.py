@@ -30,6 +30,8 @@ OUT_COLOR = (30, 100, 74)
 PC_COLOR = (92, 58, 132)
 PORT_COLOR = (120, 170, 235)
 VIA_COLOR = (235, 190, 110)
+ROUTER_COLOR = (128, 86, 30)
+RULE_COLOR = (240, 170, 90)
 NEW_INBOUND = []
 
 
@@ -96,6 +98,17 @@ class EndNode(BaseNode):
         self.add_custom_widget(InfoWidget(self.view, lines=3))
 
 
+class RouterNode(BaseNode):
+    """Router: one output per rule plus 'default' (added when the canvas is built)."""
+    __identifier__ = "proxydock"
+    NODE_NAME = "Router"
+
+    def __init__(self):
+        super().__init__()
+        self.add_input(_t("in"), multi_input=True, color=PORT_COLOR)
+        self.add_custom_widget(InfoWidget(self.view, lines=3))
+
+
 class PcNode(BaseNode):
     __identifier__ = "proxydock"
     NODE_NAME = "PC"
@@ -140,7 +153,8 @@ class CanvasInterface(QWidget):
         self.mid_of = {}            # NodeGraphQt node id -> model id
 
         self.graph = NodeGraph()
-        self.graph.register_nodes([InNode, OutNode, EndNode, PcNode])
+        self.graph.register_nodes([InNode, OutNode, EndNode, RouterNode, PcNode])
+        self.rule_of = {}           # (NodeGraphQt node id, output port name) -> rule id or "default"
         self.graph.set_acyclic(True)
         self.graph.disable_context_menu(True)
         self.graph.port_connected.connect(self._on_connected)
@@ -157,6 +171,8 @@ class CanvasInterface(QWidget):
         self.btn_in.setMenu(self._inbound_menu())
         self.btn_out = DropDownPushButton(FIF.SEND, _t("Add outbound"), self)
         self.btn_out.setMenu(self._outbound_menu())
+        self.btn_router = PushButton(_t("Add router"), self, FIF.SHARE)
+        self.btn_router.clicked.connect(lambda: self.ctl.new_router())
         self.btn_fit = PushButton(_t("Fit"), self, FIF.ZOOM)
         self.btn_fit.clicked.connect(self.fit)
         self.btn_stop = PushButton(_t("Stop all"), self, FIF.PAUSE)
@@ -164,6 +180,7 @@ class CanvasInterface(QWidget):
         hint = CaptionLabel(_t("Drag from an inbound's output to an outbound block, to another inbound (relay) or to the PC. "
                                "Double-click a block to edit it, right-click for more, Delete removes the selection.") + " "
                            + _t("An outbound's 'via' output chains it through another outbound.") + " "
+                           + _t("A router sends each rule's traffic out of its own output.") + " "
                            + _t("Alt+Shift+drag cuts links."), self)
         hint.setWordWrap(True)
         self.pc_bar = PcBar(ctl, self)
@@ -171,7 +188,7 @@ class CanvasInterface(QWidget):
         header = QHBoxLayout()
         header.addWidget(title)
         header.addStretch(1)
-        for b in (self.btn_fit, self.btn_stop, self.btn_out, self.btn_in):
+        for b in (self.btn_fit, self.btn_stop, self.btn_router, self.btn_out, self.btn_in):
             header.addWidget(b)
         root = QVBoxLayout(self)
         root.setContentsMargins(36, 20, 36, 20)
@@ -222,6 +239,9 @@ class CanvasInterface(QWidget):
         if node is None:
             menu.addMenu(self._inbound_menu(p, menu))
             menu.addMenu(self._outbound_menu(p, menu))
+            add_router = Action(FIF.SHARE, _t("Add router"), menu)
+            add_router.triggered.connect(lambda: self.ctl.new_router(p))
+            menu.addAction(add_router)
             menu.addSeparator()
             fit = Action(FIF.ZOOM, _t("Fit"), menu)
             fit.triggered.connect(self.fit)
@@ -296,6 +316,8 @@ class CanvasInterface(QWidget):
     def _signature(self, graph):
         return json.dumps([[n["id"], n["name"], n["target"]] for n in graph["inbounds"]] +
                           [[n["id"], n["name"], n["via"], n["outbound"]["type"]] for n in graph["outbounds"]] +
+                          [[n["id"], n["name"], n["default"], [[x["id"], x["name"], x["target"]] for x in n["rules"]]]
+                           for n in graph.get("routers", [])] +
                           [graph["pc"]["inbound"]])
 
     def refresh(self, graph, proxies, statuses, pc_status):
@@ -311,7 +333,7 @@ class CanvasInterface(QWidget):
         self.syncing = True
         try:
             g.clear_session()
-            self.node_of, self.mid_of = {}, {}
+            self.node_of, self.mid_of, self.rule_of = {}, {}, {}
 
             def make(kind, mid, name, pos, color):
                 node = g.create_node(f"proxydock.{kind}", name=name, pos=list(pos), color=color,
@@ -326,6 +348,15 @@ class CanvasInterface(QWidget):
                      n["id"], n["name"], n["pos"], OUT_COLOR)
             for n in graph["inbounds"]:
                 make("InNode", n["id"], n["name"], n["pos"], IN_COLOR)
+            for r in graph.get("routers", []):
+                node = make("RouterNode", r["id"], r["name"], r["pos"], ROUTER_COLOR)
+                for i, rule in enumerate(r["rules"]):
+                    name = f"{i + 1}. {rule['name']}"
+                    node.add_output(name, multi_output=False, color=RULE_COLOR)
+                    self.rule_of[(node.id, name)] = rule["id"]
+                default = _t("default")
+                node.add_output(default, multi_output=False, color=PORT_COLOR)
+                self.rule_of[(node.id, default)] = "default"
             make("PcNode", PC_ID, _t("PC (system proxy)"), graph["pc"]["pos"], PC_COLOR)
             for n in graph["inbounds"]:
                 src = self.node_of[n["id"]]
@@ -335,6 +366,11 @@ class CanvasInterface(QWidget):
             for n in graph["outbounds"]:
                 if n["via"] and n["via"] in self.node_of and self.node_of[n["id"]].outputs():
                     self.node_of[n["id"]].output(0).connect_to(self.node_of[n["via"]].input(0), push_undo=False)
+            for r in graph.get("routers", []):
+                node = self.node_of[r["id"]]
+                for i, (key, tid) in enumerate([(x["id"], x["target"]) for x in r["rules"]] + [("default", r["default"])]):
+                    if tid and tid in self.node_of and i < len(node.outputs()):
+                        node.output(i).connect_to(self.node_of[tid].input(0), push_undo=False)
             if graph["pc"]["inbound"] in self.node_of:
                 self.node_of[graph["pc"]["inbound"]].output(0).connect_to(self.node_of[PC_ID].input(0), push_undo=False)
             g.clear_undo_stack()
@@ -379,6 +415,19 @@ class CanvasInterface(QWidget):
             lines.append(_line("#9A9A9A", _t("used by: {names}").format(names=", ".join(u["name"] for u in users))
                                if users else _t("not used")))
             node.get_widget("info").set_value("<br>".join(lines))
+        for r in cg.get("routers", []):
+            node = self.node_of.get(r["id"])
+            if node is None:
+                continue
+            users = graph_mod.users(cg, r["id"])
+            _, d = graph_mod.find(cg, r["default"]) if r["default"] else (None, None)
+            lines = [_line("#DADADA", _t("{count} rules").format(count=len(r["rules"])) + " · "
+                           + _t("default: {name}").format(name=d["name"] if d else "-"))]
+            if not d:
+                lines.append(_line("#E8B339", "⚠ " + _t("no default target")))
+            lines.append(_line("#9A9A9A", _t("used by: {names}").format(names=", ".join(u["name"] for u in users))
+                               if users else _t("not used")))
+            node.get_widget("info").set_value("<br>".join(lines))
         pc = self.node_of.get(PC_ID)
         if pc is not None:
             state, text = pc_status
@@ -397,6 +446,16 @@ class CanvasInterface(QWidget):
         from .. import graph as graph_mod
         src_kind, _ = graph_mod.find(self.ctl.graph, src)
         dst_kind, _ = graph_mod.find(self.ctl.graph, dst)
+        if src_kind == "router":
+            key = self.rule_of.get((out_port.node().id, out_port.name()))
+            if dst_kind not in ("outbound", "router"):
+                self._reject(in_port, out_port, _t("A router rule can only go to an outbound block or another router"))
+                return
+            QTimer.singleShot(0, self, lambda: self._apply_rule(src, key, dst))
+            return
+        if src_kind == "outbound" and dst_kind == "router":
+            self._reject(in_port, out_port, _t("An outbound's 'via' can only go to another outbound"))
+            return
         if src_kind == "outbound":
             if dst_kind != "outbound":
                 self._reject(in_port, out_port, _t("An outbound's 'via' can only go to another outbound"))
@@ -430,6 +489,11 @@ class CanvasInterface(QWidget):
             self.sig = None
             self.ctl.refresh_lists()
 
+    def _apply_rule(self, src, key, dst):
+        if key is None or not self.ctl.set_rule_target(src, key, dst):
+            self.sig = None
+            self.ctl.refresh_lists()
+
     def _apply_target(self, src, dst):
         if not self.ctl.set_target(src, dst):
             self.sig = None         # rejected (loop): redraw from the model
@@ -442,11 +506,17 @@ class CanvasInterface(QWidget):
         dst = self.mid_of.get(in_port.node().id)
         if not src or not dst:
             return
-        QTimer.singleShot(0, self, lambda: self._apply_disconnect(src, dst))
+        key = self.rule_of.get((out_port.node().id, out_port.name()))
+        QTimer.singleShot(0, self, lambda: self._apply_disconnect(src, dst, key))
 
-    def _apply_disconnect(self, src, dst):
+    def _apply_disconnect(self, src, dst, key=None):
         from .. import graph as graph_mod
         kind, n = graph_mod.find(self.ctl.graph, src)
+        if kind == "router":
+            target = n["default"] if key == "default" else next((x["target"] for x in n["rules"] if x["id"] == key), None)
+            if key and target == dst:
+                self.ctl.set_rule_target(src, key, None)
+            return
         if kind == "outbound":
             if n["via"] == dst:
                 self.ctl.set_via(src, None)

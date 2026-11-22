@@ -62,7 +62,8 @@ class ProxyInstance:
     def outbound_label(self):
         parts, ob = [], self.outbound
         while ob:
-            parts.append("Direct" if ob["type"] == "direct" else f"{OUTBOUND_TYPES[ob['type']]} {host_port(ob['host'], ob['port'])}")
+            parts.append("Direct" if ob["type"] == "direct" else OUTBOUND_TYPES["block"] if ob["type"] == "block"
+                         else f"{OUTBOUND_TYPES[ob['type']]} {host_port(ob['host'], ob['port'])}")
             ob = ob.get("via")
         return " ⇢ ".join(parts)
 
@@ -139,7 +140,7 @@ class ProxyInstance:
 
 
 def _net_key(p):
-    return (p["inbound"], p["outbound"])
+    return (p["inbound"], p["outbound"], p.get("routes"))
 
 
 def _make_instance(proxy, glob, stats):
@@ -152,6 +153,8 @@ def _make_instance(proxy, glob, stats):
     if engine == "hysteria":
         from .singbox.hysteria import HysteriaInstance
         return HysteriaInstance(proxy, glob, stats)
+    if engine == "none":
+        raise RuntimeError(_t("Router and Block blocks need the sing-box engine: {reason}").format(reason=reason))
     inst = ProxyInstance(proxy, glob, stats)
     if glob.get("engine") == "sing-box" and reason != "internal":
         inst.log(LOG_INFO, _t("Running on the Python engine: {reason}").format(reason=reason))

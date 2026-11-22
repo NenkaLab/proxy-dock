@@ -334,7 +334,9 @@ def outbound_errors(ob):
         if ob["type"] == "hysteria2":
             errs.append(_t("Hysteria2 uses QUIC (UDP), so it cannot go through another outbound"))
         errs += outbound_errors(via)
-    if ob["type"] == "direct":
+    if ob["type"] == "block":
+        pass
+    elif ob["type"] == "direct":
         if ob.get("bind") and not _valid_listen_host(ob["bind"]):
             errs.append(_t("The source address must be an IP of this PC"))
     else:

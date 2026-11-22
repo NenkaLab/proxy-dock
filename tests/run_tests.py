@@ -279,6 +279,28 @@ def test_ui():
     w.go_back()
     wait(300)
     check("ui: back leaves the editor", w.stackedWidget.currentWidget() is not w.editor)
+    # router block: create, connect on the model, open its editor, cut a loop
+    r = ctl.new_router(edit=False)
+    blk = ctl.new_outbound({"type": "block"}, edit=False)
+    r2 = ctl.new_router(edit=False)
+    check("ui: router rule -> block", ctl.set_rule_target(r["id"], r["rules"][0]["id"], blk["id"]))
+    check("ui: router default -> router", ctl.set_rule_target(r["id"], "default", r2["id"]))
+    check("ui: router loop refused", not ctl.set_rule_target(r2["id"], "default", r["id"]))
+    check("ui: inbound -> router", ctl.set_target(graph["inbounds"][0]["id"], r["id"]))
+    w.switchTo(w.canvas_page)
+    wait(300)
+    check("ui: router drawn with rule outputs", r["id"] in w.canvas_page.node_of
+          and len(w.canvas_page.node_of[r["id"]].outputs()) == 2)
+    ctl.edit_node(r["id"])
+    wait(300)
+    check("ui: router editor opens", w.stackedWidget.currentWidget() is w.editor and w.editor.s_router.isVisible()
+          and len(w.editor.s_router.cards) == 1)
+    w.editor.s_router.add_rule()
+    w.editor.s_router.cards[1].edits["port"].setText("70000")
+    check("ui: router editor reports a bad port", any("70000" in e for e in w.editor._errors(w.editor.collect())))
+    w.editor.cancel()
+    wait(300)
+    ctl.set_target(graph["inbounds"][0]["id"], d["id"])
     ctl.change_language("ko")
     wait(600)
     check("ui: language switch rebuilds the window", ctl.window.canvas_page.btn_in.text() == "받는 쪽 추가")
@@ -426,12 +448,130 @@ def test_hysteria():
         origin.shutdown()
 
 
+def test_router_graph():
+    g = gm.empty()
+    d = gm.add_outbound(g, {"type": "direct"}, "Direct")
+    up = gm.add_outbound(g, {"type": "socks5", "host": "127.0.0.1", "port": 1081}, "Up")
+    blk = gm.add_outbound(g, {"type": "block"})
+    r1, r2 = gm.add_router(g, "R1"), gm.add_router(g, "R2")
+    r1["rules"][0].update(match={"domain_suffix": ["ads.example"]}, target=blk["id"])
+    r1["rules"].append({"id": "n", "name": "kr", "match": {"geoip": ["kr"]}, "target": r2["id"]})
+    r1["rules"].append({"id": "e", "name": "empty", "match": {}, "target": up["id"]})     # no condition: skipped
+    r1["default"] = up["id"]
+    r2["rules"][0].update(match={"port": ["443"]}, target=d["id"])
+    r2["default"] = blk["id"]
+    gm.add_inbound(g, "in", {"type": "socks5", "port": 1080}, target=r1["id"])
+    p = gm.compile(g)[0]
+    got = [(x["name"], [list(m) for m in x["match"]], x["outbound"]["type"]) for x in p["routes"]]
+    check("router: flatten rules, nested router, default", got == [
+        ("Rule 1", [["domain_suffix"]], "block"),
+        ("kr › Rule 1", [["geoip"], ["port"]], "direct"),
+        ("kr", [["geoip"]], "block"),
+    ] and p["outbound"]["type"] == "socks5" and not p["unlinked"], got)
+    check("router: target label", p["target_name"] == "Router R1", p["target_name"])
+    r1["default"] = None
+    check("router: no default -> not connected", gm.compile(g)[0]["unlinked"])
+    r1["default"] = up["id"]
+    raw = json.loads(json.dumps(g))
+    raw["routers"][1]["default"] = r1["id"]          # R2 -> R1 -> R2 loop
+    v = gm.validate(raw)
+    check("router: validate cuts loops", not gm.router_loop(v, r1["id"]) and not gm.router_loop(v, r2["id"]))
+    check("router: validate round trip", gm.validate(json.loads(json.dumps(g)))["routers"] == g["routers"])
+    gm.remove(g, blk["id"])
+    check("router: removing a block clears rule links", r1["rules"][0]["target"] is None and r2["default"] is None)
+
+
+def test_router_singbox():
+    from proxydock.singbox import compile as sbc, engine_for
+    g = gm.empty()
+    d = gm.add_outbound(g, {"type": "direct"}, "Direct")
+    up = gm.add_outbound(g, {"type": "http", "host": "127.0.0.1", "port": 3128}, "Up")
+    blk = gm.add_outbound(g, {"type": "block"})
+    r = gm.add_router(g, "R")
+    r["rules"][0].update(name="ads", match={"domain_suffix": ["*.ads.example"], "port": ["80", "8000-9000"]}, target=blk["id"])
+    r["rules"].append({"id": "x", "name": "kr", "match": {"geoip": ["kr"], "ip_cidr": ["10.1.2.3"]}, "target": up["id"]})
+    r["rules"].append({"id": "y", "name": "app", "match": {"process_name": ["chrome.exe"]}, "target": up["id"]})
+    r["default"] = d["id"]
+    gm.add_inbound(g, "in", {"type": "socks5", "port": 1080}, target=r["id"])
+    p = gm.compile(g)[0]
+    cfg = config.resolve(p, config.validate_global({}))
+    conf, reasons = sbc.build(p, cfg, bans_path="b.json", api_port=1, api_secret="s", rulesets={"geoip-kr": "kr.srs"})
+    rules = conf["route"]["rules"]
+    ads = rules[reasons.index(("rule", "ads"))]
+    check("router sing-box: block rule -> reject with fields",
+          ads == {"domain_suffix": ["ads.example"], "port": [80], "port_range": ["8000:9000"], "action": "reject"}, ads)
+    kr = next(x for x in rules if x.get("rule_set") == ["geoip-kr"])
+    check("router sing-box: geoip rule-set + cidr -> shared upstream chain",
+          kr["ip_cidr"] == ["10.1.2.3/32"] and kr["outbound"] == "r0_0"
+          and sum(1 for o in conf["outbounds"] if o["tag"].startswith("r")) == 1, kr)
+    check("router sing-box: resolve before IP rules", any(x.get("action") == "resolve" for x in rules[:rules.index(kr)]))
+    check("router sing-box: local rule-set listed",
+          {"type": "local", "tag": "geoip-kr", "format": "binary", "path": "kr.srs"} in conf["route"]["rule_set"])
+    check("router sing-box: router rules after protections", rules.index(ads) > reasons.index(sbc.R_BANNED))
+    r["rules"] = r["rules"][2:]      # only the program rule: no IP conditions, so no resolve
+    conf2, _ = sbc.build(gm.compile(g)[0], cfg, bans_path="b.json", api_port=1, api_secret="s")
+    check("router sing-box: no resolve without IP rules", not any(x.get("action") == "resolve" for x in conf2["route"]["rules"]))
+    r["default"] = blk["id"]
+    p3 = gm.compile(g)[0]
+    conf3, reasons3 = sbc.build(p3, cfg, bans_path="b.json", api_port=1, api_secret="s")
+    check("router sing-box: Block default -> final reject", conf3["route"]["rules"][-1] == {"action": "reject"}
+          and reasons3[-1] == ("rule", "default"))
+    check("router: Python engine setting -> cannot start", engine_for(p3, config.validate_global({"engine": "python"}))[0] == "none")
+    from proxydock.runtime import ProxyManager
+    mgr = ProxyManager()
+    ok = mgr.start(p3, config.validate_global({"engine": "python"})).result(10)
+    check("router: start refused with a clear message", not ok and "sing-box" in mgr.state(p3["id"])[1], mgr.state(p3["id"]))
+    mgr.stop_all()
+
+
+def test_router_e2e():
+    """SOCKS5 -> router: blocked port, domain via an upstream proxy card, default Direct."""
+    from proxydock import common
+    from proxydock.runtime import ProxyManager
+    origin = ThreadingHTTPServer(("127.0.0.1", 0), Origin)
+    threading.Thread(target=origin.serve_forever, daemon=True).start()
+    origin2 = ThreadingHTTPServer(("127.0.0.1", 0), Origin)
+    threading.Thread(target=origin2.serve_forever, daemon=True).start()
+    oport, oport2 = origin.server_address[1], origin2.server_address[1]
+    glob = config.validate_global({"engine": "sing-box"})
+    mgr = ProxyManager()
+    upstream = config.new_proxy("upstream", {"type": "http", "port": free_port()})
+    mgr.start(upstream, glob).result(15)
+    g = gm.empty()
+    d = gm.add_outbound(g, {"type": "direct"}, "Direct")
+    up = gm.add_outbound(g, {"type": "http", "host": "127.0.0.1", "port": upstream["inbound"]["port"]}, "Up")
+    blk = gm.add_outbound(g, {"type": "block"})
+    r = gm.add_router(g, "R")
+    r["rules"][0].update(name="no-origin2", match={"port": [str(oport2)]}, target=blk["id"])
+    r["rules"].append({"id": "u", "name": "via-up", "match": {"domain": ["localhost"]}, "target": up["id"]})
+    r["default"] = d["id"]
+    gm.add_inbound(g, "router card", {"type": "socks5", "port": free_port()}, target=r["id"])
+    p = gm.compile(g)[0]
+    mgr.start(p, glob).result(15)
+    check("[sing-box] router: card starts", mgr.state(p["id"])[0] == "running", mgr.state(p["id"]))
+    port = p["inbound"]["port"]
+    before = mgr.stats_for(upstream["id"]).total
+    check("[sing-box] router: default -> Direct", socks5_get(port, "127.0.0.1", oport) == "200")
+    time.sleep(0.3)
+    check("[sing-box] router: default did not use the upstream", mgr.stats_for(upstream["id"]).total == before)
+    check("[sing-box] router: domain rule -> upstream proxy", socks5_get(port, "localhost", oport) == "200")
+    time.sleep(0.3)
+    check("[sing-box] router: upstream used", mgr.stats_for(upstream["id"]).total > before)
+    check("[sing-box] router: port rule -> Block", socks5_get(port, "127.0.0.1", oport2) != "200")
+    time.sleep(0.5)
+    check("[sing-box] router: block logged with the rule name",
+          any("no-origin2" in e[2] and e[3] == p["id"] for e in common.pending_logs))
+    mgr.stop_all()
+    origin.shutdown()
+    origin2.shutdown()
+
+
 def main():
     t0 = time.time()
-    tests = [test_translations, test_graph, test_engine, test_singbox_compile]
+    tests = [test_translations, test_graph, test_engine, test_singbox_compile, test_router_graph, test_router_singbox]
     from proxydock.singbox import find_binary
     if find_binary():
-        tests += [lambda: test_engine("sing-box"), test_singbox_guard]
+        tests += [lambda: test_engine("sing-box"), test_singbox_guard, test_router_e2e]
         from proxydock.singbox import find_hysteria
         if find_hysteria():
             tests.append(test_hysteria)

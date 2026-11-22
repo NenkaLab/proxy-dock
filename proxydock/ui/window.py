@@ -466,7 +466,7 @@ class Controller:
             if self.manager.state(p["id"])[0] not in ("running", "starting"):
                 continue
             before = old.get(p["id"])
-            if before is not None and all(before[k] == p[k] for k in ("name", "inbound", "outbound", "overrides")):
+            if before is not None and all(before.get(k) == p.get(k) for k in ("name", "inbound", "outbound", "overrides", "routes")):
                 continue
             if p["unlinked"]:
                 self.manager.stop(p["id"])
@@ -481,7 +481,7 @@ class Controller:
             self.refresh_lists()
 
     def _unique_name(self, base):
-        names = {n["name"] for n in self.graph["inbounds"] + self.graph["outbounds"]}
+        names = {n["name"] for n in self.graph["inbounds"] + self.graph["outbounds"] + self.graph.get("routers", [])}
         if base not in names:
             return base
         i = 2
@@ -523,6 +523,47 @@ class Controller:
         if edit and n["outbound"]["type"] != "direct":
             self.edit_node(n["id"])
         return n
+
+    def new_router(self, pos=None, edit=True):
+        pos = pos or [230, (max([r["pos"][1] for r in self.graph["routers"]], default=-170) + 170)]
+        n = graph_mod.add_router(self.graph, self._unique_name("Router"), pos)
+        log(LOG_SETTING, _t("Created block '{name}'").format(name=n['name']))
+        self._recompile()
+        if edit:
+            self.edit_node(n["id"])
+        return n
+
+    def set_rule_target(self, rid, key, tid):
+        """Router rid's rule key (rule id or "default") sends traffic to tid (outbound block or router, None = nothing)."""
+        kind, r = graph_mod.find(self.graph, rid)
+        if kind != "router":
+            return True
+        tkind, _ = graph_mod.find(self.graph, tid) if tid else (None, None)
+        if tid and tkind not in ("outbound", "router"):
+            info(self.window, "error", _t("Cannot connect"), _t("A router rule can only go to an outbound block or another router"), 5000)
+            self.refresh_lists()
+            return False
+        rule = None if key == "default" else next((x for x in r["rules"] if x["id"] == key), None)
+        if key != "default" and rule is None:
+            return True
+        old = r["default"] if rule is None else rule["target"]
+        if old == tid:
+            return True
+        if rule is None:
+            r["default"] = tid
+        else:
+            rule["target"] = tid
+        if graph_mod.router_loop(self.graph, rid):
+            if rule is None:
+                r["default"] = old
+            else:
+                rule["target"] = old
+            info(self.window, "error", _t("Cannot connect"), _t("The routers point at each other in a loop"), 5000)
+            self.refresh_lists()
+            return False
+        log(LOG_SETTING, _t("Saved proxy '{name}'").format(name=r['name']))
+        self._recompile()
+        return True
 
     def new_proxy(self, name, inbound, outbound):
         """List page templates: inbound + outbound (shared Direct or a new outbound block)."""
@@ -589,8 +630,8 @@ class Controller:
         return True
 
     def move_nodes(self, positions):
-        for kind in ("inbounds", "outbounds"):
-            for n in self.graph[kind]:
+        for kind in ("inbounds", "outbounds", "routers"):
+            for n in self.graph.get(kind, []):
                 if n["id"] in positions:
                     n["pos"] = positions[n["id"]]
         if "__pc__" in positions:

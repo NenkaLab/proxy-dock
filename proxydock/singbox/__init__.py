@@ -60,8 +60,21 @@ def _chain(ob):
         ob = ob.get("via")
 
 
+def needs_singbox(proxy):
+    """Router rules and the Block outbound only exist as sing-box route rules."""
+    return bool(proxy.get("routes")) or proxy["outbound"]["type"] == "block"
+
+
 def engine_for(proxy, glob):
-    """(engine, reason): engine is "sing-box", "hysteria" or "python"; reason says why it is not sing-box."""
+    """(engine, reason): engine is "sing-box", "hysteria", "python" or "none" (cannot run: needs sing-box);
+    reason says why it is not sing-box."""
+    engine, reason = _engine_for(proxy, glob)
+    if engine == "python" and needs_singbox(proxy) and reason != "internal":
+        return "none", reason
+    return engine, reason
+
+
+def _engine_for(proxy, glob):
     if glob.get("engine", "sing-box") != "sing-box":
         return "python", _t("Python engine selected in Settings")
     if proxy["id"].startswith("__"):

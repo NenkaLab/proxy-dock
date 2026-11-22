@@ -27,6 +27,9 @@ Shadowsocks server" is a single card.
 - **Canvas**: blueprint-style editor - drag lines from inbound blocks to outbound blocks; several inbounds can share one outbound, an inbound linked into another inbound relays through it, and Direct can leave from a chosen source IP
 - **PC block**: link an HTTP inbound to use it as the Windows system proxy while it runs; the previous settings are saved and put back when it stops or the app quits (Restore previous / Off buttons)
 - **Chaining**: an outbound block's 'via' output sends its own server connection through another outbound (e.g. Shadowsocks through the company HTTP proxy, HTTPS upstream through a Hysteria2 tunnel), as many hops as needed
+- **Router**: put a router block between an inbound and its outbounds - rules on domains, IP ranges, ports, programs
+  (chrome.exe, ...), GeoIP countries and Geosite categories each get their own output; unmatched traffic takes the
+  default. Rules can lead to any outbound, to the **Block** outbound (refuse) or to another router
 - **Engine**: sing-box (default) runs each proxy in its own process - multi-core, UDP through chains, Hysteria2 through other outbounds. The built-in Python engine is the fallback (Settings → Proxy engine)
 - **Shadowsocks**: AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) and 2022 (SIP022, blake3), TCP+UDP, copy `ss://` links
 - **Hysteria2**: interoperates both ways with the official implementation (TCP and UDP), certificate pinning, copy `hysteria2://` links
@@ -92,6 +95,8 @@ The macOS build has not been tried on a real Mac yet.
 
 ## Known limitations
 
+- Router and Block blocks need the sing-box engine. IP and GeoIP rules resolve the domain on this PC first, so a tunnel
+  behind them connects to the IP instead of resolving the domain remotely. Program rules only see connections from this PC.
 - sing-box engine: a Hysteria2 server open to other PCs runs on the official Hysteria2 core, which asks ProxyDock about every
   login (sing-box cannot report wrong passwords, so IP bans would not work); its traffic then goes through sing-box. Certificate
   pinning still runs on the Python engine (needs sing-box 1.15). The per-IP connection limit closes extra connections after

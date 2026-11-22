@@ -52,11 +52,14 @@ def summary(p):
     if "target_name" in p:
         right = p["target_name"]
     else:
-        right = "Direct" if ob["type"] == "direct" else f"{OUTBOUND_TYPES[ob['type']]} {host_port(ob['host'], ob['port'])}"
+        right = "Direct" if ob["type"] == "direct" else OUTBOUND_TYPES["block"] if ob["type"] == "block" \
+            else f"{OUTBOUND_TYPES[ob['type']]} {host_port(ob['host'], ob['port'])}"
     return f"{left}  →  {right}"
 
 
 def outbound_summary(ob):
+    if ob["type"] == "block":
+        return _t("Refuses every connection (use it as a router target)")
     if ob["type"] == "direct":
         return _t("Direct from this PC") + (f" · {ob['bind']}" if ob.get("bind") else "")
     return f"{OUTBOUND_TYPES[ob['type']]} · {host_port(ob['host'], ob['port']) if ob['host'] else _t('server not set')}"
@@ -75,6 +78,7 @@ def _tr_outbound_new():
         ("socks4", _t("Upstream SOCKS4 proxy")),
         ("shadowsocks", _t("Shadowsocks tunnel (remote server)")),
         ("hysteria2", _t("Hysteria2 tunnel (remote server)")),
+        ("block", _t("Block (refuse connections, for router rules)")),
     ]
 
 
@@ -633,6 +637,10 @@ class EditorInterface(ScrollArea):
             self.ov[key] = (follow, w)
             s_local.add(Row(title, desc, v).right(follow, w))
 
+        # router blocks
+        from .router import RouterSection
+        self.s_router = RouterSection(ctl, v)
+
         header = QHBoxLayout()
         header.addWidget(self.title)
         header.addStretch(1)
@@ -642,8 +650,9 @@ class EditorInterface(ScrollArea):
         root.setContentsMargins(36, 20, 36, 28)
         root.setSpacing(18)
         root.addLayout(header)
-        self.sections = {"basic": s_basic, "in": s_in, "link": s_link, "out": s_out, "check": s_check, "local": s_local}
-        for s in (s_basic, s_in, s_link, s_out, s_check, s_local):
+        self.sections = {"basic": s_basic, "in": s_in, "link": s_link, "out": s_out, "check": s_check, "local": s_local,
+                         "router": self.s_router}
+        for s in (s_basic, s_in, s_link, s_out, s_check, s_local, self.s_router):
             root.addWidget(s)
         root.addStretch(1)
 
@@ -666,11 +675,20 @@ class EditorInterface(ScrollArea):
 
     # --- display ---
     def load_node(self, kind, node):
-        """Edit an inbound or outbound block of the graph."""
+        """Edit an inbound, outbound or router block of the graph."""
         from .. import config as cfg
         self.kind = kind
         self.node = copy.deepcopy(node)
         n = self.node
+        if kind == "router":
+            for key, sec in self.sections.items():
+                sec.setVisible(key in ("basic", "router"))
+            self.r_auto.setVisible(False)
+            self.title.setText(_t("Edit router"))
+            self.ed_name.setText(n["name"])
+            self.s_router.load(n)
+            self.verticalScrollBar().setValue(0)
+            return
         inbound = kind == "inbound"
         for key, sec in self.sections.items():
             sec.setVisible(key in (("basic", "in", "link", "check", "local") if inbound else ("basic", "out", "check")))
@@ -720,8 +738,11 @@ class EditorInterface(ScrollArea):
             self.cb_via.setCurrentIndex(self.vias.index(n.get("via")) if n.get("via") in self.vias else 0)
         if inbound:
             g = self.ctl.graph
-            self.targets = [None] + [x["id"] for x in g["outbounds"]] + [x["id"] for x in g["inbounds"] if x["id"] != n["id"]]
+            routers = g.get("routers", [])
+            self.targets = [None] + [x["id"] for x in g["outbounds"]] + [x["id"] for x in routers] + \
+                [x["id"] for x in g["inbounds"] if x["id"] != n["id"]]
             labels = [_t("(not connected)")] + [x["name"] for x in g["outbounds"]] + \
+                [_t("Router {name}").format(name=x["name"]) for x in routers] + \
                 [_t("relay → {name}").format(name=x["name"]) for x in g["inbounds"] if x["id"] != n["id"]]
             self.cb_target.clear()
             self.cb_target.addItems(labels)
@@ -778,10 +799,10 @@ class EditorInterface(ScrollArea):
             "hysteria2": _t("Encrypted tunnel server over QUIC (UDP). TCP+UDP. Copy the hysteria2:// link with the button on the card. Python implementation, about 100 Mbps."),
         }
         self.in_note.setText(notes[it])
-        remote = ot != "direct"
+        remote = ot not in ("direct", "block")
         self.r_out_server.setVisible(remote)
-        self.r_out_bind.setVisible(not remote)
-        self.r_out_via.setVisible(ot not in ("direct", "hysteria2"))
+        self.r_out_bind.setVisible(ot == "direct")
+        self.r_out_via.setVisible(ot not in ("direct", "hysteria2", "block"))
         self.r_out_cred.setVisible(ot in ("http", "https", "socks4", "socks5"))
         self.ed_out_pass.setVisible(ot != "socks4")
         self.r_out_verify.setVisible(ot in ("https", "hysteria2"))
@@ -798,6 +819,7 @@ class EditorInterface(ScrollArea):
             "socks5": _t("Through an upstream SOCKS5 proxy (TCP). UDP cannot be sent."),
             "shadowsocks": _t("Encrypted tunnel to a remote Shadowsocks server (TCP+UDP)."),
             "hysteria2": _t("QUIC tunnel to a remote Hysteria2 server (TCP+UDP). Bandwidth settings (Brutal), obfuscation and port hopping are not supported."),
+            "block": _t("Refuses every connection. Connect router rules to it (e.g. ads, trackers). Needs the sing-box engine."),
         }
         note = out_notes[ot]
         if remote:
@@ -809,6 +831,9 @@ class EditorInterface(ScrollArea):
         if self.probing:
             return
         n = self.collect()
+        if self.kind == "outbound" and n["outbound"]["type"] == "block":
+            self._set_probe_text(_t("A Block outbound refuses every connection, so there is nothing to check."), None)
+            return
         errs = self._errors(n, for_check=True)
         if errs:
             info(self.window(), "error", _t("Please fix first"), "\n".join(errs[:4]), 6000)
@@ -889,6 +914,13 @@ class EditorInterface(ScrollArea):
         from .. import graph as graph_mod
         n = copy.deepcopy(self.node)
         n["name"] = self.ed_name.text().strip()
+        if self.kind == "router":
+            r = self.s_router.collect(n)
+            out = graph_mod.validate_router_node(r)
+            out["name"] = n["name"]         # keep empty names so the error check can report them
+            for a, b in zip(out["rules"], r["rules"]):
+                a["name"] = b["name"]
+            return out
         if self.kind == "inbound":
             n["autostart"] = self.sw_auto.isChecked()
             ib = n["inbound"]
@@ -933,6 +965,8 @@ class EditorInterface(ScrollArea):
         return p, []
 
     def _errors(self, n, for_check=False):
+        if self.kind == "router":
+            return self.s_router.errors(n)
         if self.kind == "outbound":
             from .. import graph as graph_mod
             errs = [] if n["name"] else [_t("Enter a name")]

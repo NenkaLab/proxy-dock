@@ -27,6 +27,9 @@ es una sola tarjeta.
 - **Lienzo**: editor estilo blueprint - arrastra líneas de los bloques de entrada a los de salida; varias entradas pueden compartir una salida, una entrada conectada a otra entrada pasa por ella, y Direct puede salir desde una IP de origen elegida
 - **Bloque PC**: conecta una entrada HTTP para usarla como proxy del sistema de Windows mientras se ejecuta; la configuración anterior se guarda y se restaura al detenerla o cerrar la aplicación (botones Restaurar anterior / Desactivado)
 - **Encadenamiento**: la salida 'via' de un bloque de salida hace que su propia conexión al servidor pase por otra salida (p. ej. Shadowsocks a través del proxy HTTP de la empresa, proxy HTTPS superior dentro de un túnel Hysteria2), con tantos saltos como haga falta
+- **Enrutador**: un bloque enrutador entre una entrada y sus salidas da a cada regla (dominios, rangos de IP, puertos,
+  programas como chrome.exe, países GeoIP, categorías Geosite) su propia salida; el resto va a la predeterminada.
+  Las reglas pueden ir a cualquier salida, a la salida **Bloquear** (rechazar) o a otro enrutador
 - **Motor**: sing-box (predeterminado) ejecuta cada proxy en su propio proceso: varios núcleos, UDP a través de cadenas, Hysteria2 por otras salidas. El motor Python integrado queda de respaldo (Ajustes → Motor de proxy)
 - **Shadowsocks**: AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) y 2022 (SIP022, blake3), TCP+UDP, copia de enlaces `ss://`
 - **Hysteria2**: compatible en ambos sentidos con la implementación oficial (TCP y UDP), fijación del certificado, copia de enlaces `hysteria2://`
@@ -93,6 +96,8 @@ La compilación para macOS aún no se ha probado en un Mac real.
 
 ## Limitaciones conocidas
 
+- Los bloques Enrutador y Bloquear requieren el motor sing-box. Las reglas de IP y GeoIP resuelven primero el dominio en este PC,
+  así que un túnel detrás de ellas se conecta a la IP en lugar de resolver el dominio en remoto. Las reglas de programa solo ven conexiones de este PC.
 - Motor sing-box: un servidor Hysteria2 abierto a otros PC funciona con el núcleo oficial de Hysteria2, que consulta a ProxyDock en
   cada inicio de sesión (sing-box no informa de contraseñas incorrectas, así que el bloqueo de IP no funcionaría); el tráfico sale
   luego por sing-box. La fijación de certificado sigue con el motor Python (requiere sing-box 1.15). El límite por IP cierra las

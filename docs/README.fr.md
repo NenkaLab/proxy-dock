@@ -27,6 +27,9 @@ Shadowsocks distant » tient sur une seule carte.
 - **Canevas** : éditeur façon blueprint - tirez des liens des blocs d'entrée vers les blocs de sortie ; plusieurs entrées peuvent partager une sortie, une entrée reliée à une autre entrée passe par celle-ci, et Direct peut partir d'une IP source choisie
 - **Bloc PC** : reliez une entrée HTTP pour l'utiliser comme proxy système Windows pendant qu'elle tourne ; les paramètres précédents sont sauvegardés et remis à l'arrêt ou à la fermeture (boutons Restaurer l'état précédent / Désactivé)
 - **Chaînage** : la sortie 'via' d'un bloc de sortie fait passer sa propre connexion au serveur par une autre sortie (ex. Shadowsocks à travers le proxy HTTP de l'entreprise, proxy HTTPS amont dans un tunnel Hysteria2), sur autant d'étapes que nécessaire
+- **Routeur** : un bloc routeur entre une entrée et ses sorties donne à chaque règle (domaines, plages d'IP, ports,
+  programmes comme chrome.exe, pays GeoIP, catégories Geosite) sa propre sortie ; le reste prend la sortie par défaut.
+  Les règles peuvent mener à n'importe quelle sortie, à la sortie **Blocage** (refus) ou à un autre routeur
 - **Moteur** : sing-box (par défaut) exécute chaque proxy dans son propre processus - multicœur, UDP à travers les chaînes, Hysteria2 via d'autres sorties. Le moteur Python intégré sert de secours (Paramètres → Moteur de proxy)
 - **Shadowsocks** : AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) et 2022 (SIP022, blake3), TCP+UDP, copie des liens `ss://`
 - **Hysteria2** : interopérable dans les deux sens avec l'implémentation officielle (TCP et UDP), épinglage du certificat, copie des liens `hysteria2://`
@@ -93,6 +96,8 @@ La compilation macOS n'a pas encore été essayée sur un vrai Mac.
 
 ## Limites connues
 
+- Les blocs Routeur et Blocage nécessitent le moteur sing-box. Les règles IP et GeoIP résolvent d'abord le domaine sur ce PC :
+  un tunnel derrière elles se connecte à l'IP au lieu de résoudre le domaine à distance. Les règles de programme ne voient que les connexions de ce PC.
 - Moteur sing-box : un serveur Hysteria2 ouvert aux autres PC tourne sur le cœur Hysteria2 officiel, qui interroge ProxyDock à chaque
   connexion (sing-box ne signale pas les mauvais mots de passe, le bannissement d'IP ne marcherait pas) ; le trafic passe ensuite par
   sing-box. L'épinglage de certificat reste sur le moteur Python (sing-box 1.15 requis). La limite par IP ferme les connexions en trop
