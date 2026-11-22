@@ -8,7 +8,7 @@ config.json
 
 Effective proxy setting = the value in overrides if set (local), otherwise the global default (null).
 """
-from .i18n import _t
+from .i18n import _t, on_language_change
 import base64
 import copy
 import ctypes
@@ -42,7 +42,14 @@ LOG_DIR = os.path.join(APP_DIR, "logs")
 CERT_DIR = os.path.join(APP_DIR, "certs")
 WINDOW_STATE_PATH = os.path.join(APP_DIR, "window.json")
 
-THEMES = [("auto", _t("System")), ("light", _t("Light")), ("dark", _t("Dark"))]
+THEMES = []
+
+
+@on_language_change
+def _tr_themes():
+    THEMES[:] = [("auto", _t("System")), ("light", _t("Light")), ("dark", _t("Dark"))]
+
+
 UI_SCALES = [90, 100, 110, 125, 150]
 
 GLOBAL_DEFAULTS = {
@@ -313,9 +320,14 @@ def check_proxy(p, proxies):
 
 
 def outbound_errors(ob):
-    """Problems in an outbound's settings (empty list = OK)."""
+    """Problems in an outbound's settings, including the blocks it goes through (empty list = OK)."""
     from .ss import ss_make_key
     errs = []
+    via = ob.get("via")
+    if via:
+        if ob["type"] == "hysteria2":
+            errs.append(_t("Hysteria2 uses QUIC (UDP), so it cannot go through another outbound"))
+        errs += outbound_errors(via)
     if ob["type"] == "direct":
         if ob.get("bind") and not _valid_listen_host(ob["bind"]):
             errs.append(_t("The source address must be an IP of this PC"))

@@ -281,7 +281,7 @@ class Socks5Pipe(ClientPipe):
 
     async def _udp(self):
         inst = self.inst
-        if inst.outbound["type"] not in ("direct", "shadowsocks", "hysteria2"):
+        if inst.outbound["type"] not in ("direct", "shadowsocks", "hysteria2") or inst.outbound.get("via"):
             self.write(make_reply(REP_UNSUPPORTED))
             inst.log(LOG_WARN, _t("{client} UDP request refused - UDP cannot be sent via {outbound_label}").format(client=self.client, outbound_label=inst.outbound_label))
             return

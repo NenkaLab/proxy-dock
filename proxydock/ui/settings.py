@@ -59,7 +59,7 @@ class SettingsInterface(ScrollArea):
         self.cb_lang = ComboBox(v)
         self.cb_lang.addItems([name for _, name in LANGUAGES])
         self.cb_lang.setFixedWidth(160)
-        s_view.add(Row(_t("Language"), _t("Applies after restart"), v).right(self.cb_lang))
+        s_view.add(Row(_t("Language"), _t("Applies right away"), v).right(self.cb_lang))
         self.cb_theme = ComboBox(v)
         self.cb_theme.addItems([label for _, label in config.THEMES])
         self.cb_theme.setFixedWidth(160)

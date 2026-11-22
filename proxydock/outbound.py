@@ -14,7 +14,7 @@ from .common import (
     ATYP_DOMAIN, ATYP_IPV4, ATYP_IPV6, BlockedDestination, UpstreamError, encode_address, host_port,
     is_internal_ip, is_ip_literal, parse_address,
 )
-from .relay import DatagramCallback, DirectEgress, Pipe, open_direct
+from .relay import DatagramCallback, DirectEgress, LayerTransport, Pipe, open_direct
 from . import ss as ssc
 from .tls import client_context
 
@@ -61,7 +61,27 @@ def _is_self(inst, host, port):
     return a.is_loopback or a.is_unspecified
 
 
+async def _start_tls(inst, lower, ob):
+    """TLS (HTTPS upstream) on top of a pipe that already reaches the upstream server."""
+    loop = asyncio.get_running_loop()
+    layer = LayerTransport(lower)
+    upper = Pipe(inst)
+    try:
+        tr = await loop.start_tls(layer, upper, client_context(ob.get("tls_verify", True)),
+                                  server_hostname=ob.get("sni") or ob["host"])
+    except (OSError, ConnectionError) as e:
+        lower.transport.abort()
+        raise UpstreamError(_t("Could not connect to upstream proxy {host_port}: {value}").format(
+            host_port=host_port(ob['host'], ob['port']), value=e), "net") from e
+    upper.connection_made(tr)
+    return upper
+
+
 async def _tcp(inst, ob, tls):
+    """Pipe to the upstream server itself: directly, or through the next outbound ("via")."""
+    if ob.get("via"):
+        lower = await connect(inst, ob["host"], ob["port"], ob["via"])
+        return await _start_tls(inst, lower, ob) if tls else lower
     loop = asyncio.get_running_loop()
     kw = {}
     if tls:
@@ -176,8 +196,17 @@ class SSClientPipe(Pipe):
 
 async def _ss_connect(inst, ob, host, port):
     loop = asyncio.get_running_loop()
-    method, key = inst.ss_out_key
+    method, key = inst.ss_key(ob)
     enc, dec = ssc.ss_client_codec(method, key, host, port)
+    if ob.get("via"):       # Shadowsocks through another outbound: stack the encryption on that pipe
+        lower = await connect(inst, ob["host"], ob["port"], ob["via"])
+        pipe = SSClientPipe(inst, enc, dec)
+        layer = LayerTransport(lower)
+        layer.set_protocol(pipe)
+        pipe.connection_made(layer)
+        layer.resume_reading()
+        pipe.send(b"")
+        return pipe
     try:
         _, pipe = await loop.create_connection(lambda: SSClientPipe(inst, enc, dec), ob["host"], ob["port"],
                                                happy_eyeballs_delay=0.25)
@@ -188,14 +217,17 @@ async def _ss_connect(inst, ob, host, port):
     return pipe
 
 
-async def connect(inst, host, port):
-    ob = inst.outbound
+async def connect(inst, host, port, ob=None):
+    """ob: the outbound to use (default: the proxy's own). Chained outbounds call this for their server."""
+    final = ob is None
+    ob = inst.outbound if final else ob
     t = ob["type"]
-    if _is_self(inst, host, port):
+    if final and _is_self(inst, host, port):
         raise BlockedDestination(_t("this proxy's own address"))
     if t == "direct":
         return await open_direct(inst, host, port)
-    check_destination(inst, host)
+    if final:
+        check_destination(inst, host)
     if t in ("http", "https"):
         return await _http_connect(inst, ob, host, port, tls=t == "https")
     if t == "socks4":
@@ -206,7 +238,7 @@ async def connect(inst, host, port):
         return await _ss_connect(inst, ob, host, port)
     if t == "hysteria2":
         from .hysteria2 import open_tcp
-        return await open_tcp(inst, host, port)
+        return await open_tcp(inst, host, port, ob)
     raise UpstreamError(_t("Unknown outbound type: {t}").format(t=t))
 
 
@@ -253,6 +285,8 @@ class SSEgress:
 
 async def make_udp_egress(inst, session):
     t = inst.outbound["type"]
+    if inst.outbound.get("via"):
+        raise UpstreamError(_t("UDP cannot go through chained outbounds"), "general")
     if t == "direct":
         return await DirectEgress(session).start()
     if t == "shadowsocks":

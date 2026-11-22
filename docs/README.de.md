@@ -26,6 +26,7 @@ Shadowsocks-Server" eine einzige Karte.
 
 - **Fläche**: Editor im Blueprint-Stil - Linien von Eingangsblöcken zu Ausgangsblöcken ziehen; mehrere Eingänge können einen Ausgang teilen, ein mit einem anderen Eingang verbundener Eingang leitet über diesen weiter, und Direct kann eine gewählte Quell-IP nutzen
 - **PC-Block**: einen HTTP-Eingang verbinden, um ihn als Windows-Systemproxy zu nutzen, solange er läuft; die vorherigen Einstellungen werden gesichert und beim Stoppen oder Beenden wiederhergestellt (Knöpfe Vorherige wiederherstellen / Aus)
+- **Verkettung**: der 'via'-Ausgang eines Ausgangsblocks führt dessen eigene Serververbindung über einen anderen Ausgang (z. B. Shadowsocks durch den Firmen-HTTP-Proxy, HTTPS-Upstream durch einen Hysteria2-Tunnel), beliebig viele Stufen
 - **Shadowsocks**: AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) und 2022 (SIP022, blake3), TCP+UDP, `ss://`-Links kopieren
 - **Hysteria2**: in beide Richtungen mit der offiziellen Implementierung kompatibel (TCP und UDP), Zertifikats-Pinning, `hysteria2://`-Links kopieren
 - **Einstellungen**: globale Standardwerte + lokale Einstellungen pro Proxy (lokal hat Vorrang) - zugelassene Domains, Blockieren privater Netze, Leerlauf-Timeout, Protokoll
@@ -80,6 +81,7 @@ Der macOS-Build wurde noch nicht auf einem echten Mac getestet.
 
 ## Bekannte Einschränkungen
 
+- Hysteria2 (QUIC/UDP) kann nicht *über* andere Ausgänge laufen (andere können über Hysteria2 laufen), und UDP wird über verkettete Ausgänge nicht weitergeleitet.
 - Hysteria2 läuft auf einer QUIC-Implementierung in Python (aioquic) und schafft etwa 100 Mbit/s. Bandbreiteneinstellungen (Brutal),
   Salamander-Verschleierung und Port-Hopping werden nicht unterstützt.
 - Der offizielle Hysteria2-Server lehnt Verbindungen ab, deren SNI nicht zum Zertifikat passt - tragen Sie die Domain des

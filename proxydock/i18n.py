@@ -5,8 +5,9 @@ Source strings in the code are English and double as lookup keys: ``_t("Start te
 back to English. Strings with placeholders are translated first and formatted afterwards,
 e.g. ``_t("Port {port} available").format(port=port)``.
 
-The language is chosen once at startup (``init_from_config``) because some labels are
-built at import time; changing it in Settings takes effect after a restart.
+The language is read at startup (``init_from_config``) and can be changed while running with
+``set_language``: module-level labels are rebuilt by the functions registered with
+``on_language_change`` (lists/dicts are refilled in place), and the UI then rebuilds its window.
 """
 import json
 import os
@@ -27,6 +28,14 @@ LANGUAGE_CODES = [code for code, _ in LANGUAGES]
 
 _current = DEFAULT_LANGUAGE
 _table = {}
+_hooks = []
+
+
+def on_language_change(fn):
+    """Register fn to rebuild translated module constants; it also runs right away."""
+    _hooks.append(fn)
+    fn()
+    return fn
 
 
 def locale_dir():
@@ -54,6 +63,8 @@ def set_language(code):
         code = DEFAULT_LANGUAGE
     _current = code
     _table = load_table(code)
+    for fn in list(_hooks):
+        fn()
 
 
 def current():

@@ -1,5 +1,5 @@
 """Shared: constants, logging, address handling, IP bans. No Qt dependency (used by the proxy thread and tests)."""
-from .i18n import _t
+from .i18n import _t, on_language_change
 import asyncio
 import errno
 import ipaddress
@@ -55,15 +55,23 @@ INBOUND_TYPES = {           # inbound
     "shadowsocks": "Shadowsocks",
     "hysteria2": "Hysteria2",
 }
-OUTBOUND_TYPES = {          # outbound
-    "direct": "Direct",
-    "http": _t("HTTP proxy"),
-    "https": _t("HTTPS proxy"),
-    "socks4": _t("SOCKS4 proxy"),
-    "socks5": _t("SOCKS5 proxy"),
-    "shadowsocks": _t("Shadowsocks tunnel"),
-    "hysteria2": _t("Hysteria2 tunnel"),
-}
+OUTBOUND_TYPES = {}
+
+
+@on_language_change
+def _tr_outbound_types():
+    OUTBOUND_TYPES.clear()
+    OUTBOUND_TYPES.update({          # outbound
+        "direct": "Direct",
+        "http": _t("HTTP proxy"),
+        "https": _t("HTTPS proxy"),
+        "socks4": _t("SOCKS4 proxy"),
+        "socks5": _t("SOCKS5 proxy"),
+        "shadowsocks": _t("Shadowsocks tunnel"),
+        "hysteria2": _t("Hysteria2 tunnel"),
+    })
+
+
 UDP_INBOUNDS = ("socks5", "shadowsocks", "hysteria2")     # inbound types that can receive UDP
 UDP_OUTBOUNDS = ("direct", "shadowsocks", "hysteria2")    # outbound types that can send UDP
 

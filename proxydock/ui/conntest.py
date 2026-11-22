@@ -1,5 +1,5 @@
 """Connection test page: pick a running proxy and connect to 21 sites through it."""
-from ..i18n import _t
+from ..i18n import _t, on_language_change
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -19,8 +19,15 @@ class _Signals(QObject):
     done = Signal(str)
 
 
+COLS = []
+
+
+@on_language_change
+def _tr_cols():
+    COLS[:] = [_t("Region"), _t("Site"), _t("Address"), _t("Result"), _t("Connect"), _t("All")]
+
+
 class ConnTestInterface(QWidget):
-    COLS = (_t("Region"), _t("Site"), _t("Address"), _t("Result"), _t("Connect"), _t("All"))
 
     def __init__(self, ctl, parent=None):
         super().__init__(parent)
@@ -41,8 +48,8 @@ class ConnTestInterface(QWidget):
         self.btn.clicked.connect(self._on_click)
 
         self.table = TableWidget(self)
-        self.table.setColumnCount(len(self.COLS))
-        self.table.setHorizontalHeaderLabels(self.COLS)
+        self.table.setColumnCount(len(COLS))
+        self.table.setHorizontalHeaderLabels(COLS)
         self.table.setRowCount(len(TEST_SITES))
         self.table.verticalHeader().hide()
         self.table.setEditTriggers(TableWidget.NoEditTriggers)

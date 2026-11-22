@@ -2,7 +2,7 @@
 
 A proxy = inbound (how it accepts connections on a port of this PC) + outbound (how it reaches the destination) + local settings.
 """
-from ..i18n import _t
+from ..i18n import _t, on_language_change
 import copy
 import os
 import threading
@@ -62,15 +62,22 @@ def outbound_summary(ob):
     return f"{OUTBOUND_TYPES[ob['type']]} · {host_port(ob['host'], ob['port']) if ob['host'] else _t('server not set')}"
 
 
-OUTBOUND_NEW = [
-    ("direct", _t("Direct (optionally from a chosen source IP)")),
-    ("http", _t("Upstream HTTP proxy")),
-    ("https", _t("Upstream HTTPS proxy")),
-    ("socks5", _t("Upstream SOCKS5 proxy")),
-    ("socks4", _t("Upstream SOCKS4 proxy")),
-    ("shadowsocks", _t("Shadowsocks tunnel (remote server)")),
-    ("hysteria2", _t("Hysteria2 tunnel (remote server)")),
-]
+OUTBOUND_NEW = []
+
+
+@on_language_change
+def _tr_outbound_new():
+    OUTBOUND_NEW[:] = [
+        ("direct", _t("Direct (optionally from a chosen source IP)")),
+        ("http", _t("Upstream HTTP proxy")),
+        ("https", _t("Upstream HTTPS proxy")),
+        ("socks5", _t("Upstream SOCKS5 proxy")),
+        ("socks4", _t("Upstream SOCKS4 proxy")),
+        ("shadowsocks", _t("Shadowsocks tunnel (remote server)")),
+        ("hysteria2", _t("Hysteria2 tunnel (remote server)")),
+    ]
+
+
 
 
 class PcBar(SimpleCardWidget):
@@ -127,23 +134,30 @@ class Dot(QWidget):
 
 # --- list ---
 
-TEMPLATES = [
-    (_t("Local SOCKS5"), _t("SOCKS5 proxy for this PC"), {"type": "socks5", "port": 1080}, {"type": "direct"}),
-    (_t("Local HTTP"), _t("For HTTP proxy settings in browsers and apps"), {"type": "http", "port": 8080}, {"type": "direct"}),
-    (_t("HTTPS proxy"), _t("HTTP proxy wrapped in TLS (self-signed certificate generated)"), {"type": "https", "port": 8443},
-     {"type": "direct"}),
-    ("SOCKS4", _t("For older programs (no authentication)"), {"type": "socks4", "port": 1084}, {"type": "direct"}),
-    (_t("Shadowsocks server"), _t("Shadowsocks apps on other devices connect to it"), {"type": "shadowsocks", "host": "0.0.0.0", "port": 8388},
-     {"type": "direct"}),
-    (_t("Hysteria2 server"), _t("Hysteria2 apps on other devices connect to it (QUIC)"), {"type": "hysteria2", "host": "0.0.0.0", "port": 8443},
-     {"type": "direct"}),
-    (_t("Local → upstream proxy"), _t("Local SOCKS5, forwarded to a company/other HTTP or SOCKS proxy"), {"type": "socks5", "port": 1080},
-     {"type": "http"}),
-    (_t("Local → Shadowsocks tunnel"), _t("Local SOCKS5, encrypted to a remote Shadowsocks server"), {"type": "socks5", "port": 1080},
-     {"type": "shadowsocks"}),
-    (_t("Local → Hysteria2 tunnel"), _t("Local SOCKS5, to a remote Hysteria2 server (QUIC)"), {"type": "socks5", "port": 1080},
-     {"type": "hysteria2"}),
-]
+TEMPLATES = []
+
+
+@on_language_change
+def _tr_templates():
+    TEMPLATES[:] = [
+        (_t("Local SOCKS5"), _t("SOCKS5 proxy for this PC"), {"type": "socks5", "port": 1080}, {"type": "direct"}),
+        (_t("Local HTTP"), _t("For HTTP proxy settings in browsers and apps"), {"type": "http", "port": 8080}, {"type": "direct"}),
+        (_t("HTTPS proxy"), _t("HTTP proxy wrapped in TLS (self-signed certificate generated)"), {"type": "https", "port": 8443},
+         {"type": "direct"}),
+        ("SOCKS4", _t("For older programs (no authentication)"), {"type": "socks4", "port": 1084}, {"type": "direct"}),
+        (_t("Shadowsocks server"), _t("Shadowsocks apps on other devices connect to it"), {"type": "shadowsocks", "host": "0.0.0.0", "port": 8388},
+         {"type": "direct"}),
+        (_t("Hysteria2 server"), _t("Hysteria2 apps on other devices connect to it (QUIC)"), {"type": "hysteria2", "host": "0.0.0.0", "port": 8443},
+         {"type": "direct"}),
+        (_t("Local → upstream proxy"), _t("Local SOCKS5, forwarded to a company/other HTTP or SOCKS proxy"), {"type": "socks5", "port": 1080},
+         {"type": "http"}),
+        (_t("Local → Shadowsocks tunnel"), _t("Local SOCKS5, encrypted to a remote Shadowsocks server"), {"type": "socks5", "port": 1080},
+         {"type": "shadowsocks"}),
+        (_t("Local → Hysteria2 tunnel"), _t("Local SOCKS5, to a remote Hysteria2 server (QUIC)"), {"type": "socks5", "port": 1080},
+         {"type": "hysteria2"}),
+    ]
+
+
 
 
 class ProxyCard(CardWidget):
@@ -245,7 +259,9 @@ class OutboundCard(CardWidget):
 
     def update_from(self, node, user_names):
         self.name.setText(node["name"])
-        self.desc.setText(outbound_summary(node["outbound"]))
+        from .. import graph as graph_mod
+        chain = graph_mod.chain_names(self.page.ctl.graph, node["via"]) if node.get("via") else []
+        self.desc.setText(outbound_summary(node["outbound"]) + ("  ⇢ " + " ⇢ ".join(chain) if chain else ""))
         self.used.setText(_t("used by: {names}").format(names=", ".join(user_names)) if user_names else _t("not used"))
 
     def _menu(self):
@@ -421,7 +437,9 @@ class Row(SimpleCardWidget):
         return self
 
 
-def _switch(parent, on=_t("On"), off=_t("Off")):
+def _switch(parent, on=None, off=None):
+    on = _t("On") if on is None else on
+    off = _t("Off") if off is None else off
     sw = SwitchButton(parent)
     sw.setOnText(on)
     sw.setOffText(off)
@@ -534,6 +552,11 @@ class EditorInterface(ScrollArea):
         self.sp_out_port.setRange(0, 65535)
         self.sp_out_port.setFixedWidth(150)
         self.r_out_server = s_out.add(Row(_t("Server address · port"), "", v).right(self.ed_out_host, self.sp_out_port))
+        self.cb_via = ComboBox(v)
+        self.cb_via.setFixedWidth(320)
+        self.r_out_via = s_out.add(Row(_t("Through"), _t("Connect to this server through another outbound block (e.g. a tunnel through the company proxy). Also editable on the canvas."), v)
+                                   .right(self.cb_via))
+        self.vias = []
         self.ed_out_bind = LineEdit(v)
         self.ed_out_bind.setPlaceholderText(_t("Automatic"))
         self.ed_out_bind.setFixedWidth(220)
@@ -688,6 +711,13 @@ class EditorInterface(ScrollArea):
             follow.blockSignals(False)
             self._set_value(key, ov[key] if ov.get(key) is not None else glob[key])
             w.setEnabled(ov.get(key) is not None)
+        if not inbound:
+            g = self.ctl.graph
+            others = [x for x in g["outbounds"] if x["id"] != n["id"] and x["outbound"]["type"] != "direct"]
+            self.vias = [None] + [x["id"] for x in others]
+            self.cb_via.clear()
+            self.cb_via.addItems([_t("(directly)")] + [x["name"] for x in others])
+            self.cb_via.setCurrentIndex(self.vias.index(n.get("via")) if n.get("via") in self.vias else 0)
         if inbound:
             g = self.ctl.graph
             self.targets = [None] + [x["id"] for x in g["outbounds"]] + [x["id"] for x in g["inbounds"] if x["id"] != n["id"]]
@@ -751,6 +781,7 @@ class EditorInterface(ScrollArea):
         remote = ot != "direct"
         self.r_out_server.setVisible(remote)
         self.r_out_bind.setVisible(not remote)
+        self.r_out_via.setVisible(ot not in ("direct", "hysteria2"))
         self.r_out_cred.setVisible(ot in ("http", "https", "socks4", "socks5"))
         self.ed_out_pass.setVisible(ot != "socks4")
         self.r_out_verify.setVisible(ot in ("https", "hysteria2"))
@@ -883,23 +914,34 @@ class EditorInterface(ScrollArea):
                              ss_method=self.ss_methods[self.cb_out_ss.currentIndex()],
                              ss_password=self.ed_out_ss_pw.text().strip(), hy2_password=self.ed_out_hy.text(),
                              bind=self.ed_out_bind.text().strip() if ot == "direct" else "")
+        idx = self.cb_via.currentIndex()
+        n["via"] = self.vias[idx] if 0 <= idx < len(self.vias) and ot not in graph_mod.NO_VIA else None
         return graph_mod.validate_outbound_node(n)
 
     def _as_proxy(self, n):
         """Runtime proxy for the edited block, compiled against the current graph (outbound: a stand-in inbound)."""
-        from .. import graph as graph_mod
+        from .. import graph as graph_mod  # noqa: F811
         if self.kind == "inbound":
             g = copy.deepcopy(self.ctl.graph)
             g["inbounds"] = [n if x["id"] == n["id"] else x for x in g["inbounds"]]
             compiled = graph_mod.compile(g)
             return next(x for x in compiled if x["id"] == n["id"]), [x for x in compiled if x["id"] != n["id"]]
+        g = copy.deepcopy(self.ctl.graph)
+        g["outbounds"] = [n if x["id"] == n["id"] else x for x in g["outbounds"]]
         p = config.validate_proxy({"id": "__edit__", "name": n["name"], "outbound": n["outbound"]})
+        p["outbound"]["via"] = (graph_mod.resolve_outbound(g, n["id"]) or {}).get("via")
         return p, []
 
     def _errors(self, n, for_check=False):
         if self.kind == "outbound":
+            from .. import graph as graph_mod
             errs = [] if n["name"] else [_t("Enter a name")]
-            return errs + config.outbound_errors(n["outbound"])
+            g = copy.deepcopy(self.ctl.graph)
+            g["outbounds"] = [n if x["id"] == n["id"] else x for x in g["outbounds"]]
+            if graph_mod.via_loop(g, n["id"]):
+                return errs + [_t("The proxy chain loops: ") + " → ".join(graph_mod.chain_names(g, n["via"]) + [n["name"]])]
+            p, _ = self._as_proxy(n)
+            return errs + config.outbound_errors(p["outbound"])
         p, others = self._as_proxy(n)
         errs = config.check_proxy(p, others)
         if not for_check:       # an unconnected inbound can be saved, it just cannot start
@@ -928,8 +970,24 @@ def config_unlinked_error():
     return _t("Not connected to an outbound - connect it on the canvas or choose one in the editor")
 
 
-CHECK_DESC_OUT = _t("Tests the current, unsaved settings: connects to an HTTPS site through this outbound.")
-CHECK_DESC = (_t("Tests the current, unsaved settings: connects to an HTTPS site through the outbound and checks that the inbound port can be opened (including the certificate)."))
+CHECK_DESC_OUT = ""
+
+
+@on_language_change
+def _tr_check_desc_out():
+    global CHECK_DESC_OUT
+    CHECK_DESC_OUT = _t("Tests the current, unsaved settings: connects to an HTTPS site through this outbound.")
+
+
+CHECK_DESC = ""
+
+
+@on_language_change
+def _tr_check_desc():
+    global CHECK_DESC
+    CHECK_DESC = _t("Tests the current, unsaved settings: connects to an HTTPS site through the outbound and checks that the inbound port can be opened (including the certificate).")
+
+
 
 
 def _check_inbound(p, running):

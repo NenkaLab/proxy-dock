@@ -60,7 +60,10 @@ class LogInterface(QWidget):
         self.proxy.currentIndexChanged.connect(self.render)
         self.btn_clear.clicked.connect(self.clear)
         self.btn_copy.clicked.connect(self.copy_all)
-        qconfig.themeChanged.connect(lambda *_: self.render())
+        qconfig.themeChanged.connect(self._on_theme_changed)
+
+    def _on_theme_changed(self, *_):
+        self.render()
         self.render()
 
     def set_proxies(self, proxies):

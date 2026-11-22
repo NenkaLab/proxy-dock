@@ -20,7 +20,7 @@ from qfluentwidgets import (
 )
 
 from ..common import INBOUND_TYPES, host_port
-from ..i18n import _t
+from ..i18n import _t, on_language_change
 from .common import STATE_TEXT, info
 from .proxies import OUTBOUND_NEW, PcBar, confirm_delete, outbound_summary
 
@@ -29,7 +29,15 @@ IN_COLOR = (34, 74, 128)
 OUT_COLOR = (30, 100, 74)
 PC_COLOR = (92, 58, 132)
 PORT_COLOR = (120, 170, 235)
-NEW_INBOUND = [(t, label) for t, label in INBOUND_TYPES.items()]
+VIA_COLOR = (235, 190, 110)
+NEW_INBOUND = []
+
+
+@on_language_change
+def _tr_new_inbound():
+    NEW_INBOUND[:] = [(t, label) for t, label in INBOUND_TYPES.items()]
+
+
 DEFAULT_PORTS = {"socks5": 1080, "socks4": 1084, "http": 8080, "https": 8443, "shadowsocks": 8388, "hysteria2": 8443}
 
 
@@ -66,8 +74,21 @@ class InNode(BaseNode):
 
 
 class OutNode(BaseNode):
+    """Outbound that can go through another outbound ("via" output)."""
     __identifier__ = "proxydock"
     NODE_NAME = "Outbound"
+
+    def __init__(self):
+        super().__init__()
+        self.add_input(_t("in"), multi_input=True, color=PORT_COLOR)
+        self.add_output(_t("via"), multi_output=False, color=VIA_COLOR)
+        self.add_custom_widget(InfoWidget(self.view, lines=3))
+
+
+class EndNode(BaseNode):
+    """Outbound that ends a chain: Direct, Hysteria2 (QUIC cannot be tunnelled)."""
+    __identifier__ = "proxydock"
+    NODE_NAME = "Outbound "
 
     def __init__(self):
         super().__init__()
@@ -119,7 +140,7 @@ class CanvasInterface(QWidget):
         self.mid_of = {}            # NodeGraphQt node id -> model id
 
         self.graph = NodeGraph()
-        self.graph.register_nodes([InNode, OutNode, PcNode])
+        self.graph.register_nodes([InNode, OutNode, EndNode, PcNode])
         self.graph.set_acyclic(True)
         self.graph.disable_context_menu(True)
         self.graph.port_connected.connect(self._on_connected)
@@ -142,6 +163,7 @@ class CanvasInterface(QWidget):
         self.btn_stop.clicked.connect(ctl.stop_all)
         hint = CaptionLabel(_t("Drag from an inbound's output to an outbound block, to another inbound (relay) or to the PC. "
                                "Double-click a block to edit it, right-click for more, Delete removes the selection.") + " "
+                           + _t("An outbound's 'via' output chains it through another outbound.") + " "
                            + _t("Alt+Shift+drag cuts links."), self)
         hint.setWordWrap(True)
         self.pc_bar = PcBar(ctl, self)
@@ -159,7 +181,10 @@ class CanvasInterface(QWidget):
         root.addWidget(self.pc_bar)
         root.addWidget(self.graph.widget, 1)
         self._apply_theme()
-        qconfig.themeChanged.connect(lambda *_: self._apply_theme())
+        qconfig.themeChanged.connect(self._on_theme_changed)
+
+    def _on_theme_changed(self, *_):
+        self._apply_theme()
 
     # --- menus ---
     def _inbound_menu(self, pos=None, parent=None):
@@ -227,6 +252,12 @@ class CanvasInterface(QWidget):
                         cut = Action(FIF.REMOVE, _t("Disconnect"), menu)
                         cut.triggered.connect(lambda: self.ctl.set_target(mid, None))
                         menu.addAction(cut)
+                from .. import graph as graph_mod
+                kind, gn = graph_mod.find(self.ctl.graph, mid)
+                if kind == "outbound" and gn["via"]:
+                    cut = Action(FIF.REMOVE, _t("Disconnect"), menu)
+                    cut.triggered.connect(lambda: self.ctl.set_via(mid, None))
+                    menu.addAction(cut)
                 dup = Action(FIF.COPY, _t("Duplicate"), menu)
                 dup.triggered.connect(lambda: self.ctl.duplicate_node(mid))
                 delete = Action(FIF.DELETE, _t("Delete"), menu)
@@ -264,7 +295,8 @@ class CanvasInterface(QWidget):
     # --- model -> view ---
     def _signature(self, graph):
         return json.dumps([[n["id"], n["name"], n["target"]] for n in graph["inbounds"]] +
-                          [[n["id"], n["name"]] for n in graph["outbounds"]] + [graph["pc"]["inbound"]])
+                          [[n["id"], n["name"], n["via"], n["outbound"]["type"]] for n in graph["outbounds"]] +
+                          [graph["pc"]["inbound"]])
 
     def refresh(self, graph, proxies, statuses, pc_status):
         sig = self._signature(graph)
@@ -288,8 +320,10 @@ class CanvasInterface(QWidget):
                 self.mid_of[node.id] = mid
                 return node
 
+            from .. import graph as graph_mod
             for n in graph["outbounds"]:
-                make("OutNode", n["id"], n["name"], n["pos"], OUT_COLOR)
+                make("EndNode" if n["outbound"]["type"] in graph_mod.NO_VIA else "OutNode",
+                     n["id"], n["name"], n["pos"], OUT_COLOR)
             for n in graph["inbounds"]:
                 make("InNode", n["id"], n["name"], n["pos"], IN_COLOR)
             make("PcNode", PC_ID, _t("PC (system proxy)"), graph["pc"]["pos"], PC_COLOR)
@@ -298,6 +332,9 @@ class CanvasInterface(QWidget):
                 dst = self.node_of.get(n["target"]) if n["target"] else None
                 if dst is not None:
                     src.output(0).connect_to(dst.input(0), push_undo=False)
+            for n in graph["outbounds"]:
+                if n["via"] and n["via"] in self.node_of and self.node_of[n["id"]].outputs():
+                    self.node_of[n["id"]].output(0).connect_to(self.node_of[n["via"]].input(0), push_undo=False)
             if graph["pc"]["inbound"] in self.node_of:
                 self.node_of[graph["pc"]["inbound"]].output(0).connect_to(self.node_of[PC_ID].input(0), push_undo=False)
             g.clear_undo_stack()
@@ -336,9 +373,11 @@ class CanvasInterface(QWidget):
             if node is None:
                 continue
             users = graph_mod.users(cg, n["id"])
-            lines = [_line("#DADADA", outbound_summary(n["outbound"])),
-                     _line("#9A9A9A", _t("used by: {names}").format(names=", ".join(u["name"] for u in users))
-                           if users else _t("not used"))]
+            lines = [_line("#DADADA", outbound_summary(n["outbound"]))]
+            if n["via"]:
+                lines.append(_line("#EBBE6E", "⇢ " + " ⇢ ".join(graph_mod.chain_names(cg, n["via"]))))
+            lines.append(_line("#9A9A9A", _t("used by: {names}").format(names=", ".join(u["name"] for u in users))
+                               if users else _t("not used")))
             node.get_widget("info").set_value("<br>".join(lines))
         pc = self.node_of.get(PC_ID)
         if pc is not None:
@@ -355,6 +394,15 @@ class CanvasInterface(QWidget):
         dst = self.mid_of.get(in_port.node().id)
         if not src or not dst:
             return
+        from .. import graph as graph_mod
+        src_kind, _ = graph_mod.find(self.ctl.graph, src)
+        dst_kind, _ = graph_mod.find(self.ctl.graph, dst)
+        if src_kind == "outbound":
+            if dst_kind != "outbound":
+                self._reject(in_port, out_port, _t("An outbound's 'via' can only go to another outbound"))
+                return
+            QTimer.singleShot(0, lambda: self._apply_via(src, dst))
+            return
         if dst == PC_ID:
             QTimer.singleShot(0, lambda: self.ctl.set_pc(src))
             return
@@ -368,6 +416,19 @@ class CanvasInterface(QWidget):
             self.syncing = False
         # apply after NodeGraphQt has finished handling the drag (the update may redraw the whole canvas)
         QTimer.singleShot(0, lambda: self._apply_target(src, dst))
+
+    def _reject(self, in_port, out_port, message):
+        self.syncing = True
+        try:
+            out_port.disconnect_from(in_port, push_undo=False)
+        finally:
+            self.syncing = False
+        info(self.window(), "warning", _t("Cannot connect"), message, 4000)
+
+    def _apply_via(self, src, dst):
+        if not self.ctl.set_via(src, dst):
+            self.sig = None
+            self.ctl.refresh_lists()
 
     def _apply_target(self, src, dst):
         if not self.ctl.set_target(src, dst):
@@ -385,6 +446,11 @@ class CanvasInterface(QWidget):
 
     def _apply_disconnect(self, src, dst):
         from .. import graph as graph_mod
+        kind, n = graph_mod.find(self.ctl.graph, src)
+        if kind == "outbound":
+            if n["via"] == dst:
+                self.ctl.set_via(src, None)
+            return
         if dst == PC_ID:
             if self.ctl.graph["pc"]["inbound"] == src:
                 self.ctl.set_pc(None)

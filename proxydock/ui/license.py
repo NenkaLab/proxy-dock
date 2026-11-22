@@ -1,5 +1,5 @@
 """Licenses page."""
-from ..i18n import _t
+from ..i18n import _t, on_language_change
 import os
 import sys
 
@@ -9,25 +9,32 @@ from qfluentwidgets import CaptionLabel, ComboBox, FluentIcon as FIF, PushButton
 from ..platform_utils import open_path
 from .common import LICENSE_DIR, TextView, info, make_mono_font, resource_path
 
-LICENSES = [
-    (_t("Overview"), "README.txt"),
-    ("Pretendard · OFL 1.1", "Pretendard-OFL-1.1.txt"),
-    ("JetBrains Mono · OFL 1.1", "JetBrainsMono-OFL-1.1.txt"),
-    ("PySide6-Fluent-Widgets · GPL v3", "PySide6-Fluent-Widgets-GPL-3.0.txt"),
-    ("Qt 6 · PySide6 · Frameless Window · LGPL v3", "LGPL-3.0.txt"),
-    ("NodeGraphQt · MIT", "NodeGraphQt-MIT.txt"),
-    ("Qt.py · MIT", "Qt.py-MIT.txt"),
-    ("aioquic · BSD 3-Clause", "aioquic-BSD-3-Clause.txt"),
-    ("pylsqpack · BSD 3-Clause", "pylsqpack-BSD-3-Clause.txt"),
-    (_t("cryptography · Apache 2.0 / BSD (includes OpenSSL)"), "cryptography-Apache-2.0-BSD.txt"),
-    ("pyOpenSSL · Apache 2.0", "pyOpenSSL-Apache-2.0.txt"),
-    ("service-identity · MIT", "service-identity-MIT.txt"),
-    ("attrs · MIT", "attrs-MIT.txt"),
-    ("certifi · MPL 2.0", "certifi-MPL-2.0.txt"),
-    ("darkdetect · BSD 3-Clause", "darkdetect-BSD-3-Clause.txt"),
-    ("Python · PSF", "Python-PSF.txt"),
-    (_t("PyInstaller · GPL v2+ (bootloader exception)"), "PyInstaller.txt"),
-]
+LICENSES = []
+
+
+@on_language_change
+def _tr_licenses():
+    LICENSES[:] = [
+        (_t("Overview"), "README.txt"),
+        ("Pretendard · OFL 1.1", "Pretendard-OFL-1.1.txt"),
+        ("JetBrains Mono · OFL 1.1", "JetBrainsMono-OFL-1.1.txt"),
+        ("PySide6-Fluent-Widgets · GPL v3", "PySide6-Fluent-Widgets-GPL-3.0.txt"),
+        ("Qt 6 · PySide6 · Frameless Window · LGPL v3", "LGPL-3.0.txt"),
+        ("NodeGraphQt · MIT", "NodeGraphQt-MIT.txt"),
+        ("Qt.py · MIT", "Qt.py-MIT.txt"),
+        ("aioquic · BSD 3-Clause", "aioquic-BSD-3-Clause.txt"),
+        ("pylsqpack · BSD 3-Clause", "pylsqpack-BSD-3-Clause.txt"),
+        (_t("cryptography · Apache 2.0 / BSD (includes OpenSSL)"), "cryptography-Apache-2.0-BSD.txt"),
+        ("pyOpenSSL · Apache 2.0", "pyOpenSSL-Apache-2.0.txt"),
+        ("service-identity · MIT", "service-identity-MIT.txt"),
+        ("attrs · MIT", "attrs-MIT.txt"),
+        ("certifi · MPL 2.0", "certifi-MPL-2.0.txt"),
+        ("darkdetect · BSD 3-Clause", "darkdetect-BSD-3-Clause.txt"),
+        ("Python · PSF", "Python-PSF.txt"),
+        (_t("PyInstaller · GPL v2+ (bootloader exception)"), "PyInstaller.txt"),
+    ]
+
+
 
 
 def license_dir():

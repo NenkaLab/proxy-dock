@@ -26,6 +26,7 @@ Shadowsocks distant » tient sur une seule carte.
 
 - **Canevas** : éditeur façon blueprint - tirez des liens des blocs d'entrée vers les blocs de sortie ; plusieurs entrées peuvent partager une sortie, une entrée reliée à une autre entrée passe par celle-ci, et Direct peut partir d'une IP source choisie
 - **Bloc PC** : reliez une entrée HTTP pour l'utiliser comme proxy système Windows pendant qu'elle tourne ; les paramètres précédents sont sauvegardés et remis à l'arrêt ou à la fermeture (boutons Restaurer l'état précédent / Désactivé)
+- **Chaînage** : la sortie 'via' d'un bloc de sortie fait passer sa propre connexion au serveur par une autre sortie (ex. Shadowsocks à travers le proxy HTTP de l'entreprise, proxy HTTPS amont dans un tunnel Hysteria2), sur autant d'étapes que nécessaire
 - **Shadowsocks** : AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) et 2022 (SIP022, blake3), TCP+UDP, copie des liens `ss://`
 - **Hysteria2** : interopérable dans les deux sens avec l'implémentation officielle (TCP et UDP), épinglage du certificat, copie des liens `hysteria2://`
 - **Paramètres** : valeurs globales par défaut + paramètres locaux par proxy (le local prime) - domaines autorisés, blocage du réseau privé, délai d'inactivité, journal
@@ -80,6 +81,7 @@ La compilation macOS n'a pas encore été essayée sur un vrai Mac.
 
 ## Limites connues
 
+- Hysteria2 (QUIC/UDP) ne peut pas passer *par* d'autres sorties (les autres peuvent passer par lui), et l'UDP n'est pas relayé à travers des sorties chaînées.
 - Hysteria2 tourne sur une implémentation QUIC en Python (aioquic) : comptez environ 100 Mbit/s. Les réglages de bande passante (Brutal),
   l'obfuscation Salamander et le saut de ports ne sont pas pris en charge.
 - Le serveur Hysteria2 officiel refuse les connexions dont le SNI ne correspond pas à son certificat - saisissez le domaine du

@@ -26,6 +26,7 @@ Shadowsocks server" is a single card.
 
 - **Canvas**: blueprint-style editor - drag lines from inbound blocks to outbound blocks; several inbounds can share one outbound, an inbound linked into another inbound relays through it, and Direct can leave from a chosen source IP
 - **PC block**: link an HTTP inbound to use it as the Windows system proxy while it runs; the previous settings are saved and put back when it stops or the app quits (Restore previous / Off buttons)
+- **Chaining**: an outbound block's 'via' output sends its own server connection through another outbound (e.g. Shadowsocks through the company HTTP proxy, HTTPS upstream through a Hysteria2 tunnel), as many hops as needed
 - **Shadowsocks**: AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) and 2022 (SIP022, blake3), TCP+UDP, copy `ss://` links
 - **Hysteria2**: interoperates both ways with the official implementation (TCP and UDP), certificate pinning, copy `hysteria2://` links
 - **Settings**: global defaults + per-proxy local settings (local wins) - allowed domains, private network blocking, idle timeout, logging
@@ -79,6 +80,7 @@ The macOS build has not been tried on a real Mac yet.
 
 ## Known limitations
 
+- Hysteria2 (QUIC/UDP) cannot go *through* other outbounds (others can go through it), and UDP is not relayed through chained outbounds.
 - Hysteria2 runs on a Python QUIC implementation (aioquic), so expect about 100 Mbps. Bandwidth settings (Brutal),
   Salamander obfuscation and port hopping are not supported.
 - The official Hysteria2 server rejects connections whose SNI does not match its certificate - put the server

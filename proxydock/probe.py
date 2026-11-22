@@ -4,7 +4,7 @@ To test every inbound protocol the same way, a temporary SOCKS5 "bridge" proxy i
 client for the tested proxy's inbound protocol (SOCKS/HTTP/HTTPS/Shadowsocks/Hysteria2), so a SOCKS5 connection
 to the bridge goes bridge -> tested proxy -> that proxy's outbound -> site.
 """
-from .i18n import _t
+from .i18n import _t, on_language_change
 import socket
 import ssl
 import struct
@@ -13,36 +13,51 @@ import time
 from . import config
 from .common import ATYP_IPV4, ATYP_IPV6, describe_error
 
-TEST_SITES = [
-    (_t("Global"), "Google", "www.google.com"),
-    (_t("Global"), "YouTube", "www.youtube.com"),
-    (_t("Global"), "Microsoft", "www.microsoft.com"),
-    (_t("Global"), "Apple", "www.apple.com"),
-    (_t("Global"), "Amazon", "www.amazon.com"),
-    (_t("Global"), "Cloudflare", "www.cloudflare.com"),
-    (_t("Global"), "GitHub", "github.com"),
-    (_t("Global"), "Wikipedia", "www.wikipedia.org"),
-    (_t("Global"), "Netflix", "www.netflix.com"),
-    (_t("Korea"), "NAVER", "www.naver.com"),
-    (_t("Japan"), "Yahoo! JAPAN", "www.yahoo.co.jp"),
-    (_t("China"), "Baidu", "www.baidu.com"),
-    (_t("USA"), "CNN", "www.cnn.com"),
-    (_t("UK"), "BBC", "www.bbc.co.uk"),
-    (_t("Germany"), "DER SPIEGEL", "www.spiegel.de"),
-    (_t("France"), "Le Monde", "www.lemonde.fr"),
-    (_t("Brazil"), "Globo", "www.globo.com"),
-    (_t("India"), "Flipkart", "www.flipkart.com"),
-    (_t("Australia"), "ABC", "www.abc.net.au"),
-    (_t("Canada"), "CBC", "www.cbc.ca"),
-    (_t("Russia"), "Yandex", "ya.ru"),
-]
+TEST_SITES = []
+
+
+@on_language_change
+def _tr_test_sites():
+    TEST_SITES[:] = [
+        (_t("Global"), "Google", "www.google.com"),
+        (_t("Global"), "YouTube", "www.youtube.com"),
+        (_t("Global"), "Microsoft", "www.microsoft.com"),
+        (_t("Global"), "Apple", "www.apple.com"),
+        (_t("Global"), "Amazon", "www.amazon.com"),
+        (_t("Global"), "Cloudflare", "www.cloudflare.com"),
+        (_t("Global"), "GitHub", "github.com"),
+        (_t("Global"), "Wikipedia", "www.wikipedia.org"),
+        (_t("Global"), "Netflix", "www.netflix.com"),
+        (_t("Korea"), "NAVER", "www.naver.com"),
+        (_t("Japan"), "Yahoo! JAPAN", "www.yahoo.co.jp"),
+        (_t("China"), "Baidu", "www.baidu.com"),
+        (_t("USA"), "CNN", "www.cnn.com"),
+        (_t("UK"), "BBC", "www.bbc.co.uk"),
+        (_t("Germany"), "DER SPIEGEL", "www.spiegel.de"),
+        (_t("France"), "Le Monde", "www.lemonde.fr"),
+        (_t("Brazil"), "Globo", "www.globo.com"),
+        (_t("India"), "Flipkart", "www.flipkart.com"),
+        (_t("Australia"), "ABC", "www.abc.net.au"),
+        (_t("Canada"), "CBC", "www.cbc.ca"),
+        (_t("Russia"), "Yandex", "ya.ru"),
+    ]
+
+
 PROBE_TIMEOUT = 8
 PROBE_WORKERS = 6           # sites tried at the same time
 PROBE_COOLDOWN = 15         # seconds before the test can be run again
 BRIDGE_ID = "__probe__"
-REP_NAMES = {1: _t("Proxy error"), 2: _t("Blocked (allow list / private network)"), 3: _t("Network unreachable"),
-             4: _t("Host unreachable (DNS / route / upstream proxy)"), 5: _t("Connection refused"), 6: _t("TTL expired"),
-             7: _t("Command not supported"), 8: _t("Address type not supported")}
+REP_NAMES = {}
+
+
+@on_language_change
+def _tr_rep_names():
+    REP_NAMES.clear()
+    REP_NAMES.update({1: _t("Proxy error"), 2: _t("Blocked (allow list / private network)"), 3: _t("Network unreachable"),
+                 4: _t("Host unreachable (DNS / route / upstream proxy)"), 5: _t("Connection refused"), 6: _t("TTL expired"),
+                 7: _t("Command not supported"), 8: _t("Address type not supported")})
+
+
 
 
 def bridge_for(proxy):

@@ -25,6 +25,7 @@
 
 - **画布**：蓝图式编辑器 - 从入站块拖线到出站块；多个入站可共用一个出站，把入站连到另一个入站会经由它中继，Direct 可以指定源 IP
 - **PC 块**：连接一个 HTTP 入站，在其运行期间用作 Windows 系统代理；之前的设置会被保存，停止或退出应用时恢复 (恢复之前的设置 / 关闭 按钮)
+- **链式连接**：连接出站块的'经由'输出后，它到服务器的连接会经由另一个出站 (例如穿过公司 HTTP 代理的 Shadowsocks、Hysteria2 隧道中的 HTTPS 上游代理)，可以串联任意多级
 - **Shadowsocks**：AEAD 2018 (aes-128/256-gcm、chacha20-ietf-poly1305) 和 2022 (SIP022、blake3)，TCP+UDP，复制 `ss://` 链接
 - **Hysteria2**：已确认与官方实现双向互通 (TCP、UDP)，证书指纹固定，复制 `hysteria2://` 链接
 - **设置**：全局默认值 + 每个代理的本地设置 (本地优先) - 允许的域名、阻止内网、空闲超时、日志
@@ -78,6 +79,7 @@ macOS 构建尚未在真实的 Mac 上验证。
 
 ## 已知限制
 
+- Hysteria2 (QUIC/UDP) 不能*经由*其他出站 (其他块可以经由 Hysteria2)；串联的出站不转发 UDP。
 - Hysteria2 运行在 Python 的 QUIC 实现 (aioquic) 上，速度约 100 Mbps。不支持带宽设置 (Brutal)、
   Salamander 混淆和端口跳跃。
 - 官方 Hysteria2 服务器会拒绝 SNI 与证书不符的连接 - 请在出站的 SNI 中填写服务器证书的域名。

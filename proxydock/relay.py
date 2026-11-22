@@ -34,6 +34,7 @@ class Pipe(asyncio.Protocol):
         self.discard = False        # UDP control connection: received data is ignored
         self.waiter = None
         self.lost = None
+        self.layer = None           # LayerTransport stacked on this connection (chained outbounds)
 
     def connection_made(self, transport):
         self.transport = transport
@@ -41,6 +42,9 @@ class Pipe(asyncio.Protocol):
         self.lost = asyncio.get_running_loop().create_future()
 
     def data_received(self, data):
+        if self.layer is not None:
+            self.layer._feed(data)
+            return
         peer = self.peer
         if peer is not None:
             if not peer.closed:
@@ -64,6 +68,9 @@ class Pipe(asyncio.Protocol):
 
     def eof_received(self):
         self.eof = True
+        if self.layer is not None:
+            self.layer._eof()
+            return not getattr(self, "tls", False)
         peer = self.peer
         if peer is not None:
             if peer.eof:
@@ -84,17 +91,24 @@ class Pipe(asyncio.Protocol):
         self._wake()
         if self.lost is not None and not self.lost.done():
             self.lost.set_result(None)
+        if self.layer is not None:
+            self.layer._lost(exc)
+            return
         peer = self.peer
         if peer is not None and not peer.closed:
             peer.transport.close()
 
     # stop reading from the peer when my send buffer is full
     def pause_writing(self):
-        if self.peer is not None and not self.peer.closed:
+        if self.layer is not None:
+            self.layer._pause_writing()
+        elif self.peer is not None and not self.peer.closed:
             self.peer.transport.pause_reading()
 
     def resume_writing(self):
-        if self.peer is not None and not self.peer.closed:
+        if self.layer is not None:
+            self.layer._resume_writing()
+        elif self.peer is not None and not self.peer.closed:
             self.peer.transport.resume_reading()
 
     def _wake(self):
@@ -139,6 +153,149 @@ class Pipe(asyncio.Protocol):
     def write(self, data):
         if not self.closed:
             self.send(data)
+
+
+class LayerTransport(asyncio.Transport):
+    """A transport that runs over an already connected Pipe (the "lower" hop of a chain).
+
+    Lets one outbound be stacked on another: e.g. Shadowsocks through an upstream HTTP proxy, or TLS
+    (HTTPS upstream, via loop.start_tls) through a Shadowsocks/Hysteria2 tunnel. Writes go into the lower
+    pipe (which encrypts for its own tunnel); bytes the lower pipe receives are handed to this protocol.
+    """
+    _start_tls_compatible = True
+
+    def __init__(self, lower):
+        super().__init__()
+        self.lower = lower
+        self.protocol = None
+        self.pending = bytearray()
+        self.paused = False
+        self.closing = False
+        self.eof_pending = False
+        self.lost_pending = False
+        lower.layer = self
+        if lower.buf:                       # bytes that arrived during the lower handshake
+            self.pending += lower.buf
+            lower.buf.clear()
+
+    # --- transport API ---
+    def get_extra_info(self, name, default=None):
+        if name in ("sslcontext", "ssl_object", "peercert", "cipher", "compression"):
+            return default
+        tr = self.lower.transport
+        return tr.get_extra_info(name, default) if tr is not None else default
+
+    def set_protocol(self, protocol):
+        self.protocol = protocol
+
+    def get_protocol(self):
+        return self.protocol
+
+    def is_closing(self):
+        return self.closing or self.lower.closed
+
+    def close(self):
+        if not self.closing:
+            self.closing = True
+            self.lower.transport.close()
+
+    def abort(self):
+        self.closing = True
+        self.lower.transport.abort()
+
+    def write(self, data):
+        if data and not self.is_closing():
+            self.lower.send(data)
+
+    def writelines(self, chunks):
+        for c in chunks:
+            self.write(c)
+
+    def can_write_eof(self):
+        return self.lower.transport.can_write_eof()
+
+    def write_eof(self):
+        self.lower.transport.write_eof()
+
+    def is_reading(self):
+        return not self.paused
+
+    def pause_reading(self):
+        self.paused = True
+        if not self.lower.closed:
+            self.lower.transport.pause_reading()
+
+    def resume_reading(self):
+        self.paused = False
+        if not self.lower.closed:
+            self.lower.transport.resume_reading()
+        asyncio.get_running_loop().call_soon(self._flush)
+
+    def get_write_buffer_size(self):
+        return self.lower.transport.get_write_buffer_size()
+
+    def get_write_buffer_limits(self):
+        return self.lower.transport.get_write_buffer_limits()
+
+    def set_write_buffer_limits(self, high=None, low=None):
+        self.lower.transport.set_write_buffer_limits(high, low)
+
+    # --- from the lower pipe ---
+    def _deliver(self, data):
+        p = self.protocol
+        if isinstance(p, asyncio.BufferedProtocol):     # e.g. asyncio's SSLProtocol (start_tls)
+            mv = memoryview(data)
+            while mv:
+                buf = p.get_buffer(len(mv))
+                n = min(len(buf), len(mv))
+                buf[:n] = mv[:n]
+                p.buffer_updated(n)
+                mv = mv[n:]
+        else:
+            p.data_received(data)
+
+    def _feed(self, data):
+        if self.paused or self.protocol is None or self.pending:
+            self.pending += data
+            return
+        self._deliver(data)
+
+    def _flush(self):
+        if self.paused or self.protocol is None:
+            return
+        if self.pending:
+            data = bytes(self.pending)
+            self.pending.clear()
+            self._deliver(data)
+        if self.eof_pending:
+            self.eof_pending = False
+            self._eof()
+        if self.lost_pending:
+            self.lost_pending = False
+            self.protocol.connection_lost(None)
+
+    def _eof(self):
+        if self.protocol is None or self.paused or self.pending:
+            self.eof_pending = True
+            return
+        if not self.protocol.eof_received():
+            self.close()
+
+    def _lost(self, exc):
+        if self.protocol is None or self.paused or self.pending:
+            self.lost_pending = True
+            if self.protocol is not None and not self.paused:
+                asyncio.get_running_loop().call_soon(self._flush)
+            return
+        self.protocol.connection_lost(exc)
+
+    def _pause_writing(self):
+        if self.protocol is not None:
+            self.protocol.pause_writing()
+
+    def _resume_writing(self):
+        if self.protocol is not None:
+            self.protocol.resume_writing()
 
 
 def half_close(transport):

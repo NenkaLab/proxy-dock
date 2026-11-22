@@ -1,5 +1,5 @@
 """How-to page."""
-from ..i18n import _t
+from ..i18n import _t, on_language_change
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
 from qfluentwidgets import (
@@ -9,24 +9,31 @@ from qfluentwidgets import (
 
 from ..common import IS_WIN
 
-STEPS = [
-    (FIF.TILES, _t("1. ProxyDock is a \"dock\" for proxies"),
-     _t("Proxies are built from blocks. Inbound blocks accept connections on a port of this PC (SOCKS5 · SOCKS4 · HTTP · HTTPS · Shadowsocks · Hysteria2); outbound blocks decide how traffic reaches the destination (Direct, optionally from a chosen source IP · upstream HTTP/HTTPS/SOCKS4/SOCKS5 proxy · Shadowsocks tunnel · Hysteria2 tunnel).\nOn the Canvas, drag a line from an inbound's output to an outbound block. Several inbounds can share one outbound; linking an inbound into another inbound relays traffic through it.")),
-    (FIF.ADD, _t("2. Create and run"),
-     _t("Add blocks with 'Add inbound' / 'Add outbound' (or right-click the canvas), connect them, and double-click a block to edit it. The Proxy page shows the same blocks as a list.\nUse 'Check connection' in the editor to test the outbound and the inbound port before saving. Start/stop an inbound with its switch or right-click menu; 'Start with the app' starts it with ProxyDock.\nPC block: connect an HTTP inbound to it to use it as the Windows system proxy while that inbound runs. The previous settings are saved and put back when it stops or ProxyDock quits; 'Restore previous' and 'Off (default)' disconnect it.")),
-    (FIF.GLOBE, _t("3. Use it in your apps"),
-     _t("Copy the address (or link) with the copy button on a card and put it in your app's proxy settings.\n• Firefox: Settings → Network Settings → Manual proxy (for SOCKS5, check 'Proxy DNS when using SOCKS v5')\n• Chrome/Edge: append  --proxy-server=\"socks5://127.0.0.1:1080\"  to the shortcut target (http:// also works)\n• curl:  curl -x socks5h://127.0.0.1:1080 https://example.com   (HTTPS proxy: -x https://… --proxy-insecure)\n• Shadowsocks / Hysteria2 apps: paste the copied ss:// · hysteria2:// link")),
-    (FIF.VPN, _t("4. Tunnels and upstream proxies"),
-     _t("Changing the outbound hands connections over to another server.\n• Through a company proxy: inbound SOCKS5 (local) → outbound HTTP proxy (company address)\n• Encrypted tunnel: inbound SOCKS5 (local) → outbound Shadowsocks/Hysteria2 tunnel (remote server). The remote server can be a 'Shadowsocks server'/'Hysteria2 server' proxy in ProxyDock on another PC.\nUDP (QUIC, games, DNS) works when receiving via SOCKS5/Shadowsocks/Hysteria2 and sending via Direct/Shadowsocks/Hysteria2. Hysteria2 is a Python implementation, so expect about 100 Mbps.")),
-    (FIF.SETTING, _t("5. Global and per-proxy settings"),
-     _t("The 'Proxy defaults' on the Settings page (allowed domains, private network blocking, timeout, logging) apply to every proxy.\nIn the proxy editor, uncheck 'Use global' on an item to give that proxy its own value.\nChanges made while running: allowed domains, private network blocking and logging apply to new connections; the timeout applies to current connections too. Changing the inbound/outbound restarts that proxy and drops its connections.\nWhen chaining proxies (A's outbound = B's inbound), a chain that loops cannot be saved.")),
-    (FIF.WIFI, _t("6. Use from / block other PCs"),
-     (_t("Set the inbound address to 0.0.0.0 and (for SOCKS5/HTTP/HTTPS) turn on user authentication. If the firewall block below is on, turn it off. If you only use it on this PC, keeping the block on is safer (an administrator prompt appears)."))
-     if IS_WIN else
-     (_t("Set the inbound address to 0.0.0.0 and (for SOCKS5/HTTP/HTTPS) turn on user authentication. If an OS firewall (macOS firewall, ufw/firewalld, etc.) is on, allow the port."))),
-    (FIF.MINIMIZE, _t("7. Closing and quitting"),
-     _t("By default, X only hides the window and the proxies keep running in the tray.\nTo quit completely, right-click the tray icon → Quit. (Change this in Settings → Display → 'Quit with the X button')")),
-]
+STEPS = []
+
+
+@on_language_change
+def _tr_steps():
+    STEPS[:] = [
+        (FIF.TILES, _t("1. ProxyDock is a \"dock\" for proxies"),
+         _t("Proxies are built from blocks. Inbound blocks accept connections on a port of this PC (SOCKS5 · SOCKS4 · HTTP · HTTPS · Shadowsocks · Hysteria2); outbound blocks decide how traffic reaches the destination (Direct, optionally from a chosen source IP · upstream HTTP/HTTPS/SOCKS4/SOCKS5 proxy · Shadowsocks tunnel · Hysteria2 tunnel).\nOn the Canvas, drag a line from an inbound's output to an outbound block. Several inbounds can share one outbound; linking an inbound into another inbound relays traffic through it.")),
+        (FIF.ADD, _t("2. Create and run"),
+         _t("Add blocks with 'Add inbound' / 'Add outbound' (or right-click the canvas), connect them, and double-click a block to edit it. The Proxy page shows the same blocks as a list.\nUse 'Check connection' in the editor to test the outbound and the inbound port before saving. Start/stop an inbound with its switch or right-click menu; 'Start with the app' starts it with ProxyDock.\nPC block: connect an HTTP inbound to it to use it as the Windows system proxy while that inbound runs. The previous settings are saved and put back when it stops or ProxyDock quits; 'Restore previous' and 'Off (default)' disconnect it.")),
+        (FIF.GLOBE, _t("3. Use it in your apps"),
+         _t("Copy the address (or link) with the copy button on a card and put it in your app's proxy settings.\n• Firefox: Settings → Network Settings → Manual proxy (for SOCKS5, check 'Proxy DNS when using SOCKS v5')\n• Chrome/Edge: append  --proxy-server=\"socks5://127.0.0.1:1080\"  to the shortcut target (http:// also works)\n• curl:  curl -x socks5h://127.0.0.1:1080 https://example.com   (HTTPS proxy: -x https://… --proxy-insecure)\n• Shadowsocks / Hysteria2 apps: paste the copied ss:// · hysteria2:// link")),
+        (FIF.VPN, _t("4. Tunnels and upstream proxies"),
+         _t("Changing the outbound hands connections over to another server.\n• Through a company proxy: inbound SOCKS5 (local) → outbound HTTP proxy (company address)\n• Encrypted tunnel: inbound SOCKS5 (local) → outbound Shadowsocks/Hysteria2 tunnel (remote server). The remote server can be a 'Shadowsocks server'/'Hysteria2 server' proxy in ProxyDock on another PC.\nUDP (QUIC, games, DNS) works when receiving via SOCKS5/Shadowsocks/Hysteria2 and sending via Direct/Shadowsocks/Hysteria2. Hysteria2 is a Python implementation, so expect about 100 Mbps.")),
+        (FIF.SETTING, _t("5. Global and per-proxy settings"),
+         _t("The 'Proxy defaults' on the Settings page (allowed domains, private network blocking, timeout, logging) apply to every proxy.\nIn the proxy editor, uncheck 'Use global' on an item to give that proxy its own value.\nChanges made while running: allowed domains, private network blocking and logging apply to new connections; the timeout applies to current connections too. Changing the inbound/outbound restarts that proxy and drops its connections.\nWhen chaining proxies (A's outbound = B's inbound), a chain that loops cannot be saved.")),
+        (FIF.WIFI, _t("6. Use from / block other PCs"),
+         (_t("Set the inbound address to 0.0.0.0 and (for SOCKS5/HTTP/HTTPS) turn on user authentication. If the firewall block below is on, turn it off. If you only use it on this PC, keeping the block on is safer (an administrator prompt appears)."))
+         if IS_WIN else
+         (_t("Set the inbound address to 0.0.0.0 and (for SOCKS5/HTTP/HTTPS) turn on user authentication. If an OS firewall (macOS firewall, ufw/firewalld, etc.) is on, allow the port."))),
+        (FIF.MINIMIZE, _t("7. Closing and quitting"),
+         _t("By default, X only hides the window and the proxies keep running in the tray.\nTo quit completely, right-click the tray icon → Quit. (Change this in Settings → Display → 'Quit with the X button')")),
+    ]
+
+
 
 
 class HelpInterface(ScrollArea):

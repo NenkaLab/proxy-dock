@@ -234,15 +234,16 @@ class Controller:
 
         self.has_tray = QSystemTrayIcon.isSystemTrayAvailable()
         self.window = MainWindow(self)
-        self.tray = QSystemTrayIcon(make_icon(), self.window)
+        self.tray = QSystemTrayIcon(make_icon())
         self.tray.setToolTip(APP_NAME)
-        self.menu = SystemTrayMenu(parent=self.window)
-        self.act_show = Action(FIF.VIEW, _t("Open window"), self.menu)
-        self.act_stop_all = Action(FIF.PAUSE, _t("Stop all proxies"), self.menu)
-        self.act_startup = Action(FIF.POWER_BUTTON, _t("Start at login"), self.menu)
-        self.act_hidden = Action(FIF.INFO, _t("Hide startup notification"), self.menu)
-        self.act_restart = Action(FIF.SYNC, _t("Restart"), self.menu)
-        self.act_exit = Action(FIF.CLOSE, _t("Quit"), self.menu)
+        self.menu = SystemTrayMenu()
+        self.act_show = Action(FIF.VIEW, "", self.menu)
+        self.act_stop_all = Action(FIF.PAUSE, "", self.menu)
+        self.act_startup = Action(FIF.POWER_BUTTON, "", self.menu)
+        self.act_hidden = Action(FIF.INFO, "", self.menu)
+        self.act_restart = Action(FIF.SYNC, "", self.menu)
+        self.act_exit = Action(FIF.CLOSE, "", self.menu)
+        self._retranslate_tray()
         for act in (self.act_startup, self.act_hidden):
             act.setCheckable(True)
         self.act_show.triggered.connect(self.toggle_window)
@@ -256,7 +257,7 @@ class Controller:
         self.tray.setContextMenu(self.menu)
         self.tray.activated.connect(self._on_tray_activated)
 
-        self.theme_listener = SystemThemeListener(self.window)
+        self.theme_listener = SystemThemeListener()
         self.theme_listener.systemThemeChanged.connect(
             lambda: self.glob["theme"] == "auto" and apply_theme("auto"))
         self.theme_listener.start()
@@ -428,6 +429,29 @@ class Controller:
                  _t("The proxy chain loops: ") + " → ".join(cycle), 5000)
             self.refresh_lists()
             return False
+        self._recompile()
+        return True
+
+    def set_via(self, oid, vid):
+        """Outbound oid connects to its server through outbound vid (None = directly)."""
+        kind, n = graph_mod.find(self.graph, oid)
+        if kind != "outbound" or n["via"] == vid:
+            return True
+        if vid and n["outbound"]["type"] in graph_mod.NO_VIA:
+            info(self.window, "error", _t("Cannot connect"),
+                 _t("Hysteria2 uses QUIC (UDP), so it cannot go through another outbound")
+                 if n["outbound"]["type"] == "hysteria2" else _t("Direct is the end of a chain"), 5000)
+            self.refresh_lists()
+            return False
+        old = n["via"]
+        n["via"] = vid
+        if graph_mod.via_loop(self.graph, oid):
+            n["via"] = old
+            info(self.window, "error", _t("Cannot connect"),
+                 _t("The proxy chain loops: ") + " → ".join(graph_mod.chain_names(self.graph, vid) + [n["name"]]), 5000)
+            self.refresh_lists()
+            return False
+        log(LOG_SETTING, _t("Saved proxy '{name}'").format(name=n['name']))
         self._recompile()
         return True
 
@@ -603,7 +627,7 @@ class Controller:
             pending.append(_t("UI font"))
         from ..i18n import current as current_language
         if g["language"] != current_language():
-            pending.append(_t("Language"))
+            QTimer.singleShot(0, lambda code=g["language"]: self.change_language(code))
         if g["ui_scale"] != Fonts.startup_scale:
             pending.append(_t("App scale"))
         log(LOG_SETTING, _t("Settings saved") + (_t(" (applies after restart: {join})").format(join=', '.join(pending)) if pending else ""))
@@ -615,6 +639,73 @@ class Controller:
         if self.window.editor.isVisible():
             pass
         _ = old
+
+    # --- language: switch at once by rebuilding the window ---
+    def _retranslate_tray(self):
+        self.act_stop_all.setText(_t("Stop all proxies"))
+        self.act_startup.setText(_t("Start at login"))
+        self.act_hidden.setText(_t("Hide startup notification"))
+        self.act_restart.setText(_t("Restart"))
+        self.act_exit.setText(_t("Quit"))
+        self._sync_show_action(self.window.isVisible() if hasattr(self, "window") else False)
+
+    def change_language(self, code):
+        from .. import i18n
+        from PySide6.QtCore import QLocale
+        from qfluentwidgets import FluentTranslator
+        i18n.set_language(code)
+        app = QApplication.instance()
+        old_tr = getattr(app, "_fluent_translator", None)
+        if old_tr is not None:
+            app.removeTranslator(old_tr)
+        locale = QLocale(i18n.current())
+        QLocale.setDefault(locale)
+        app._fluent_translator = FluentTranslator(locale)
+        app.installTranslator(app._fluent_translator)
+        load_fonts(app, self.glob)          # Japanese/Chinese use the system font of that language
+        self.rebuild_window()
+        log(LOG_SETTING, _t("Language changed"))
+
+    def rebuild_window(self):
+        """Recreate the main window (all pages) in the current language, keeping position, page, logs and graphs."""
+        old = self.window
+        try:
+            old.visibilityChanged.disconnect(self._sync_show_action)
+        except (RuntimeError, TypeError):
+            pass
+        visible, maximized = old.isVisible(), old.isMaximized()
+        geometry = old.saveGeometry()
+        cur = old.stackedWidget.currentWidget()
+        page = cur.objectName() if cur is not None and cur is not old.editor else "canvasInterface"
+        if cur is old.editor and old.editor_return is not None:
+            page = old.editor_return.objectName()
+        entries = list(old.log_page.entries)
+        history = old.stats_page.history
+        self.window = MainWindow(self)
+        w = self.window
+        w.visibilityChanged.connect(self._sync_show_action)
+        w.restoreGeometry(geometry)
+        w.log_page.add_entries(entries)
+        w.stats_page.history = history
+        target = next((p for p in (w.canvas_page, w.proxies_page, w.log_page, w.stats_page, w.test_page,
+                                   w.help_page, w.license_page, w.settings_page) if p.objectName() == page), w.canvas_page)
+        w.stackedWidget.setCurrentWidget(target, popOut=False)
+        w.navigationInterface.setCurrentItem(target.objectName())
+        self.refresh_lists()
+        self.refresh_states()
+        if IS_WIN:
+            self.refresh_firewall()
+        self._retranslate_tray()
+        self._rebuild_tray_proxies()
+        if visible:
+            if maximized:
+                w.showMaximized()
+            else:
+                w.show()
+            w.raise_()
+            w.activateWindow()
+        old.hide()
+        old.deleteLater()
 
     # --- logs / statistics ---
     def drain_logs(self):

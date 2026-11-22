@@ -650,8 +650,9 @@ class Hy2ClientProtocol(_Hy2Protocol):
 class Hy2Client:
     """One per proxy instance. Keeps the QUIC connection to the remote Hysteria2 server and reconnects when it drops."""
 
-    def __init__(self, inst):
+    def __init__(self, inst, ob=None):
         self.inst = inst
+        self.ob = ob or inst.outbound
         self.cm = None
         self.proto = None
         self.lock = asyncio.Lock()
@@ -661,7 +662,7 @@ class Hy2Client:
             if self.proto is not None and not self.proto.closed:
                 return self.proto
             await self._close()
-            ob = self.inst.outbound
+            ob = self.ob
             cfg = _quic_config(is_client=True)
             cfg.server_name = ob.get("sni") or ob["host"]
             pin = (ob.get("pin_sha256") or "").replace(":", "").lower()
@@ -716,9 +717,9 @@ async def _read_varint(pipe):
     return v
 
 
-async def open_tcp(inst, host, port):
+async def open_tcp(inst, host, port, ob=None):
     """Open a TCP stream to host:port through the remote Hysteria2 server -> Pipe."""
-    proto = await inst.hy2_client().get()
+    proto = await inst.hy2_client(ob).get()
     sid = proto._quic.get_next_available_stream_id()
     pipe = Pipe(inst)
     tr = StreamTransport(proto, sid, pipe, proto.peer())

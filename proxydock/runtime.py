@@ -2,6 +2,7 @@
 from .i18n import _t
 import asyncio
 import errno
+import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -19,7 +20,8 @@ class ProxyInstance:
         self.tasks = set()
         self.hy2_conns = set()
         self.servers = []
-        self._hy2 = None
+        self._hy2 = {}
+        self._ss_keys = {}
         self.last_error = ""
         self.last_reason = ""     # code of the last destination connection failure (auth/denied/net/host/timeout/...)
         self.update(proxy, glob)
@@ -56,10 +58,11 @@ class ProxyInstance:
 
     @property
     def outbound_label(self):
-        ob = self.outbound
-        if ob["type"] == "direct":
-            return "Direct"
-        return f"{OUTBOUND_TYPES[ob['type']]} {host_port(ob['host'], ob['port'])}"
+        parts, ob = [], self.outbound
+        while ob:
+            parts.append("Direct" if ob["type"] == "direct" else f"{OUTBOUND_TYPES[ob['type']]} {host_port(ob['host'], ob['port'])}")
+            ob = ob.get("via")
+        return " ⇢ ".join(parts)
 
     @property
     def summary(self):
@@ -85,11 +88,23 @@ class ProxyInstance:
         cert, key = self.server_cert_paths()
         return server_context(cert, key)
 
-    def hy2_client(self):
-        if self._hy2 is None:
-            from .hysteria2 import Hy2Client
-            self._hy2 = Hy2Client(self)
-        return self._hy2
+    def hy2_client(self, ob=None):
+        """Hysteria2 client for this outbound (one QUIC connection per server, shared by all streams)."""
+        from .hysteria2 import Hy2Client
+        ob = ob or self.outbound
+        key = json.dumps({k: v for k, v in ob.items() if k != "via"}, sort_keys=True)
+        client = self._hy2.get(key)
+        if client is None:
+            client = self._hy2[key] = Hy2Client(self, ob)
+        return client
+
+    def ss_key(self, ob):
+        """(method, key) for a Shadowsocks outbound anywhere in the chain (cached)."""
+        from .ss import ss_make_key
+        k = (ob["ss_method"], ob["ss_password"])
+        if k not in self._ss_keys:
+            self._ss_keys[k] = (ob["ss_method"], ss_make_key(ob["ss_method"], ob["ss_password"]))
+        return self._ss_keys[k]
 
     # --- start / stop ---
     async def start(self):
@@ -116,9 +131,9 @@ class ProxyInstance:
                 pass
         for t in list(self.tasks):
             t.cancel()
-        if self._hy2 is not None:
-            await self._hy2.close()
-            self._hy2 = None
+        for client in list(self._hy2.values()):
+            await client.close()
+        self._hy2 = {}
 
 
 def _net_key(p):

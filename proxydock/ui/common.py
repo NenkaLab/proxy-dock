@@ -1,6 +1,6 @@
 """Shared UI: fonts, theme, icon, colors, text view, proxy selector."""
 from .. import i18n
-from ..i18n import _t
+from ..i18n import _t, on_language_change
 import os
 import sys
 
@@ -109,19 +109,26 @@ def make_icon():
 
 
 _PROBLEMS = frozenset((LOG_BLOCKED, LOG_AUTH, LOG_FAIL, LOG_ERROR, LOG_WARN))
-LEVEL_FILTERS = [
-    (_t("All"), None),
-    (_t("Connections (TCP+UDP)"), frozenset((LOG_TCP, LOG_UDP))),
-    ("TCP", frozenset((LOG_TCP,))),
-    ("UDP", frozenset((LOG_UDP,))),
-    (_t("All problems"), _PROBLEMS),
-    (_t("Blocked"), frozenset((LOG_BLOCKED,))),
-    (_t("Auth failures"), frozenset((LOG_AUTH,))),
-    (_t("Connection failures"), frozenset((LOG_FAIL,))),
-    (_t("Errors & warnings"), frozenset((LOG_ERROR, LOG_WARN))),
-    (_t("Settings"), frozenset((LOG_SETTING,))),
-    (_t("Info"), frozenset((LOG_INFO,))),
-]
+LEVEL_FILTERS = []
+
+
+@on_language_change
+def _tr_level_filters():
+    LEVEL_FILTERS[:] = [
+        (_t("All"), None),
+        (_t("Connections (TCP+UDP)"), frozenset((LOG_TCP, LOG_UDP))),
+        ("TCP", frozenset((LOG_TCP,))),
+        ("UDP", frozenset((LOG_UDP,))),
+        (_t("All problems"), _PROBLEMS),
+        (_t("Blocked"), frozenset((LOG_BLOCKED,))),
+        (_t("Auth failures"), frozenset((LOG_AUTH,))),
+        (_t("Connection failures"), frozenset((LOG_FAIL,))),
+        (_t("Errors & warnings"), frozenset((LOG_ERROR, LOG_WARN))),
+        (_t("Settings"), frozenset((LOG_SETTING,))),
+        (_t("Info"), frozenset((LOG_INFO,))),
+    ]
+
+
 LOG_COLORS_DARK = {
     LOG_TCP: "#6CCB5F", LOG_UDP: "#60CDFF", LOG_BLOCKED: "#FFB86C",
     LOG_AUTH: "#D7A6FF", LOG_FAIL: "#F7A8B8", LOG_ERROR: "#FF6B6B",
@@ -132,7 +139,15 @@ LOG_COLORS_LIGHT = {
     LOG_AUTH: "#8764B8", LOG_FAIL: "#A4262C", LOG_ERROR: "#C42B1C",
     LOG_WARN: "#8A6D00", LOG_SETTING: "#9D5D00", LOG_INFO: "#605E5C",
 }
-STATE_TEXT = {"running": _t("Running"), "starting": _t("Starting…"), "stopped": _t("Stopped"), "error": _t("error")}
+STATE_TEXT = {}
+
+
+@on_language_change
+def _tr_state_text():
+    STATE_TEXT.clear()
+    STATE_TEXT.update({"running": _t("Running"), "starting": _t("Starting…"), "stopped": _t("Stopped"), "error": _t("error")})
+
+
 STATE_COLORS = {"running": "#16A34A", "starting": "#CA8A04", "stopped": "#8A8A8A", "error": "#DC2626"}
 
 
@@ -153,7 +168,10 @@ class TextView(PlainTextEdit):
         vp = self.viewport()
         vp.setAttribute(Qt.WA_OpaquePaintEvent, True)
         vp.setAutoFillBackground(False)
-        qconfig.themeChanged.connect(lambda *_: vp.update())
+        qconfig.themeChanged.connect(self._on_theme_changed)
+
+    def _on_theme_changed(self, *_):
+        self.viewport().update()
 
     def paintEvent(self, e):
         p = QPainter(self.viewport())
@@ -165,9 +183,9 @@ class TextView(PlainTextEdit):
 class ProxyCombo(ComboBox):
     """Proxy selector. With all_label, an 'all' item (value "") comes first."""
 
-    def __init__(self, parent=None, all_label=_t("All proxies"), width=260):
+    def __init__(self, parent=None, all_label="", width=260):
         super().__init__(parent)
-        self.all_label = all_label
+        self.all_label = _t("All proxies") if all_label == "" else all_label
         self.ids = []
         self.setFixedWidth(width)
 

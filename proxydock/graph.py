@@ -2,12 +2,14 @@
 
 graph = {
   "inbounds":  [{"id", "name", "autostart", "inbound": {...}, "overrides": {...}, "target": id|None, "pos": [x, y]}],
-  "outbounds": [{"id", "name", "outbound": {...}, "pos": [x, y]}],
+  "outbounds": [{"id", "name", "outbound": {...}, "via": id|None, "pos": [x, y]}],
   "pc":        {"inbound": id|None, "pos": [x, y], "backup": {...}|None, "applied": bool, "server": str},
 }
 
 An inbound's target is either an outbound block (traffic leaves through it) or another inbound block
 (relay: traffic is handed to that local inbound). Several inbounds can share one outbound block.
+An outbound block's "via" is another outbound block its own server connection goes through
+(e.g. Shadowsocks via the company HTTP proxy); Direct and Hysteria2 (QUIC/UDP) cannot have a via.
 The runtime still works with one "proxy" per inbound (inbound + resolved outbound + overrides); compile() builds them.
 """
 import copy
@@ -16,6 +18,9 @@ import uuid
 
 from .common import INBOUND_TYPES, OUTBOUND_TYPES, host_port
 from .i18n import _t
+
+
+NO_VIA = ("direct", "hysteria2")     # Direct ends a chain; Hysteria2 uses QUIC (UDP) so it cannot be tunnelled
 
 
 def new_id():
@@ -48,8 +53,11 @@ def validate_outbound_node(raw):
         ob["ss_method"] = config.OUTBOUND_DEFAULTS["ss_method"]
     if not 0 <= ob["port"] <= 65535:
         ob["port"] = 0
+    via = raw.get("via")
     return {"id": raw.get("id") if isinstance(raw.get("id"), str) and raw.get("id") else new_id(),
-            "name": _name(raw.get("name"), default_outbound_name(ob)), "outbound": ob, "pos": _pos(raw.get("pos"))}
+            "name": _name(raw.get("name"), default_outbound_name(ob)), "outbound": ob,
+            "via": via if isinstance(via, str) and via and ob["type"] not in NO_VIA else None,
+            "pos": _pos(raw.get("pos"))}
 
 
 def validate_inbound_node(raw):
@@ -80,6 +88,13 @@ def validate(raw):
     for n in g["inbounds"]:
         if n["target"] not in ids or n["target"] == n["id"]:
             n["target"] = None
+    out_ids = {n["id"] for n in g["outbounds"]}
+    for n in g["outbounds"]:
+        if n["via"] not in out_ids or n["via"] == n["id"]:
+            n["via"] = None
+    for n in g["outbounds"]:            # a via loop cannot be used: cut it
+        if via_loop(g, n["id"]):
+            n["via"] = None
     pc = raw.get("pc") if isinstance(raw.get("pc"), dict) else {}
     g["pc"]["pos"] = _pos(pc.get("pos"), g["pc"]["pos"])
     if pc.get("inbound") in {n["id"] for n in g["inbounds"]}:
@@ -103,6 +118,48 @@ def find(graph, nid):
     return None, None
 
 
+def via_loop(graph, nid):
+    """True if following the via links from outbound nid comes back to it."""
+    seen, cur = set(), nid
+    while cur:
+        if cur in seen:
+            return True
+        seen.add(cur)
+        _, n = find(graph, cur)
+        cur = n["via"] if n is not None and "via" in n else None
+    return False
+
+
+def resolve_outbound(graph, nid):
+    """Outbound settings with the via chain nested in ob["via"] (None at the end)."""
+    seen, chain, cur = set(), [], nid
+    while cur and cur not in seen:
+        seen.add(cur)
+        kind, n = find(graph, cur)
+        if kind != "outbound":
+            break
+        chain.append(n)
+        cur = n["via"]
+    ob = None
+    for n in reversed(chain):
+        d = copy.deepcopy(n["outbound"])
+        d["via"] = ob
+        ob = d
+    return ob
+
+
+def chain_names(graph, nid):
+    names, seen, cur = [], set(), nid
+    while cur and cur not in seen:
+        seen.add(cur)
+        kind, n = find(graph, cur)
+        if kind != "outbound":
+            break
+        names.append(n["name"])
+        cur = n["via"]
+    return names
+
+
 def users(graph, nid):
     """Inbound blocks whose target is nid."""
     return [n for n in graph["inbounds"] if n["target"] == nid]
@@ -119,7 +176,9 @@ def target_label(graph, n):
     kind, t = find(graph, n["target"]) if n["target"] else (None, None)
     if t is None:
         return _t("not connected")
-    return t["name"] if kind == "outbound" else _t("relay → {name}").format(name=t["name"])
+    if kind == "outbound":
+        return " ⇢ ".join(chain_names(graph, t["id"]))
+    return _t("relay → {name}").format(name=t["name"])
 
 
 # --- compile to runtime proxies ---
@@ -145,7 +204,7 @@ def compile(graph):
     for n in graph["inbounds"]:
         kind, t = find(graph, n["target"]) if n["target"] else (None, None)
         if kind == "outbound":
-            ob = copy.deepcopy(t["outbound"])
+            ob = resolve_outbound(graph, t["id"])
         elif kind == "inbound":
             ob = chain_outbound(t["inbound"])
         else:
@@ -153,6 +212,7 @@ def compile(graph):
         p = config.validate_proxy({"id": n["id"], "name": n["name"], "autostart": n["autostart"],
                                    "inbound": copy.deepcopy(n["inbound"]), "outbound": ob,
                                    "overrides": copy.deepcopy(n["overrides"])})
+        p["outbound"]["via"] = ob.get("via")
         p["target"] = n["target"]
         p["target_name"] = target_label(graph, n)
         p["unlinked"] = t is None
@@ -183,6 +243,9 @@ def remove(graph, nid):
     for n in graph["inbounds"]:
         if n["target"] == nid:
             n["target"] = None
+    for n in graph["outbounds"]:
+        if n["via"] == nid:
+            n["via"] = None
     if graph["pc"]["inbound"] == nid:
         graph["pc"]["inbound"] = None
 
