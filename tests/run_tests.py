@@ -8,6 +8,7 @@ settings checks (port conflicts), and the proxy engine end to end on 127.0.0.1 -
 proxies, Shadowsocks/Hysteria2 tunnels and chained outbounds (TLS and Shadowsocks stacked on other hops).
 """
 import ast
+import faulthandler
 import glob
 import json
 import os
@@ -22,6 +23,7 @@ import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+faulthandler.enable()           # print the Python stack if Qt crashes (shows up in CI logs)
 sys.path.insert(0, ROOT)
 if sys.platform != "darwin":       # macOS: the frameless window needs a real Cocoa window
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")

@@ -233,9 +233,20 @@ class MainWindow(FluentWindow):
         ani.stop()
         ani.deleteLater()
         try:
-            widget.setGraphicsEffect(None)
+            effect = widget.graphicsEffect()
         except RuntimeError:        # widget already deleted
-            pass
+            return
+        if isinstance(effect, _SlideFadeEffect):
+            effect.set_progress(1.0, 0)
+            # remove it on the next loop turn: deleting an effect inside a paint pass crashes on macOS
+
+            def drop(w=widget, e=effect):
+                try:
+                    if w.graphicsEffect() is e:
+                        w.setGraphicsEffect(None)
+                except RuntimeError:
+                    pass
+            QTimer.singleShot(0, widget, drop)
 
     def _warm_pages(self):
         """Lay out and render each page once while idle, so its first opening does not drop frames."""
@@ -246,7 +257,13 @@ class MainWindow(FluentWindow):
         def step():
             if not pages or not self.isVisible():
                 return
+            if self._transition is not None:        # never render while a page is animating
+                QTimer.singleShot(120, self, step)
+                return
             page = pages.pop(0)
+            if page.isVisible():
+                QTimer.singleShot(30, self, step)
+                return
             try:
                 page.resize(self.stackedWidget.view.size())
                 page.grab()
