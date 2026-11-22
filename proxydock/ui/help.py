@@ -22,7 +22,8 @@ def _tr_steps():
         (FIF.GLOBE, _t("3. Use it in your apps"),
          _t("Copy the address (or link) with the copy button on a card and put it in your app's proxy settings.\n• Firefox: Settings → Network Settings → Manual proxy (for SOCKS5, check 'Proxy DNS when using SOCKS v5')\n• Chrome/Edge: append  --proxy-server=\"socks5://127.0.0.1:1080\"  to the shortcut target (http:// also works)\n• curl:  curl -x socks5h://127.0.0.1:1080 https://example.com   (HTTPS proxy: -x https://… --proxy-insecure)\n• Shadowsocks / Hysteria2 apps: paste the copied ss:// · hysteria2:// link")),
         (FIF.VPN, _t("4. Tunnels and upstream proxies"),
-         _t("Changing the outbound hands connections over to another server.\n• Through a company proxy: inbound SOCKS5 (local) → outbound HTTP proxy (company address)\n• Encrypted tunnel: inbound SOCKS5 (local) → outbound Shadowsocks/Hysteria2 tunnel (remote server). The remote server can be a 'Shadowsocks server'/'Hysteria2 server' proxy in ProxyDock on another PC.\nUDP (QUIC, games, DNS) works when receiving via SOCKS5/Shadowsocks/Hysteria2 and sending via Direct/Shadowsocks/Hysteria2. Hysteria2 is a Python implementation, so expect about 100 Mbps.")),
+         _t("Changing the outbound hands connections over to another server.\n• Through a company proxy: inbound SOCKS5 (local) → outbound HTTP proxy (company address)\n• Encrypted tunnel: inbound SOCKS5 (local) → outbound Shadowsocks/Hysteria2 tunnel (remote server). The remote server can be a 'Shadowsocks server'/'Hysteria2 server' proxy in ProxyDock on another PC.\nUDP (QUIC, games, DNS) works when receiving via SOCKS5/Shadowsocks/Hysteria2 and sending via Direct/Shadowsocks/Hysteria2. Hysteria2 is a Python implementation, so expect about 100 Mbps.")
+         + "\n" + _t("Chaining: connect an outbound block's 'via' output to another outbound block on the Canvas (or pick it under 'Through' in the editor). Its own server connection then goes through that block - e.g. Shadowsocks (VPS) via the company HTTP proxy, or an upstream HTTPS proxy inside a Hysteria2 tunnel. Any number of hops; loops are refused. Hysteria2 can be a hop but cannot go through others (QUIC uses UDP), Direct ends a chain, and UDP is not sent through chained outbounds.")),
         (FIF.SETTING, _t("5. Global and per-proxy settings"),
          _t("The 'Proxy defaults' on the Settings page (allowed domains, private network blocking, timeout, logging) apply to every proxy.\nIn the proxy editor, uncheck 'Use global' on an item to give that proxy its own value.\nChanges made while running: allowed domains, private network blocking and logging apply to new connections; the timeout applies to current connections too. Changing the inbound/outbound restarts that proxy and drops its connections.\nWhen chaining proxies (A's outbound = B's inbound), a chain that loops cannot be saved.")),
         (FIF.WIFI, _t("6. Use from / block other PCs"),
@@ -30,7 +31,8 @@ def _tr_steps():
          if IS_WIN else
          (_t("Set the inbound address to 0.0.0.0 and (for SOCKS5/HTTP/HTTPS) turn on user authentication. If an OS firewall (macOS firewall, ufw/firewalld, etc.) is on, allow the port."))),
         (FIF.MINIMIZE, _t("7. Closing and quitting"),
-         _t("By default, X only hides the window and the proxies keep running in the tray.\nTo quit completely, right-click the tray icon → Quit. (Change this in Settings → Display → 'Quit with the X button')")),
+         _t("By default, X only hides the window and the proxies keep running in the tray.\nTo quit completely, right-click the tray icon → Quit. (Change this in Settings → Display → 'Quit with the X button')")
+         + "\n" + _t("The mouse back/forward buttons (and Alt+←/→) move between the pages you visited; in the editor, back cancels it.")),
     ]
 
 

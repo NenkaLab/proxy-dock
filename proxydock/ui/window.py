@@ -12,10 +12,11 @@ import threading
 import time
 
 from PySide6.QtCore import (
-    QByteArray, QEasingCurve, QObject, QPropertyAnimation, Qt, QTimer, Signal,
+    QByteArray, QEasingCurve, QEvent, QObject, QPropertyAnimation, Qt, QTimer, Signal,
 )
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
-from PySide6.QtWidgets import QApplication, QGraphicsOpacityEffect, QLabel, QSystemTrayIcon
+from PySide6.QtWidgets import QApplication, QGraphicsOpacityEffect, QLabel, QSystemTrayIcon, QWidget
 from qfluentwidgets import (
     Action, FluentIcon as FIF, FluentWindow, NavigationItemPosition, PushButton, SystemThemeListener, SystemTrayMenu,
 )
@@ -84,7 +85,72 @@ class MainWindow(FluentWindow):
         self.editor_return = None
         self.navigationInterface.setExpandWidth(180)
         self._install_fade()
+        self._install_history()
         self.restore_state()
+
+    # --- back / forward between pages (mouse buttons, Alt+Left/Right, the window's back button) ---
+    def _install_history(self):
+        self.nav_back, self.nav_forward = [], []
+        self._nav_current = self.stackedWidget.currentWidget()
+        self._nav_jumping = False
+        self.stackedWidget.currentChanged.connect(self._on_page_changed)
+        panel = self.navigationInterface.panel
+        try:
+            panel.returnButton.clicked.disconnect()
+            panel.history.emptyChanged.disconnect(panel.returnButton.setDisabled)
+        except (RuntimeError, TypeError, AttributeError):
+            pass
+        panel.returnButton.clicked.connect(self.go_back)
+        self._back_button = panel.returnButton
+        QShortcut(QKeySequence(QKeySequence.Back), self, activated=self.go_back)
+        QShortcut(QKeySequence(QKeySequence.Forward), self, activated=self.go_forward)
+        self._mouse_nav = _MouseNavFilter(self)
+        QApplication.instance().installEventFilter(self._mouse_nav)
+        self._sync_back_button()
+
+    def _on_page_changed(self, _index):
+        new = self.stackedWidget.currentWidget()
+        old, self._nav_current = self._nav_current, new
+        if self._nav_jumping or old is None or old is new:
+            return
+        if old is self.editor:              # leaving the editor returns to where it was opened from
+            if self.nav_back and self.nav_back[-1] is new:
+                self.nav_back.pop()
+        else:
+            self.nav_back.append(old)
+            del self.nav_back[:-30]
+        self.nav_forward.clear()
+        self._sync_back_button()
+
+    def _jump(self, widget):
+        self._nav_jumping = True
+        try:
+            self.switchTo(widget)
+            self._nav_current = widget
+        finally:
+            self._nav_jumping = False
+        self._sync_back_button()
+
+    def go_back(self):
+        cur = self.stackedWidget.currentWidget()
+        if cur is self.editor:              # back in the editor = cancel
+            self.editor.cancel()
+            return
+        if not self.nav_back:
+            return
+        self.nav_forward.append(cur)
+        self._jump(self.nav_back.pop())
+
+    def go_forward(self):
+        if not self.nav_forward:
+            return
+        cur = self.stackedWidget.currentWidget()
+        if cur is not self.editor:
+            self.nav_back.append(cur)
+        self._jump(self.nav_forward.pop())
+
+    def _sync_back_button(self):
+        self._back_button.setDisabled(not self.nav_back and self.stackedWidget.currentWidget() is not self.editor)
 
     # --- remember window size/position ---
     def restore_state(self):
@@ -205,6 +271,22 @@ class MainWindow(FluentWindow):
             self.ctl.exit()
         else:
             self.hide()     # default: X only hides the window; proxies and the tray keep running
+
+
+class _MouseNavFilter(QObject):
+    """Mouse back/forward (X1/X2) buttons anywhere in the main window."""
+
+    def __init__(self, window):
+        super().__init__(window)
+        self.window = window
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.MouseButtonPress and event.button() in (Qt.BackButton, Qt.ForwardButton):
+            w = obj.window() if isinstance(obj, QWidget) else None
+            if w is self.window:
+                (self.window.go_back if event.button() == Qt.BackButton else self.window.go_forward)()
+                return True
+        return False
 
 
 class _Bridge(QObject):
