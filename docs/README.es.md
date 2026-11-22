@@ -79,6 +79,16 @@ Los scripts crean un entorno virtual por sistema, instalan solo los paquetes que
 
 La compilación para macOS aún no se ha probado en un Mac real.
 
+## Versiones y CI
+
+- Cada push y pull request ejecuta las pruebas en Windows, Linux y macOS ([CI](../.github/workflows/ci.yml),
+  en local `python tests/run_tests.py` - sin internet).
+- `tools\release.bat 2.1.0` (o `python tools/release.py 2.1.0`) comprueba el árbol de trabajo, ejecuta las pruebas, sube
+  `__version__`, hace commit, crea la etiqueta `v2.1.0` y hace push. La etiqueta inicia el [flujo de publicación](../.github/workflows/release.yml),
+  que compila Windows / Linux / macOS y publica una GitHub Release con los archivos y `SHA256SUMS.txt`.
+  Añade `--dry-run` para ensayar.
+- `python tools/build.py package win|linux|mac` genera los mismos archivos en local en `dist/release/`.
+
 ## Limitaciones conocidas
 
 - Hysteria2 (QUIC/UDP) no puede pasar *por* otras salidas (las demás sí pueden pasar por él), y el UDP no se retransmite a través de salidas encadenadas.

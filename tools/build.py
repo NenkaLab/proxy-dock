@@ -1,21 +1,29 @@
 """ProxyDock build tool.
 
     python tools/build.py win|linux|mac|all
+    python tools/build.py package win|linux|mac
 
   win    Windows executable   -> dist/win/ProxyDock.exe   (on Windows only)
   linux  Linux executable     -> dist/linux/ProxyDock     (natively on Linux, with Docker on Windows/macOS)
   mac    macOS app bundle     -> dist/mac/ProxyDock.app   (on macOS only)
   all    build everything this computer can and print a summary
+  package <target>  archive an existing build for a release -> dist/release/ProxyDock-<version>-<os>-<arch>.zip/.tar.gz
+                    (+ .sha256), used by the release workflow (.github/workflows/release.yml)
 
 Creates a virtual environment per OS (.venv / .venv-linux / .venv-mac), installs only the packages that are
 missing or differ from requirements.txt, then builds with tools/ProxyDock.spec.
 The batch/shell scripts (tools/build*.bat, tools/build*.sh) only call this file (all logic lives here so output does not
 depend on the console code page).
 """
+import hashlib
 import os
+import platform
+import re
 import shutil
 import subprocess
 import sys
+import tarfile
+import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SPEC = "tools/ProxyDock.spec"
@@ -126,6 +134,55 @@ def build_linux_docker():
         raise RuntimeError("build failed inside the container")
 
 
+def version():
+    with open(os.path.join(ROOT, "proxydock", "__init__.py"), encoding="utf-8") as f:
+        return re.search(r'__version__ = "([^"]+)"', f.read()).group(1)
+
+
+def arch():
+    m = platform.machine().lower()
+    return {"amd64": "x64", "x86_64": "x64", "arm64": "arm64", "aarch64": "arm64"}.get(m, m)
+
+
+def package(target):
+    """Archive dist/<target> for a release. Returns the archive path."""
+    src = os.path.join(ROOT, "dist", target)
+    main = os.path.join(ROOT, OUTPUTS[target])
+    if not os.path.exists(main):
+        raise RuntimeError(f"{OUTPUTS[target]} not found - build it first")
+    out_dir = os.path.join(ROOT, "dist", "release")
+    os.makedirs(out_dir, exist_ok=True)
+    os_name = {"win": "windows", "linux": "linux", "mac": "macos"}[target]
+    name = f"ProxyDock-{version()}-{os_name}-{arch()}"
+    if target == "linux":           # tar keeps the executable bit
+        path = os.path.join(out_dir, name + ".tar.gz")
+        with tarfile.open(path, "w:gz") as tar:
+            for entry in sorted(os.listdir(src)):
+                tar.add(os.path.join(src, entry), arcname=f"{name}/{entry}")
+    elif target == "mac":           # ditto keeps the symlinks and permissions inside the .app bundle
+        path = os.path.join(out_dir, name + ".zip")
+        if os.path.exists(path):
+            os.remove(path)
+        staging = os.path.join(ROOT, "build", "package", name)
+        shutil.rmtree(staging, ignore_errors=True)
+        shutil.copytree(src, staging, symlinks=True)
+        if run(["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", staging, path]).returncode != 0:
+            raise RuntimeError("ditto failed")
+    else:
+        path = os.path.join(out_dir, name + ".zip")
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+            for base, dirs, files in os.walk(src):
+                dirs.sort()
+                for fn in sorted(files):
+                    full = os.path.join(base, fn)
+                    z.write(full, f"{name}/{os.path.relpath(full, src)}".replace(os.sep, "/"))
+    digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
+    with open(path + ".sha256", "w", encoding="ascii") as f:
+        f.write(f"{digest}  {os.path.basename(path)}\n")
+    print(f"packaged: {os.path.relpath(path, ROOT)}  sha256={digest[:16]}...")
+    return path
+
+
 def build(target):
     if target == PLATFORM:
         build_native(target)
@@ -138,6 +195,13 @@ def build(target):
 
 
 def main(argv):
+    if len(argv) == 3 and argv[1] == "package" and argv[2] in ("win", "linux", "mac"):
+        try:
+            package(argv[2])
+            return 0
+        except RuntimeError as e:
+            print(f"failed: {e}")
+            return 1
     if len(argv) != 2 or argv[1] not in ("win", "linux", "mac", "all"):
         print(__doc__)
         return 64

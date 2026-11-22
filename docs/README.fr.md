@@ -79,6 +79,16 @@ puis compilent avec `tools/ProxyDock.spec`. Ils peuvent être lancés depuis n'i
 
 La compilation macOS n'a pas encore été essayée sur un vrai Mac.
 
+## Versions et CI
+
+- Chaque push et pull request lance les tests sous Windows, Linux et macOS ([CI](../.github/workflows/ci.yml),
+  en local `python tests/run_tests.py` - sans internet).
+- `tools\release.bat 2.1.0` (ou `python tools/release.py 2.1.0`) vérifie l'arbre de travail, lance les tests, augmente
+  `__version__`, commite, crée le tag `v2.1.0` et pousse. Le tag démarre le [workflow de publication](../.github/workflows/release.yml),
+  qui compile Windows / Linux / macOS et publie une GitHub Release avec les archives et `SHA256SUMS.txt`.
+  Ajoutez `--dry-run` pour une répétition.
+- `python tools/build.py package win|linux|mac` produit les mêmes archives en local dans `dist/release/`.
+
 ## Limites connues
 
 - Hysteria2 (QUIC/UDP) ne peut pas passer *par* d'autres sorties (les autres peuvent passer par lui), et l'UDP n'est pas relayé à travers des sorties chaînées.

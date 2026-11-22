@@ -14,6 +14,32 @@ ROOT = os.path.dirname(SPECPATH)      # this spec lives in tools/; sources are r
 def src(*parts):
     return os.path.join(ROOT, *parts)
 
+
+def app_version():
+    import re
+    with open(src('proxydock', '__init__.py'), encoding='utf-8') as f:
+        return re.search(r'__version__ = "([^"]+)"', f.read()).group(1)
+
+
+def windows_version_info():
+    """File properties of ProxyDock.exe (Details tab)."""
+    from PyInstaller.utils.win32.versioninfo import (
+        FixedFileInfo, StringFileInfo, StringStruct, StringTable, VarFileInfo, VarStruct, VSVersionInfo)
+    ver = app_version()
+    nums = tuple((list(map(int, ver.split('-')[0].split('.'))) + [0, 0, 0, 0])[:4])
+    return VSVersionInfo(
+        ffi=FixedFileInfo(filevers=nums, prodvers=nums),
+        kids=[StringFileInfo([StringTable('040904B0', [
+            StringStruct('CompanyName', 'NenkaLab'),
+            StringStruct('FileDescription', 'ProxyDock'),
+            StringStruct('FileVersion', ver),
+            StringStruct('InternalName', 'ProxyDock'),
+            StringStruct('LegalCopyright', 'Copyright (C) 2026 NenkaLab - GPL-3.0'),
+            StringStruct('OriginalFilename', 'ProxyDock.exe'),
+            StringStruct('ProductName', 'ProxyDock'),
+            StringStruct('ProductVersion', ver)])]),
+              VarFileInfo([VarStruct('Translation', [0x0409, 1200])])])
+
 # exclude unused Qt modules so not all of PySide6 is pulled in (smaller size, faster startup)
 EXCLUDES = [
     'PySide6.QtWebEngineCore', 'PySide6.QtWebEngineWidgets', 'PySide6.QtWebEngineQuick',
@@ -59,6 +85,8 @@ if IS_MAC:
         info_plist={
             'CFBundleName': 'ProxyDock',
             'CFBundleDisplayName': 'ProxyDock',
+            'CFBundleShortVersionString': app_version(),
+            'CFBundleVersion': app_version(),
             'NSHighResolutionCapable': True,
             'LSMinimumSystemVersion': '12.0',
         },
@@ -79,4 +107,5 @@ else:
         target_arch=None,
         codesign_identity=None,
         entitlements_file=None,
+        version=windows_version_info() if sys.platform == 'win32' else None,
     )

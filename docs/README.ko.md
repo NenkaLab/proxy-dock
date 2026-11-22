@@ -77,6 +77,16 @@ Python 3.14 기준으로 개발·테스트했습니다.
 
 macOS 빌드는 아직 실제 Mac 에서 확인하지 않았습니다.
 
+## 릴리스와 CI
+
+- 푸시와 PR 마다 Windows·Linux·macOS 에서 테스트가 돕니다 ([CI](../.github/workflows/ci.yml),
+  로컬에서는 `python tests/run_tests.py` - 인터넷 불필요).
+- `tools\release.bat 2.1.0` (또는 `python tools/release.py 2.1.0`) 은 작업 트리를 확인하고 테스트를 돌린 뒤
+  `__version__` 을 올려 커밋하고 `v2.1.0` 태그를 만들어 푸시합니다. 태그가 [릴리스 워크플로](../.github/workflows/release.yml)를
+  시작해 Windows / Linux / macOS 를 빌드하고 압축 파일과 `SHA256SUMS.txt` 를 GitHub Release 로 올립니다.
+  `--dry-run` 을 붙이면 미리 확인만 합니다.
+- `python tools/build.py package win|linux|mac` 로 같은 압축 파일을 로컬 `dist/release/` 에 만들 수 있습니다.
+
 ## 알려진 제한
 
 - Hysteria2 (QUIC/UDP) 는 다른 내보내는 쪽을 *거쳐* 나갈 수 없고 (다른 블록이 Hysteria2 를 거치는 것은 가능), 체인으로 이은 내보내는 쪽으로는 UDP 를 보내지 않습니다.

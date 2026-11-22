@@ -401,10 +401,10 @@ class CanvasInterface(QWidget):
             if dst_kind != "outbound":
                 self._reject(in_port, out_port, _t("An outbound's 'via' can only go to another outbound"))
                 return
-            QTimer.singleShot(0, lambda: self._apply_via(src, dst))
+            QTimer.singleShot(0, self, lambda: self._apply_via(src, dst))
             return
         if dst == PC_ID:
-            QTimer.singleShot(0, lambda: self.ctl.set_pc(src))
+            QTimer.singleShot(0, self, lambda: self.ctl.set_pc(src))
             return
         # one traffic target per inbound: the new link replaces the old one (the PC link stays)
         self.syncing = True
@@ -415,7 +415,7 @@ class CanvasInterface(QWidget):
         finally:
             self.syncing = False
         # apply after NodeGraphQt has finished handling the drag (the update may redraw the whole canvas)
-        QTimer.singleShot(0, lambda: self._apply_target(src, dst))
+        QTimer.singleShot(0, self, lambda: self._apply_target(src, dst))
 
     def _reject(self, in_port, out_port, message):
         self.syncing = True
@@ -442,7 +442,7 @@ class CanvasInterface(QWidget):
         dst = self.mid_of.get(in_port.node().id)
         if not src or not dst:
             return
-        QTimer.singleShot(0, lambda: self._apply_disconnect(src, dst))
+        QTimer.singleShot(0, self, lambda: self._apply_disconnect(src, dst))
 
     def _apply_disconnect(self, src, dst):
         from .. import graph as graph_mod
@@ -462,7 +462,7 @@ class CanvasInterface(QWidget):
     def _on_double_clicked(self, node):
         mid = self.mid_of.get(node.id)
         if mid and mid != PC_ID:
-            QTimer.singleShot(0, lambda: self.ctl.edit_node(mid))
+            QTimer.singleShot(0, self, lambda: self.ctl.edit_node(mid))
 
     def _on_moved(self, *_):
         positions = {}

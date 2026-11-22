@@ -12,11 +12,11 @@ import threading
 import time
 
 from PySide6.QtCore import (
-    QByteArray, QEasingCurve, QEvent, QObject, QPropertyAnimation, Qt, QTimer, Signal,
+    QByteArray, QEasingCurve, QEvent, QObject, Qt, QTimer, QVariantAnimation, Signal,
 )
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtGui import QKeySequence, QPainter, QShortcut
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
-from PySide6.QtWidgets import QApplication, QGraphicsOpacityEffect, QLabel, QSystemTrayIcon, QWidget
+from PySide6.QtWidgets import QApplication, QGraphicsEffect, QSystemTrayIcon, QWidget
 from qfluentwidgets import (
     Action, FluentIcon as FIF, FluentWindow, NavigationItemPosition, PushButton, SystemThemeListener, SystemTrayMenu,
 )
@@ -86,6 +86,7 @@ class MainWindow(FluentWindow):
         self.navigationInterface.setExpandWidth(180)
         self._install_fade()
         self._install_history()
+        self._warmed = False
         self.restore_state()
 
     # --- back / forward between pages (mouse buttons, Alt+Left/Right, the window's back button) ---
@@ -185,77 +186,74 @@ class MainWindow(FluentWindow):
     def showEvent(self, event):
         super().showEvent(event)
         self.visibilityChanged.emit(True)
+        if not self._warmed:
+            self._warmed = True
+            self._warm_pages()
 
     # --- page transitions: slide + fade ---
+    # The new page is drawn by a graphics effect that offsets (sub-pixel) and fades it in. The widget itself
+    # never moves, so layout updates during the animation cannot make it jump, and no snapshot of the old
+    # page is needed (snapshots of the translucent Mica pages came out with a white background).
+    TRANSITION_MS = 260
+    SLIDE_PX = 28
+
     def _install_fade(self):
         sw = self.stackedWidget
-        view = sw.view
-        self._snap = QLabel(view)
-        self._snap.setAttribute(Qt.WA_TransparentForMouseEvents)
-        self._snap.setAttribute(Qt.WA_TranslucentBackground)
-        self._snap.hide()
-        self._snap_eff = QGraphicsOpacityEffect(self._snap)
-        self._snap.setGraphicsEffect(self._snap_eff)
-        self._snap_ani = QPropertyAnimation(self._snap_eff, b"opacity", self)
-        self._snap_ani.setEasingCurve(QEasingCurve.OutQuad)
-        self._snap_ani.finished.connect(self._snap.hide)
-        self._fading = {}
-        self._fade_in_after_pop = None
-        view.aniFinished.connect(self._on_pop_finished)
+        sw.setAnimationEnabled(False)       # the built-in slide moves the live widget
+        self._transition = None
         orig = sw.setCurrentWidget
 
-        def set_current(widget, popOut=True):
+        def set_current(widget, popOut=False):
             cur = sw.currentWidget()
-            if cur is None or cur is widget or not sw.isAnimationEnabled() or not self.isVisible():
-                return orig(widget, popOut)
-            for wd in list(self._fading):
-                self._finish_fade(wd)
-            if popOut:
-                self._fade(cur, 1.0, 0.0, 300, QEasingCurve.InQuad)
-                self._fade_in_after_pop = widget
-                orig(widget, popOut)
-            else:
-                self._snap.setPixmap(cur.grab())
-                self._snap.setGeometry(cur.geometry())
-                self._snap_eff.setOpacity(1.0)
-                self._snap.show()
-                self._snap.raise_()
-                self._fade(widget, 0.0, 1.0, self.FADE_IN_MS, QEasingCurve.OutCubic)
-                orig(widget, popOut)
-                self._snap.raise_()
-                self._snap_ani.stop()
-                self._snap_ani.setDuration(self.FADE_OUT_MS)
-                self._snap_ani.setStartValue(1.0)
-                self._snap_ani.setEndValue(0.0)
-                self._snap_ani.start()
+            orig(widget, False)
+            if cur is not None and cur is not widget and self.isVisible():
+                self._animate_in(widget)
         sw.setCurrentWidget = set_current
 
-    def _fade(self, widget, start, end, ms, curve):
-        eff = QGraphicsOpacityEffect(widget)
-        eff.setOpacity(start)
-        widget.setGraphicsEffect(eff)
-        ani = QPropertyAnimation(eff, b"opacity", self)
-        ani.setDuration(ms)
-        ani.setStartValue(start)
-        ani.setEndValue(end)
-        ani.setEasingCurve(curve)
-        ani.finished.connect(lambda: self._finish_fade(widget))
-        self._fading[widget] = ani
+    def _animate_in(self, widget):
+        self._finish_transition()
+        effect = _SlideFadeEffect(widget)
+        widget.setGraphicsEffect(effect)
+        ani = QVariantAnimation(self)
+        ani.setDuration(self.TRANSITION_MS)
+        ani.setStartValue(0.0)
+        ani.setEndValue(1.0)
+        ani.setEasingCurve(QEasingCurve.OutCubic)
+        ani.valueChanged.connect(lambda t: effect.set_progress(t, self.SLIDE_PX))
+        ani.finished.connect(self._finish_transition)
+        self._transition = (widget, ani)
+        effect.set_progress(0.0, self.SLIDE_PX)
         ani.start()
 
-    def _finish_fade(self, widget):
-        ani = self._fading.pop(widget, None)
-        if ani is not None:
-            ani.stop()
-            ani.deleteLater()
-        widget.setGraphicsEffect(None)
+    def _finish_transition(self):
+        tr, self._transition = self._transition, None
+        if tr is None:
+            return
+        widget, ani = tr
+        ani.stop()
+        ani.deleteLater()
+        try:
+            widget.setGraphicsEffect(None)
+        except RuntimeError:        # widget already deleted
+            pass
 
-    def _on_pop_finished(self):
-        w, self._fade_in_after_pop = self._fade_in_after_pop, None
-        for wd in list(self._fading):
-            self._finish_fade(wd)
-        if w is not None:
-            self._fade(w, 0.0, 1.0, self.FADE_IN_MS, QEasingCurve.OutCubic)
+    def _warm_pages(self):
+        """Lay out and render each page once while idle, so its first opening does not drop frames."""
+        pages = [w for w in (self.canvas_page, self.proxies_page, self.log_page, self.stats_page, self.test_page,
+                             self.help_page, self.license_page, self.settings_page, self.editor)
+                 if w is not self.stackedWidget.currentWidget()]
+
+        def step():
+            if not pages or not self.isVisible():
+                return
+            page = pages.pop(0)
+            try:
+                page.resize(self.stackedWidget.view.size())
+                page.grab()
+            except RuntimeError:
+                return
+            QTimer.singleShot(30, self, step)       # tied to the window: cancelled if it is deleted
+        QTimer.singleShot(400, self, step)
 
     def show_window(self):
         if self.isMinimized():
@@ -271,6 +269,31 @@ class MainWindow(FluentWindow):
             self.ctl.exit()
         else:
             self.hide()     # default: X only hides the window; proxies and the tray keep running
+
+
+class _SlideFadeEffect(QGraphicsEffect):
+    """Draws the widget moved down by dy (fractional) with the given opacity."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.opacity = 0.0
+        self.dy = 0.0
+
+    def set_progress(self, t, distance):
+        self.opacity = t
+        self.dy = (1.0 - t) * distance
+        self.update()
+
+    def draw(self, painter):
+        # PySide6 returns only the pixmap; with NoPad it covers sourceBoundingRect exactly
+        pixmap = self.sourcePixmap(Qt.LogicalCoordinates, mode=QGraphicsEffect.NoPad)
+        origin = self.sourceBoundingRect(Qt.LogicalCoordinates).topLeft()
+        painter.save()
+        painter.setOpacity(self.opacity)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        painter.translate(0, self.dy)
+        painter.drawPixmap(origin, pixmap)
+        painter.restore()
 
 
 class _MouseNavFilter(QObject):
@@ -1010,6 +1033,8 @@ def main():
     parser = argparse.ArgumentParser(prog="ProxyDock")
     parser.add_argument("--hidden", action="store_true", help=_t("Start in the tray without a notification"))
     parser.add_argument("--restart", action="store_true", help=argparse.SUPPRESS)
+    from .. import __version__
+    parser.add_argument("--version", action="version", version=f"ProxyDock {__version__}")
     args = parser.parse_args()
 
     glob, graph = config.load()
@@ -1027,6 +1052,8 @@ def main():
 
     app = QApplication([sys.argv[0]])
     app.setApplicationName(APP_NAME)
+    from .. import __version__
+    app.setApplicationVersion(__version__)
     app.setQuitOnLastWindowClosed(False)
     # Built-in texts of Qt / Fluent widgets follow the app language
     from PySide6.QtCore import QLocale

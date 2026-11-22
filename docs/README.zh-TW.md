@@ -77,6 +77,15 @@ python proxydock.py            # --hidden : 不顯示視窗，直接啟動到系
 
 macOS 建置尚未在實體 Mac 上驗證。
 
+## 發佈與 CI
+
+- 每次推送和 PR 都會在 Windows、Linux、macOS 上執行測試 ([CI](../.github/workflows/ci.yml)，
+  本機執行 `python tests/run_tests.py` - 不需要網路)。
+- `tools\release.bat 2.1.0` (或 `python tools/release.py 2.1.0`) 會檢查工作區、執行測試、提升 `__version__`、
+  提交、建立 `v2.1.0` 標籤並推送。標籤會觸發[發佈工作流程](../.github/workflows/release.yml)，建置 Windows / Linux / macOS
+  並把壓縮檔和 `SHA256SUMS.txt` 發佈到 GitHub Release。加上 `--dry-run` 只做預演。
+- `python tools/build.py package win|linux|mac` 可在本機 `dist/release/` 產生相同的壓縮檔。
+
 ## 已知限制
 
 - Hysteria2 (QUIC/UDP) 無法*經由*其他傳出端 (其他區塊可以經由 Hysteria2)；串接的傳出端不轉送 UDP。
