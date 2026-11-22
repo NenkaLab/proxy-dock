@@ -127,8 +127,17 @@ OUTBOUND_DEFAULTS = {
     "transport_host": "",       # ws: Host header
     "tuic_congestion": "bbr",   # cubic / new_reno / bbr
     "tuic_udp_relay": "native",  # native / quic
+    # subscription (a provider's server list from a URL, used as one block)
+    "sub_url": "",
+    "sub_servers": "",          # JSON [{"name", "outbound"}] of the last update (kept for offline starts)
+    "sub_mode": "auto",         # "auto" = fastest server (urltest, fails over), "select" = sub_selected
+    "sub_selected": "",
+    "sub_interval": 24,         # hours between automatic updates, 0 = only "Update now"
+    "sub_updated": 0,           # time of the last update (epoch seconds)
+    "sub_test_url": "https://www.gstatic.com/generate_204",     # what "auto" measures
 }
-SECRET_FIELDS = ("password", "ss_password", "hy2_password", "wg_private_key", "wg_preshared_key")
+SECRET_FIELDS = ("password", "ss_password", "hy2_password", "wg_private_key", "wg_preshared_key",
+                 "sub_url", "sub_servers")      # (subscription URLs carry tokens, the server list has passwords)
 
 
 # --- validation ---
@@ -370,6 +379,12 @@ def outbound_errors(ob):
         errs += outbound_errors(via)
     if ob["type"] == "block":
         pass
+    elif ob["type"] == "subscription":
+        from .subscription import servers_of
+        if not ob["sub_url"].strip().lower().startswith(("https://", "http://")):
+            errs.append(_t("Enter the subscription address (https://...)"))
+        if not servers_of(ob):
+            errs.append(_t("The subscription has no servers yet - click 'Update now'"))
     elif ob["type"] == "direct":
         if ob.get("bind") and not _valid_listen_host(ob["bind"]):
             errs.append(_t("The source address must be an IP of this PC"))

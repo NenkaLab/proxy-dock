@@ -20,7 +20,7 @@
 | | 対応 |
 |---|---|
 | 受信側 | SOCKS5 · SOCKS4/4a · HTTP · HTTPS (TLS) · Shadowsocks サーバー · Hysteria2 サーバー · TUN (すべてのアプリ) |
-| 送信側 | Direct · 上位 HTTP / HTTPS / SOCKS4 / SOCKS5 プロキシ · Shadowsocks トンネル · Hysteria2 (QUIC) トンネル · WireGuard · VLESS (TLS / REALITY) · Trojan · TUIC |
+| 送信側 | Direct · 上位 HTTP / HTTPS / SOCKS4 / SOCKS5 プロキシ · Shadowsocks トンネル · Hysteria2 (QUIC) トンネル · WireGuard · VLESS (TLS / REALITY) · Trojan · TUIC · サブスクリプション |
 | UDP | 受信 SOCKS5 · Shadowsocks · Hysteria2、送信 Direct · Shadowsocks · Hysteria2 · WireGuard · VLESS · Trojan · TUIC |
 
 - **キャンバス**: ブループリント風エディター - 受信側ブロックから送信側ブロックへ線を引いてつなぎます。複数の受信側で 1 つの送信側を共有でき、受信側を別の受信側につなぐとそこを経由して中継し、Direct は送信元 IP を選べます
@@ -33,6 +33,7 @@
 - **WireGuard**: ProxyDock の中で動く WireGuard トンネルブロック - VPN アプリ不要なので、複数の国のトンネルを同時に使いアプリごとに分けられます。事業者の `.conf` を読み込めて、WireGuard ブロックを別の WireGuard ブロック経由にすると二重 VPN になります (sing-box エンジン)
 - **TUN**: この PC のすべてのアプリ (プロキシ設定のないアプリも) を捕まえる仮想ネットワークカード。Router につなぐとプログラムのルール (game.exe、chrome.exe) がすべてのアプリに効きます。ProxyDock が管理者でなければ起動時に管理者権限 (UAC) を求めます (sing-box エンジン)
 - **VLESS / Trojan / TUIC**: TLS または REALITY (Vision flow) の VLESS、Trojan、TUIC v5 を TCP・WebSocket・gRPC で使えます。事業者の `vless://`、`trojan://`、`tuic://`、`ss://`、`hysteria2://` リンクをコピーして **送信側を追加 → 共有リンクから** (またはエディターの **共有リンクを貼り付け**) を押します。Cloudflare WARP は WARP の WireGuard プロファイル (wgcf などで作成) を WireGuard ブロックに読み込みます (sing-box エンジン)
+- **サブスクリプション**: 事業者のサブスクリプション URL を、全サーバーを含む 1 つのブロックとして使います。サーバーを選ぶか最速を自動で使えます (数分ごとに測定し、止まったサーバーは避けます)。定期的に更新し、一覧を暗号化して保存するのでオフラインでも起動します (sing-box エンジン)
 - **エンジン**: 既定の sing-box はプロキシごとに別プロセスで動きます - マルチコア、チェーン経由の UDP、他の送信側を経由する Hysteria2。内蔵の Python エンジンは代替用です (設定 → プロキシエンジン)
 - **Shadowsocks**: AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) と 2022 (SIP022, blake3)、TCP+UDP、`ss://` リンクのコピー
 - **Hysteria2**: 公式実装と双方向で互換性を確認 (TCP・UDP)、証明書フィンガープリントの固定、`hysteria2://` リンクのコピー
@@ -98,6 +99,7 @@ macOS ビルドはまだ実機の Mac で確認していません。
 
 ## 既知の制限
 
+- サブスクリプションは共有リンクの一覧 (そのまま、または base64) だけを読み、Clash YAML は読みません。「最速を自動で選ぶ」は数分ごとに小さなテストページ (gstatic.com generate_204) を取得してサーバーを測ります。
 - TUN はまだ実際の環境で試していません。TUN カードは同時に 1 つで、捕まえたアプリの DNS はこの PC で ProxyDock が
   答えます。厳格なルートは Windows で IPv6 を壊すことがあるため既定でオフです。macOS/Linux では ProxyDock 自体を root で実行する必要があります。
 - Router とブロックには sing-box エンジンが必要です。IP・GeoIP のルールはこの PC で先にドメインを解決するため、その後ろの

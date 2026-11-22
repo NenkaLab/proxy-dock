@@ -21,7 +21,7 @@ Shadowsocks-Server" eine einzige Karte.
 | | Unterstützt |
 |---|---|
 | Eingang | SOCKS5 · SOCKS4/4a · HTTP · HTTPS (TLS) · Shadowsocks-Server · Hysteria2-Server · TUN (alle Apps) |
-| Ausgang | Direct · Upstream-HTTP / HTTPS / SOCKS4 / SOCKS5-Proxy · Shadowsocks-Tunnel · Hysteria2-Tunnel (QUIC) · WireGuard · VLESS (TLS / REALITY) · Trojan · TUIC |
+| Ausgang | Direct · Upstream-HTTP / HTTPS / SOCKS4 / SOCKS5-Proxy · Shadowsocks-Tunnel · Hysteria2-Tunnel (QUIC) · WireGuard · VLESS (TLS / REALITY) · Trojan · TUIC · Abonnement |
 | UDP | Eingang SOCKS5 · Shadowsocks · Hysteria2, Ausgang Direct · Shadowsocks · Hysteria2 · WireGuard · VLESS · Trojan · TUIC |
 
 - **Fläche**: Editor im Blueprint-Stil - Linien von Eingangsblöcken zu Ausgangsblöcken ziehen; mehrere Eingänge können einen Ausgang teilen, ein mit einem anderen Eingang verbundener Eingang leitet über diesen weiter, und Direct kann eine gewählte Quell-IP nutzen
@@ -34,6 +34,7 @@ Shadowsocks-Server" eine einzige Karte.
 - **WireGuard**: ein WireGuard-Tunnelblock, der in ProxyDock läuft - keine VPN-App, daher können mehrere Länder gleichzeitig für verschiedene Apps laufen; `.conf` eines Anbieters importieren; ein WireGuard-Block 'über' einen anderen ergibt ein Doppel-VPN (sing-box-Engine)
 - **TUN**: eine virtuelle Netzwerkkarte, die alle Apps auf diesem PC erfasst, auch ohne Proxy-Einstellung - mit einem Router verbunden gelten Programmregeln (game.exe, chrome.exe) für alle Apps. Fragt beim Start nach Administratorrechten (UAC), außer ProxyDock läuft schon als Administrator (sing-box-Engine)
 - **VLESS / Trojan / TUIC**: VLESS mit TLS oder REALITY (Vision-Flow), Trojan, TUIC v5, über TCP, WebSocket oder gRPC. Den `vless://`-, `trojan://`-, `tuic://`-, `ss://`- oder `hysteria2://`-Link eines Anbieters kopieren und **Ausgang hinzufügen → Aus einem Freigabelink** wählen (oder **Freigabelink einfügen** im Editor). Cloudflare WARP: ein WARP-WireGuard-Profil (z. B. mit wgcf erstellt) in einen WireGuard-Block importieren (sing-box-Engine)
+- **Abonnements**: Die Abo-URL eines Anbieters wird zu einem Block mit allen Servern - einen wählen oder automatisch den schnellsten nehmen (misst alle paar Minuten und meidet ausgefallene Server). Aktualisiert sich nach Zeitplan; die Liste wird verschlüsselt gespeichert und startet auch offline (sing-box-Engine)
 - **Engine**: sing-box (Standard) führt jeden Proxy in einem eigenen Prozess aus - mehrere Kerne, UDP über Ketten, Hysteria2 über andere Ausgänge. Die integrierte Python-Engine ist der Ersatz (Einstellungen → Proxy-Engine)
 - **Shadowsocks**: AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) und 2022 (SIP022, blake3), TCP+UDP, `ss://`-Links kopieren
 - **Hysteria2**: in beide Richtungen mit der offiziellen Implementierung kompatibel (TCP und UDP), Zertifikats-Pinning, `hysteria2://`-Links kopieren
@@ -100,6 +101,7 @@ Der macOS-Build wurde noch nicht auf einem echten Mac getestet.
 
 ## Bekannte Einschränkungen
 
+- Abonnements lesen Listen von Freigabelinks (unverändert oder base64), kein Clash-YAML. 'Automatisch der schnellste' misst die Server alle paar Minuten mit einer kleinen Testseite (gstatic.com generate_204).
 - TUN wurde noch nicht in echten Umgebungen getestet. Nur eine TUN-Karte gleichzeitig; DNS der erfassten Apps beantwortet
   ProxyDock auf diesem PC; strikte Route kann unter Windows IPv6 stören (standardmäßig aus). Unter macOS/Linux muss ProxyDock selbst als Root laufen.
 - Router- und Block-Blöcke brauchen die sing-box-Engine. IP- und GeoIP-Regeln lösen die Domain zuerst auf diesem PC auf,

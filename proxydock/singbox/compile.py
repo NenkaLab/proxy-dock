@@ -153,6 +153,9 @@ def outbounds(ob, prefix="out"):
     that dials out itself (the end of the chain)."""
     out, i = [], 0
     while ob and ob["type"] != "block":
+        if ob["type"] == "subscription":
+            out += subscription_outbounds(ob, f"{prefix}{i}")
+            break
         d = outbound(ob, f"{prefix}{i}")
         if ob.get("via"):
             d["detour"] = f"{prefix}{i + 1}"
@@ -161,6 +164,34 @@ def outbounds(ob, prefix="out"):
         out.append(d)
         ob, i = ob.get("via"), i + 1
     return out
+
+
+def subscription_outbounds(ob, tag):
+    """A subscription block: one outbound per server plus a group with the block's tag
+    (selector = the chosen server, urltest = the fastest one, switching away from dead servers)."""
+    from ..subscription import servers_of
+    members, tags = [], []
+    for i, s in enumerate(servers_of(ob)):
+        m = dict(s["outbound"], via=None)
+        try:
+            d = outbound(m, f"{tag}_m{i}")
+        except (ValueError, KeyError):
+            continue
+        if ob.get("interface"):
+            d["bind_interface"] = ob["interface"]
+        members.append(d)
+        tags.append((s["name"], d["tag"]))
+    if not tags:
+        return [{"type": "block", "tag": tag}]    # (cannot happen after validation)
+    names = [n for n, _ in tags]
+    if ob.get("sub_mode") == "select":
+        chosen = tags[names.index(ob["sub_selected"])][1] if ob.get("sub_selected") in names else tags[0][1]
+        group = {"type": "selector", "tag": tag, "outbounds": [t for _, t in tags], "default": chosen}
+    else:
+        group = {"type": "urltest", "tag": tag, "outbounds": [t for _, t in tags],
+                 "url": ob.get("sub_test_url") or "https://www.gstatic.com/generate_204",
+                 "interval": "3m", "tolerance": 50}
+    return members + [group]
 
 
 def _cidr(x):

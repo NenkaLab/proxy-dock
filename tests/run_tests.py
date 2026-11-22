@@ -314,6 +314,34 @@ def test_ui():
     w.editor.cancel()
     wait(300)
     ctl.delete_node(t["id"])
+    import base64
+    SubServer.body = base64.b64encode(b"ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@1.2.3.4:8388#One\n"
+                                      b"trojan://pw@b.example:443?sni=b.example#Two")
+    web = ThreadingHTTPServer(("127.0.0.1", 0), SubServer)
+    threading.Thread(target=web.serve_forever, daemon=True).start()
+    sb = ctl.new_outbound({"type": "subscription"}, edit=False)
+    ctl.edit_node(sb["id"])
+    wait(300)
+    w.editor.ed_sub_url.setText(f"http://127.0.0.1:{web.server_address[1]}/s")
+    w.editor._sub_update()
+    for _ in range(40):
+        wait(100)
+        if w.editor.btn_sub_update.isEnabled() and w.editor.sub_names:
+            break
+    check("ui: subscription 'Update now' lists the servers", w.editor.sub_names == ["One", "Two"], w.editor.sub_names)
+    w.editor.save()
+    wait(300)
+    _, sbn = gm.find(ctl.graph, sb["id"])
+    check("ui: subscription saved with its servers", sbn is not None and '"Two"' in sbn["outbound"]["sub_servers"])
+    SubServer.body = base64.b64encode(b"ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@1.2.3.4:8388#Three")
+    ctl.update_due_subscriptions(force_id=sb["id"])
+    for _ in range(40):
+        wait(100)
+        if '"Three"' in gm.find(ctl.graph, sb["id"])[1]["outbound"]["sub_servers"]:
+            break
+    check("ui: background subscription update", '"Three"' in gm.find(ctl.graph, sb["id"])[1]["outbound"]["sub_servers"])
+    ctl.delete_node(sb["id"])
+    web.shutdown()
     vb = ctl.new_outbound({"type": "vless"}, edit=False)
     ctl.edit_node(vb["id"])
     wait(300)
@@ -993,14 +1021,113 @@ def test_protocols_e2e():
         origin.shutdown()
 
 
+class SubServer(BaseHTTPRequestHandler):
+    body = b""
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(self.body)))
+        self.end_headers()
+        self.wfile.write(self.body)
+
+    def log_message(self, *a):
+        pass
+
+
+def test_subscription():
+    import base64
+    from proxydock import subscription as sub
+    from proxydock.singbox import compile as sbc, engine_for
+    text = "\n".join(["ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@1.2.3.4:8388#Tokyo", "trojan://pw@b.example:443?sni=b.example#Seoul",
+                      "vmess://abc", "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@1.2.3.5:8388#Tokyo"])
+    servers, skipped = sub.parse(base64.b64encode(text.encode()))
+    check("subscription: base64 list parsed, unknown skipped, names unique",
+          [x["name"] for x in servers] == ["Tokyo", "Seoul", "Tokyo (2)"] and skipped == 1, (servers, skipped))
+    plain, _ = sub.parse(text.encode())
+    check("subscription: plain list parsed", len(plain) == 3)
+    for bad in (b"proxies:\n  - name: x\n", b""):
+        try:
+            sub.parse(bad)
+            check("subscription: Clash YAML / empty refused", False)
+        except ValueError:
+            check("subscription: Clash YAML / empty refused", True)
+    ob = dict(config.OUTBOUND_DEFAULTS, type="subscription", sub_url="https://x/sub", sub_servers=json.dumps(servers),
+              sub_mode="select", sub_selected="Seoul", interface="Wi-Fi", via=None)
+    obs = sbc.outbounds(ob)
+    check("subscription: selector over all servers, chosen default, interface on each",
+          obs[-1]["type"] == "selector" and obs[-1]["default"] == "out0_m1" and len(obs) == 4
+          and all(o.get("bind_interface") == "Wi-Fi" for o in obs[:-1]), obs)
+    check("subscription: auto = urltest", sbc.outbounds(dict(ob, sub_mode="auto"))[-1]["type"] == "urltest")
+    check("subscription: needs a URL and servers", len(config.outbound_errors(dict(ob, sub_url="", sub_servers=""))) == 2)
+    p = config.new_proxy("s", {"type": "socks5", "port": 1080})
+    p["outbound"] = ob
+    check("subscription: needs sing-box", engine_for(p, config.validate_global({"engine": "python"}))[0] == "none")
+    g = gm.empty()
+    n = gm.add_outbound(g, ob)
+    config.save(config.validate_global({}), g)
+    raw = open(config.CONFIG_PATH, encoding="utf-8").read()
+    check("subscription: URL and server list not saved in plain text" if os.name == "nt" else "subscription: saved",
+          ("https://x/sub" not in raw and "1.2.3.4" not in raw) if os.name == "nt" else True)
+    _, g2 = config.load()
+    check("subscription: survives save/load", sub.servers_of(g2["outbounds"][0]["outbound"])[1]["name"] == "Seoul")
+
+
+def test_subscription_e2e():
+    """A local subscription URL listing two Shadowsocks servers (ProxyDock cards); pick mode and fastest mode."""
+    import base64
+    from proxydock import subscription as sub
+    from proxydock.runtime import ProxyManager
+    from proxydock.ss import ss_generate_password, ss_link
+    origin = ThreadingHTTPServer(("127.0.0.1", 0), Origin)
+    threading.Thread(target=origin.serve_forever, daemon=True).start()
+    oport = origin.server_address[1]
+    glob = config.validate_global({"engine": "sing-box"})
+    mgr = ProxyManager()
+    servers = []
+    for name in ("Alpha", "Beta"):
+        key = ss_generate_password("2022-blake3-aes-128-gcm")
+        sp = config.new_proxy(name, {"type": "shadowsocks", "port": free_port(), "ss_method": "2022-blake3-aes-128-gcm",
+                                     "ss_password": key})
+        mgr.start(sp, glob).result(15)
+        servers.append(sp)
+    links = "\n".join(ss_link("127.0.0.1", x["inbound"]["port"], "2022-blake3-aes-128-gcm", x["inbound"]["ss_password"], x["name"])
+                      for x in servers)
+    SubServer.body = base64.b64encode(links.encode())
+    web = ThreadingHTTPServer(("127.0.0.1", 0), SubServer)
+    threading.Thread(target=web.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{web.server_address[1]}/sub?token=secret"
+    fields, note = sub.update({"sub_url": url})
+    check("[sing-box] subscription: downloaded from the URL", len(sub.servers_of(fields)) == 2, note)
+    ob = dict(config.OUTBOUND_DEFAULTS, type="subscription", sub_url=url, sub_mode="select", sub_selected="Beta",
+              sub_test_url=f"http://127.0.0.1:{oport}/", via=None, **fields)
+    card = config.new_proxy("sub card", {"type": "socks5", "port": free_port()})
+    card["outbound"] = ob
+    mgr.start(card, glob).result(20)
+    before = [mgr.stats_for(x["id"]).total for x in servers]
+    check("[sing-box] subscription: picked server -> origin", socks5_get(card["inbound"]["port"], "127.0.0.1", oport) == "200",
+          mgr.state(card["id"]))
+    time.sleep(0.5)
+    after = [mgr.stats_for(x["id"]).total for x in servers]
+    check("[sing-box] subscription: the picked server (Beta) was used", after[1] > before[1] and after[0] == before[0],
+          (before, after))
+    card2 = config.new_proxy("sub auto", {"type": "socks5", "port": free_port()})
+    card2["outbound"] = dict(ob, sub_mode="auto")
+    mgr.start(card2, glob).result(20)
+    check("[sing-box] subscription: fastest mode -> origin", socks5_get(card2["inbound"]["port"], "127.0.0.1", oport) == "200")
+    mgr.stop_all()
+    web.shutdown()
+    origin.shutdown()
+
+
 def main():
     t0 = time.time()
     tests = [test_translations, test_graph, test_engine, test_singbox_compile, test_router_graph, test_router_singbox, test_interface,
-             test_wireguard, test_tun, test_run_as_admin, test_protocols]
+             test_wireguard, test_tun, test_run_as_admin, test_protocols,
+             test_subscription]
     from proxydock.singbox import find_binary
     if find_binary():
         tests += [lambda: test_engine("sing-box"), test_singbox_guard, test_router_e2e, test_interface_e2e, test_wireguard_e2e, test_helper,
-                  test_protocols_e2e]
+                  test_protocols_e2e, test_subscription_e2e]
         from proxydock.singbox import find_hysteria
         if find_hysteria():
             tests.append(test_hysteria)

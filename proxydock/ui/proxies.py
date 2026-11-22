@@ -6,6 +6,7 @@ from ..i18n import _t, on_language_change
 import copy
 import os
 import threading
+import time
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QPainter
@@ -101,6 +102,7 @@ def _tr_outbound_new():
         ("vless", _t("VLESS tunnel (TLS / REALITY)")),
         ("trojan", _t("Trojan tunnel")),
         ("tuic", _t("TUIC tunnel (QUIC)")),
+        ("subscription", _t("Subscription (a provider's server list from a URL)")),
         ("block", _t("Block (refuse connections, for router rules)")),
     ]
 
@@ -482,6 +484,7 @@ class EditorInterface(ScrollArea):
 
     closed = Signal()
     check_done = Signal(object, object)     # (outbound result, inbound result)
+    sub_done = Signal(object, str)          # (subscription fields or None, note / error)
 
     def __init__(self, ctl, parent=None):
         super().__init__(parent)
@@ -621,6 +624,28 @@ class EditorInterface(ScrollArea):
         self.ed_out_pass.setPlaceholderText(_t("Password"))
         self.ed_out_pass.setFixedWidth(180)
         self.r_out_cred = s_out.add(Row(_t("Upstream proxy account"), "", v).right(self.ed_out_user, self.ed_out_pass))
+        # subscription
+        self.ed_sub_url = PasswordLineEdit(v)
+        self.ed_sub_url.setPlaceholderText("https://...")
+        self.ed_sub_url.setFixedWidth(330)
+        self.btn_sub_update = PushButton(_t("Update now"), v, FIF.SYNC)
+        self.btn_sub_update.clicked.connect(self._sub_update)
+        self.r_sub_url = s_out.add(Row(_t("Subscription address"), "", v).right(self.ed_sub_url, self.btn_sub_update))
+        self.sub_modes = ["auto", "select"]
+        self.cb_sub_mode = ComboBox(v)
+        self.cb_sub_mode.addItems([_t("Fastest automatically"), _t("Pick a server")])
+        self.cb_sub_mode.setFixedWidth(200)
+        self.cb_sub_server = ComboBox(v)
+        self.cb_sub_server.setFixedWidth(260)
+        self.cb_sub_server.setMaxVisibleItems(15)
+        self.r_sub_mode = s_out.add(Row(_t("Server"), _t("Fastest automatically measures the servers every few minutes and moves away from ones that stop working"), v)
+                                    .right(self.cb_sub_mode, self.cb_sub_server))
+        self.sp_sub_hours = SpinBox(v)
+        self.sp_sub_hours.setRange(0, 168)
+        self.sp_sub_hours.setFixedWidth(150)
+        self.r_sub_hours = s_out.add(Row(_t("Update every (hours)"), _t("0 = only when you click 'Update now'"), v).right(self.sp_sub_hours))
+        self.sub_done.connect(self._on_sub_done)
+        self._sub = {"sub_servers": "", "sub_updated": 0}
         # VLESS / Trojan / TUIC
         self.ed_out_uuid = LineEdit(v)
         self.ed_out_uuid.setPlaceholderText("0b5b8d9e-xxxx-xxxx-xxxx-xxxxxxxxxxxx")
@@ -795,6 +820,7 @@ class EditorInterface(ScrollArea):
         self.cb_via.currentIndexChanged.connect(lambda *_: self._sync())
         self.cb_out_sec.currentIndexChanged.connect(lambda *_: self._sync())
         self.cb_out_tr.currentIndexChanged.connect(lambda *_: self._sync())
+        self.cb_sub_mode.currentIndexChanged.connect(lambda *_: self._sync())
         self.sw_in_auth.checkedChanged.connect(lambda *_: self._sync())
 
     def _ss_labels(self):
@@ -893,6 +919,51 @@ class EditorInterface(ScrollArea):
         self.ed_out_tr_host.setText(ob["transport_host"])
         self.cb_out_cc.setCurrentIndex(self.congestions.index(ob["tuic_congestion"]) if ob["tuic_congestion"] in self.congestions else 0)
         self.cb_out_relay.setCurrentIndex(self.relays.index(ob["tuic_udp_relay"]) if ob["tuic_udp_relay"] in self.relays else 0)
+        self.ed_sub_url.setText(ob["sub_url"])
+        self.cb_sub_mode.setCurrentIndex(self.sub_modes.index(ob["sub_mode"]) if ob["sub_mode"] in self.sub_modes else 0)
+        self.sp_sub_hours.setValue(ob["sub_interval"])
+        self._sub = {"sub_servers": ob["sub_servers"], "sub_updated": ob["sub_updated"]}
+        self._fill_sub_servers(ob["sub_selected"])
+
+    def _fill_sub_servers(self, selected=""):
+        from ..subscription import servers_of
+        names = [s["name"] for s in servers_of(self._sub)]
+        self.sub_names = names
+        self.cb_sub_server.clear()
+        self.cb_sub_server.addItems(names or [_t("(no servers yet)")])
+        self.cb_sub_server.setCurrentIndex(names.index(selected) if selected in names else 0)
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(self._sub["sub_updated"])) if self._sub["sub_updated"] else "-"
+        d = self.r_sub_url.desc
+        d.setText(_t("{count} servers · updated {when}").format(count=len(names), when=when))
+        d.setVisible(True)
+
+    def _sub_update(self):
+        url = self.ed_sub_url.text().strip()
+        if not url:
+            info(self.window(), "error", _t("Subscription"), _t("Enter the subscription address (https://...)"), 4000)
+            return
+        self.btn_sub_update.setEnabled(False)
+        self.btn_sub_update.setText(_t("Updating…"))
+
+        def work():
+            from ..subscription import update
+            try:
+                fields, note = update({"sub_url": url})
+                self.sub_done.emit(fields, note)
+            except ValueError as e:
+                self.sub_done.emit(None, str(e))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_sub_done(self, fields, note):
+        self.btn_sub_update.setEnabled(True)
+        self.btn_sub_update.setText(_t("Update now"))
+        if fields is None:
+            info(self.window(), "error", _t("Subscription"), note, 6000)
+            return
+        current = self.sub_names[self.cb_sub_server.currentIndex()] if getattr(self, "sub_names", None) else ""
+        self._sub = fields
+        self._fill_sub_servers(current)
+        info(self.window(), "success", _t("Subscription"), note, 4000)
 
     def _paste_link(self):
         from ..links import parse
@@ -1038,10 +1109,13 @@ class EditorInterface(ScrollArea):
             "tun": _t("A virtual network card that captures the traffic of every app on this PC, including apps without proxy settings, so router rules on programs work for all of them. Starting it asks for administrator permission (UAC) unless ProxyDock runs as administrator. One TUN card at a time. Needs the sing-box engine."),
         }
         self.in_note.setText(notes[it])
-        remote = ot not in ("direct", "block")
+        remote = ot not in ("direct", "block", "subscription")
+        for r in (self.r_sub_url, self.r_sub_mode, self.r_sub_hours):
+            r.setVisible(ot == "subscription")
+        self.cb_sub_server.setVisible(self.sub_modes[max(self.cb_sub_mode.currentIndex(), 0)] == "select")
         self.r_out_server.setVisible(remote)
         self.r_out_bind.setVisible(ot == "direct")
-        self.r_out_via.setVisible(ot not in ("direct", "hysteria2", "block"))
+        self.r_out_via.setVisible(ot not in ("direct", "hysteria2", "block", "subscription"))
         vi = self.cb_via.currentIndex()
         has_via = ot not in ("direct", "hysteria2", "block") and 0 < vi < len(self.vias)
         self.r_out_iface.setVisible(ot != "block" and not has_via)    # only the hop that dials out itself
@@ -1079,6 +1153,7 @@ class EditorInterface(ScrollArea):
             "block": _t("Refuses every connection. Connect router rules to it (e.g. ads, trackers). Needs the sing-box engine."),
             "vless": _t("VLESS tunnel (TCP+UDP) with TLS or REALITY, optionally over WebSocket/gRPC. Paste a vless:// link to fill everything in. Needs the sing-box engine."),
             "trojan": _t("Trojan tunnel over TLS (TCP+UDP), optionally over WebSocket/gRPC. Paste a trojan:// link to fill everything in. Needs the sing-box engine."),
+            "subscription": _t("All servers of a provider's subscription link as one block. Pick a server or let it use the fastest one (it also moves away from servers that stop working). The server list is saved, so it works offline too. Needs the sing-box engine."),
             "tuic": _t("TUIC v5 tunnel over QUIC (TCP+UDP). Paste a tuic:// link to fill everything in. Needs the sing-box engine."),
             "wireguard": _t("WireGuard tunnel run inside ProxyDock (TCP+UDP): no VPN app and no change to the PC's network, so several can run at once. 'Through' another WireGuard block makes a double VPN. Needs the sing-box engine."),
         }
@@ -1223,7 +1298,12 @@ class EditorInterface(ScrollArea):
                              transport=self.transports[max(self.cb_out_tr.currentIndex(), 0)],
                              transport_path=self.ed_out_tr_path.text().strip(), transport_host=self.ed_out_tr_host.text().strip(),
                              tuic_congestion=self.congestions[max(self.cb_out_cc.currentIndex(), 0)],
-                             tuic_udp_relay=self.relays[max(self.cb_out_relay.currentIndex(), 0)])
+                             tuic_udp_relay=self.relays[max(self.cb_out_relay.currentIndex(), 0)],
+                             sub_url=self.ed_sub_url.text().strip(),
+                             sub_mode=self.sub_modes[max(self.cb_sub_mode.currentIndex(), 0)],
+                             sub_selected=(self.sub_names[self.cb_sub_server.currentIndex()]
+                                           if getattr(self, "sub_names", None) and 0 <= self.cb_sub_server.currentIndex() < len(self.sub_names) else ""),
+                             sub_interval=self.sp_sub_hours.value(), **self._sub)
         idx = self.cb_via.currentIndex()
         n["via"] = self.vias[idx] if 0 <= idx < len(self.vias) and ot not in graph_mod.NO_VIA else None
         if n["via"]:

@@ -21,7 +21,7 @@ es una sola tarjeta.
 | | Compatible |
 |---|---|
 | Entrada | SOCKS5 · SOCKS4/4a · HTTP · HTTPS (TLS) · servidor Shadowsocks · servidor Hysteria2 · TUN (todas las apps) |
-| Salida | Direct · proxy superior HTTP / HTTPS / SOCKS4 / SOCKS5 · túnel Shadowsocks · túnel Hysteria2 (QUIC) · WireGuard · VLESS (TLS / REALITY) · Trojan · TUIC |
+| Salida | Direct · proxy superior HTTP / HTTPS / SOCKS4 / SOCKS5 · túnel Shadowsocks · túnel Hysteria2 (QUIC) · WireGuard · VLESS (TLS / REALITY) · Trojan · TUIC · suscripción |
 | UDP | entrada SOCKS5 · Shadowsocks · Hysteria2, salida Direct · Shadowsocks · Hysteria2 · WireGuard · VLESS · Trojan · TUIC |
 
 - **Lienzo**: editor estilo blueprint - arrastra líneas de los bloques de entrada a los de salida; varias entradas pueden compartir una salida, una entrada conectada a otra entrada pasa por ella, y Direct puede salir desde una IP de origen elegida
@@ -34,6 +34,7 @@ es una sola tarjeta.
 - **WireGuard**: un bloque de túnel WireGuard que funciona dentro de ProxyDock: sin app de VPN, así que varios países pueden estar activos a la vez para apps distintas; importa el `.conf` de un proveedor; un bloque WireGuard «por» otro da una VPN doble (motor sing-box)
 - **TUN**: una tarjeta de red virtual que captura todas las apps de este PC, incluso sin ajustes de proxy; conectada a un enrutador, las reglas de programa (game.exe, chrome.exe) se aplican a todas. Pide permisos de administrador (UAC) al iniciarse, salvo que ProxyDock ya se ejecute como administrador (motor sing-box)
 - **VLESS / Trojan / TUIC**: VLESS con TLS o REALITY (flow Vision), Trojan y TUIC v5, sobre TCP, WebSocket o gRPC. Copia el enlace `vless://`, `trojan://`, `tuic://`, `ss://` o `hysteria2://` de un proveedor y usa **Añadir salida → Desde un enlace compartido** (o **Pegar enlace compartido** en el editor). Cloudflare WARP: importa un perfil WireGuard de WARP (p. ej. hecho con wgcf) en un bloque WireGuard (motor sing-box)
+- **Suscripciones**: la URL de suscripción de un proveedor se convierte en un bloque con todos sus servidores; elige uno o deja que use el más rápido (mide cada pocos minutos y evita los caídos). Se actualiza según un horario y la lista se guarda cifrada, así que también arranca sin conexión (motor sing-box)
 - **Motor**: sing-box (predeterminado) ejecuta cada proxy en su propio proceso: varios núcleos, UDP a través de cadenas, Hysteria2 por otras salidas. El motor Python integrado queda de respaldo (Ajustes → Motor de proxy)
 - **Shadowsocks**: AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) y 2022 (SIP022, blake3), TCP+UDP, copia de enlaces `ss://`
 - **Hysteria2**: compatible en ambos sentidos con la implementación oficial (TCP y UDP), fijación del certificado, copia de enlaces `hysteria2://`
@@ -100,6 +101,7 @@ La compilación para macOS aún no se ha probado en un Mac real.
 
 ## Limitaciones conocidas
 
+- Las suscripciones leen listas de enlaces compartidos (tal cual o en base64), no YAML de Clash. «El más rápido automáticamente» mide los servidores cada pocos minutos con una pequeña página de prueba (gstatic.com generate_204).
 - El TUN aún no se ha probado en entornos reales. Solo una tarjeta TUN a la vez; ProxyDock responde en este PC el DNS de
   las apps capturadas; la ruta estricta puede romper IPv6 en Windows (desactivada por defecto). En macOS/Linux, ProxyDock debe ejecutarse como root.
 - Los bloques Enrutador y Bloquear requieren el motor sing-box. Las reglas de IP y GeoIP resuelven primero el dominio en este PC,

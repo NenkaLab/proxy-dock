@@ -342,6 +342,7 @@ class _MouseNavFilter(QObject):
 
 class _Bridge(QObject):
     status = Signal(str, str, str)      # proxy id, state, message (loop thread -> UI)
+    sub_updated = Signal(str, object, str)      # outbound id, new fields (None = failed), note
     notify = Signal(str)
     firewall = Signal(object, str)
 
@@ -356,7 +357,13 @@ class Controller:
         self.sig.status.connect(self._on_status)
         self.sig.notify.connect(self.on_notify)
         self.sig.firewall.connect(self._on_firewall)
+        self.sig.sub_updated.connect(self._on_sub_updated)
         common.notify_hook = self.sig.notify.emit
+        self._sub_busy = set()
+        self.sub_timer = QTimer()
+        self.sub_timer.timeout.connect(self.update_due_subscriptions)
+        self.sub_timer.start(15 * 60 * 1000)
+        QTimer.singleShot(20 * 1000, self.update_due_subscriptions)
         self.manager = ProxyManager(status_hook=lambda pid, st, msg: self.sig.status.emit(pid, st, msg))
         server.newConnection.connect(self._on_second_instance)
 
@@ -564,6 +571,44 @@ class Controller:
         log(LOG_SETTING, _t("Saved proxy '{name}'").format(name=r['name']))
         self._recompile()
         return True
+
+    # --- subscriptions ---
+    def update_due_subscriptions(self, force_id=None):
+        """Refresh subscription blocks whose interval has passed (or force_id now), off the UI thread."""
+        now = time.time()
+        for n in self.graph["outbounds"]:
+            ob = n["outbound"]
+            if ob["type"] != "subscription" or n["id"] in self._sub_busy:
+                continue
+            due = ob["sub_interval"] > 0 and now - ob["sub_updated"] >= ob["sub_interval"] * 3600
+            if n["id"] != force_id and not due:
+                continue
+            self._sub_busy.add(n["id"])
+
+            def work(nid=n["id"], ob=dict(ob)):
+                from ..subscription import update
+                try:
+                    fields, note = update(ob)
+                    self.sig.sub_updated.emit(nid, fields, note)
+                except ValueError as e:
+                    self.sig.sub_updated.emit(nid, None, str(e))
+            threading.Thread(target=work, daemon=True).start()
+
+    def _on_sub_updated(self, nid, fields, note):
+        self._sub_busy.discard(nid)
+        kind, n = graph_mod.find(self.graph, nid)
+        if kind != "outbound":
+            return
+        if fields is None:
+            log(LOG_WARN, _t("Subscription '{name}' could not be updated: {note}").format(name=n["name"], note=note))
+            return
+        if fields["sub_servers"] == n["outbound"]["sub_servers"]:
+            n["outbound"]["sub_updated"] = fields["sub_updated"]
+            self._persist()
+            return
+        n["outbound"].update(fields)
+        log(LOG_SETTING, _t("Subscription '{name}' updated: {note}").format(name=n["name"], note=note))
+        self._recompile()
 
     def rename_node(self, nid, name):
         kind, n = graph_mod.find(self.graph, nid)

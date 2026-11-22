@@ -26,7 +26,7 @@ from .common import INBOUND_TYPES, OUTBOUND_TYPES, host_port
 from .i18n import _t
 
 
-NO_VIA = ("direct", "hysteria2", "block")   # Direct/Block end a chain; Hysteria2 uses QUIC (UDP), cannot be tunnelled
+NO_VIA = ("direct", "hysteria2", "block", "subscription")   # end a chain (a subscription's servers dial out themselves)
 
 # router rule conditions: lists of strings, plus ip_private (bool). Inside one rule, sing-box ORs the address
 # conditions (domain*, ip_cidr, ip_private, geoip, geosite) and ANDs the rest (port, process_name).
@@ -254,6 +254,8 @@ def users(graph, nid):
 def default_outbound_name(ob):
     if ob["type"] == "block":
         return _t("Block")
+    if ob["type"] == "subscription":
+        return _t("Subscription")
     if ob["type"] == "direct":
         where = ob.get("interface") or ob.get("bind")
         return "Direct" + (f" ({where})" if where else "")
