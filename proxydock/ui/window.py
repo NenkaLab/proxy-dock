@@ -16,7 +16,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QKeySequence, QPainter, QShortcut
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
-from PySide6.QtWidgets import QApplication, QGraphicsEffect, QSystemTrayIcon, QWidget
+from PySide6.QtWidgets import QApplication, QGraphicsEffect, QGraphicsOpacityEffect, QSystemTrayIcon, QWidget
 from qfluentwidgets import (
     Action, FluentIcon as FIF, FluentWindow, NavigationItemPosition, PushButton, SystemThemeListener, SystemTrayMenu,
 )
@@ -24,7 +24,7 @@ from qfluentwidgets import (
 from .. import common, config
 from .. import graph as graph_mod
 from ..common import (
-    APP_ID, APP_NAME, IS_WIN, LOG_ERROR, LOG_INFO, LOG_SETTING, LOG_WARN, Stats, fmt_rate, format_line, log,
+    APP_ID, APP_NAME, IS_MAC, IS_WIN, LOG_ERROR, LOG_INFO, LOG_SETTING, LOG_WARN, Stats, fmt_rate, format_line, log,
 )
 from ..platform_utils import (
     firewall_apply, firewall_rule_exists, get_system_proxy, is_startup_hidden, is_startup_registered,
@@ -212,7 +212,8 @@ class MainWindow(FluentWindow):
 
     def _animate_in(self, widget):
         self._finish_transition()
-        effect = _SlideFadeEffect(widget)
+        # macOS: a Python draw() override crashes there (invalid QPainter wrapper), so fade with Qt's own effect
+        effect = _FadeEffect(widget) if IS_MAC else _SlideFadeEffect(widget)
         widget.setGraphicsEffect(effect)
         ani = QVariantAnimation(self)
         ani.setDuration(self.TRANSITION_MS)
@@ -236,7 +237,7 @@ class MainWindow(FluentWindow):
             effect = widget.graphicsEffect()
         except RuntimeError:        # widget already deleted
             return
-        if isinstance(effect, _SlideFadeEffect):
+        if isinstance(effect, (_SlideFadeEffect, _FadeEffect)):
             effect.set_progress(1.0, 0)
             # remove it on the next loop turn: deleting an effect inside a paint pass crashes on macOS
 
@@ -321,6 +322,13 @@ class _ThemeListener(SystemThemeListener):
             super().run()
         except Exception:
             pass
+
+
+class _FadeEffect(QGraphicsOpacityEffect):
+    """Fade only, drawn by Qt in C++ (used on macOS)."""
+
+    def set_progress(self, t, distance):
+        self.setOpacity(t)
 
 
 class _MouseNavFilter(QObject):
