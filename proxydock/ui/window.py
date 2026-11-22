@@ -617,6 +617,13 @@ class Controller:
                  if n["outbound"]["type"] == "hysteria2" else _t("Direct is the end of a chain"), 5000)
             self.refresh_lists()
             return False
+        if vid and n["outbound"]["type"] == "wireguard":
+            _, v = graph_mod.find(self.graph, vid)
+            if v is not None and v["outbound"]["type"] not in ("shadowsocks", "hysteria2", "wireguard", "socks5"):
+                info(self.window, "error", _t("Cannot connect"),
+                     _t("WireGuard needs UDP, so it can only go through Shadowsocks, Hysteria2, WireGuard or SOCKS5"), 5000)
+                self.refresh_lists()
+                return False
         old = n["via"]
         n["via"] = vid
         if graph_mod.via_loop(self.graph, oid):

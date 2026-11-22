@@ -103,8 +103,16 @@ OUTBOUND_DEFAULTS = {
     "hy2_password": "",
     "bind": "",                 # Direct only: source address to connect from ("" = automatic)
     "interface": "",            # network interface to leave from (Tailscale, a VPN, Wi-Fi...; "" = automatic, sing-box)
+    # WireGuard tunnel (host/port = the peer's endpoint)
+    "wg_private_key": "",
+    "wg_address": "",           # this side's tunnel address(es), comma separated, e.g. "10.0.0.2/32, fd00::2/128"
+    "wg_peer_public_key": "",
+    "wg_preshared_key": "",
+    "wg_allowed_ips": "0.0.0.0/0, ::/0",
+    "wg_mtu": 1408,
+    "wg_keepalive": 0,          # persistent keepalive (s), 0 = off
 }
-SECRET_FIELDS = ("password", "ss_password", "hy2_password")
+SECRET_FIELDS = ("password", "ss_password", "hy2_password", "wg_private_key", "wg_preshared_key")
 
 
 # --- validation ---
@@ -334,6 +342,8 @@ def outbound_errors(ob):
     if via:
         if ob["type"] == "hysteria2":
             errs.append(_t("Hysteria2 uses QUIC (UDP), so it cannot go through another outbound"))
+        if ob["type"] == "wireguard" and via["type"] not in ("shadowsocks", "hysteria2", "wireguard", "socks5"):
+            errs.append(_t("WireGuard needs UDP, so it can only go through Shadowsocks, Hysteria2, WireGuard or SOCKS5"))
         errs += outbound_errors(via)
     if ob["type"] == "block":
         pass
@@ -352,6 +362,20 @@ def outbound_errors(ob):
                 errs.append(_t("Outbound: {e}").format(e=e))
         if ob["type"] == "hysteria2" and not ob["hy2_password"]:
             errs.append(_t("Enter the outbound Hysteria2 password"))
+        if ob["type"] == "wireguard":
+            from .wgconf import valid_cidrs, valid_key
+            if not valid_key(ob["wg_private_key"]):
+                errs.append(_t("WireGuard: enter a valid private key (base64, or click Generate)"))
+            if not valid_key(ob["wg_peer_public_key"]):
+                errs.append(_t("WireGuard: enter the server's public key (base64)"))
+            if ob["wg_preshared_key"] and not valid_key(ob["wg_preshared_key"]):
+                errs.append(_t("WireGuard: the preshared key is not valid (base64, 32 bytes)"))
+            if not valid_cidrs(ob["wg_address"]):
+                errs.append(_t("WireGuard: enter this side's tunnel address, e.g. 10.0.0.2/32"))
+            if not valid_cidrs(ob["wg_allowed_ips"]):
+                errs.append(_t("WireGuard: allowed IPs must be IP ranges, e.g. 0.0.0.0/0, ::/0"))
+            if not 576 <= ob["wg_mtu"] <= 9200:
+                errs.append(_t("WireGuard: MTU must be between 576 and 9200"))
         if ob["type"] == "socks4" and ob["password"]:
             errs.append(_t("SOCKS4 does not support passwords (user ID only)"))
     return errs

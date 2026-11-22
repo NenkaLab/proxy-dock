@@ -79,6 +79,16 @@ def outbound(ob, tag):
         return {"type": "shadowsocks", **srv, "method": ob["ss_method"], "password": ob["ss_password"]}
     if t == "hysteria2":
         return {"type": "hysteria2", **srv, "password": ob["hy2_password"], "tls": _tls(ob)}
+    if t == "wireguard":            # a sing-box endpoint (goes into "endpoints", used like an outbound)
+        from ..wgconf import split
+        peer = {"address": ob["host"], "port": ob["port"], "public_key": ob["wg_peer_public_key"].strip(),
+                "allowed_ips": split(ob["wg_allowed_ips"])}
+        if ob.get("wg_preshared_key"):
+            peer["pre_shared_key"] = ob["wg_preshared_key"].strip()
+        if ob.get("wg_keepalive"):
+            peer["persistent_keepalive_interval"] = ob["wg_keepalive"]
+        return {"type": "wireguard", "tag": tag, "address": split(ob["wg_address"]),
+                "private_key": ob["wg_private_key"].strip(), "mtu": ob.get("wg_mtu") or 1408, "peers": [peer]}
     raise ValueError(f"unsupported outbound {t}")
 
 
@@ -220,13 +230,16 @@ def build(proxy, cfg, *, bans_path, api_port, api_secret, cert=None, rulesets=No
             route_tags[r["block"]] = prefix = f"r{len(route_tags)}_"
             obs += outbounds(r["outbound"], prefix)
     r, reasons = route(proxy, cfg, bans_path, rulesets, route_tags)
+    endpoints = [o for o in obs if o["type"] == "wireguard"]
     conf = {
         "log": {"level": "debug", "timestamp": False},      # colors are turned off with --disable-color
         "inbounds": [inbound(proxy["inbound"], cert)],
-        "outbounds": obs,
+        "outbounds": [o for o in obs if o["type"] != "wireguard"] or [{"type": "direct", "tag": "direct"}],
         "route": r,
         "experimental": {"clash_api": {"external_controller": f"127.0.0.1:{api_port}", "secret": api_secret}},
     }
+    if endpoints:
+        conf["endpoints"] = endpoints
     return conf, reasons
 
 

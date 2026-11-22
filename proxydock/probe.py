@@ -161,7 +161,12 @@ def check_outbound(manager, proxy, glob):
     Result dict: ok, site, status, connect_ms, total_ms, error, detail (failure reason logged by the proxy), note."""
     res = {"ok": False, "site": "", "error": "", "detail": ""}
     try:
-        if not manager.start(checker_for(proxy, glob), glob).result(15):
+        checker = checker_for(proxy, glob)
+        from .singbox import needs_singbox
+        if needs_singbox(checker):      # sing-box needs a real port (the Python engine binds port 0)
+            from .singbox.process import _free_port
+            checker["inbound"]["port"] = _free_port()
+        if not manager.start(checker, glob).result(20):
             res["error"] = manager.state(CHECK_ID)[1] or _t("Could not create the check connection")
             return res
         inst = manager.instances.get(CHECK_ID)
@@ -188,4 +193,8 @@ def check_outbound(manager, proxy, glob):
 
 def bridge_port_for(manager, pid):
     inst = manager.instances.get(pid)
-    return inst.servers[0].sockets[0].getsockname()[1] if inst else None
+    if inst is None:
+        return None
+    if getattr(inst, "engine", "python") != "python":
+        return inst.inbound["port"]
+    return inst.servers[0].sockets[0].getsockname()[1]

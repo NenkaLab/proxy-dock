@@ -94,6 +94,7 @@ def _tr_outbound_new():
         ("socks4", _t("Upstream SOCKS4 proxy")),
         ("shadowsocks", _t("Shadowsocks tunnel (remote server)")),
         ("hysteria2", _t("Hysteria2 tunnel (remote server)")),
+        ("wireguard", _t("WireGuard tunnel (no VPN app needed)")),
         ("block", _t("Block (refuse connections, for router rules)")),
     ]
 
@@ -618,6 +619,38 @@ class EditorInterface(ScrollArea):
         self.ed_out_hy = PasswordLineEdit(v)
         self.ed_out_hy.setFixedWidth(260)
         self.r_out_hy = s_out.add(Row(_t("Hysteria2 password"), "", v).right(self.ed_out_hy))
+        # WireGuard
+        b_wg_import = PushButton(_t("Import .conf…"), v, FIF.DOCUMENT)
+        b_wg_import.clicked.connect(self._wg_import)
+        self.r_wg_import = s_out.add(Row(_t("WireGuard config file"), _t("Fill everything in from a .conf file from your VPN provider or WireGuard server"), v)
+                                     .right(b_wg_import))
+        self.ed_wg_key = PasswordLineEdit(v)
+        self.ed_wg_key.setFixedWidth(330)
+        b_wg_gen = PushButton(_t("Generate"), v, FIF.SYNC)
+        b_wg_gen.clicked.connect(self._wg_generate)
+        self.r_wg_key = s_out.add(Row(_t("Private key"), "", v).right(self.ed_wg_key, b_wg_gen))
+        self.ed_wg_key.textChanged.connect(lambda *_: self._wg_show_public())
+        self.ed_wg_addr = LineEdit(v)
+        self.ed_wg_addr.setPlaceholderText("10.0.0.2/32, fd00::2/128")
+        self.ed_wg_addr.setFixedWidth(330)
+        self.r_wg_addr = s_out.add(Row(_t("Tunnel address"), _t("This side's address inside the tunnel (Address in the .conf)"), v).right(self.ed_wg_addr))
+        self.ed_wg_peer = LineEdit(v)
+        self.ed_wg_peer.setFixedWidth(330)
+        self.r_wg_peer = s_out.add(Row(_t("Server public key"), _t("PublicKey of the [Peer]"), v).right(self.ed_wg_peer))
+        self.ed_wg_psk = PasswordLineEdit(v)
+        self.ed_wg_psk.setPlaceholderText(_t("(optional)"))
+        self.ed_wg_psk.setFixedWidth(330)
+        self.r_wg_psk = s_out.add(Row(_t("Preshared key"), "", v).right(self.ed_wg_psk))
+        self.ed_wg_allowed = LineEdit(v)
+        self.ed_wg_allowed.setFixedWidth(330)
+        self.r_wg_allowed = s_out.add(Row(_t("Allowed IPs"), _t("Destinations sent into the tunnel. 0.0.0.0/0, ::/0 = everything"), v).right(self.ed_wg_allowed))
+        self.sp_wg_mtu = SpinBox(v)
+        self.sp_wg_mtu.setRange(576, 9200)
+        self.sp_wg_mtu.setFixedWidth(150)
+        self.sp_wg_keep = SpinBox(v)
+        self.sp_wg_keep.setRange(0, 3600)
+        self.sp_wg_keep.setFixedWidth(150)
+        self.r_wg_mtu = s_out.add(Row(_t("MTU · keepalive (s)"), _t("Keepalive 0 = off. 25 helps behind NAT"), v).right(self.sp_wg_mtu, self.sp_wg_keep))
         self.out_note = CaptionLabel("", v)
         self.out_note.setWordWrap(True)
         s_out.add(self.out_note)
@@ -746,6 +779,13 @@ class EditorInterface(ScrollArea):
         self.cb_out_ss.setCurrentIndex(self.ss_methods.index(ob["ss_method"]))
         self.ed_out_ss_pw.setText(ob["ss_password"])
         self.ed_out_hy.setText(ob["hy2_password"])
+        self.ed_wg_key.setText(ob["wg_private_key"])
+        self.ed_wg_addr.setText(ob["wg_address"])
+        self.ed_wg_peer.setText(ob["wg_peer_public_key"])
+        self.ed_wg_psk.setText(ob["wg_preshared_key"])
+        self.ed_wg_allowed.setText(ob["wg_allowed_ips"])
+        self.sp_wg_mtu.setValue(ob["wg_mtu"])
+        self.sp_wg_keep.setValue(ob["wg_keepalive"])
         self.ed_out_bind.setText(ob.get("bind", ""))
         self._fill_ifaces(ob.get("interface", ""))
         glob = self.ctl.glob
@@ -781,6 +821,44 @@ class EditorInterface(ScrollArea):
         self._set_probe_text(CHECK_DESC if inbound else CHECK_DESC_OUT, None)
         self._sync()
         self.verticalScrollBar().setValue(0)
+
+    def _wg_generate(self):
+        from ..wgconf import keypair
+        self.ed_wg_key.setText(keypair()[0])
+
+    def _wg_show_public(self):
+        from ..wgconf import public_of
+        pub = public_of(self.ed_wg_key.text())
+        d = self.r_wg_key.desc
+        d.setText(_t("Public key (give it to the server): {key}").format(key=pub) if pub else
+                  _t("Paste the PrivateKey from the .conf, or click Generate"))
+        d.setVisible(True)
+        d.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+    def _wg_import(self):
+        from ..wgconf import parse_conf
+        path, _ = QFileDialog.getOpenFileName(self, _t("Choose file"), "", _t("WireGuard config (*.conf);;All files (*)"))
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8-sig") as f:
+                ob, notes = parse_conf(f.read())
+        except (OSError, ValueError, UnicodeDecodeError) as e:
+            info(self.window(), "error", _t("Cannot import"), str(e), 6000)
+            return
+        self.cb_out.setCurrentIndex(self.out_types.index("wireguard"))
+        self.ed_out_host.setText(ob["host"])
+        self.sp_out_port.setValue(ob["port"])
+        self.ed_wg_key.setText(ob["wg_private_key"])
+        self.ed_wg_addr.setText(ob["wg_address"])
+        self.ed_wg_peer.setText(ob["wg_peer_public_key"])
+        self.ed_wg_psk.setText(ob["wg_preshared_key"])
+        self.ed_wg_allowed.setText(ob["wg_allowed_ips"])
+        self.sp_wg_mtu.setValue(ob["wg_mtu"])
+        self.sp_wg_keep.setValue(ob["wg_keepalive"])
+        if not self.ed_name.text().strip() or self.ed_name.text().startswith(OUTBOUND_TYPES["wireguard"]):
+            self.ed_name.setText(os.path.splitext(os.path.basename(path))[0][:60])
+        info(self.window(), "success", _t("Imported"), "\n".join(notes) or os.path.basename(path), 5000)
 
     def _fill_ifaces(self, current):
         names = network_interfaces()
@@ -855,6 +933,8 @@ class EditorInterface(ScrollArea):
         self.r_out_ss_method.setVisible(ot == "shadowsocks")
         self.r_out_ss_pw.setVisible(ot == "shadowsocks")
         self.r_out_hy.setVisible(ot == "hysteria2")
+        for r in (self.r_wg_import, self.r_wg_key, self.r_wg_addr, self.r_wg_peer, self.r_wg_psk, self.r_wg_allowed, self.r_wg_mtu):
+            r.setVisible(ot == "wireguard")
         out_notes = {
             "direct": _t("Connects to the destination directly from this PC."),
             "http": _t("Connects through an upstream HTTP proxy with CONNECT. UDP cannot be sent."),
@@ -864,6 +944,7 @@ class EditorInterface(ScrollArea):
             "shadowsocks": _t("Encrypted tunnel to a remote Shadowsocks server (TCP+UDP)."),
             "hysteria2": _t("QUIC tunnel to a remote Hysteria2 server (TCP+UDP). Bandwidth settings (Brutal), obfuscation and port hopping are not supported."),
             "block": _t("Refuses every connection. Connect router rules to it (e.g. ads, trackers). Needs the sing-box engine."),
+            "wireguard": _t("WireGuard tunnel run inside ProxyDock (TCP+UDP): no VPN app and no change to the PC's network, so several can run at once. 'Through' another WireGuard block makes a double VPN. Needs the sing-box engine."),
         }
         note = out_notes[ot]
         if remote:
@@ -990,7 +1071,11 @@ class EditorInterface(ScrollArea):
                              ss_method=self.ss_methods[self.cb_out_ss.currentIndex()],
                              ss_password=self.ed_out_ss_pw.text().strip(), hy2_password=self.ed_out_hy.text(),
                              bind=self.ed_out_bind.text().strip() if ot == "direct" else "",
-                             interface=self._iface_value() if ot != "block" else "")
+                             interface=self._iface_value() if ot != "block" else "",
+                             wg_private_key=self.ed_wg_key.text().strip(), wg_address=self.ed_wg_addr.text().strip(),
+                             wg_peer_public_key=self.ed_wg_peer.text().strip(), wg_preshared_key=self.ed_wg_psk.text().strip(),
+                             wg_allowed_ips=self.ed_wg_allowed.text().strip(), wg_mtu=self.sp_wg_mtu.value(),
+                             wg_keepalive=self.sp_wg_keep.value())
         idx = self.cb_via.currentIndex()
         n["via"] = self.vias[idx] if 0 <= idx < len(self.vias) and ot not in graph_mod.NO_VIA else None
         if n["via"]:

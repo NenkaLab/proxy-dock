@@ -70,12 +70,13 @@ def _tr_outbound_types():
         "socks5": _t("SOCKS5 proxy"),
         "shadowsocks": _t("Shadowsocks tunnel"),
         "hysteria2": _t("Hysteria2 tunnel"),
+        "wireguard": _t("WireGuard tunnel"),
         "block": _t("Block"),
     })
 
 
 UDP_INBOUNDS = ("socks5", "shadowsocks", "hysteria2")     # inbound types that can receive UDP
-UDP_OUTBOUNDS = ("direct", "shadowsocks", "hysteria2")    # outbound types that can send UDP
+UDP_OUTBOUNDS = ("direct", "shadowsocks", "hysteria2", "wireguard")    # outbound types that can send UDP
 
 
 # --- logging ---

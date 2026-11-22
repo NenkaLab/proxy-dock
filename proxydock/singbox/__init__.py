@@ -65,7 +65,7 @@ def needs_singbox(proxy):
     a sing-box dial option."""
     chains = [proxy["outbound"]] + [r["outbound"] for r in proxy.get("routes") or []]
     return (bool(proxy.get("routes")) or proxy["outbound"]["type"] == "block"
-            or any(ob.get("interface") for c in chains for ob in _chain(c)))
+            or any(ob.get("interface") or ob["type"] == "wireguard" for c in chains for ob in _chain(c)))
 
 
 def engine_for(proxy, glob):
@@ -80,8 +80,8 @@ def engine_for(proxy, glob):
 def _engine_for(proxy, glob):
     if glob.get("engine", "sing-box") != "sing-box":
         return "python", _t("Python engine selected in Settings")
-    if proxy["id"].startswith("__"):
-        return "python", "internal"
+    if proxy["id"].startswith("__") and not needs_singbox(proxy):
+        return "python", "internal"       # connection-test helpers (sing-box only when the outbound needs it)
     if any(ob.get("pin_sha256") for ob in _chain(proxy["outbound"]) if ob["type"] in ("https", "hysteria2")):
         return "python", _t("certificate pinning needs sing-box 1.15 or later")
     if find_binary(glob) is None:

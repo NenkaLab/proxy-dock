@@ -21,8 +21,8 @@ Shadowsocks distant » tient sur une seule carte.
 | | Pris en charge |
 |---|---|
 | Entrée | SOCKS5 · SOCKS4/4a · HTTP · HTTPS (TLS) · serveur Shadowsocks · serveur Hysteria2 |
-| Sortie | Direct · proxy amont HTTP / HTTPS / SOCKS4 / SOCKS5 · tunnel Shadowsocks · tunnel Hysteria2 (QUIC) |
-| UDP | entrée SOCKS5 · Shadowsocks · Hysteria2, sortie Direct · Shadowsocks · Hysteria2 |
+| Sortie | Direct · proxy amont HTTP / HTTPS / SOCKS4 / SOCKS5 · tunnel Shadowsocks · tunnel Hysteria2 (QUIC) · WireGuard |
+| UDP | entrée SOCKS5 · Shadowsocks · Hysteria2, sortie Direct · Shadowsocks · Hysteria2 · WireGuard |
 
 - **Canevas** : éditeur façon blueprint - tirez des liens des blocs d'entrée vers les blocs de sortie ; plusieurs entrées peuvent partager une sortie, une entrée reliée à une autre entrée passe par celle-ci, et Direct peut partir d'une IP source choisie
 - **Bloc PC** : reliez une entrée HTTP pour l'utiliser comme proxy système Windows pendant qu'elle tourne ; les paramètres précédents sont sauvegardés et remis à l'arrêt ou à la fermeture (boutons Restaurer l'état précédent / Désactivé)
@@ -31,6 +31,7 @@ Shadowsocks distant » tient sur une seule carte.
   programmes comme chrome.exe, pays GeoIP, catégories Geosite) sa propre sortie ; le reste prend la sortie par défaut.
   Les règles peuvent mener à n'importe quelle sortie, à la sortie **Blocage** (refus) ou à un autre routeur
 - **Interface réseau** : toute sortie peut passer par une carte réseau choisie - Tailscale, WireGuard, une application VPN, le Wi-Fi - sans modifier les routes du PC ; seul le trafic relié à elle l'utilise (moteur sing-box)
+- **WireGuard** : un bloc tunnel WireGuard exécuté dans ProxyDock - sans application VPN, plusieurs pays peuvent être actifs en même temps pour des applications différentes ; import du `.conf` d'un fournisseur ; un bloc WireGuard « par » un autre donne un double VPN (moteur sing-box)
 - **Moteur** : sing-box (par défaut) exécute chaque proxy dans son propre processus - multicœur, UDP à travers les chaînes, Hysteria2 via d'autres sorties. Le moteur Python intégré sert de secours (Paramètres → Moteur de proxy)
 - **Shadowsocks** : AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) et 2022 (SIP022, blake3), TCP+UDP, copie des liens `ss://`
 - **Hysteria2** : interopérable dans les deux sens avec l'implémentation officielle (TCP et UDP), épinglage du certificat, copie des liens `hysteria2://`

@@ -21,8 +21,8 @@ Shadowsocks-Server" eine einzige Karte.
 | | Unterstützt |
 |---|---|
 | Eingang | SOCKS5 · SOCKS4/4a · HTTP · HTTPS (TLS) · Shadowsocks-Server · Hysteria2-Server |
-| Ausgang | Direct · Upstream-HTTP / HTTPS / SOCKS4 / SOCKS5-Proxy · Shadowsocks-Tunnel · Hysteria2-Tunnel (QUIC) |
-| UDP | Eingang SOCKS5 · Shadowsocks · Hysteria2, Ausgang Direct · Shadowsocks · Hysteria2 |
+| Ausgang | Direct · Upstream-HTTP / HTTPS / SOCKS4 / SOCKS5-Proxy · Shadowsocks-Tunnel · Hysteria2-Tunnel (QUIC) · WireGuard |
+| UDP | Eingang SOCKS5 · Shadowsocks · Hysteria2, Ausgang Direct · Shadowsocks · Hysteria2 · WireGuard |
 
 - **Fläche**: Editor im Blueprint-Stil - Linien von Eingangsblöcken zu Ausgangsblöcken ziehen; mehrere Eingänge können einen Ausgang teilen, ein mit einem anderen Eingang verbundener Eingang leitet über diesen weiter, und Direct kann eine gewählte Quell-IP nutzen
 - **PC-Block**: einen HTTP-Eingang verbinden, um ihn als Windows-Systemproxy zu nutzen, solange er läuft; die vorherigen Einstellungen werden gesichert und beim Stoppen oder Beenden wiederhergestellt (Knöpfe Vorherige wiederherstellen / Aus)
@@ -31,6 +31,7 @@ Shadowsocks-Server" eine einzige Karte.
   (chrome.exe, ...), GeoIP-Länder und Geosite-Kategorien je einen eigenen Ausgang; nicht passender Verkehr nimmt den
   Standard. Regeln können zu jedem Ausgang, zum **Block**-Ausgang (ablehnen) oder zu einem anderen Router führen
 - **Netzwerkschnittstelle**: Jeder Ausgang kann über eine gewählte Netzwerkkarte hinausgehen - Tailscale, WireGuard, eine VPN-App, WLAN - ohne die Routen des PCs zu ändern; nur der dorthin verbundene Verkehr nutzt sie (sing-box-Engine)
+- **WireGuard**: ein WireGuard-Tunnelblock, der in ProxyDock läuft - keine VPN-App, daher können mehrere Länder gleichzeitig für verschiedene Apps laufen; `.conf` eines Anbieters importieren; ein WireGuard-Block 'über' einen anderen ergibt ein Doppel-VPN (sing-box-Engine)
 - **Engine**: sing-box (Standard) führt jeden Proxy in einem eigenen Prozess aus - mehrere Kerne, UDP über Ketten, Hysteria2 über andere Ausgänge. Die integrierte Python-Engine ist der Ersatz (Einstellungen → Proxy-Engine)
 - **Shadowsocks**: AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) und 2022 (SIP022, blake3), TCP+UDP, `ss://`-Links kopieren
 - **Hysteria2**: in beide Richtungen mit der offiziellen Implementierung kompatibel (TCP und UDP), Zertifikats-Pinning, `hysteria2://`-Links kopieren

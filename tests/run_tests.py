@@ -608,12 +608,138 @@ def test_interface_e2e():
     mgr.stop_all()
 
 
+WG_CONF = """[Interface]
+PrivateKey = {priv}
+Address = 10.66.0.2/32, fd00:66::2/128
+DNS = 1.1.1.1
+MTU = 1380
+
+[Peer]
+PublicKey = {pub}
+PresharedKey = {psk}
+AllowedIPs = 0.0.0.0/0, ::/0
+Endpoint = vpn.example.net:51820
+PersistentKeepalive = 25
+"""
+
+
+def test_wireguard():
+    from proxydock import wgconf
+    from proxydock.singbox import compile as sbc, engine_for
+    priv, pub = wgconf.keypair()
+    check("wireguard: key pair round trip", wgconf.public_of(priv) == pub and wgconf.valid_key(pub))
+    psk = wgconf.keypair()[0]
+    ob, notes = wgconf.parse_conf(WG_CONF.format(priv=priv, pub=pub, psk=psk))
+    check("wireguard: .conf import", ob["host"] == "vpn.example.net" and ob["port"] == 51820 and ob["wg_mtu"] == 1380
+          and ob["wg_keepalive"] == 25 and ob["wg_address"].startswith("10.66.0.2/32") and ob["wg_preshared_key"] == psk
+          and any("DNS" in n for n in notes), (ob, notes))
+    try:
+        wgconf.parse_conf("[Interface]\nAddress = 10.0.0.2/32\n")
+        check("wireguard: bad .conf refused", False)
+    except ValueError:
+        check("wireguard: bad .conf refused", True)
+    full = dict(config.OUTBOUND_DEFAULTS, **ob, via=None)
+    check("wireguard: valid outbound has no errors", config.outbound_errors(full) == [], config.outbound_errors(full))
+    bad = dict(full, wg_private_key="nope", wg_address="10.0.0.2")
+    check("wireguard: bad key and address reported", len(config.outbound_errors(bad)) >= 2)
+    over_http = dict(full, via=dict(config.OUTBOUND_DEFAULTS, type="http", host="h", port=8080, via=None))
+    check("wireguard: cannot go through an HTTP proxy (no UDP)",
+          any("UDP" in e for e in config.outbound_errors(over_http)))
+    g = gm.empty()
+    outer = gm.add_outbound(g, dict(ob), "JP")
+    inner = gm.add_outbound(g, dict(ob, host="kr.example.net"), "KR")
+    inner["via"] = outer["id"]
+    gm.add_inbound(g, "in", {"type": "socks5", "port": 1080}, target=inner["id"])
+    p = gm.compile(g)[0]
+    conf, _ = sbc.build(p, config.resolve(p, config.validate_global({})), bans_path="b.json", api_port=1, api_secret="s")
+    eps = {e["tag"]: e for e in conf.get("endpoints", [])}
+    check("wireguard: double VPN -> two endpoints, inner detours through outer",
+          set(eps) == {"out0", "out1"} and eps["out0"].get("detour") == "out1"
+          and eps["out0"]["peers"][0]["address"] == "kr.example.net"
+          and eps["out0"]["peers"][0]["persistent_keepalive_interval"] == 25
+          and conf["route"]["final"] == "out0", conf.get("endpoints"))
+    check("wireguard: needs sing-box", engine_for(p, config.validate_global({"engine": "python"}))[0] == "none")
+    # keys are sealed like passwords when the settings are saved (Windows DPAPI)
+    config.save(config.validate_global({}), g)
+    raw = open(config.CONFIG_PATH, encoding="utf-8").read()
+    check("wireguard: private key not saved in plain text" if os.name == "nt" else "wireguard: settings saved",
+          (priv not in raw and psk not in raw) if os.name == "nt" else True)
+    _, g2 = config.load()
+    check("wireguard: keys survive save/load", g2["outbounds"][0]["outbound"]["wg_private_key"] == priv)
+
+
+def test_wireguard_e2e():
+    """SOCKS5 -> WireGuard (and WireGuard through WireGuard) to local sing-box WireGuard servers."""
+    import subprocess
+    from proxydock import wgconf
+    from proxydock.runtime import ProxyManager
+    from proxydock.singbox import find_binary
+    origin = ThreadingHTTPServer(("127.0.0.1", 0), Origin)
+    threading.Thread(target=origin.serve_forever, daemon=True).start()
+    oport = origin.server_address[1]
+    procs = []
+
+    def udp_port():
+        u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        u.bind(("127.0.0.1", 0))
+        port = u.getsockname()[1]
+        u.close()
+        return port
+
+    def server(net, client_pub):
+        priv, pub = wgconf.keypair()
+        port = udp_port()
+        conf = {"log": {"level": "warn"}, "endpoints": [{
+            "type": "wireguard", "tag": "wg", "listen_port": port, "address": [f"{net}.1/24"], "private_key": priv,
+            "peers": [{"public_key": client_pub, "allowed_ips": [f"{net}.2/32"]}]}],
+            "outbounds": [{"type": "direct", "tag": "d"}],
+            # stands in for the internet behind the VPN server: <net>.99 is this PC's 127.0.0.1
+            "route": {"rules": [{"ip_cidr": [f"{net}.99/32"], "action": "route-options", "override_address": "127.0.0.1"}],
+                      "final": "d"}}
+        path = os.path.join(TMP, f"wg-server-{net}.json")
+        json.dump(conf, open(path, "w"))
+        procs.append(subprocess.Popen([find_binary(), "run", "-c", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+        return pub, port
+
+    try:
+        c1, c2 = wgconf.keypair(), wgconf.keypair()
+        s1_pub, s1_port = server("10.91.0", c1[1])
+        s2_pub, s2_port = server("10.92.0", c2[1])
+        time.sleep(1.5)
+        glob = config.validate_global({"engine": "sing-box"})
+        mgr = ProxyManager()
+
+        def wg(priv, net, pub, host, port):
+            return dict(config.OUTBOUND_DEFAULTS, type="wireguard", host=host, port=port, wg_private_key=priv,
+                        wg_address=f"{net}.2/32", wg_peer_public_key=pub, via=None)
+
+        single = config.new_proxy("wg", {"type": "socks5", "port": free_port()})
+        single["outbound"] = wg(c1[0], "10.91.0", s1_pub, "127.0.0.1", s1_port)
+        mgr.start(single, glob).result(20)
+        check("[sing-box] wireguard: card starts", mgr.state(single["id"])[0] == "running", mgr.state(single["id"]))
+        check("[sing-box] wireguard: TCP through the tunnel",
+              socks5_get(single["inbound"]["port"], "10.91.0.99", oport) == "200")
+        double = config.new_proxy("wg2", {"type": "socks5", "port": free_port()})
+        # inner tunnel's server is reached through the outer tunnel (10.91.0.99 = this PC behind server 1)
+        double["outbound"] = dict(wg(c2[0], "10.92.0", s2_pub, "10.91.0.99", s2_port),
+                                  via=wg(c1[0], "10.91.0", s1_pub, "127.0.0.1", s1_port))
+        mgr.start(double, glob).result(20)
+        check("[sing-box] wireguard: double VPN (WireGuard through WireGuard)",
+              socks5_get(double["inbound"]["port"], "10.92.0.99", oport) == "200")
+        mgr.stop_all()
+    finally:
+        for pr in procs:
+            pr.terminate()
+        origin.shutdown()
+
+
 def main():
     t0 = time.time()
-    tests = [test_translations, test_graph, test_engine, test_singbox_compile, test_router_graph, test_router_singbox, test_interface]
+    tests = [test_translations, test_graph, test_engine, test_singbox_compile, test_router_graph, test_router_singbox, test_interface,
+             test_wireguard]
     from proxydock.singbox import find_binary
     if find_binary():
-        tests += [lambda: test_engine("sing-box"), test_singbox_guard, test_router_e2e, test_interface_e2e]
+        tests += [lambda: test_engine("sing-box"), test_singbox_guard, test_router_e2e, test_interface_e2e, test_wireguard_e2e]
         from proxydock.singbox import find_hysteria
         if find_hysteria():
             tests.append(test_hysteria)
