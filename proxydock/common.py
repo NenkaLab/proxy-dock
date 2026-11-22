@@ -5,6 +5,7 @@ import errno
 import ipaddress
 import socket
 import struct
+import os
 import sys
 import time
 from collections import deque
@@ -355,3 +356,19 @@ def is_banned(ip):
         del _banned[ip]
         return False
     return True
+
+
+def hard_exit(code=0):
+    """End the process now. On Windows skip DLL unload routines: Qt plugin DLLs can crash there
+    (access violation at exit) while background threads are still running."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
+    if IS_WIN:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+        kernel32.TerminateProcess(ctypes.c_void_p(kernel32.GetCurrentProcess()), code)
+    os._exit(code)

@@ -1007,7 +1007,7 @@ class Controller:
         self.manager.stop_all(2)
         self.drain_logs()
         self.tray.hide()
-        os._exit(0)
+        common.hard_exit(0)
 
 
 # --- single instance ---

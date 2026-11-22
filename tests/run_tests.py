@@ -23,7 +23,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+if sys.platform != "darwin":       # macOS: the frameless window needs a real Cocoa window
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from proxydock import config, graph as gm  # noqa: E402
 
@@ -282,7 +283,8 @@ def main():
     if failed:
         print("FAILED: " + ", ".join(failed))
     sys.stdout.flush()
-    os._exit(1 if failed else 0)
+    from proxydock.common import hard_exit
+    hard_exit(1 if failed else 0)
 
 
 if __name__ == "__main__":
