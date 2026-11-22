@@ -60,9 +60,25 @@ def summary(p):
 def outbound_summary(ob):
     if ob["type"] == "block":
         return _t("Refuses every connection (use it as a router target)")
+    iface = f" · ⇢ {ob['interface']}" if ob.get("interface") else ""
     if ob["type"] == "direct":
-        return _t("Direct from this PC") + (f" · {ob['bind']}" if ob.get("bind") else "")
-    return f"{OUTBOUND_TYPES[ob['type']]} · {host_port(ob['host'], ob['port']) if ob['host'] else _t('server not set')}"
+        return _t("Direct from this PC") + (f" · {ob['bind']}" if ob.get("bind") else "") + iface
+    return f"{OUTBOUND_TYPES[ob['type']]} · {host_port(ob['host'], ob['port']) if ob['host'] else _t('server not set')}" + iface
+
+
+def network_interfaces():
+    """[(name, label)] of the network interfaces that are up (loopback excluded), e.g. ("Tailscale", "Tailscale · 100.x")."""
+    from PySide6.QtNetwork import QAbstractSocket, QNetworkInterface as Q
+    out = []
+    for i in Q.allInterfaces():
+        f = i.flags()
+        if not (f & Q.IsUp) or f & Q.IsLoopBack:
+            continue
+        ips = [a.ip().toString() for a in i.addressEntries()
+               if a.ip().protocol() == QAbstractSocket.IPv4Protocol and not a.ip().toString().startswith("169.254.")]
+        name = i.humanReadableName()
+        out.append((name, f"{name} · {ips[0]}" if ips else name))
+    return sorted(out, key=lambda x: x[0].lower())
 
 
 OUTBOUND_NEW = []
@@ -566,6 +582,14 @@ class EditorInterface(ScrollArea):
         self.ed_out_bind.setFixedWidth(220)
         self.r_out_bind = s_out.add(Row(_t("Source address"), _t("Connect from this IP of the PC (choose a network card / VPN). Empty = automatic"), v)
                                     .right(self.ed_out_bind))
+        self.cb_out_iface = ComboBox(v)
+        self.cb_out_iface.setFixedWidth(320)
+        b_iface = TransparentToolButton(FIF.SYNC, v)
+        b_iface.setToolTip(_t("Refresh the list"))
+        b_iface.clicked.connect(lambda: self._fill_ifaces(self._iface_value()))
+        self.r_out_iface = s_out.add(Row(_t("Network interface"), _t("Leave through this network card, e.g. Tailscale, WireGuard, a VPN app or Wi-Fi, without changing the PC's routes. Needs the sing-box engine."), v)
+                                     .right(self.cb_out_iface, b_iface))
+        self.ifaces = [""]
         self.ed_out_user = LineEdit(v)
         self.ed_out_user.setPlaceholderText(_t("Username (leave empty if none)"))
         self.ed_out_user.setFixedWidth(170)
@@ -658,6 +682,7 @@ class EditorInterface(ScrollArea):
 
         self.cb_in.currentIndexChanged.connect(lambda *_: self._sync())
         self.cb_out.currentIndexChanged.connect(lambda *_: self._sync())
+        self.cb_via.currentIndexChanged.connect(lambda *_: self._sync())
         self.sw_in_auth.checkedChanged.connect(lambda *_: self._sync())
 
     def _ss_labels(self):
@@ -722,6 +747,7 @@ class EditorInterface(ScrollArea):
         self.ed_out_ss_pw.setText(ob["ss_password"])
         self.ed_out_hy.setText(ob["hy2_password"])
         self.ed_out_bind.setText(ob.get("bind", ""))
+        self._fill_ifaces(ob.get("interface", ""))
         glob = self.ctl.glob
         for key, (follow, w) in self.ov.items():
             follow.blockSignals(True)
@@ -755,6 +781,21 @@ class EditorInterface(ScrollArea):
         self._set_probe_text(CHECK_DESC if inbound else CHECK_DESC_OUT, None)
         self._sync()
         self.verticalScrollBar().setValue(0)
+
+    def _fill_ifaces(self, current):
+        names = network_interfaces()
+        self.ifaces = [""] + [n for n, _ in names]
+        labels = [_t("Automatic")] + [label for _, label in names]
+        if current and current not in self.ifaces:          # saved name that is not up right now
+            self.ifaces.append(current)
+            labels.append(_t("{name} (not connected)").format(name=current))
+        self.cb_out_iface.clear()
+        self.cb_out_iface.addItems(labels)
+        self.cb_out_iface.setCurrentIndex(self.ifaces.index(current) if current in self.ifaces else 0)
+
+    def _iface_value(self):
+        i = self.cb_out_iface.currentIndex()
+        return self.ifaces[i] if 0 <= i < len(self.ifaces) else ""
 
     def _set_value(self, key, val):
         w = self.ov[key][1]
@@ -803,6 +844,9 @@ class EditorInterface(ScrollArea):
         self.r_out_server.setVisible(remote)
         self.r_out_bind.setVisible(ot == "direct")
         self.r_out_via.setVisible(ot not in ("direct", "hysteria2", "block"))
+        vi = self.cb_via.currentIndex()
+        has_via = ot not in ("direct", "hysteria2", "block") and 0 < vi < len(self.vias)
+        self.r_out_iface.setVisible(ot != "block" and not has_via)    # only the hop that dials out itself
         self.r_out_cred.setVisible(ot in ("http", "https", "socks4", "socks5"))
         self.ed_out_pass.setVisible(ot != "socks4")
         self.r_out_verify.setVisible(ot in ("https", "hysteria2"))
@@ -945,9 +989,12 @@ class EditorInterface(ScrollArea):
                              pin_sha256=self.ed_out_pin.text().strip(),
                              ss_method=self.ss_methods[self.cb_out_ss.currentIndex()],
                              ss_password=self.ed_out_ss_pw.text().strip(), hy2_password=self.ed_out_hy.text(),
-                             bind=self.ed_out_bind.text().strip() if ot == "direct" else "")
+                             bind=self.ed_out_bind.text().strip() if ot == "direct" else "",
+                             interface=self._iface_value() if ot != "block" else "")
         idx = self.cb_via.currentIndex()
         n["via"] = self.vias[idx] if 0 <= idx < len(self.vias) and ot not in graph_mod.NO_VIA else None
+        if n["via"]:
+            n["outbound"]["interface"] = ""     # a hop that goes through another block does not dial out itself
         return graph_mod.validate_outbound_node(n)
 
     def _as_proxy(self, n):

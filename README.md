@@ -30,6 +30,7 @@ Shadowsocks server" is a single card.
 - **Router**: put a router block between an inbound and its outbounds - rules on domains, IP ranges, ports, programs
   (chrome.exe, ...), GeoIP countries and Geosite categories each get their own output; unmatched traffic takes the
   default. Rules can lead to any outbound, to the **Block** outbound (refuse) or to another router
+- **Network interface**: any outbound can leave through a chosen network card - Tailscale, WireGuard, a VPN app, Wi-Fi - without changing the PC's routes, so only the traffic you link there uses it (sing-box engine)
 - **Engine**: sing-box (default) runs each proxy in its own process - multi-core, UDP through chains, Hysteria2 through other outbounds. The built-in Python engine is the fallback (Settings → Proxy engine)
 - **Shadowsocks**: AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) and 2022 (SIP022, blake3), TCP+UDP, copy `ss://` links
 - **Hysteria2**: interoperates both ways with the official implementation (TCP and UDP), certificate pinning, copy `hysteria2://` links

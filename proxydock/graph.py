@@ -255,7 +255,8 @@ def default_outbound_name(ob):
     if ob["type"] == "block":
         return _t("Block")
     if ob["type"] == "direct":
-        return "Direct" + (f" ({ob['bind']})" if ob.get("bind") else "")
+        where = ob.get("interface") or ob.get("bind")
+        return "Direct" + (f" ({where})" if where else "")
     label = OUTBOUND_TYPES[ob["type"]]
     return f"{label} {host_port(ob['host'], ob['port'])}" if ob["host"] else label
 

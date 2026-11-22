@@ -30,6 +30,7 @@ Shadowsocks-Server" eine einzige Karte.
 - **Router**: Ein Router-Block zwischen Eingang und Ausgängen gibt Regeln für Domains, IP-Bereiche, Ports, Programme
   (chrome.exe, ...), GeoIP-Länder und Geosite-Kategorien je einen eigenen Ausgang; nicht passender Verkehr nimmt den
   Standard. Regeln können zu jedem Ausgang, zum **Block**-Ausgang (ablehnen) oder zu einem anderen Router führen
+- **Netzwerkschnittstelle**: Jeder Ausgang kann über eine gewählte Netzwerkkarte hinausgehen - Tailscale, WireGuard, eine VPN-App, WLAN - ohne die Routen des PCs zu ändern; nur der dorthin verbundene Verkehr nutzt sie (sing-box-Engine)
 - **Engine**: sing-box (Standard) führt jeden Proxy in einem eigenen Prozess aus - mehrere Kerne, UDP über Ketten, Hysteria2 über andere Ausgänge. Die integrierte Python-Engine ist der Ersatz (Einstellungen → Proxy-Engine)
 - **Shadowsocks**: AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) und 2022 (SIP022, blake3), TCP+UDP, `ss://`-Links kopieren
 - **Hysteria2**: in beide Richtungen mit der offiziellen Implementierung kompatibel (TCP und UDP), Zertifikats-Pinning, `hysteria2://`-Links kopieren

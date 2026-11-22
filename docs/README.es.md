@@ -30,6 +30,7 @@ es una sola tarjeta.
 - **Enrutador**: un bloque enrutador entre una entrada y sus salidas da a cada regla (dominios, rangos de IP, puertos,
   programas como chrome.exe, países GeoIP, categorías Geosite) su propia salida; el resto va a la predeterminada.
   Las reglas pueden ir a cualquier salida, a la salida **Bloquear** (rechazar) o a otro enrutador
+- **Interfaz de red**: cualquier salida puede salir por una tarjeta de red elegida (Tailscale, WireGuard, una app de VPN, Wi-Fi) sin cambiar las rutas del PC; solo el tráfico conectado a ella la usa (motor sing-box)
 - **Motor**: sing-box (predeterminado) ejecuta cada proxy en su propio proceso: varios núcleos, UDP a través de cadenas, Hysteria2 por otras salidas. El motor Python integrado queda de respaldo (Ajustes → Motor de proxy)
 - **Shadowsocks**: AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) y 2022 (SIP022, blake3), TCP+UDP, copia de enlaces `ss://`
 - **Hysteria2**: compatible en ambos sentidos con la implementación oficial (TCP y UDP), fijación del certificado, copia de enlaces `hysteria2://`

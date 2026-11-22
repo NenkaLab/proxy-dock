@@ -102,6 +102,7 @@ OUTBOUND_DEFAULTS = {
     "ss_password": "",
     "hy2_password": "",
     "bind": "",                 # Direct only: source address to connect from ("" = automatic)
+    "interface": "",            # network interface to leave from (Tailscale, a VPN, Wi-Fi...; "" = automatic, sing-box)
 }
 SECRET_FIELDS = ("password", "ss_password", "hy2_password")
 

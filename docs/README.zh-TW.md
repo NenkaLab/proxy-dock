@@ -28,6 +28,7 @@
 - **串接**：連接傳出端區塊的「經由」輸出後，它到伺服器的連線會經由另一個傳出端 (例如穿過公司 HTTP 代理的 Shadowsocks、Hysteria2 通道中的 HTTPS 上游代理)，可以串接任意多層
 - **路由**: 在接收端與傳出端之間放一個路由區塊，網域、IP 範圍、連接埠、程式 (chrome.exe 等)、GeoIP 國家、Geosite 分類的
   每條規則都有自己的輸出；沒有規則符合時走預設出口。規則可以連到任何傳出端、**封鎖**區塊 (拒絕連線) 或另一個路由
+- **網路介面**: 任何傳出端都可以從選定的網路卡 (Tailscale、WireGuard、VPN 應用程式、Wi-Fi) 送出，不變更電腦的路由，只有連到那裡的流量才使用它 (sing-box 引擎)
 - **引擎**: 預設的 sing-box 為每個代理各自執行一個處理程序 - 多核心、經過鏈結的 UDP、經由其他傳出端的 Hysteria2。內建 Python 引擎作為備用 (設定 → 代理引擎)
 - **Shadowsocks**：AEAD 2018 (aes-128/256-gcm、chacha20-ietf-poly1305) 與 2022 (SIP022、blake3)，TCP+UDP，複製 `ss://` 連結
 - **Hysteria2**：已確認與官方實作雙向相容 (TCP、UDP)，憑證指紋固定，複製 `hysteria2://` 連結

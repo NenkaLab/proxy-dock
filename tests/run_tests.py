@@ -300,6 +300,12 @@ def test_ui():
     check("ui: router editor reports a bad port", any("70000" in e for e in w.editor._errors(w.editor.collect())))
     w.editor.cancel()
     wait(300)
+    ctl.edit_node(d["id"])
+    wait(300)
+    check("ui: Direct editor shows the network interface choice", w.editor.r_out_iface.isVisible()
+          and w.editor.cb_out_iface.count() >= 1)
+    w.editor.cancel()
+    wait(300)
     ctl.set_target(graph["inbounds"][0]["id"], d["id"])
     ctl.change_language("ko")
     wait(600)
@@ -566,12 +572,48 @@ def test_router_e2e():
     origin2.shutdown()
 
 
+def test_interface():
+    """Leaving through a chosen network interface (sing-box bind_interface)."""
+    from proxydock.singbox import compile as sbc, engine_for
+    g = gm.empty()
+    tail = gm.add_outbound(g, {"type": "socks5", "host": "10.0.0.1", "port": 1080, "interface": "Tailscale"}, "Tail")
+    head = gm.add_outbound(g, {"type": "shadowsocks", "host": "9.9.9.9", "port": 8388, "interface": "ignored"}, "SS")
+    head["via"] = tail["id"]
+    gm.add_inbound(g, "in", {"type": "socks5", "port": 1080}, target=head["id"])
+    p = gm.compile(g)[0]
+    conf, _ = sbc.build(p, config.resolve(p, config.validate_global({})), bans_path="b.json", api_port=1, api_secret="s")
+    obs = {o["tag"]: o for o in conf["outbounds"]}
+    check("interface: applied to the hop that dials out", obs["out1"].get("bind_interface") == "Tailscale"
+          and "bind_interface" not in obs["out0"], obs)
+    check("interface: needs sing-box (not run on Python)",
+          engine_for(p, config.validate_global({"engine": "python"}))[0] == "none")
+    d = gm.add_outbound(g, {"type": "direct", "interface": "Wi-Fi"})
+    check("interface: block name shows it", d["name"] == "Direct (Wi-Fi)", d["name"])
+
+
+def test_interface_e2e():
+    from proxydock import common
+    from proxydock.runtime import ProxyManager
+    glob = config.validate_global({"engine": "sing-box"})
+    mgr = ProxyManager()
+    p = config.new_proxy("iface", {"type": "socks5", "port": free_port()},
+                         {"type": "direct", "interface": "NoSuchAdapter-ProxyDock"})
+    mgr.start(p, glob).result(15)
+    check("[sing-box] interface: card starts", mgr.state(p["id"])[0] == "running", mgr.state(p["id"]))
+    # sing-box does not bind loopback destinations; 192.0.2.1 (TEST-NET) fails at the interface lookup, nothing is sent
+    r = socks5_get(p["inbound"]["port"], "192.0.2.1", 9)
+    time.sleep(0.5)
+    check("[sing-box] interface: missing interface fails with a hint", r != "200"
+          and any("network interface does not exist" in e[2] and e[3] == p["id"] for e in common.pending_logs), r)
+    mgr.stop_all()
+
+
 def main():
     t0 = time.time()
-    tests = [test_translations, test_graph, test_engine, test_singbox_compile, test_router_graph, test_router_singbox]
+    tests = [test_translations, test_graph, test_engine, test_singbox_compile, test_router_graph, test_router_singbox, test_interface]
     from proxydock.singbox import find_binary
     if find_binary():
-        tests += [lambda: test_engine("sing-box"), test_singbox_guard, test_router_e2e]
+        tests += [lambda: test_engine("sing-box"), test_singbox_guard, test_router_e2e, test_interface_e2e]
         from proxydock.singbox import find_hysteria
         if find_hysteria():
             tests.append(test_hysteria)

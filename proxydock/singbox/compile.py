@@ -84,12 +84,15 @@ def outbound(ob, tag):
 
 def outbounds(ob, prefix="out"):
     """The via chain as sing-box outbounds: out0 (the card's outbound) -detour-> out1 -> ...
-    A Block outbound has no sing-box outbound (it becomes a reject rule)."""
+    A Block outbound has no sing-box outbound (it becomes a reject rule). A network interface applies to the hop
+    that dials out itself (the end of the chain)."""
     out, i = [], 0
     while ob and ob["type"] != "block":
         d = outbound(ob, f"{prefix}{i}")
         if ob.get("via"):
             d["detour"] = f"{prefix}{i + 1}"
+        elif ob.get("interface"):
+            d["bind_interface"] = ob["interface"]
         out.append(d)
         ob, i = ob.get("via"), i + 1
     return out

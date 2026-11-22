@@ -28,6 +28,7 @@
 - **链式连接**：连接出站块的'经由'输出后，它到服务器的连接会经由另一个出站 (例如穿过公司 HTTP 代理的 Shadowsocks、Hysteria2 隧道中的 HTTPS 上游代理)，可以串联任意多级
 - **路由**: 在入站和出站之间放一个路由块，域名、IP 范围、端口、程序 (chrome.exe 等)、GeoIP 国家、Geosite 分类的
   每条规则都有自己的输出；没有规则匹配时走默认出口。规则可以连接到任何出站、**阻止**块 (拒绝连接) 或另一个路由
+- **网络接口**: 任何出站都可以从选定的网卡 (Tailscale、WireGuard、VPN 应用、Wi-Fi) 发出，不改变电脑的路由，只有连到那里的流量才使用它 (sing-box 引擎)
 - **引擎**: 默认的 sing-box 为每个代理单独运行一个进程 - 多核、经过链路的 UDP、经由其他出站的 Hysteria2。内置 Python 引擎作为备用 (设置 → 代理引擎)
 - **Shadowsocks**：AEAD 2018 (aes-128/256-gcm、chacha20-ietf-poly1305) 和 2022 (SIP022、blake3)，TCP+UDP，复制 `ss://` 链接
 - **Hysteria2**：已确认与官方实现双向互通 (TCP、UDP)，证书指纹固定，复制 `hysteria2://` 链接

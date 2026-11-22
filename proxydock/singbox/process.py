@@ -331,7 +331,12 @@ class SingBoxInstance:
             dest, err = m.groups()
             self.stats.failed += 1
             self.last_reason = "auth" if "authentication failed" in err else "net"
-            self.log(LOG_FAIL, f"{who} -> {dest} " + _SECRET.sub(r"\1=***", err))
+            hint = ""
+            if "no such network interface" in err:
+                hint = " - " + _t("the chosen network interface does not exist (renamed or removed?)")
+            elif "unreachable network" in err or "network is unreachable" in err:
+                hint = " - " + _t("the chosen network interface may be disconnected")
+            self.log(LOG_FAIL, f"{who} -> {dest} " + _SECRET.sub(r"\1=***", err) + hint)
             return
 
     # --- statistics / per-IP limit through the Clash API ---

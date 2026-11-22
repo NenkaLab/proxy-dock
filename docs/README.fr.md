@@ -30,6 +30,7 @@ Shadowsocks distant » tient sur une seule carte.
 - **Routeur** : un bloc routeur entre une entrée et ses sorties donne à chaque règle (domaines, plages d'IP, ports,
   programmes comme chrome.exe, pays GeoIP, catégories Geosite) sa propre sortie ; le reste prend la sortie par défaut.
   Les règles peuvent mener à n'importe quelle sortie, à la sortie **Blocage** (refus) ou à un autre routeur
+- **Interface réseau** : toute sortie peut passer par une carte réseau choisie - Tailscale, WireGuard, une application VPN, le Wi-Fi - sans modifier les routes du PC ; seul le trafic relié à elle l'utilise (moteur sing-box)
 - **Moteur** : sing-box (par défaut) exécute chaque proxy dans son propre processus - multicœur, UDP à travers les chaînes, Hysteria2 via d'autres sorties. Le moteur Python intégré sert de secours (Paramètres → Moteur de proxy)
 - **Shadowsocks** : AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) et 2022 (SIP022, blake3), TCP+UDP, copie des liens `ss://`
 - **Hysteria2** : interopérable dans les deux sens avec l'implémentation officielle (TCP et UDP), épinglage du certificat, copie des liens `hysteria2://`

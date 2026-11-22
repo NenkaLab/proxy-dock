@@ -154,7 +154,7 @@ def _make_instance(proxy, glob, stats):
         from .singbox.hysteria import HysteriaInstance
         return HysteriaInstance(proxy, glob, stats)
     if engine == "none":
-        raise RuntimeError(_t("Router and Block blocks need the sing-box engine: {reason}").format(reason=reason))
+        raise RuntimeError(_t("Routers, Block and network interface choices need the sing-box engine: {reason}").format(reason=reason))
     inst = ProxyInstance(proxy, glob, stats)
     if glob.get("engine") == "sing-box" and reason != "internal":
         inst.log(LOG_INFO, _t("Running on the Python engine: {reason}").format(reason=reason))

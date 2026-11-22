@@ -29,6 +29,7 @@
 - **Router**: 받는 쪽과 내보내는 쪽 사이에 Router 블록을 두면 도메인, IP 대역, 포트, 프로그램(chrome.exe 등),
   GeoIP 국가, Geosite 분류 규칙마다 출력이 따로 생깁니다. 맞는 규칙이 없으면 기본 출구로 나갑니다. 규칙은 아무 내보내는 쪽,
   **차단** 블록(연결 거부), 다른 Router로 이을 수 있습니다
+- **네트워크 인터페이스**: 어떤 내보내는 쪽이든 고른 네트워크 카드(Tailscale, WireGuard, VPN 앱, Wi-Fi)로 내보낼 수 있습니다. PC 라우팅은 바꾸지 않으므로 거기에 이은 트래픽만 그 카드를 씁니다 (sing-box 엔진)
 - **엔진**: 기본인 sing-box는 프록시마다 별도 프로세스로 실행합니다 - 멀티코어, 체인을 거치는 UDP, 다른 내보내는 쪽을 거치는 Hysteria2. 내장 Python 엔진은 대체용입니다 (설정 → 프록시 엔진)
 - **Shadowsocks**: AEAD 2018(aes-128/256-gcm, chacha20-ietf-poly1305) 과 2022(SIP022, blake3) 방식, TCP+UDP, `ss://` 링크 복사
 - **Hysteria2**: 공식 구현과 양방향 호환 확인 (TCP·UDP), 인증서 지문 고정, `hysteria2://` 링크 복사
