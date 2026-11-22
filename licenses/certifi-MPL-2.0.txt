@@ -1,5 +1,5 @@
 certifi 2026.11.20 (https://github.com/certifi/python-certifi)
-Mozilla Public License 2.0 전문: https://mozilla.org/MPL/2.0/
+Full text of the Mozilla Public License 2.0: https://mozilla.org/MPL/2.0/
 
 This package contains a modified version of ca-bundle.crt:
 

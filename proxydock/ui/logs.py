@@ -1,4 +1,5 @@
-"""로그 페이지: 프록시 드롭다운 + 종류 필터 + 검색."""
+"""Log page: proxy selector + level filter + search."""
+from ..i18n import _t
 from collections import deque
 
 from PySide6.QtCore import QTimer
@@ -14,21 +15,21 @@ class LogInterface(QWidget):
     def __init__(self, glob, parent=None):
         super().__init__(parent)
         self.setObjectName("logInterface")
-        self.entries = deque(maxlen=MAX_LOG * 4)     # 프록시별로 걸러 봐도 충분하도록 여유 있게
+        self.entries = deque(maxlen=MAX_LOG * 4)     # generous, so filtering by proxy still shows enough
         self.dirty = False
         self._fmt_dark = None
         self._fmts = {}
 
-        self.title = TitleLabel("로그", self)
-        self.proxy = ProxyCombo(self, "전체 (앱 + 모든 프록시)", 230)
+        self.title = TitleLabel(_t("Logs"), self)
+        self.proxy = ProxyCombo(self, _t("All (app + all proxies)"), 230)
         self.search = SearchLineEdit(self)
-        self.search.setPlaceholderText("검색")
+        self.search.setPlaceholderText(_t("Search"))
         self.search.setFixedWidth(200)
         self.combo = ComboBox(self)
         self.combo.addItems([name for name, _ in LEVEL_FILTERS])
         self.combo.setFixedWidth(150)
-        self.btn_clear = PushButton("지우기", self, FIF.DELETE)
-        self.btn_copy = PushButton("복사", self, FIF.COPY)
+        self.btn_clear = PushButton(_t("Clear"), self, FIF.DELETE)
+        self.btn_copy = PushButton(_t("Copy"), self, FIF.COPY)
 
         self.view = TextView(self)
         self.view.setMaximumBlockCount(MAX_LOG)
@@ -119,7 +120,7 @@ class LogInterface(QWidget):
     def add_entries(self, batch):
         self.entries.extend(batch)
         if not self.isVisible():
-            self.dirty = True   # 숨겨져 있으면 보일 때 한 번에 그린다
+            self.dirty = True   # when hidden, render everything at once when shown
             return
         m = self._matcher()
         shown = [e for e in batch if m(e)]
@@ -148,4 +149,4 @@ class LogInterface(QWidget):
 
     def copy_all(self):
         QApplication.clipboard().setText(self.view.toPlainText())
-        info(self.window(), "success", "복사됨", "표시된 로그를 클립보드에 복사했습니다.", 2000)
+        info(self.window(), "success", _t("Copied"), _t("Copied the visible log to the clipboard."), 2000)

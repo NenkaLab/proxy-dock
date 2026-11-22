@@ -1,4 +1,5 @@
-"""연결 테스트 페이지: 실행 중인 프록시를 드롭다운으로 골라 21개 사이트에 접속해 본다."""
+"""Connection test page: pick a running proxy and connect to 21 sites through it."""
+from ..i18n import _t
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -19,7 +20,7 @@ class _Signals(QObject):
 
 
 class ConnTestInterface(QWidget):
-    COLS = ("구분", "사이트", "주소", "결과", "목적지 연결", "전체")
+    COLS = (_t("Region"), _t("Site"), _t("Address"), _t("Result"), _t("Connect"), _t("All"))
 
     def __init__(self, ctl, parent=None):
         super().__init__(parent)
@@ -32,11 +33,11 @@ class ConnTestInterface(QWidget):
         self.sig.result.connect(self._on_result)
         self.sig.done.connect(self._on_done)
 
-        title = TitleLabel("연결 테스트", self)
+        title = TitleLabel(_t("Connection test"), self)
         self.proxy = ProxyCombo(self, None, 240)
         self.proxy.currentIndexChanged.connect(lambda *_: self._sync_button())
         self.summary = CaptionLabel("", self)
-        self.btn = PrimaryPushButton("테스트 시작", self, FIF.SPEED_HIGH)
+        self.btn = PrimaryPushButton(_t("Start test"), self, FIF.SPEED_HIGH)
         self.btn.clicked.connect(self._on_click)
 
         self.table = TableWidget(self)
@@ -70,7 +71,7 @@ class ConnTestInterface(QWidget):
         root.addWidget(self.summary)
         root.addWidget(self.table, 1)
 
-        # 연타 방지: 클릭 후 잠깐 기다렸다 한 번만 시작(디바운스), 끝난 뒤엔 쿨다운(쓰로틀)
+        # against rapid clicks: wait briefly after a click and start once (debounce), then a cooldown (throttle)
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
         self._debounce.setInterval(300)
@@ -92,16 +93,15 @@ class ConnTestInterface(QWidget):
         if has:
             p = self.ctl.proxy_by_id(self.proxy.current_id())
             self.summary.setText(
-                f"'{p['name']}' 을(를) 거쳐 {len(TEST_SITES)}개 사이트에 HTTPS 로 접속해 봅니다 "
-                f"(동시 {PROBE_WORKERS}개, 사이트당 최대 {PROBE_TIMEOUT}초)." if p else "")
+                _t("Connects to {len} sites over HTTPS through '{name}' ({PROBE_WORKERS} at a time, up to {PROBE_TIMEOUT}s per site).").format(name=p['name'], len=len(TEST_SITES), PROBE_WORKERS=PROBE_WORKERS, PROBE_TIMEOUT=PROBE_TIMEOUT) if p else "")
         else:
-            self.summary.setText("실행 중인 프록시가 없습니다. 프록시 화면에서 먼저 시작하세요.")
+            self.summary.setText(_t("No proxy is running. Start one on the Proxies page first."))
 
     def _on_click(self):
         if self.running or self.cooldown > 0 or not self.proxy.current_id():
             return
         self.btn.setEnabled(False)
-        self.btn.setText("준비 중…")
+        self.btn.setText(_t("Preparing…"))
         self._debounce.start()
 
     def _start(self):
@@ -111,18 +111,18 @@ class ConnTestInterface(QWidget):
             return
         self.running = True
         self.results.clear()
-        self.btn.setText("테스트 중…")
+        self.btn.setText(_t("Testing…"))
         for r in range(len(TEST_SITES)):
-            self._set_row(r, "대기 중…", "", "", None)
-        self.summary.setText(f"'{proxy['name']}' 테스트 중… 0 / {len(TEST_SITES)}")
-        log(LOG_INFO, f"연결 테스트 시작: {proxy['name']} ({len(TEST_SITES)}개 사이트)")
+            self._set_row(r, _t("Waiting…"), "", "", None)
+        self.summary.setText(_t("Testing '{name}'… 0 / {len}").format(name=proxy['name'], len=len(TEST_SITES)))
+        log(LOG_INFO, _t("Connection test started: {name} ({len} sites)").format(name=proxy['name'], len=len(TEST_SITES)))
         mgr, glob = self.ctl.manager, self.ctl.glob
 
         def work():
             err = ""
             try:
                 if not mgr.start(bridge_for(proxy), glob).result(15):
-                    raise RuntimeError(mgr.state(BRIDGE_ID)[1] or "테스트 연결을 만들지 못했습니다")
+                    raise RuntimeError(mgr.state(BRIDGE_ID)[1] or _t("Could not create the test connection"))
                 port = bridge_port(mgr)
                 with ThreadPoolExecutor(max_workers=PROBE_WORKERS) as ex:
                     futs = {ex.submit(probe_site, host, port): r for r, (_, _, host) in enumerate(TEST_SITES)}
@@ -151,23 +151,23 @@ class ConnTestInterface(QWidget):
         self.results[r] = res
         ms = lambda v: f"{v:.0f} ms" if v is not None else "-"
         if res["ok"]:
-            text = f"연결됨 · {res['note']}" if res.get("note") else f"성공 · HTTP {res['status']}"
+            text = _t("Connected · {note}").format(note=res['note']) if res.get("note") else _t("OK · HTTP {status}").format(status=res['status'])
         else:
-            text = f"실패 · {res['error']}"
+            text = _t("Failed · {error}").format(error=res['error'])
         self._set_row(r, text, ms(res["connect_ms"]), ms(res["total_ms"]), res["ok"])
-        self.summary.setText(f"테스트 중… {len(self.results)} / {len(TEST_SITES)}")
+        self.summary.setText(_t("Testing… {len} / {len2}").format(len=len(self.results), len2=len(TEST_SITES)))
 
     def _on_done(self, err):
         self.running = False
         if err:
-            self.summary.setText(f"테스트를 시작하지 못했습니다: {err}")
-            log(LOG_FAIL, f"연결 테스트 실패: {err}")
+            self.summary.setText(_t("Could not start the test: {err}").format(err=err))
+            log(LOG_FAIL, _t("Connection test failed: {err}").format(err=err))
         else:
             oks = [v for v in self.results.values() if v["ok"]]
             avg = sum(v["total_ms"] for v in oks) / len(oks) if oks else 0
-            msg = f"성공 {len(oks)} / {len(TEST_SITES)}" + (f" · 평균 {avg:.0f} ms" if oks else "")
-            self.summary.setText(msg + f"  ·  {time.strftime('%H:%M:%S')} 완료")
-            log(LOG_INFO, f"연결 테스트 완료: {msg}")
+            msg = _t("Succeeded {len} / {len2}").format(len=len(oks), len2=len(TEST_SITES)) + (_t(" · average {avg:.0f} ms").format(avg=avg) if oks else "")
+            self.summary.setText(msg + _t("  ·  finished at {strftime}").format(strftime=time.strftime('%H:%M:%S')))
+            log(LOG_INFO, _t("Connection test finished: {msg}").format(msg=msg))
         self.cooldown = PROBE_COOLDOWN
         self._cool_tick()
         self._cool_timer.start()
@@ -175,8 +175,8 @@ class ConnTestInterface(QWidget):
     def _cool_tick(self):
         if self.cooldown <= 0:
             self._cool_timer.stop()
-            self.btn.setText("다시 테스트" if self.results else "테스트 시작")
+            self.btn.setText(_t("Test again") if self.results else _t("Start test"))
             self._sync_button()
             return
-        self.btn.setText(f"다시 테스트 ({self.cooldown}초)")
+        self.btn.setText(_t("Test again ({cooldown}s)").format(cooldown=self.cooldown))
         self.cooldown -= 1

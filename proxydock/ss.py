@@ -1,4 +1,5 @@
-"""Shadowsocks (AEAD-2018 / 2022) 암호화 - 서버·클라이언트 공용. 네트워크 코드는 inbound/outbound 에 있다."""
+"""Shadowsocks (AEAD-2018 / 2022) encryption, shared by server and client. Network code is in inbound/outbound."""
+from .i18n import _t
 import base64
 import hashlib
 import os
@@ -16,28 +17,28 @@ from .common import APP_NAME, encode_address, parse_address
 
 # --- Shadowsocks ---
 # AEAD-2018 (https://shadowsocks.org/doc/aead.html)
-#  키     = EVP_BytesToKey(password, MD5), 세션 서브키 = HKDF-SHA1(키, salt, "ss-subkey")
-#  TCP    = [salt][암호화된 길이(2)+태그][암호화된 데이터+태그]... (청크 최대 0x3FFF, nonce 는 매번 +1)
-#  UDP    = [salt][암호화된 (주소 + 데이터)+태그] (nonce 0)
+#  key    = EVP_BytesToKey(password, MD5), session subkey = HKDF-SHA1(key, salt, "ss-subkey")
+#  TCP    = [salt][encrypted length(2)+tag][encrypted data+tag]... (chunks up to 0x3FFF, nonce +1 each time)
+#  UDP    = [salt][encrypted (address + data)+tag] (nonce 0)
 # 2022 (SIP022, https://shadowsocks.org/doc/sip022.html)
-#  키     = base64 PSK 그대로, 세션 서브키 = BLAKE3.derive_key("shadowsocks 2022 session subkey", PSK + salt)
-#  TCP    = [salt][고정 헤더: 종류·시각·가변 헤더 길이][가변 헤더: 주소·패딩·첫 데이터][청크(최대 0xFFFF)]...
-#           응답은 요청 salt 를 고정 헤더에 넣는다. 시각 ±30초, salt 재사용 60초간 거부.
-#  UDP    = AES: [AES-ECB(PSK, 세션 ID + 패킷 ID)][AEAD(세션 서브키, nonce=헤더[4:16])]
-#           ChaCha: [24바이트 nonce][XChaCha20-Poly1305(PSK, 세션 ID + 패킷 ID + 본문)]
-#  주소   = SOCKS5 주소 형식 (ATYP + 주소 + 포트)
+#  key    = base64 PSK as is, session subkey = BLAKE3.derive_key("shadowsocks 2022 session subkey", PSK + salt)
+#  TCP    = [salt][fixed header: type, timestamp, variable header length][variable header: address, padding, first data][chunks (up to 0xFFFF)]...
+#           the response carries the request salt in its fixed header. Timestamp within ±30 s; reused salts rejected for 60 s.
+#  UDP    = AES: [AES-ECB(PSK, session id + packet id)][AEAD(session subkey, nonce=header[4:16])]
+#           ChaCha: [24-byte nonce][XChaCha20-Poly1305(PSK, session id + packet id + body)]
+#  address = SOCKS5 address format (ATYP + address + port)
 
 SS_TAG = 16
 SS_MAX_CHUNK = 0x3FFF       # AEAD-2018
 SS22_MAX_CHUNK = 0xFFFF     # 2022
-SS22_TIME_WINDOW = 30       # 2022 시각 허용 오차(초)
-SS22_SALT_TTL = 60          # 2022 salt 재사용 거부 기간(초)
-SS_UDP_IDLE = 120           # UDP 세션 유휴 만료(초)
+SS22_TIME_WINDOW = 30       # 2022 timestamp tolerance (s)
+SS22_SALT_TTL = 60          # 2022 salt reuse rejection window (s)
+SS_UDP_IDLE = 120           # UDP session idle expiry (s)
 SS_MAX_UDP_SESSIONS = 1024
 SS_MAX_PADDING = 900
 
 SS_METHODS = {
-    # 이름: (키 길이, AEAD 클래스, 2022 여부)
+    # name: (key length, AEAD class, is 2022)
     "2022-blake3-aes-128-gcm": (16, AESGCM, True),
     "2022-blake3-aes-256-gcm": (32, AESGCM, True),
     "2022-blake3-chacha20-poly1305": (32, ChaCha20Poly1305, True),
@@ -47,7 +48,7 @@ SS_METHODS = {
 }
 
 
-# --- BLAKE3 (2022 키 유도용. 1024바이트 이하 입력 = 한 청크만 지원) ---
+# --- BLAKE3 (for 2022 key derivation; inputs up to 1024 bytes = a single chunk only) ---
 
 _B3_IV = (0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A, 0x510E527F, 0x9B05688C, 0x1F83D9AB, 0x5BE0CD19)
 _B3_PERM = (2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8)
@@ -90,7 +91,7 @@ def _b3_compress(cv, m, counter, block_len, flags):
 
 def _b3_single_chunk(data, key_words, flags, out_len):
     if len(data) > 1024 or out_len > 64:
-        raise ValueError("BLAKE3: 1024바이트 이하 입력, 64바이트 이하 출력만 지원")
+        raise ValueError(_t("BLAKE3: only inputs up to 1024 bytes and outputs up to 64 bytes are supported"))
     blocks = [data[i:i + 64] for i in range(0, len(data), 64)] or [b""]
     cv = list(key_words)
     for i, block in enumerate(blocks):
@@ -112,7 +113,7 @@ def blake3_derive_key(context, material, out_len):
     return _b3_single_chunk(material, struct.unpack("<8I", ctx_key), _B3_DERIVE_MATERIAL, out_len)
 
 
-# --- XChaCha20-Poly1305 (2022 chacha UDP) = HChaCha20 서브키 + ChaCha20-Poly1305 ---
+# --- XChaCha20-Poly1305 (2022 chacha UDP) = HChaCha20 subkey + ChaCha20-Poly1305 ---
 
 def _hchacha20(key, nonce16):
     s = [0x61707865, 0x3320646E, 0x79622D32, 0x6B206574] + list(struct.unpack("<8I", key)) \
@@ -152,10 +153,10 @@ def xchacha_decrypt(key, nonce24, data):
     return ChaCha20Poly1305(_hchacha20(key, nonce24[:16])).decrypt(b"\0" * 4 + nonce24[16:], data, None)
 
 
-# --- 키 ---
+# --- keys ---
 
 def ss_master_key(password, key_len):
-    """AEAD-2018: OpenSSL EVP_BytesToKey(MD5, 반복 1, salt 없음)."""
+    """AEAD-2018: OpenSSL EVP_BytesToKey(MD5, 1 iteration, no salt)."""
     pw = password.encode("utf-8")
     out, prev = b"", b""
     while len(out) < key_len:
@@ -165,16 +166,16 @@ def ss_master_key(password, key_len):
 
 
 def ss_make_key(method, password):
-    """설정의 비밀번호로 서버 키를 만든다. 2022 는 base64 PSK 여야 한다(아니면 ValueError)."""
+    """Build the server key from the configured password. 2022 needs a base64 PSK (ValueError otherwise)."""
     key_len, _, v2022 = SS_METHODS[method]
     if not v2022:
         return ss_master_key(password, key_len)
     try:
         psk = base64.b64decode(password.strip(), validate=True)
     except (ValueError, TypeError):
-        raise ValueError("2022 비밀번호는 base64 키여야 합니다 ('생성' 버튼 사용)")
+        raise ValueError(_t("The 2022 password must be a base64 key (use the 'Generate' button)"))
     if len(psk) != key_len:
-        raise ValueError(f"2022 키 길이는 {key_len}바이트여야 합니다 (현재 {len(psk)}바이트)")
+        raise ValueError(_t("The 2022 key must be {key_len} bytes (currently {len} bytes)").format(key_len=key_len, len=len(psk)))
     return psk
 
 
@@ -193,7 +194,7 @@ def _ss_aead(method, key, salt):
 
 
 class _SaltFilter:
-    """재전송(replay) 방지: 최근에 본 salt 를 기억한다. ttl 이 있으면 그 시간 동안만."""
+    """Replay protection: remembers recently seen salts, only for ttl seconds when ttl is given."""
 
     def __init__(self, cap=100_000, ttl=None):
         self.cap, self.ttl = cap, ttl
@@ -220,11 +221,11 @@ _ss22_salts = _SaltFilter(ttl=SS22_SALT_TTL)
 
 def _check_ss22_time(ts):
     if abs(time.time() - ts) > SS22_TIME_WINDOW:
-        raise ValueError("2022 시각 차이가 30초를 넘음 (PC 시계 확인)")
+        raise ValueError(_t("2022 clock difference over 30 seconds (check the PC clock)"))
 
 
 class SSDecryptor:
-    """AEAD-2018 TCP 스트림 복호화. 버퍼는 읽은 위치만 옮기고 마지막에 한 번 정리한다."""
+    """AEAD-2018 TCP stream decryption. The buffer only advances a read offset and is compacted once at the end."""
 
     MAX_CHUNK = SS_MAX_CHUNK
 
@@ -234,7 +235,7 @@ class SSDecryptor:
         self.aead = None
         self.counter = 0
         self.buf = bytearray()
-        self.need = None            # 다음 데이터 청크 길이 (None 이면 길이 블록 대기)
+        self.need = None            # length of the next data chunk (None = waiting for the length block)
         self.salt = None
 
     def _nonce(self):
@@ -247,14 +248,14 @@ class SSDecryptor:
 
     def _on_salt(self, salt):
         if not _ss_salts.add(salt):
-            raise ValueError("salt 재사용 (재전송 공격 의심)")
+            raise ValueError(_t("salt reused (possible replay attack)"))
 
     def _header(self, buf, pos, out):
-        """2022 요청 헤더 처리용. (새 위치, 헤더 완료 여부)"""
+        """For 2022 request header parsing. (new offset, header complete)"""
         return pos, True
 
     def feed(self, data):
-        """암호문을 넣으면 지금까지 복원된 평문을 돌려준다. 인증 실패 시 InvalidTag/ValueError."""
+        """Feed ciphertext, get back the plaintext recovered so far. InvalidTag/ValueError on authentication failure."""
         buf = self.buf
         buf += data
         pos = 0
@@ -291,7 +292,7 @@ class SSDecryptor:
 
 
 class SS22Decryptor(SSDecryptor):
-    """2022 TCP 요청 복호화. 가변 헤더에서 주소 + 첫 데이터만 평문으로 내보낸다(패딩 제거)."""
+    """2022 TCP request decryption. Only the address + first data of the variable header come out as plaintext (padding removed)."""
 
     MAX_CHUNK = SS22_MAX_CHUNK
     FIXED = 1 + 8 + 2
@@ -303,7 +304,7 @@ class SS22Decryptor(SSDecryptor):
 
     def _on_salt(self, salt):
         if not _ss22_salts.add(salt):
-            raise ValueError("salt 재사용 (재전송 공격 의심)")
+            raise ValueError(_t("salt reused (possible replay attack)"))
 
     def _header(self, buf, pos, out):
         if self.state == "fixed":
@@ -313,7 +314,7 @@ class SS22Decryptor(SSDecryptor):
             pos += self.FIXED + SS_TAG
             typ, ts, self.var_len = struct.unpack("!BQH", hdr)
             if typ != 0:
-                raise ValueError("2022 요청 종류가 잘못됨")
+                raise ValueError(_t("2022 invalid request type"))
             _check_ss22_time(ts)
             self.state = "var"
         if self.state == "var":
@@ -323,17 +324,17 @@ class SS22Decryptor(SSDecryptor):
             pos += self.var_len + SS_TAG
             _, _, end = parse_address(var, 0)
             if len(var) < end + 2:
-                raise ValueError("2022 가변 헤더가 짧음")
+                raise ValueError(_t("2022 variable header too short"))
             pad = struct.unpack("!H", var[end:end + 2])[0]
             if pad > SS_MAX_PADDING or len(var) < end + 2 + pad:
-                raise ValueError("2022 패딩 길이가 잘못됨")
+                raise ValueError(_t("2022 invalid padding length"))
             out.append(var[:end] + var[end + 2 + pad:])
             self.state = "data"
         return pos, True
 
 
 class SSEncryptor:
-    """AEAD-2018 TCP 스트림 암호화."""
+    """AEAD-2018 TCP stream encryption."""
 
     MAX_CHUNK = SS_MAX_CHUNK
 
@@ -367,7 +368,7 @@ class SSEncryptor:
 
 
 class SS22Encryptor(SSEncryptor):
-    """2022 TCP 응답 암호화: 첫 데이터는 요청 salt 를 담은 고정 헤더와 함께 보낸다."""
+    """2022 TCP response encryption: the first data goes out with the fixed header carrying the request salt."""
 
     MAX_CHUNK = SS22_MAX_CHUNK
 
@@ -401,7 +402,7 @@ def ss_udp_encrypt(method, key, plain):
 
 
 class _ReplayWindow:
-    """2022 UDP 패킷 ID 재전송 방지 (슬라이딩 윈도 1024)."""
+    """2022 UDP packet id replay protection (sliding window of 1024)."""
     SIZE = 1024
 
     def __init__(self):
@@ -423,7 +424,7 @@ class _ReplayWindow:
 
 
 def ss_link(host, port, method, password, name=APP_NAME):
-    """SIP002 형식 ss:// 링크. 2022 는 사용자 정보를 base64 대신 퍼센트 인코딩한다."""
+    """SIP002 ss:// link. 2022 percent-encodes the user info instead of using base64."""
     if SS_METHODS[method][2]:
         user = urllib.parse.quote(method, safe="") + ":" + urllib.parse.quote(password, safe="")
     else:
@@ -434,17 +435,17 @@ def ss_link(host, port, method, password, name=APP_NAME):
 
 
 
-# --- 클라이언트 역할 (내보내는 쪽 Shadowsocks 터널) ---
+# --- client role (outbound Shadowsocks tunnel) ---
 
 class SSClientDecryptor(SSDecryptor):
-    """AEAD-2018 응답 복호화 (서버가 보낸 salt 는 재전송 필터에 넣지 않는다)."""
+    """AEAD-2018 response decryption (salts sent by the server are not added to the replay filter)."""
 
     def _on_salt(self, salt):
         pass
 
 
 class SS22ClientDecryptor(SSDecryptor):
-    """2022 응답 복호화: [salt][고정 헤더: 종류1·시각·요청 salt·첫 청크 길이][첫 청크][청크]..."""
+    """2022 response decryption: [salt][fixed header: type 1, timestamp, request salt, first chunk length][first chunk][chunks]..."""
 
     MAX_CHUNK = SS22_MAX_CHUNK
 
@@ -466,17 +467,17 @@ class SS22ClientDecryptor(SSDecryptor):
         pos += n
         typ, ts = struct.unpack("!BQ", hdr[:9])
         if typ != 1:
-            raise ValueError("2022 응답 종류가 잘못됨")
+            raise ValueError(_t("2022 invalid response type"))
         _check_ss22_time(ts)
         if hdr[9:9 + self.salt_len] != self.request_salt:
-            raise ValueError("2022 응답의 요청 salt 불일치")
-        self.need = struct.unpack("!H", hdr[-2:])[0]     # 첫 데이터 청크 길이 (길이 블록 없이 바로 옴)
+            raise ValueError(_t("2022 request salt mismatch in response"))
+        self.need = struct.unpack("!H", hdr[-2:])[0]     # length of the first data chunk (comes directly, without a length block)
         self.header_done = True
         return pos, True
 
 
 class SS22ClientEncryptor(SSEncryptor):
-    """2022 요청 암호화: 첫 전송에 고정 헤더 + 가변 헤더(주소·패딩·첫 데이터)."""
+    """2022 request encryption: the first send carries the fixed header + variable header (address, padding, first data)."""
 
     MAX_CHUNK = SS22_MAX_CHUNK
 
@@ -495,7 +496,7 @@ class SS22ClientEncryptor(SSEncryptor):
 
 
 class SS2018ClientEncryptor(SSEncryptor):
-    """AEAD-2018 요청: 첫 청크 앞에 목적지 주소를 붙인다."""
+    """AEAD-2018 request: the destination address goes in front of the first chunk."""
 
     def __init__(self, method, key, target):
         super().__init__(method, key)
@@ -506,7 +507,7 @@ class SS2018ClientEncryptor(SSEncryptor):
 
 
 def ss_client_codec(method, key, host, port):
-    """(암호화기, 복호화기 생성 함수). 복호화기는 요청 salt 가 필요해 암호화기를 만든 뒤 만든다."""
+    """(encryptor, decryptor factory). The decryptor needs the request salt, so it is built after the encryptor."""
     target = encode_address(host, port)
     if SS_METHODS[method][2]:
         enc = SS22ClientEncryptor(method, key, target)
@@ -515,7 +516,7 @@ def ss_client_codec(method, key, host, port):
 
 
 class SSUDPClientCodec:
-    """Shadowsocks UDP 클라이언트 (내보내는 쪽). encode(주소+데이터) / decode(패킷) -> 주소+데이터."""
+    """Shadowsocks UDP client (outbound). encode(address+data) / decode(packet) -> address+data."""
 
     def __init__(self, method, key):
         self.method, self.key = method, key

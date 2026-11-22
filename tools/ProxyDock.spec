@@ -1,14 +1,20 @@
 # -*- mode: python ; coding: utf-8 -*-
-# tools/build.py 가 이 spec 으로 빌드한다 (옵션은 여기서만 관리).
-#  - Windows, Linux : 단일 실행 파일 (dist/<os>/ProxyDock[.exe])
-#  - macOS          : 앱 번들 (dist/mac/ProxyDock.app)
-# 출력 폴더는 build.py 가 --distpath 로 정한다.
+# tools/build.py builds with this spec (options live only here).
+#  - Windows, Linux : single executable (dist/<os>/ProxyDock[.exe])
+#  - macOS          : app bundle (dist/mac/ProxyDock.app)
+# build.py sets the output folder with --distpath.
+import os
 import sys
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 IS_MAC = sys.platform == "darwin"
+ROOT = os.path.dirname(SPECPATH)      # this spec lives in tools/; sources are relative to the repo root
 
-# PySide6 전체를 끌어오지 않도록 쓰지 않는 Qt 모듈은 제외한다 (용량/시작 시간 감소)
+
+def src(*parts):
+    return os.path.join(ROOT, *parts)
+
+# exclude unused Qt modules so not all of PySide6 is pulled in (smaller size, faster startup)
 EXCLUDES = [
     'PySide6.QtWebEngineCore', 'PySide6.QtWebEngineWidgets', 'PySide6.QtWebEngineQuick',
     'PySide6.QtWebChannel', 'PySide6.QtQuick', 'PySide6.QtQml', 'PySide6.QtQuickWidgets',
@@ -21,13 +27,13 @@ EXCLUDES = [
 ]
 
 DATAS = collect_data_files('qfluentwidgets') + collect_data_files('certifi') + [
-    ('fonts/PretendardVariable.ttf', 'fonts'), ('fonts/JetBrainsMono.ttf', 'fonts'),
-    ('licenses/*.txt', 'licenses'),
+    (src('fonts', 'PretendardVariable.ttf'), 'fonts'), (src('fonts', 'JetBrainsMono.ttf'), 'fonts'),
+    (src('licenses', '*.txt'), 'licenses'), (src('proxydock', 'locales', '*.json'), 'proxydock/locales'),
 ]
 
 a = Analysis(
-    ['proxydock.py'],
-    pathex=[],
+    [src('proxydock.py')],
+    pathex=[ROOT],
     binaries=[],
     datas=DATAS,
     hiddenimports=collect_submodules('proxydock') + collect_submodules('aioquic'),

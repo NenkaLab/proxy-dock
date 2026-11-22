@@ -1,4 +1,5 @@
-"""통계 페이지: 프록시 드롭다운(전체 합계 / 프록시별) + 타일 + 처리량 그래프."""
+"""Statistics page: proxy selector (total / per proxy) + tiles + throughput graph."""
+from ..i18n import _t
 from collections import deque
 
 from PySide6.QtCore import QPointF
@@ -85,9 +86,9 @@ class ThroughputChart(QWidget):
         f = p.font()
         f.setPixelSize(12)
         p.setFont(f)
-        p.drawText(4, 16, f"최대 {fmt_rate(top)}")
+        p.drawText(4, 16, _t("max {fmt_rate}").format(fmt_rate=fmt_rate(top)))
         x = self.width() - 200
-        for label, c in (("다운로드", down_c), ("업로드", up_c)):
+        for label, c in ((_t("Download"), down_c), (_t("Upload"), up_c)):
             p.fillRect(x, 7, 10, 10, c)
             p.setPen(muted)
             p.drawText(x + 16, 16, label)
@@ -99,18 +100,18 @@ class StatsInterface(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("statsInterface")
-        self.history = {}       # id("" = 합계) -> (up deque, down deque)
+        self.history = {}       # id ("" = total) -> (up deque, down deque)
         self.latest = {}        # id -> (Stats, up_rate, down_rate)
 
-        title = TitleLabel("통계", self)
-        self.proxy = ProxyCombo(self, "전체 합계", 240)
+        title = TitleLabel(_t("Statistics"), self)
+        self.proxy = ProxyCombo(self, _t("Total"), 240)
         self.proxy.currentIndexChanged.connect(lambda *_: self._show())
-        self.t_tcp = StatTile("활성 TCP 연결", self)
-        self.t_udp = StatTile("활성 UDP 세션", self)
-        self.t_total = StatTile("누적 연결", self)
-        self.t_down = StatTile("다운로드", self)
-        self.t_up = StatTile("업로드", self)
-        self.t_err = StatTile("차단 / 실패", self)
+        self.t_tcp = StatTile(_t("Active TCP connections"), self)
+        self.t_udp = StatTile(_t("Active UDP sessions"), self)
+        self.t_total = StatTile(_t("Total connections"), self)
+        self.t_down = StatTile(_t("Download"), self)
+        self.t_up = StatTile(_t("Upload"), self)
+        self.t_err = StatTile(_t("Blocked / failed"), self)
         grid = QGridLayout()
         grid.setSpacing(12)
         for i, t in enumerate((self.t_tcp, self.t_udp, self.t_total, self.t_down, self.t_up, self.t_err)):
@@ -120,7 +121,7 @@ class StatsInterface(QWidget):
         self.chart = ThroughputChart(chart_card)
         cl = QVBoxLayout(chart_card)
         cl.setContentsMargins(18, 14, 18, 14)
-        self.chart_title = CaptionLabel("처리량 (최근 60초)", chart_card)
+        self.chart_title = CaptionLabel(_t("Throughput (last 60 s)"), chart_card)
         cl.addWidget(self.chart_title)
         cl.addWidget(self.chart, 1)
 
@@ -139,7 +140,7 @@ class StatsInterface(QWidget):
         self.proxy.set_proxies(proxies)
 
     def push(self, snapshots):
-        """snapshots: {id: (Stats, up_rate, down_rate)}, "" 는 합계. 1초마다 호출."""
+        """snapshots: {id: (Stats, up_rate, down_rate)}, "" is the total. Called once a second."""
         for pid, (s, up, down) in snapshots.items():
             h = self.history.get(pid)
             if h is None:
@@ -163,8 +164,8 @@ class StatsInterface(QWidget):
         self.t_tcp.set(str(s.tcp_active))
         self.t_udp.set(str(s.udp_active))
         self.t_total.set(f"{s.total:,}")
-        self.t_down.set(fmt_rate(down), f"누적 {fmt_size(s.down)}")
-        self.t_up.set(fmt_rate(up), f"누적 {fmt_size(s.up)}")
+        self.t_down.set(fmt_rate(down), _t("total {fmt_size}").format(fmt_size=fmt_size(s.down)))
+        self.t_up.set(fmt_rate(up), _t("total {fmt_size}").format(fmt_size=fmt_size(s.up)))
         self.t_err.set(f"{s.blocked:,} / {s.failed:,}")
         h = self.history.get(pid)
         if h:

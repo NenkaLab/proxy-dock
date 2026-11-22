@@ -1,9 +1,11 @@
-"""TCP 중계(Pipe), Direct 연결, UDP 세션 + Direct UDP 내보내기.
+"""TCP relay (Pipe), Direct connections, UDP sessions + Direct UDP egress.
 
-Pipe 는 asyncio.Protocol 이다. 협상 단계에서는 받은 바이트를 버퍼에 모았다가(readexactly/readuntil),
-link() 이후에는 받은 즉시 상대 Pipe 로 넘긴다. 상대 송신 버퍼가 차면(pause_writing) 읽기를 멈춰 메모리 폭주를 막는다.
-모든 연결은 자기가 속한 프록시 인스턴스(inst)를 알고 있어 통계·로그·설정을 인스턴스별로 쓴다.
+Pipe is an asyncio.Protocol. During the handshake it buffers received bytes (readexactly/readuntil);
+after link() it passes them straight to the peer Pipe. When the peer's send buffer is full (pause_writing)
+it stops reading so memory cannot run away.
+Every connection knows its proxy instance (inst), so statistics, logs and settings are per instance.
 """
+from .i18n import _t
 import asyncio
 import ctypes
 import socket
@@ -22,14 +24,14 @@ class RelayState:
 class Pipe(asyncio.Protocol):
     def __init__(self, inst, upstream=False):
         self.inst = inst
-        self.upstream = upstream    # True: 클라이언트 쪽 (여기서 받은 바이트 = 업로드)
+        self.upstream = upstream    # True: client side (bytes received here = upload)
         self.transport = None
         self.peer = None
         self.relay = None
         self.buf = bytearray()
         self.eof = False
         self.closed = False
-        self.discard = False        # UDP 제어 연결: 받은 데이터 무시
+        self.discard = False        # UDP control connection: received data is ignored
         self.waiter = None
         self.lost = None
 
@@ -73,7 +75,7 @@ class Pipe(asyncio.Protocol):
             self.transport.close()
         else:
             self._wake()
-        # half-close 유지. TLS 트랜스포트는 half-close 를 지원하지 않아 True 를 돌려주면 경고만 난다.
+        # keep half-close. TLS transports do not support half-close; returning True there only causes a warning.
         return not getattr(self, "tls", False)
 
     def connection_lost(self, exc):
@@ -86,7 +88,7 @@ class Pipe(asyncio.Protocol):
         if peer is not None and not peer.closed:
             peer.transport.close()
 
-    # 내 송신 버퍼가 가득 차면 상대 읽기를 멈춘다
+    # stop reading from the peer when my send buffer is full
     def pause_writing(self):
         if self.peer is not None and not self.peer.closed:
             self.peer.transport.pause_reading()
@@ -119,7 +121,7 @@ class Pipe(asyncio.Protocol):
         return data
 
     async def readuntil(self, sep, limit=HANDSHAKE_LIMIT):
-        """sep 까지(포함) 읽는다. limit 를 넘으면 ValueError."""
+        """Read up to and including sep. ValueError if limit is exceeded."""
         while True:
             i = self.buf.find(sep)
             if i >= 0:
@@ -131,7 +133,7 @@ class Pipe(asyncio.Protocol):
             await self._wait_data()
 
     def send(self, data):
-        """상대에게 보낼 데이터를 이 연결로 쓴다 (터널은 여기서 암호화)."""
+        """Write data meant for the peer to this connection (tunnels encrypt here)."""
         self.transport.write(data)
 
     def write(self, data):
@@ -156,7 +158,7 @@ def link(a, b):
     a.relay = b.relay = st
     a.peer, b.peer = b, a
     stats = a.inst.stats
-    # 협상 중 미리 도착한 데이터(클라이언트의 선행 전송, 서버 배너 등)를 먼저 넘긴다
+    # pass on data that arrived during the handshake first (client data sent early, server banners, ...)
     for src, dst in ((a, b), (b, a)):
         if src.buf:
             data = bytes(src.buf)
@@ -182,19 +184,19 @@ def link(a, b):
 
 
 async def run_relay(a, b):
-    """두 Pipe 를 잇고 끝날 때까지 기다린다. (종료 사유, RelayState)."""
+    """Link two Pipes and wait until they finish. (close reason, RelayState)."""
     link(a, b)
     st = a.relay
-    reason = "정상 종료"
+    reason = _t("normal close")
     try:
         while not (a.lost.done() and b.lost.done()):
             remaining = a.inst.cfg["timeout"] - (time.monotonic() - st.last)
             if remaining <= 0:
-                reason = "유휴 타임아웃"
+                reason = _t("idle timeout")
                 break
             await asyncio.wait((a.lost, b.lost), timeout=remaining)
     except asyncio.CancelledError:
-        reason = "취소됨"
+        reason = _t("cancelled")
         raise
     finally:
         for p in (a, b):
@@ -203,7 +205,7 @@ async def run_relay(a, b):
     return reason, st
 
 
-# --- Direct 연결 ---
+# --- Direct connections ---
 
 def _close_if_connected(task):
     if not task.cancelled() and task.exception() is None:
@@ -211,7 +213,7 @@ def _close_if_connected(task):
 
 
 async def _race_connect(inst, addrs, delay=0.25):
-    """RFC 8305 식 happy-eyeballs: delay 간격으로 다음 주소를 동시에 시도, 먼저 붙는 쪽 사용."""
+    """RFC 8305-style happy eyeballs: start the next address every delay seconds, use whichever connects first."""
     loop = asyncio.get_running_loop()
     pending = set()
     errors = []
@@ -248,7 +250,7 @@ async def _race_connect(inst, addrs, delay=0.25):
 
 
 async def open_direct(inst, host, port, block_private=None):
-    """목적지에 직접 TCP 연결 -> Pipe. 내부망 차단이면 직접 해석·검사한 주소로만 연결(DNS rebinding 방지)."""
+    """Direct TCP connection to the destination -> Pipe. With private network blocking, only connect to addresses resolved and checked here (prevents DNS rebinding)."""
     loop = asyncio.get_running_loop()
     if block_private is None:
         block_private = inst.cfg["block_private"]
@@ -262,7 +264,7 @@ async def open_direct(inst, host, port, block_private=None):
         if fam not in (socket.AF_INET, socket.AF_INET6) or sa[0] in seen:
             continue
         if is_internal_ip(sa[0]):
-            raise BlockedDestination(f"내부망 주소 {sa[0]}")
+            raise BlockedDestination(_t("private address {sa}").format(sa=sa[0]))
         seen.add(sa[0])
         first_fam = first_fam or fam
         (v6 if fam == socket.AF_INET6 else v4).append(sa)
@@ -292,11 +294,11 @@ def enable_keepalive(transport):
 
 
 # --- UDP ---
-# 세션 = 클라이언트 쪽(받는 쪽 형식으로 주고받기) + 내보내기(egress: Direct / SS 터널 / Hysteria2 터널).
-# 세션은 dispatch() 로 목적지 패킷을 egress 에 넘기고, egress 는 deliver() 로 응답을 돌려준다.
+# Session = client side (speaks the inbound format) + egress (Direct / SS tunnel / Hysteria2 tunnel).
+# The session hands destination packets to the egress with dispatch(); the egress returns replies with deliver().
 
 def disable_udp_connreset(sock):
-    """Windows: 목적지의 ICMP port-unreachable 이 WSAECONNRESET 으로 올라오는 것을 막는다."""
+    """Windows: stop ICMP port-unreachable from the destination surfacing as WSAECONNRESET."""
     if not IS_WIN:
         return
     try:
@@ -341,7 +343,7 @@ class DatagramCallback(asyncio.DatagramProtocol):
 
 
 class UDPSession:
-    """UDP 세션 공통. 하위 클래스가 클라이언트에서 받은 패킷을 dispatch() 하고 _reply() 로 돌려준다."""
+    """Base UDP session. Subclasses dispatch() packets from the client and answer with _reply()."""
 
     MAX_HDR_CACHE = 4096
 
@@ -355,11 +357,11 @@ class UDPSession:
         self.closed = False
         self.up = 0
         self.down = 0
-        self.dropped = 0            # 허용 목록/내부망/DNS 실패로 버린 패킷
+        self.dropped = 0            # packets dropped by the allow list / private network / DNS failure
         self.started = time.monotonic()
 
     async def open_egress(self):
-        from .outbound import make_udp_egress   # 순환 import 방지
+        from .outbound import make_udp_egress   # avoid a circular import
         self.egress = await make_udp_egress(self.inst, self)
 
     def close(self):
@@ -386,7 +388,7 @@ class UDPSession:
             self.inst.stats.up += len(payload)
 
     def deliver(self, src_host, src_port, data):
-        """egress 가 받은 응답을 클라이언트로."""
+        """Reply received by the egress -> client."""
         if self.closed or self.client_addr is None:
             return
         key = (src_host, src_port)
@@ -413,10 +415,10 @@ _dns_cache = {}
 
 
 class DirectEgress:
-    """목적지로 직접 보내는 UDP. 보낸 적 있는 IP 에서 온 응답만 받는다."""
+    """UDP sent straight to the destination. Only accepts replies from IPs it has sent to."""
 
-    MAX_PENDING_DNS = 64     # 동시에 해석 중인 호스트 수
-    MAX_QUEUED = 64          # 해석 대기 중 호스트당 보관 패킷 수
+    MAX_PENDING_DNS = 64     # hosts being resolved at the same time
+    MAX_QUEUED = 64          # packets kept per host while it is being resolved
     MAX_KNOWN_IPS = 4096
 
     def __init__(self, session):
@@ -424,7 +426,7 @@ class DirectEgress:
         self.inst = session.inst
         self.remote_tr = {}
         self.known_ips = set()
-        self.resolving = {}         # host -> [(port, payload), ...] 해석 대기열 (순서 유지)
+        self.resolving = {}         # host -> [(port, payload), ...] waiting for resolution (order kept)
 
     async def start(self):
         loop = asyncio.get_running_loop()
@@ -462,7 +464,7 @@ class DirectEgress:
         ip = None
         try:
             infos = await asyncio.get_running_loop().getaddrinfo(host, None, type=socket.SOCK_DGRAM)
-            # UDP 는 happy-eyeballs 가 없으므로 IPv4 를 우선 (IPv6 경로가 깨진 환경 대비)
+            # UDP has no happy eyeballs, so prefer IPv4 (in case the IPv6 route is broken)
             infos.sort(key=lambda i: i[0] != socket.AF_INET)
             for fam, _, _, _, sockaddr in infos:
                 if fam in self.remote_tr:

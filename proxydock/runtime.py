@@ -1,4 +1,5 @@
-"""프록시 실행: ProxyInstance(프록시 하나의 실행 상태) 와 ProxyManager(이벤트 루프 스레드에서 여러 프록시 관리)."""
+"""Running proxies: ProxyInstance (run state of one proxy) and ProxyManager (runs many proxies on an event loop thread)."""
+from .i18n import _t
 import asyncio
 import errno
 import threading
@@ -20,11 +21,12 @@ class ProxyInstance:
         self.servers = []
         self._hy2 = None
         self.last_error = ""
+        self.last_reason = ""     # code of the last destination connection failure (auth/denied/net/host/timeout/...)
         self.update(proxy, glob)
 
-    # --- 설정 ---
+    # --- settings ---
     def update(self, proxy, glob):
-        """설정 갱신. 받는/내보내는 쪽 값이 바뀐 경우는 매니저가 재시작한다."""
+        """Update the settings. The manager restarts the proxy when the inbound/outbound values change."""
         from .ss import ss_make_key
         self.proxy = proxy
         self.id = proxy["id"]
@@ -89,7 +91,7 @@ class ProxyInstance:
             self._hy2 = Hy2Client(self)
         return self._hy2
 
-    # --- 시작 / 정지 ---
+    # --- start / stop ---
     async def start(self):
         from .inbound import start_servers
         self.servers = await start_servers(self)
@@ -124,13 +126,13 @@ def _net_key(p):
 
 
 class ProxyManager:
-    """이벤트 루프 스레드 하나에서 모든 프록시를 돌린다. UI 스레드에서 부르는 메서드는 스레드 안전."""
+    """Runs every proxy on one event loop thread. Methods called from the UI thread are thread-safe."""
 
     def __init__(self, status_hook=None):
-        self.status_hook = status_hook      # (프록시 ID, 상태, 메시지) - 루프 스레드에서 호출됨
-        self.instances = {}                 # 실행 중: id -> ProxyInstance
-        self.stats = {}                     # id -> Stats (정지해도 누적 유지)
-        self.status = {}                    # id -> (상태, 메시지)
+        self.status_hook = status_hook      # (proxy id, state, message) - called on the loop thread
+        self.instances = {}                 # running: id -> ProxyInstance
+        self.stats = {}                     # id -> Stats (kept across stops)
+        self.status = {}                    # id -> (state, message)
         self.loop = asyncio.new_event_loop()
         self.loop.set_default_executor(ThreadPoolExecutor(max_workers=64, thread_name_prefix="dns"))
         self.loop.set_exception_handler(_loop_exception)
@@ -151,7 +153,7 @@ class ProxyManager:
     def stats_for(self, pid):
         return self.stats.setdefault(pid, Stats())
 
-    # --- UI 스레드에서 부르는 것 ---
+    # --- called from the UI thread ---
     def start(self, proxy, glob):
         return self.submit(self._start(proxy, glob))
 
@@ -165,11 +167,11 @@ class ProxyManager:
             pass
 
     def apply(self, proxy, glob):
-        """프록시 설정이 바뀜: 실행 중이면 받는/내보내는 쪽 변경은 재시작, 나머지는 바로 반영."""
+        """Proxy settings changed: a running proxy restarts for inbound/outbound changes, other changes apply immediately."""
         return self.submit(self._apply(proxy, glob))
 
     def apply_global(self, glob, proxies):
-        """전역 기본값이 바뀜: '전역 따름' 상태인 실행 중 프록시에 바로 반영."""
+        """Global defaults changed: apply right away to running proxies that use the global value."""
         by_id = {p["id"]: p for p in proxies}
 
         def run():
@@ -178,7 +180,7 @@ class ProxyManager:
                     inst.update(by_id[pid], glob)
         self.loop.call_soon_threadsafe(run)
 
-    # --- 루프 스레드 ---
+    # --- loop thread ---
     async def _start(self, proxy, glob):
         pid = proxy["id"]
         if pid in self.instances:
@@ -193,13 +195,13 @@ class ProxyManager:
             code = getattr(e, "winerror", None) or getattr(e, "errno", None)
             port = proxy["inbound"]["port"]
             if code in (10048, errno.EADDRINUSE, 98, 48):
-                msg = f"포트 {port} 를 이미 다른 프로그램이 쓰고 있습니다"
+                msg = _t("Port {port} is already in use by another program").format(port=port)
             elif code in (10013, errno.EACCES):
-                msg = f"포트 {port} 를 쓸 수 없습니다 (Windows 예약 범위 또는 권한)"
+                msg = _t("Port {port} cannot be used (reserved by Windows, or no permission)").format(port=port)
             elif code in (10049, errno.EADDRNOTAVAIL):
-                msg = f"이 PC 에 {proxy['inbound']['host']} 주소가 없습니다"
+                msg = _t("This PC does not have the address {host}").format(host=proxy['inbound']['host'])
             self._set(pid, "error", msg)
-            log(LOG_ERROR, f"[{proxy['name']}] 시작 실패: {msg}")
+            log(LOG_ERROR, _t("[{name}] failed to start: {msg}").format(name=proxy['name'], msg=msg))
             if inst is not None:
                 try:
                     await inst.stop()
@@ -208,13 +210,13 @@ class ProxyManager:
             return False
         self.instances[pid] = inst
         self._set(pid, "running")
-        inst.log(LOG_INFO, f"시작: {inst.summary}")
+        inst.log(LOG_INFO, _t("Started: {summary}").format(summary=inst.summary))
         ib = inst.inbound
         if not is_loopback_host(ib["host"]):
             if ib["type"] == "socks4":
-                inst.log(LOG_WARN, "SOCKS4 는 비밀번호 인증이 없어 외부에 공개되면 누구나 쓸 수 있습니다")
+                inst.log(LOG_WARN, _t("SOCKS4 has no password authentication; anyone can use it if it is exposed"))
             elif ib["type"] in ("socks5", "http", "https") and not ib["auth_enabled"]:
-                inst.log(LOG_WARN, f"{host_port(ib['host'], ib['port'])} 에서 인증 없이 수신 중입니다 (오픈 프록시)")
+                inst.log(LOG_WARN, _t("Listening on {host_port} without authentication (open proxy)").format(host_port=host_port(ib['host'], ib['port'])))
         return True
 
     async def _stop(self, pid, quiet=False):
@@ -222,7 +224,7 @@ class ProxyManager:
         if inst is not None:
             await inst.stop()
             if not quiet:
-                inst.log(LOG_INFO, "정지")
+                inst.log(LOG_INFO, _t("Stopped"))
         if not quiet:
             self._set(pid, "stopped")
 
@@ -241,7 +243,7 @@ class ProxyManager:
 
 
 def _loop_exception(loop, context):
-    # Proactor 가 이미 끊긴/half-close 된 소켓을 닫을 때 shutdown() 에서 나는 OSError 는 무시
+    # ignore the OSError from shutdown() when Proactor closes a socket that is already gone/half-closed
     exc = context.get("exception")
     if isinstance(exc, OSError) and "_call_connection_lost" in str(context.get("handle", "")):
         return

@@ -1,9 +1,10 @@
-"""받는 쪽: SOCKS5 / SOCKS4(4a) / HTTP / HTTPS / Shadowsocks 서버.
+"""Inbound: SOCKS5 / SOCKS4(4a) / HTTP / HTTPS / Shadowsocks server.
 
-각 프로토콜은 목적지를 알아낸 뒤 relay_to() 로 넘긴다. relay_to() 는 허용 목록을 확인하고
-내보내는 쪽(outbound.connect)으로 목적지 연결을 만든 다음, 프로토콜별 응답(Reply)을 보내고 중계한다.
-Hysteria2 받기는 hysteria2.py 에 있다.
+Each protocol works out the destination and hands it to relay_to(). relay_to() checks the allow list,
+opens the destination connection through the outbound (outbound.connect), sends the protocol's reply (Reply)
+and relays. The Hysteria2 inbound lives in hysteria2.py.
 """
+from .i18n import _t
 import asyncio
 import base64
 import hmac
@@ -33,7 +34,7 @@ _tasks = set()
 
 
 class ClientPipe(Pipe):
-    """받는 쪽 클라이언트 연결. 전체/IP 별 연결 상한과 차단 IP 를 적용하고 handle() 을 실행한다."""
+    """Inbound client connection. Applies the total/per-IP connection limits and IP bans, then runs handle()."""
 
     def __init__(self, inst):
         super().__init__(inst, upstream=True)
@@ -68,7 +69,7 @@ class ClientPipe(Pipe):
         except (asyncio.IncompleteReadError, asyncio.TimeoutError, ConnectionError, asyncio.CancelledError):
             pass
         except Exception as e:
-            self.inst.log(LOG_ERROR, f"{self.client} 처리 중 오류: {e!r}")
+            self.inst.log(LOG_ERROR, _t("{client} error: {e!r}").format(client=self.client, e=e))
         finally:
             self.transport.close()
 
@@ -89,10 +90,10 @@ class ClientPipe(Pipe):
                 per_ip.pop(self.ip, None)
 
 
-# --- 공통 중계 ---
+# --- shared relay ---
 
 class Reply:
-    """프로토콜별 성공/실패 응답. 기본은 응답 없음 (Shadowsocks, HTTP 일반 요청 성공)."""
+    """Per-protocol success/failure reply. The default sends nothing (Shadowsocks, successful plain HTTP request)."""
 
     def ok(self, p, bind):
         pass
@@ -102,24 +103,26 @@ class Reply:
 
 
 async def relay_to(p, client, host, port, reply, first=b"", tag=""):
-    """허용 목록 확인 -> 내보내는 쪽 연결 -> 응답 -> 중계. first: 연결 직후 목적지에 먼저 보낼 데이터."""
+    """Allow list check -> outbound connection -> reply -> relay. first: data to send to the destination right after connecting."""
     inst = p.inst
     target = host_port(host, port)
     who = f"{tag}{client}"
     if not inst.allowed(host):
         reply.fail(p, "denied")
         inst.stats.blocked += 1
-        inst.log(LOG_BLOCKED, f"{who} -> {target} 허용 목록에 없음")
+        inst.log(LOG_BLOCKED, _t("{who} -> {target} not in the allow list").format(who=who, target=target))
         return
     try:
         remote = await asyncio.wait_for(outbound.connect(inst, host, port), CONNECT_TIMEOUT)
     except BlockedDestination as e:
         reply.fail(p, "denied")
+        inst.last_reason = "denied"
         inst.stats.blocked += 1
         inst.log(LOG_BLOCKED, f"{who} -> {target} {e}")
         return
     except (asyncio.TimeoutError, OSError, ValueError, asyncio.IncompleteReadError) as e:
-        reply.fail(p, fail_reason(e))
+        inst.last_reason = fail_reason(e)
+        reply.fail(p, inst.last_reason)
         inst.stats.failed += 1
         inst.log(LOG_FAIL, f"{who} -> {target} {describe_error(e)}")
         return
@@ -139,21 +142,19 @@ async def relay_to(p, client, host, port, reply, first=b"", tag=""):
         (f" via {inst.outbound_label}" if ob != "direct" else "")
     inst.log_conn(LOG_TCP, f"{who} -> {target}{via}")
     started = time.monotonic()
-    reason, st = "오류", None
+    reason, st = _t("error"), None
     try:
         reason, st = await run_relay(p, remote)
     finally:
         inst.stats.tcp_active -= 1
         if inst.cfg["log_close"] and st is not None:
-            inst.log(LOG_TCP, f"{who} -> {target} 종료 · {reason} · ↑ {fmt_size(st.up + len(first))} "
-                              f"↓ {fmt_size(st.down)} · {time.monotonic() - started:.1f}s")
+            inst.log(LOG_TCP, _t("{who} -> {target} closed · {reason} · ↑ {fmt_size} ↓ {fmt_size2} · {value:.1f}s").format(who=who, target=target, reason=reason, fmt_size=fmt_size(st.up + len(first)), fmt_size2=fmt_size(st.down), value=time.monotonic() - started))
 
 
 def log_udp_close(inst, who, session):
     if inst.cfg["log_close"] or inst.cfg["log_connections"]:
-        extra = f" · 버린 패킷 {session.dropped}" if session.dropped else ""
-        inst.log(LOG_UDP, f"{who} UDP 세션 종료 · ↑ {fmt_size(session.up)} ↓ {fmt_size(session.down)} · "
-                          f"{time.monotonic() - session.started:.1f}s{extra}")
+        extra = _t(" · dropped packets {dropped}").format(dropped=session.dropped) if session.dropped else ""
+        inst.log(LOG_UDP, _t("{who} UDP session ended · ↑ {fmt_size} ↓ {fmt_size2} · {value:.1f}s{extra}").format(who=who, fmt_size=fmt_size(session.up), fmt_size2=fmt_size(session.down), value=time.monotonic() - session.started, extra=extra))
 
 
 # --- SOCKS5 ---
@@ -192,7 +193,7 @@ class Socks5UDPSession(UDPSession):
             self.client_addr = addr[:2]
         elif addr[:2] != self.client_addr:
             return
-        if len(data) < 10 or data[2] != 0x00:  # FRAG != 0 은 버린다
+        if len(data) < 10 or data[2] != 0x00:  # drop FRAG != 0
             return
         try:
             dst_addr, dst_port, header_end = parse_address(data, 3)
@@ -216,7 +217,7 @@ class Socks5Pipe(ClientPipe):
             await self._udp()
         else:
             self.write(make_reply(REP_UNSUPPORTED))
-            self.inst.log(LOG_WARN, f"{self.client} 지원하지 않는 SOCKS 명령 0x{cmd:02x} (BIND 등)")
+            self.inst.log(LOG_WARN, _t("{client} unsupported SOCKS command 0x{cmd:02x} (BIND etc.)").format(client=self.client, cmd=cmd))
 
     async def _auth(self):
         ib = self.inst.inbound
@@ -231,8 +232,8 @@ class Socks5Pipe(ClientPipe):
             return True
         self.inst.stats.blocked += 1
         note_auth_failure(self.ip, self.inst)
-        self.inst.log(LOG_AUTH, f"{self.client} 인증 실패 (아이디 {uname.decode(errors='replace')!r})")
-        await asyncio.sleep(0.5)    # 무차별 대입 지연
+        self.inst.log(LOG_AUTH, _t("{client} authentication failed (user {decode!r})").format(client=self.client, decode=uname.decode(errors='replace')))
+        await asyncio.sleep(0.5)    # slow down brute force
         self.write(b"\x01\x01")
         return False
 
@@ -245,7 +246,7 @@ class Socks5Pipe(ClientPipe):
             if 0x02 not in methods:
                 self.write(b"\x05\xff")
                 self.inst.stats.blocked += 1
-                self.inst.log(LOG_AUTH, f"{self.client} 인증 없이 접속 시도 (클라이언트 인증 방식 {list(methods)})")
+                self.inst.log(LOG_AUTH, _t("{client} tried to connect without authentication (client methods {list})").format(client=self.client, list=list(methods)))
                 return None
             self.write(b"\x05\x02")
             if not await self._auth():
@@ -253,7 +254,7 @@ class Socks5Pipe(ClientPipe):
         else:
             if 0x00 not in methods:
                 self.write(b"\x05\xff")
-                self.inst.log(LOG_AUTH, f"{self.client} 지원하지 않는 인증 방식 {list(methods)}")
+                self.inst.log(LOG_AUTH, _t("{client} unsupported authentication methods {list}").format(client=self.client, list=list(methods)))
                 return None
             self.write(b"\x05\x00")
         head = await self.readexactly(4)
@@ -281,7 +282,7 @@ class Socks5Pipe(ClientPipe):
         inst = self.inst
         if inst.outbound["type"] not in ("direct", "shadowsocks", "hysteria2"):
             self.write(make_reply(REP_UNSUPPORTED))
-            inst.log(LOG_WARN, f"{self.client} UDP 요청 거부 - {inst.outbound_label} 로는 UDP 를 보낼 수 없음")
+            inst.log(LOG_WARN, _t("{client} UDP request refused - UDP cannot be sent via {outbound_label}").format(client=self.client, outbound_label=inst.outbound_label))
             return
         local_ip = self.transport.get_extra_info("sockname")[0]
         family = socket.AF_INET6 if ":" in local_ip else socket.AF_INET
@@ -290,10 +291,10 @@ class Socks5Pipe(ClientPipe):
             relay_port = await session.start(local_ip, family)
         except (OSError, UpstreamError) as e:
             session.close()
-            inst.log(LOG_ERROR, f"{self.client} UDP 릴레이 시작 실패: {describe_error(e)}")
+            inst.log(LOG_ERROR, _t("{client} could not start UDP relay: {describe_error}").format(client=self.client, describe_error=describe_error(e)))
             self.write(make_reply(REP_GENERAL))
             return
-        # UDP 세션은 TCP 제어 연결이 닫힐 때까지 유지 (유휴 타임아웃 없음)
+        # the UDP session lives until the TCP control connection closes (no idle timeout)
         self.discard = True
         self.buf.clear()
         self.transport.resume_reading()
@@ -301,7 +302,7 @@ class Socks5Pipe(ClientPipe):
         self.write(make_reply(REP_SUCCESS, local_ip, relay_port))
         inst.stats.total += 1
         inst.stats.udp_active += 1
-        inst.log_conn(LOG_UDP, f"{self.client} UDP 세션 시작 (릴레이 포트 {relay_port})")
+        inst.log_conn(LOG_UDP, _t("{client} UDP session started (relay port {relay_port})").format(client=self.client, relay_port=relay_port))
         try:
             if not self.eof:
                 await self.lost
@@ -328,9 +329,9 @@ class Socks4Pipe(ClientPipe):
             vn, cd, port = head[0], head[1], struct.unpack("!H", head[2:4])[0]
             if vn != 4:
                 return None
-            await self.readuntil(b"\0", 256)           # USERID (SOCKS4 는 비밀번호가 없다)
+            await self.readuntil(b"\0", 256)           # USERID (SOCKS4 has no password)
             ip = head[4:8]
-            if ip[:3] == b"\0\0\0" and ip[3] != 0:      # SOCKS4a: 도메인이 뒤에 온다
+            if ip[:3] == b"\0\0\0" and ip[3] != 0:      # SOCKS4a: the domain follows
                 raw = (await self.readuntil(b"\0", 256))[:-1]
                 try:
                     host = raw.decode("ascii")
@@ -348,7 +349,7 @@ class Socks4Pipe(ClientPipe):
         cd, host, port = req
         if cd != CMD_CONNECT:
             Socks4Reply().fail(self, "general")
-            self.inst.log(LOG_WARN, f"{self.client} 지원하지 않는 SOCKS4 명령 {cd} (BIND)")
+            self.inst.log(LOG_WARN, _t("{client} unsupported SOCKS4 command {cd} (BIND)").format(client=self.client, cd=cd))
             return
         await relay_to(self, self.client, host, port, Socks4Reply())
 
@@ -382,17 +383,17 @@ class HttpReply(Reply):
 
 
 class HttpPipe(ClientPipe):
-    _resp = None        # 일반 요청: 아직 다 받지 못한 응답 헤더 (None = 그대로 전달)
+    _resp = None        # plain request: response header not fully received yet (None = pass through)
 
     def send(self, data):
-        """목적지 응답을 클라이언트로. 일반 요청이면 응답 헤더의 Connection/Keep-Alive 를 close 로 바꾼다
-        (연결당 요청 하나만 처리하므로, 서버가 keep-alive 라고 해도 클라이언트가 재사용하지 않도록)."""
+        """Destination response to the client. For plain requests, rewrite Connection/Keep-Alive in the response header
+        to close (only one request per connection is handled, so the client must not reuse it even if the server says keep-alive)."""
         if self._resp is None:
             return super().send(data)
         self._resp += data
         end = self._resp.find(b"\r\n\r\n")
         if end < 0:
-            if len(self._resp) > 64 * 1024:     # 헤더가 비정상적으로 김: 손대지 않고 넘긴다
+            if len(self._resp) > 64 * 1024:     # abnormally long header: pass it on untouched
                 data, self._resp = bytes(self._resp), None
                 super().send(data)
             return
@@ -401,7 +402,7 @@ class HttpPipe(ClientPipe):
         self._resp = None
         parts = lines[0].split(b" ", 2)
         code = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
-        if 100 <= code < 200 and code != 101:   # 100 Continue 등 중간 응답: 다음 헤더를 다시 고친다
+        if 100 <= code < 200 and code != 101:   # interim response such as 100 Continue: rewrite the next header again
             super().send(b"\r\n".join(lines) + b"\r\n\r\n")
             self._resp = bytearray()
             if rest:
@@ -432,23 +433,23 @@ class HttpPipe(ClientPipe):
                 return
             await relay_to(self, self.client, host, port, HttpReply(True))
             return
-        # 일반 요청: GET http://host[:port]/path -> origin-form 으로 바꿔 전달 (연결당 요청 하나)
+        # plain request: GET http://host[:port]/path -> forwarded in origin-form (one request per connection)
         url = urllib.parse.urlsplit(target)
         if url.scheme.lower() != "http" or not url.hostname:
             self.write(http_error(400, "Bad Request"))
-            self.inst.log(LOG_WARN, f"{self.client} 프록시 요청이 아님 ({method} {target[:80]})")
+            self.inst.log(LOG_WARN, _t("{client} not a proxy request ({method} {target})").format(client=self.client, method=method, target=target[:80]))
             return
         host, port = url.hostname, url.port or 80
         path = urllib.parse.urlunsplit(("", "", url.path or "/", url.query, ""))
         upgrade = any(h.lower().startswith("upgrade:") for h in headers)
-        # Connection 헤더에 이름이 나온 헤더도 이 구간에서만 쓰는 헤더(hop-by-hop)라 지운다
+        # headers named in the Connection header are hop-by-hop too, so remove them
         listed = set()
         for h in headers:
             name, _, value = h.partition(":")
             if name.strip().lower() == "connection":
                 listed |= {v.strip().lower() for v in value.split(",") if v.strip()}
         listed -= {"upgrade"}
-        # RFC 9112 3.2.2: 절대 주소로 받은 요청은 Host 헤더를 그 주소로 바꾼다 (허용 목록과 실제 대상 일치)
+        # RFC 9112 3.2.2: for an absolute-form request, replace Host with that authority (allow list matches the real target)
         authority = host_port(host, port) if url.port else (f"[{host}]" if ":" in host else host)
         out = [f"{method} {path} {version}", f"Host: {authority}"]
         for h in headers:
@@ -458,7 +459,7 @@ class HttpPipe(ClientPipe):
             out.append(h)
         if not upgrade:
             out.append("Connection: close")
-            self._resp = bytearray()    # 응답 헤더도 Connection: close 로 고쳐서 보낸다
+            self._resp = bytearray()    # also rewrite the response header to Connection: close
         await relay_to(self, self.client, host, port, HttpReply(False),
                        first=("\r\n".join(out) + "\r\n\r\n").encode("latin-1"))
 
@@ -483,23 +484,23 @@ class HttpPipe(ClientPipe):
                 return True
             self.inst.stats.blocked += 1
             note_auth_failure(self.ip, self.inst)
-            self.inst.log(LOG_AUTH, f"{self.client} 인증 실패 (아이디 {user!r})")
+            self.inst.log(LOG_AUTH, _t("{client} authentication failed (user {user!r})").format(client=self.client, user=user))
         self.write(http_error(407, "Proxy Authentication Required",
                               'Proxy-Authenticate: Basic realm="ProxyDock"\r\n'))
         return False
 
 
-# --- Shadowsocks 서버 ---
+# --- Shadowsocks server ---
 
 class SSServerPipe(ClientPipe):
-    """Shadowsocks TCP 클라이언트 연결. 받은 암호문은 풀어서 평문 파이프로, 보낼 때는 암호화."""
+    """Shadowsocks TCP client connection. Received ciphertext is decrypted into the plaintext pipe; sends are encrypted."""
 
     def __init__(self, inst):
         super().__init__(inst)
         method, key = inst.ss_in_key
         self.v2022 = ssc.SS_METHODS[method][2]
         self.dec = (ssc.SS22Decryptor if self.v2022 else ssc.SSDecryptor)(method, key)
-        self.enc = None             # 2022 응답은 요청 salt 가 필요하므로 첫 전송 때 만든다
+        self.enc = None             # the 2022 response needs the request salt, so it is created on the first send
         self.bad = False
 
     def data_received(self, data):
@@ -508,14 +509,14 @@ class SSServerPipe(ClientPipe):
         try:
             plain = self.dec.feed(data)
         except (InvalidTag, ValueError, struct.error) as e:
-            # 탐지 방지: 바로 끊지 않고 응답 없이 두었다가 협상 시간 초과로 닫는다
+            # anti-probing: do not close right away; stay silent until the handshake timeout closes it
             self.bad = True
             self.discard = True
             self.buf.clear()
             self.inst.stats.blocked += 1
             note_auth_failure(self.ip, self.inst)
-            reason = str(e) if isinstance(e, ValueError) else "비밀번호/암호화 방식 불일치"
-            self.inst.log(LOG_AUTH, f"SS {self.client} 복호화 실패 - {reason}")
+            reason = str(e) if isinstance(e, ValueError) else _t("password/cipher mismatch")
+            self.inst.log(LOG_AUTH, _t("SS {client} decryption failed - {reason}").format(client=self.client, reason=reason))
             return
         if plain:
             Pipe.data_received(self, plain)
@@ -549,13 +550,13 @@ class SSServerPipe(ClientPipe):
 
 
 class SSUDPSession(UDPSession):
-    """Shadowsocks UDP 세션 (클라이언트 주소 또는 2022 세션 ID 별)."""
+    """Shadowsocks UDP session (per client address, or per 2022 session id)."""
 
     def __init__(self, server, client_addr, key=None):
         super().__init__(server.inst, client_addr[0])
         self.server = server
         self.client_addr = client_addr
-        self.key = key              # 2022: 클라이언트 세션 ID
+        self.key = key              # 2022: client session id
         self.ready = False
         self.backlog = []
         self.last = time.monotonic()
@@ -569,7 +570,7 @@ class SSUDPSession(UDPSession):
         try:
             await self.open_egress()
         except (OSError, UpstreamError) as e:
-            self.inst.log(LOG_ERROR, f"SS UDP 내보내기 시작 실패: {describe_error(e)}")
+            self.inst.log(LOG_ERROR, _t("Could not start SS UDP outbound: {describe_error}").format(describe_error=describe_error(e)))
             return
         self.ready = True
         for item in self.backlog:
@@ -593,14 +594,14 @@ class SSUDPSession(UDPSession):
         super().deliver(src_host, src_port, data)
 
     def _make_hdr(self, host, port):
-        return make_udp_header(host, port)[3:]   # SS 는 RSV/FRAG 없이 주소만
+        return make_udp_header(host, port)[3:]   # SS has only the address, without RSV/FRAG
 
     def _reply(self, hdr, data):
         self.server.transport.sendto(self.server.encode_reply(self, hdr + data), self.client_addr)
 
 
 class SSUDPServer(asyncio.DatagramProtocol):
-    """Shadowsocks UDP 서버. AEAD-2018 은 클라이언트 주소별, 2022 는 클라이언트 세션 ID 별 세션."""
+    """Shadowsocks UDP server. AEAD-2018 sessions are per client address, 2022 sessions per client session id."""
 
     def __init__(self, inst):
         self.inst = inst
@@ -662,7 +663,7 @@ class SSUDPServer(asyncio.DatagramProtocol):
                 sess.server_aead = self._subkey_aead(sess.server_sid)
         if not sess.window.check(pid):
             raise ValueError("replayed packet")
-        sess.client_addr = addr     # NAT 재바인딩 시 최신 주소로 응답
+        sess.client_addr = addr     # reply to the latest address after NAT rebinding
         return sess, body[11 + pad:]
 
     def _new_session(self, key, addr):
@@ -671,7 +672,7 @@ class SSUDPServer(asyncio.DatagramProtocol):
         sess = self.sessions[key] = SSUDPSession(self, addr, key)
         self.inst.stats.udp_active += 1
         self.inst.stats.total += 1
-        self.inst.log_conn(LOG_UDP, f"SS {host_port(addr[0], addr[1])} UDP 세션 시작")
+        self.inst.log_conn(LOG_UDP, _t("SS {host_port} UDP session started").format(host_port=host_port(addr[0], addr[1])))
         sess.spawn(sess.open())
         return sess
 
@@ -720,14 +721,14 @@ class SSUDPServer(asyncio.DatagramProtocol):
                     self._close(key, sess)
 
 
-# --- 서버 시작 ---
+# --- server startup ---
 
 PIPES = {"socks5": Socks5Pipe, "socks4": Socks4Pipe, "http": HttpPipe, "https": HttpPipe,
          "shadowsocks": SSServerPipe}
 
 
 async def start_servers(inst):
-    """받는 쪽 서버들을 연다. 닫을 대상 목록(asyncio.Server / 트랜스포트)을 돌려준다."""
+    """Open the inbound servers. Returns what to close later (asyncio.Server / transports)."""
     loop = asyncio.get_running_loop()
     ib = inst.inbound
     t = ib["type"]
@@ -746,5 +747,5 @@ async def start_servers(inst):
             tr, _ = await loop.create_datagram_endpoint(lambda: SSUDPServer(inst), local_addr=(host, port))
             out.append(tr)
         except OSError as e:
-            inst.log(LOG_WARN, f"Shadowsocks UDP 를 열지 못했습니다 (TCP 만 동작): {e}")
+            inst.log(LOG_WARN, _t("Could not open Shadowsocks UDP (TCP only): {e}").format(e=e))
     return out

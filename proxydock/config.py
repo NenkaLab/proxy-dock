@@ -1,12 +1,14 @@
-"""설정: 경로, v2 형식(전역 + 프록시 목록), 검증, 비밀번호 보관, 이전 버전 설정 이전, 전역/로컬 병합.
+"""Settings: paths, v2 format (global + proxy list), validation, password storage, migration from the
+previous version, global/local merge.
 
 config.json
 { "version": 2,
-  "global":  { 앱 설정 + 프록시 기본값 },
+  "global":  { app settings + proxy defaults },
   "proxies": [ { "id", "name", "autostart", "inbound": {...}, "outbound": {...}, "overrides": {...} } ] }
 
-프록시의 실제 설정 = overrides 에 값이 있으면 그 값(로컬), null 이면 전역 기본값.
+Effective proxy setting = the value in overrides if set (local), otherwise the global default (null).
 """
+from .i18n import _t
 import base64
 import copy
 import ctypes
@@ -38,20 +40,21 @@ LOG_DIR = os.path.join(APP_DIR, "logs")
 CERT_DIR = os.path.join(APP_DIR, "certs")
 WINDOW_STATE_PATH = os.path.join(APP_DIR, "window.json")
 
-THEMES = [("auto", "기기 설정"), ("light", "라이트"), ("dark", "다크")]
+THEMES = [("auto", _t("System")), ("light", _t("Light")), ("dark", _t("Dark"))]
 UI_SCALES = [90, 100, 110, 125, 150]
 
 GLOBAL_DEFAULTS = {
-    # 앱 전용 (전역에만 있음)
+    # app only (global only)
+    "language": "en",           # i18n.LANGUAGES code (applies after restart)
     "theme": "auto",
     "ui_scale": 100,
-    "ui_font": "",              # "" = 내장 Pretendard
-    "mono_font": "",            # "" = 내장 JetBrains Mono
+    "ui_font": "",              # "" = built-in Pretendard
+    "mono_font": "",            # "" = built-in JetBrains Mono
     "disable_ligatures": False,
     "log_font_size": 10,
     "close_exits": False,
     "log_to_file": False,
-    # 프록시 기본값 (프록시 로컬 설정이 우선)
+    # proxy defaults (a proxy's local settings take precedence)
     "allowed_domains": ["*"],
     "block_private": False,
     "timeout": 120,
@@ -67,7 +70,7 @@ INBOUND_DEFAULTS = {
     "auth_enabled": False,
     "username": "",
     "password": "",
-    "tls_cert": "",             # "" = 자동 생성 자체 서명 인증서
+    "tls_cert": "",             # "" = generated self-signed certificate
     "tls_key": "",
     "ss_method": "2022-blake3-aes-256-gcm",
     "ss_password": "",
@@ -89,7 +92,7 @@ OUTBOUND_DEFAULTS = {
 SECRET_FIELDS = ("password", "ss_password", "hy2_password")
 
 
-# --- 검증 ---
+# --- validation ---
 
 def _typed(defaults, raw):
     out = dict(defaults)
@@ -113,8 +116,11 @@ def _typed(defaults, raw):
 
 
 def validate_global(raw):
-    from .ss import SS_METHODS  # noqa: F401  (형식 확인용 import 순서 유지)
+    from .ss import SS_METHODS  # noqa: F401  (keeps the import order for format checks)
     g = _typed(GLOBAL_DEFAULTS, raw)
+    from .i18n import LANGUAGE_CODES
+    if g["language"] not in LANGUAGE_CODES:
+        g["language"] = "en"
     if g["theme"] not in dict(THEMES):
         g["theme"] = "auto"
     if g["ui_scale"] not in UI_SCALES:
@@ -131,7 +137,7 @@ def validate_proxy(raw):
     raw = raw if isinstance(raw, dict) else {}
     p = {
         "id": raw.get("id") if isinstance(raw.get("id"), str) and raw.get("id") else uuid.uuid4().hex[:8],
-        "name": (raw.get("name") or "프록시").strip()[:60] if isinstance(raw.get("name"), str) else "프록시",
+        "name": (raw.get("name") or _t("Proxy")).strip()[:60] if isinstance(raw.get("name"), str) else _t("Proxy"),
         "autostart": raw.get("autostart") if isinstance(raw.get("autostart"), bool) else False,
         "inbound": _typed(INBOUND_DEFAULTS, raw.get("inbound")),
         "outbound": _typed(OUTBOUND_DEFAULTS, raw.get("outbound")),
@@ -164,7 +170,7 @@ def new_proxy(name, inbound=None, outbound=None, autostart=False):
 
 
 def resolve(proxy, glob):
-    """프록시의 실제 설정 (로컬 우선, 없으면 전역)."""
+    """Effective settings of a proxy (local first, otherwise global)."""
     out = {}
     for k in OVERRIDABLE:
         v = proxy["overrides"].get(k)
@@ -183,7 +189,7 @@ def _valid_listen_host(h):
 
 
 def _bind_addrs(host):
-    """받는 쪽 주소 -> 실제로 묶이는 (주소군, 주소) 집합. localhost 는 IPv4·IPv6 루프백 둘 다 연다."""
+    """Inbound address -> set of (family, address) actually bound. localhost opens both IPv4 and IPv6 loopback."""
     if host.lower() == "localhost":
         return {(4, ipaddress.ip_address("127.0.0.1")), (6, ipaddress.ip_address("::1"))}
     try:
@@ -194,8 +200,9 @@ def _bind_addrs(host):
 
 
 def _binds_overlap(h1, h2, udp=False):
-    """같은 포트에서 두 주소가 동시에 열릴 수 없으면 True (같은 주소군에서 같은 주소이거나 한쪽이 전체 주소).
-    TCP 는 IPv6 전용으로 열려 :: 와 0.0.0.0 이 같이 열리지만, UDP 의 :: 는 OS 에 따라 IPv4 도 받으므로 겹친다고 본다."""
+    """True if the two addresses cannot be bound on the same port at once (same address in the same family,
+    or one of them is the wildcard address). TCP binds IPv6 as v6-only so :: and 0.0.0.0 can coexist, but a UDP ::
+    may also receive IPv4 depending on the OS, so it counts as overlapping."""
     def addrs(h):
         out = _bind_addrs(h)
         if udp and (6, ipaddress.ip_address("::")) in out:
@@ -220,7 +227,7 @@ def _is_local_target(host):
 
 
 def _next_hop(p, proxies):
-    """p 의 내보내는 쪽이 이 앱의 다른(또는 자기) 프록시 받는 쪽을 가리키면 그 프록시."""
+    """If p's outbound points at the inbound of another (or the same) proxy in this app, return that proxy."""
     ob = p["outbound"]
     oh = ob["host"].strip().strip("[]")
     if ob["type"] == "direct" or not oh:
@@ -235,7 +242,7 @@ def _next_hop(p, proxies):
 
 
 def find_cycle(p, proxies):
-    """p 부터 내보내는 쪽을 따라가다 p 로 돌아오면 경로(이름 목록), 아니면 None."""
+    """Follow outbounds starting at p; if we come back to p return the path (list of names), else None."""
     others = [q for q in proxies if q["id"] != p["id"]] + [p]
     path, cur, seen = [p["name"]], p, {p["id"]}
     while True:
@@ -256,47 +263,47 @@ def _transports(t):
 
 
 def check_proxy(p, proxies):
-    """저장/시작 전에 확인할 문제 목록 (빈 목록이면 정상)."""
+    """Problems to fix before saving/starting (empty list = OK)."""
     from .ss import SS_METHODS, ss_make_key
     errs = []
     ib, ob = p["inbound"], p["outbound"]
     if not p["name"].strip():
-        errs.append("이름을 입력하세요")
+        errs.append(_t("Enter a name"))
     if not _valid_listen_host(ib["host"]):
-        errs.append("받는 쪽 주소는 IP 여야 합니다 (예: 127.0.0.1, 0.0.0.0, ::)")
+        errs.append(_t("The inbound address must be an IP (e.g. 127.0.0.1, 0.0.0.0, ::)"))
     if not 1 <= ib["port"] <= 65535:
-        errs.append("받는 쪽 포트가 잘못되었습니다")
+        errs.append(_t("Invalid inbound port"))
     if ib["auth_enabled"] and ib["type"] in ("socks5", "http", "https"):
         if not (0 < len(ib["username"].encode()) <= 255 and 0 < len(ib["password"].encode()) <= 255):
-            errs.append("인증을 켜려면 아이디와 비밀번호를 입력하세요 (각 255바이트 이하)")
+            errs.append(_t("Enter a username and password to enable authentication (255 bytes max each)"))
     if ib["type"] == "shadowsocks":
         try:
             if not SS_METHODS[ib["ss_method"]][2] and len(ib["ss_password"]) < 8:
-                raise ValueError("Shadowsocks 비밀번호는 8자 이상이어야 합니다")
+                raise ValueError(_t("The Shadowsocks password must be at least 8 characters"))
             ss_make_key(ib["ss_method"], ib["ss_password"])
         except ValueError as e:
-            errs.append(f"받는 쪽 {e}")
+            errs.append(_t("Inbound: {e}").format(e=e))
     if ib["type"] == "hysteria2" and len(ib["hy2_password"]) < 8:
-        errs.append("Hysteria2 비밀번호는 8자 이상이어야 합니다")
+        errs.append(_t("The Hysteria2 password must be at least 8 characters"))
     if ib["type"] in ("https", "hysteria2") and bool(ib["tls_cert"]) != bool(ib["tls_key"]):
-        errs.append("인증서와 키 파일은 둘 다 지정하거나 둘 다 비워야 합니다 (비우면 자동 생성)")
+        errs.append(_t("Set both the certificate and key files, or leave both empty (generated automatically)"))
     for f in ("tls_cert", "tls_key"):
         if ib["type"] in ("https", "hysteria2") and ib[f] and not os.path.isfile(ib[f]):
-            errs.append(f"파일이 없습니다: {ib[f]}")
+            errs.append(_t("File not found: {ib}").format(ib=ib[f]))
     if ob["type"] != "direct":
         if not ob["host"].strip() or not 1 <= ob["port"] <= 65535:
-            errs.append("내보내는 쪽 서버 주소와 포트를 입력하세요")
+            errs.append(_t("Enter the outbound server address and port"))
         if ob["type"] == "shadowsocks":
             try:
                 ss_make_key(ob["ss_method"], ob["ss_password"])
                 if not ob["ss_password"]:
-                    raise ValueError("Shadowsocks 비밀번호를 입력하세요")
+                    raise ValueError(_t("Enter the Shadowsocks password"))
             except ValueError as e:
-                errs.append(f"내보내는 쪽 {e}")
+                errs.append(_t("Outbound: {e}").format(e=e))
         if ob["type"] == "hysteria2" and not ob["hy2_password"]:
-            errs.append("내보내는 쪽 Hysteria2 비밀번호를 입력하세요")
+            errs.append(_t("Enter the outbound Hysteria2 password"))
         if ob["type"] == "socks4" and ob["password"]:
-            errs.append("SOCKS4 는 비밀번호를 지원하지 않습니다 (아이디만 가능)")
+            errs.append(_t("SOCKS4 does not support passwords (user ID only)"))
     mine = _transports(ib["type"])
     for other in proxies:
         if other["id"] == p["id"]:
@@ -306,14 +313,14 @@ def check_proxy(p, proxies):
         if oi["port"] != ib["port"] or not shared:
             continue
         if any(_binds_overlap(ib["host"], oi["host"], udp=t == "udp") for t in shared):
-            errs.append(f"'{other['name']}' 와 포트 {ib['port']} 가 겹칩니다")
+            errs.append(_t("Port {port} conflicts with '{name}'").format(name=other['name'], port=ib['port']))
     cycle = find_cycle(p, proxies)
     if cycle:
-        errs.append("프록시 체인이 순환합니다: " + " → ".join(cycle) + " (내보내는 쪽 주소/포트를 확인하세요)")
+        errs.append(_t("The proxy chain loops: ") + " → ".join(cycle) + _t(" (check the outbound address/port)"))
     return errs
 
 
-# --- 비밀번호 보관: Windows DPAPI, 그 외에는 사용자 전용 권한(0600) 파일 ---
+# --- password storage: Windows DPAPI, elsewhere a user-only (0600) file ---
 
 class _DATA_BLOB(ctypes.Structure):
     _fields_ = [("cbData", ctypes.c_uint32), ("pbData", ctypes.POINTER(ctypes.c_char))]
@@ -328,7 +335,7 @@ def _dpapi(data, protect):
     blob_out = _DATA_BLOB()
     fn = crypt32.CryptProtectData if protect else crypt32.CryptUnprotectData
     if not fn(ctypes.byref(blob_in), None, None, None, None, 0x1, ctypes.byref(blob_out)):
-        raise OSError(ctypes.get_last_error(), "DPAPI 실패")
+        raise OSError(ctypes.get_last_error(), _t("DPAPI failed"))
     try:
         return ctypes.string_at(blob_out.pbData, blob_out.cbData)
     finally:
@@ -336,7 +343,7 @@ def _dpapi(data, protect):
 
 
 def _seal(d):
-    """dict 안의 비밀번호 필드를 저장용으로 (Windows: *_dpapi)."""
+    """Prepare the password fields of a dict for saving (Windows: *_dpapi)."""
     out = dict(d)
     if not IS_WIN:
         return out
@@ -361,17 +368,17 @@ def _unseal(d, where):
             try:
                 out[k] = _dpapi(base64.b64decode(enc), False).decode("utf-8")
             except (OSError, ValueError, UnicodeDecodeError):
-                log(LOG_WARN, f"저장된 비밀번호({where} {k})를 복호화하지 못했습니다. 다시 입력하세요")
+                log(LOG_WARN, _t("Could not decrypt the saved password ({where} {k}). Please enter it again").format(where=where, k=k))
                 out[k] = ""
         elif IS_WIN and out.get(k):
             legacy = True
     return out, legacy
 
 
-# --- 읽기 / 쓰기 ---
+# --- read / write ---
 
 def load():
-    """(전역, 프록시 목록). 설정이 없으면 이전 버전 설정을 이전하고, 그것도 없으면 빈 목록으로 시작한다."""
+    """(global, proxy list). Without a config, migrate the previous version's settings, or start with an empty list."""
     try:
         with open(CONFIG_PATH, encoding="utf-8") as f:
             raw = json.load(f)
@@ -383,13 +390,13 @@ def load():
         save(glob, [])
         return glob, []
     except (OSError, ValueError) as e:
-        # 깨진 설정은 나중 저장에 덮이지 않도록 옆에 보관해 둔다
+        # keep the broken file next to it so a later save does not overwrite it
         backup = CONFIG_PATH + ".broken"
         try:
             shutil.copy2(CONFIG_PATH, backup)
-            log(LOG_WARN, f"설정 파일을 읽지 못해 기본값으로 시작합니다 ({e}). 원본은 {backup} 에 보관했습니다")
+            log(LOG_WARN, _t("Could not read the settings file, starting with defaults ({e}). The original was kept as {backup}").format(e=e, backup=backup))
         except OSError:
-            log(LOG_WARN, f"설정 파일을 읽지 못해 기본값으로 시작합니다: {e}")
+            log(LOG_WARN, _t("Could not read the settings file, starting with defaults: {e}").format(e=e))
         return validate_global({}), []
     raw = raw if isinstance(raw, dict) else {}
     glob = validate_global(raw.get("global"))
@@ -398,8 +405,8 @@ def load():
         if not isinstance(item, dict):
             continue
         item = dict(item)
-        item["inbound"], l1 = _unseal(item.get("inbound"), "받는 쪽")
-        item["outbound"], l2 = _unseal(item.get("outbound"), "내보내는 쪽")
+        item["inbound"], l1 = _unseal(item.get("inbound"), _t("inbound"))
+        item["outbound"], l2 = _unseal(item.get("outbound"), _t("outbound"))
         legacy = legacy or l1 or l2
         proxies.append(validate_proxy(item))
     if legacy:
@@ -412,7 +419,7 @@ def save(glob, proxies):
         data = {"version": 2, "global": glob,
                 "proxies": [dict(p, inbound=_seal(p["inbound"]), outbound=_seal(p["outbound"])) for p in proxies]}
     except OSError as e:
-        log(LOG_WARN, f"비밀번호 암호화 실패, 저장하지 않았습니다: {e}")
+        log(LOG_WARN, _t("Could not encrypt passwords, settings not saved: {e}").format(e=e))
         return False
     try:
         os.makedirs(APP_DIR, exist_ok=True)
@@ -426,12 +433,12 @@ def save(glob, proxies):
         os.replace(tmp, CONFIG_PATH)
         return True
     except OSError as e:
-        log(LOG_WARN, f"설정 저장 실패: {e}")
+        log(LOG_WARN, _t("Failed to save settings: {e}").format(e=e))
         return False
 
 
 def migrate_from_old():
-    """이전 버전(SOCKS5 Proxy / ProxyLocal) 설정을 전역 설정 + 프록시로 옮긴다. 원본은 남겨 둔다."""
+    """Move the previous version's (SOCKS5 Proxy / ProxyLocal) settings into global settings + proxies. The original is kept."""
     old_dir = app_dir(OLD_APP_ID)
     old_path = os.path.join(old_dir, "config.json")
     try:
@@ -441,9 +448,9 @@ def migrate_from_old():
         return None
     if not isinstance(old, dict):
         return None
-    old, _ = _unseal(old, "이전 설정")
+    old, _ = _unseal(old, _t("previous settings"))
     glob = validate_global(old)
-    proxies = [new_proxy("기본 SOCKS5", {
+    proxies = [new_proxy(_t("Default SOCKS5"), {
         "type": "socks5", "host": old.get("host", "127.0.0.1"), "port": old.get("port", 30307),
         "auth_enabled": old.get("auth_enabled", False), "username": old.get("username", ""),
         "password": old.get("password", ""),
@@ -459,5 +466,5 @@ def migrate_from_old():
         if os.path.exists(src) and not os.path.exists(os.path.join(APP_DIR, name)):
             shutil.copy2(src, os.path.join(APP_DIR, name))
     save(glob, proxies)
-    log(LOG_INFO, f"이전 버전 설정을 가져왔습니다 ({old_dir}) - 프록시 {len(proxies)}개")
+    log(LOG_INFO, _t("Imported settings from the previous version ({old_dir}) - {len} proxies").format(old_dir=old_dir, len=len(proxies)))
     return glob, proxies

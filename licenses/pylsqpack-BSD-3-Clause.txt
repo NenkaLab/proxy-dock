@@ -1,4 +1,4 @@
-pylsqpack 1.1.1 (https://github.com/aiortc/pylsqpack) - QPACK, ls-qpack (MIT) 포함
+pylsqpack 1.1.1 (https://github.com/aiortc/pylsqpack) - QPACK, includes ls-qpack (MIT)
 
 Copyright (c) Jeremy Lainé.
 All rights reserved.

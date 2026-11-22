@@ -1,15 +1,16 @@
-"""Hysteria2 (QUIC 기반 터널) 서버·클라이언트 - aioquic 사용.
+"""Hysteria2 (QUIC-based tunnel) server and client on top of aioquic.
 
-프로토콜 (https://v2.hysteria.network/docs/developers/Protocol/):
-- QUIC + TLS (ALPN h3). 인증은 HTTP/3 `POST /auth` 에 `Hysteria-Auth` 헤더, 성공 시 상태 233.
-- TCP: 인증 후 클라이언트가 여는 양방향 스트림마다
-      요청  varint(0x401) varint(주소 길이) "host:port" varint(패딩 길이) 패딩
-      응답  u8 상태(0=성공) varint(메시지 길이) 메시지 varint(패딩 길이) 패딩
-  그 뒤로는 스트림에 데이터를 그대로 주고받는다.
-- UDP: QUIC DATAGRAM 프레임
-      u32 세션 ID, u16 패킷 ID, u8 조각 번호, u8 조각 수, varint(주소 길이) "host:port", 데이터
-지원하지 않는 것: Brutal 혼잡 제어(대역폭 지정), Salamander 난독화, 포트 호핑.
+Protocol (https://v2.hysteria.network/docs/developers/Protocol/):
+- QUIC + TLS (ALPN h3). Authentication is an HTTP/3 `POST /auth` with a `Hysteria-Auth` header; status 233 = OK.
+- TCP: for every bidirectional stream the client opens after authenticating
+      request   varint(0x401) varint(address length) "host:port" varint(padding length) padding
+      response  u8 status (0 = OK) varint(message length) message varint(padding length) padding
+  after which the stream carries the data as is.
+- UDP: QUIC DATAGRAM frames
+      u32 session id, u16 packet id, u8 fragment index, u8 fragment count, varint(address length) "host:port", data
+Not supported: Brutal congestion control (bandwidth settings), Salamander obfuscation, port hopping.
 """
+from .i18n import _t
 import asyncio
 import hashlib
 import os
@@ -39,11 +40,11 @@ TCP_REQUEST_ID = 0x401
 STATUS_AUTH_OK = b"233"
 UDP_IDLE = 120
 MAX_UDP_SESSIONS = 1024
-MAX_QUIC_CONNS = 1024               # 프록시 하나의 동시 QUIC 연결 상한
-MAX_QUIC_PER_IP = 64                # 같은 IP(루프백 제외)의 동시 QUIC 연결 상한
-DEFRAG_TTL = 5                      # 조각이 다 모이지 않은 UDP 메시지를 버리기까지 (초)
-DEFRAG_MAX = 128                    # 연결당 재조립 대기 메시지 수 상한
-SEND_HIGH = 2 * 1024 * 1024         # 스트림 송신 버퍼가 이만큼 쌓이면 상대 읽기를 멈춘다
+MAX_QUIC_CONNS = 1024               # max concurrent QUIC connections per proxy
+MAX_QUIC_PER_IP = 64                # max concurrent QUIC connections from one IP (loopback excluded)
+DEFRAG_TTL = 5                      # drop a UDP message whose fragments did not all arrive within this time (s)
+DEFRAG_MAX = 128                    # max messages waiting for reassembly per connection
+SEND_HIGH = 2 * 1024 * 1024         # stop reading from the peer when the stream send buffer grows this large
 SEND_LOW = 512 * 1024
 
 
@@ -71,7 +72,7 @@ def _read_varint_from(data, pos):
     return v, pos + buf.tell()
 
 
-# --- QUIC 스트림 위의 가짜 트랜스포트: 기존 Pipe/run_relay 를 그대로 쓰기 위해 ---
+# --- fake transport on top of a QUIC stream, so the existing Pipe/run_relay can be reused ---
 
 class StreamTransport(asyncio.Transport):
     def __init__(self, proto, stream_id, pipe, peername):
@@ -89,9 +90,9 @@ class StreamTransport(asyncio.Transport):
         self.rfin = False
         self.write_paused = False
 
-    # 읽기 쪽 (QUIC -> Pipe)
-    # QUIC 패킷(약 1.2KB)마다 바로 넘기면 상대 TCP 소켓에 작은 write 가 수만 번 생긴다.
-    # 같은 이벤트 루프 차례에 도착한 데이터는 모아서 한 번에 넘긴다.
+    # read side (QUIC -> Pipe)
+    # Passing on every QUIC packet (~1.2 KB) right away causes tens of thousands of small writes on the peer TCP socket.
+    # Data that arrives in the same event loop iteration is collected and passed on at once.
     def feed(self, data, end):
         if self.lost_called:
             return
@@ -128,7 +129,7 @@ class StreamTransport(asyncio.Transport):
     def is_reading(self):
         return not self.paused
 
-    # 쓰기 쪽 (Pipe -> QUIC)
+    # write side (Pipe -> QUIC)
     def write(self, data):
         if self.closing or self.fin_sent or self.lost_called or not data:
             return
@@ -217,7 +218,7 @@ class StreamTransport(asyncio.Transport):
 
 
 class _Hy2Protocol(QuicConnectionProtocol):
-    """서버/클라이언트 공통: 스트림 라우팅, 송신 버퍼 감시."""
+    """Shared by server and client: stream routing, send buffer watching."""
 
     def __init__(self, *args, **kw):
         super().__init__(*args, **kw)
@@ -257,7 +258,7 @@ class _Hy2Protocol(QuicConnectionProtocol):
             tr.reset_by_peer()
 
 
-# --- 서버 ---
+# --- server ---
 
 class Hy2ServerPipe(Pipe):
     def __init__(self, inst):
@@ -294,7 +295,7 @@ class Hy2ServerUDPSession(UDPSession):
         try:
             await self.open_egress()
         except (OSError, UpstreamError) as e:
-            self.inst.log(LOG_ERROR, f"Hysteria2 UDP 내보내기 시작 실패: {describe_error(e)}")
+            self.inst.log(LOG_ERROR, _t("Could not start Hysteria2 UDP outbound: {describe_error}").format(describe_error=describe_error(e)))
             return
         self.ready = True
         for item in self.backlog:
@@ -319,7 +320,7 @@ class Hy2ServerUDPSession(UDPSession):
 
 
 def send_udp(proto, session_id, packet_id, addr_bytes, data):
-    """UDP 메시지를 DATAGRAM 으로 보낸다. 한 프레임에 안 들어가면 조각으로 나눈다."""
+    """Send a UDP message as DATAGRAM frames, split into fragments if it does not fit in one."""
     quic = proto._quic
     cap = quic.get_datagram_frame_capacity() or 1200
     head_len = 4 + 2 + 2 + len(encode_uint_var(len(addr_bytes))) + len(addr_bytes)
@@ -338,10 +339,10 @@ def send_udp(proto, session_id, packet_id, addr_bytes, data):
 
 
 class _Defrag:
-    """조각난 UDP 메시지 재조립 (세션·패킷 ID 별, 오래된 것은 버림)."""
+    """Reassemble fragmented UDP messages (per session/packet id, old ones are dropped)."""
 
     def __init__(self):
-        self.parts = {}             # 삽입 순서 = 오래된 순
+        self.parts = {}             # insertion order = oldest first
 
     def add(self, key, idx, count, addr, data):
         if count <= 1:
@@ -349,7 +350,7 @@ class _Defrag:
         if idx >= count:
             return None
         now = time.monotonic()
-        # 오래된 미완성 메시지 정리 (앞쪽이 가장 오래됨) + 개수 상한
+        # drop stale incomplete messages (the front is the oldest) + size limit
         while self.parts:
             k0, v0 = next(iter(self.parts.items()))
             if now - v0[0] < DEFRAG_TTL and len(self.parts) < DEFRAG_MAX:
@@ -373,14 +374,14 @@ def parse_udp(data):
 
 
 class Hy2ServerProtocol(_Hy2Protocol):
-    inst = None     # serve() 로 만들 때 클래스 속성으로 지정
+    inst = None     # set as a class attribute when created by serve()
 
     def __init__(self, *args, **kw):
         super().__init__(*args, **kw)
         self.h3 = H3Connection(self._quic)
         self.authed = False
         self.auth_stream = None
-        self.pending = {}           # 요청을 다 받기 전인 스트림 -> bytearray
+        self.pending = {}           # streams whose request has not fully arrived -> bytearray
         self.udp = {}
         self.defrag = _Defrag()
         self.reaper = None
@@ -450,13 +451,13 @@ class Hy2ServerProtocol(_Hy2Protocol):
                     (b"hysteria-cc-rx", b"auto"), (b"hysteria-padding", _hex_padding()),
                 ], end_stream=True)
                 self.transmit()
-                inst.log_conn(LOG_TCP, f"H2 {self.client} 연결 (Hysteria2 인증 성공)")
+                inst.log_conn(LOG_TCP, _t("H2 {client} connected (Hysteria2 authenticated)").format(client=self.client))
                 self.reaper = asyncio.get_running_loop().create_task(self._reap())
                 return
             inst.stats.blocked += 1
             note_auth_failure(ip, inst)
-            inst.log(LOG_AUTH, f"H2 {self.client} 인증 실패")
-        # 인증 실패/일반 요청: 평범한 HTTP/3 서버처럼 404
+            inst.log(LOG_AUTH, _t("H2 {client} authentication failed").format(client=self.client))
+        # failed auth / ordinary request: answer 404 like a normal HTTP/3 server
         self.h3.send_headers(ev.stream_id, [(b":status", b"404"), (b"content-length", b"0")], end_stream=True)
         self.transmit()
 
@@ -508,7 +509,7 @@ class Hy2ServerProtocol(_Hy2Protocol):
         try:
             await relay_to(pipe, self.client, host, port, Hy2Reply(), tag="H2 ")
         except Exception as e:
-            self.inst.log(LOG_ERROR, f"H2 {self.client} 처리 중 오류: {e!r}")
+            self.inst.log(LOG_ERROR, _t("H2 {client} error: {e!r}").format(client=self.client, e=e))
         finally:
             tr.close()
 
@@ -528,7 +529,7 @@ class Hy2ServerProtocol(_Hy2Protocol):
             sess = self.udp[sid] = Hy2ServerUDPSession(self, sid)
             self.inst.stats.udp_active += 1
             self.inst.stats.total += 1
-            self.inst.log_conn(LOG_UDP, f"H2 {self.client} UDP 세션 시작")
+            self.inst.log_conn(LOG_UDP, _t("H2 {client} UDP session started").format(client=self.client))
             sess.spawn(sess.open())
         sess.feed(host, port, got[1])
 
@@ -563,7 +564,7 @@ class Hy2ServerProtocol(_Hy2Protocol):
 
 
 class _ServerHandle:
-    """정지 시 닫을 대상: QUIC 서버 + 연결들."""
+    """What to close on stop: the QUIC server + its connections."""
 
     def __init__(self, server, inst):
         self.server, self.inst = server, inst
@@ -588,16 +589,16 @@ async def start_server(inst):
     return _ServerHandle(server, inst)
 
 
-# --- 클라이언트 (내보내는 쪽 Hysteria2 터널) ---
+# --- client (outbound Hysteria2 tunnel) ---
 
 class Hy2ClientProtocol(_Hy2Protocol):
     def __init__(self, *args, **kw):
         super().__init__(*args, **kw)
         self.h3 = H3Connection(self._quic)
         self.auth_future = asyncio.get_running_loop().create_future()
-        # 기다리는 쪽이 이미 포기한 뒤 실패해도 "Future exception was never retrieved" 가 나지 않게
+        # avoid "Future exception was never retrieved" when it fails after the waiter gave up
         self.auth_future.add_done_callback(lambda f: f.cancelled() or f.exception())
-        self.udp_handlers = {}      # 세션 ID -> 함수(host, port, data)
+        self.udp_handlers = {}      # session id -> function(host, port, data)
         self.defrag = _Defrag()
         self.closed = False
 
@@ -625,11 +626,10 @@ class Hy2ClientProtocol(_Hy2Protocol):
             self.closed = True
             self._terminate_all()
             if not self.auth_future.done():
-                if event.error_code == 0x150:   # TLS internal_error: 공식 서버의 sniGuard 가 SNI 불일치로 거부
-                    msg = ("Hysteria2 서버가 TLS 를 거부함 - 'SNI' 칸에 서버 인증서의 도메인을 넣어 보세요 "
-                           "(IP 로 접속하면 SNI 가 인증서와 달라 거부될 수 있음)")
+                if event.error_code == 0x150:   # TLS internal_error: the official server's sniGuard rejects a mismatched SNI
+                    msg = (_t("The Hysteria2 server rejected TLS - try entering the server certificate's domain in 'SNI' (connecting by IP can make the SNI not match the certificate)"))
                 else:
-                    msg = f"Hysteria2 서버가 연결을 끊음 ({event.reason_phrase or hex(event.error_code)})"
+                    msg = _t("The Hysteria2 server closed the connection ({value})").format(value=event.reason_phrase or hex(event.error_code))
                 self.auth_future.set_exception(UpstreamError(msg, "net"))
             return
         for h3_event in self.h3.handle_event(event):
@@ -639,7 +639,7 @@ class Hy2ClientProtocol(_Hy2Protocol):
                     self.auth_future.set_result(h)
                 else:
                     self.auth_future.set_exception(UpstreamError(
-                        f"Hysteria2 인증 실패 (상태 {h.get(b':status', b'?').decode()})", "auth"))
+                        _t("Hysteria2 authentication failed (status {decode})").format(decode=h.get(b':status', b'?').decode()), "auth"))
 
     def connection_lost(self, exc):
         self.closed = True
@@ -648,7 +648,7 @@ class Hy2ClientProtocol(_Hy2Protocol):
 
 
 class Hy2Client:
-    """프록시 인스턴스당 하나. 원격 Hysteria2 서버와의 QUIC 연결을 유지하고 끊기면 다시 연결한다."""
+    """One per proxy instance. Keeps the QUIC connection to the remote Hysteria2 server and reconnects when it drops."""
 
     def __init__(self, inst):
         self.inst = inst
@@ -672,15 +672,14 @@ class Hy2Client:
                 proto = await asyncio.wait_for(self.cm.__aenter__(), CONNECT_TIMEOUT)
             except Exception as e:
                 self.cm = None
-                raise UpstreamError(f"Hysteria2 서버 {host_port(ob['host'], ob['port'])} 연결 실패: "
-                                    f"{describe_error(e)}", "net") from e
+                raise UpstreamError(_t("Could not connect to Hysteria2 server {host_port}: {describe_error}").format(host_port=host_port(ob['host'], ob['port']), describe_error=describe_error(e)), "net") from e
             if pin:
                 certs = proto._quic.tls.peer_certificates
                 got = hashlib.sha256(certs[0].public_bytes(serialization.Encoding.DER)).hexdigest() if certs else ""
                 if got != pin:
                     self.proto = proto
                     await self._close()
-                    raise UpstreamError("Hysteria2 서버 인증서 지문이 고정값과 다릅니다", "denied")
+                    raise UpstreamError(_t("The Hysteria2 server certificate does not match the pinned fingerprint"), "denied")
             sid = proto._quic.get_next_available_stream_id()
             proto.h3.send_headers(sid, [
                 (b":method", b"POST"), (b":scheme", b"https"), (b":authority", b"hysteria"),
@@ -718,7 +717,7 @@ async def _read_varint(pipe):
 
 
 async def open_tcp(inst, host, port):
-    """원격 Hysteria2 서버를 거쳐 host:port 로 TCP 스트림을 연다 -> Pipe."""
+    """Open a TCP stream to host:port through the remote Hysteria2 server -> Pipe."""
     proto = await inst.hy2_client().get()
     sid = proto._quic.get_next_available_stream_id()
     pipe = Pipe(inst)
@@ -738,15 +737,15 @@ async def open_tcp(inst, host, port):
             await pipe.readexactly(plen)
     except Exception:
         tr.abort()
-        raise UpstreamError("Hysteria2 서버가 응답하지 않음", "general")
+        raise UpstreamError(_t("The Hysteria2 server did not respond"), "general")
     if status != 0:
         tr.abort()
-        raise UpstreamError(f"Hysteria2 서버가 거부함: {msg or status}", "refused")
+        raise UpstreamError(_t("Rejected by the Hysteria2 server: {value}").format(value=msg or status), "refused")
     return pipe
 
 
 class Hy2Egress:
-    """원격 Hysteria2 서버로 UDP 를 터널링."""
+    """Tunnel UDP through the remote Hysteria2 server."""
 
     def __init__(self, session):
         self.session = session

@@ -1,6 +1,6 @@
-Qt 6 / PySide6 / Shiboken6 6.10.3 (https://www.qt.io/qt-for-python) 및
+Qt 6 / PySide6 / Shiboken6 6.10.3 (https://www.qt.io/qt-for-python) and
 PySideSix-Frameless-Window 0.8.2 (https://github.com/zhiyiYo/PyQt-Frameless-Window)
-는 GNU LGPL v3 로 사용됩니다. LGPL v3 는 GPL v3(PySide6-Fluent-Widgets-GPL-3.0.txt)를 기반으로 합니다.
+are used under the GNU LGPL v3. The LGPL v3 builds on the GPL v3 (PySide6-Fluent-Widgets-GPL-3.0.txt).
 
                    GNU LESSER GENERAL PUBLIC LICENSE
                        Version 3, 29 June 2007

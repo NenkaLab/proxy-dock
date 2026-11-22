@@ -1,5 +1,5 @@
-# Linux 빌드용 이미지 (build_linux.bat 이 사용)
-# bookworm(glibc 2.36) 기반이라 비교적 오래된 배포판에서도 실행 파일이 돈다.
+# Image for Linux builds (used by build_linux.bat)
+# Based on bookworm (glibc 2.36) so the executable also runs on fairly old distributions.
 FROM python:3.14-slim-bookworm
 RUN apt-get update && apt-get install -y --no-install-recommends \
       binutils curl libatomic1 \

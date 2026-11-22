@@ -1,110 +1,126 @@
 # ProxyDock
 
-여러 개의 프록시를 만들어 각각 켜고 끄는 데스크톱 프록시 "도크"입니다. 개인적으로 쓰려고 만들었습니다.
+**English** · [한국어](docs/README.ko.md) · [日本語](docs/README.ja.md) · [简体中文](docs/README.zh-CN.md) · [繁體中文](docs/README.zh-TW.md) · [Deutsch](docs/README.de.md) · [Français](docs/README.fr.md) · [Español](docs/README.es.md)
 
-프록시 하나는 **받는 쪽**(이 PC 의 포트로 연결을 받는 방식)과 **내보내는 쪽**(목적지까지 보내는 방식)의 조합입니다.
-예를 들어 "로컬 SOCKS5 로 받아서 → 원격 Shadowsocks 서버로 암호화 터널" 같은 구성을 카드 하나로 만들 수 있습니다.
+A desktop "dock" for proxies: create several proxies and turn each one on or off. Made for personal use.
+
+Each proxy combines an **inbound** (how it accepts connections on a port of this PC) and an **outbound**
+(how it reaches the destination). For example, "accept on a local SOCKS5 port → encrypted tunnel to a remote
+Shadowsocks server" is a single card.
 
 <p align="center">
-  <img src="docs/images/proxies.png" width="49%" alt="프록시 목록">
-  <img src="docs/images/editor.png" width="49%" alt="프록시 편집">
+  <img src="docs/images/proxies.png" width="49%" alt="Proxy list">
+  <img src="docs/images/editor.png" width="49%" alt="Proxy editor">
 </p>
 
-## 기능
+## Features
 
-| 구분 | 지원 |
+| | Supported |
 |---|---|
-| 받는 쪽 | SOCKS5 · SOCKS4/4a · HTTP · HTTPS(TLS) · Shadowsocks 서버 · Hysteria2 서버 |
-| 내보내는 쪽 | Direct · 상위 HTTP / HTTPS / SOCKS4 / SOCKS5 프록시 · Shadowsocks 터널 · Hysteria2(QUIC) 터널 |
-| UDP | 받을 때 SOCKS5 · Shadowsocks · Hysteria2, 보낼 때 Direct · Shadowsocks · Hysteria2 |
+| Inbound | SOCKS5 · SOCKS4/4a · HTTP · HTTPS (TLS) · Shadowsocks server · Hysteria2 server |
+| Outbound | Direct · upstream HTTP / HTTPS / SOCKS4 / SOCKS5 proxy · Shadowsocks tunnel · Hysteria2 (QUIC) tunnel |
+| UDP | inbound SOCKS5 · Shadowsocks · Hysteria2, outbound Direct · Shadowsocks · Hysteria2 |
 
-- **Shadowsocks**: AEAD 2018(aes-128/256-gcm, chacha20-ietf-poly1305) 과 2022(SIP022, blake3) 방식, TCP+UDP, `ss://` 링크 복사
-- **Hysteria2**: 공식 구현과 양방향 호환 확인 (TCP·UDP), 인증서 지문 고정, `hysteria2://` 링크 복사
-- **설정**: 전역 기본값 + 프록시별 로컬 설정(로컬 우선) - 허용 도메인, 내부망 차단, 유휴 타임아웃, 로그
-- **편집 화면 연결 확인**: 저장 전에 내보내는 쪽(상위 프록시·터널·비밀번호)과 받는 쪽 포트를 시험
-- **연결 테스트**: 실행 중인 프록시를 거쳐 여러 나라 사이트 21곳에 HTTPS 로 접속해 응답 시간 측정
-- **로그 / 통계**: 프록시별로 골라 보기, 실시간 속도 그래프, 파일 로그(선택)
-- **보안**: 비밀번호는 Windows DPAPI(그 외 OS 는 0600 권한 파일)로 보관, IP 별 연결 상한,
-  인증 실패가 반복되면 일시 차단, 프록시 체인 순환 방지, Windows 방화벽 외부 차단 버튼
-- 트레이 상주, 시작 프로그램 등록, 라이트/다크 테마, 글꼴(Pretendard / JetBrains Mono 내장) 선택
+- **Shadowsocks**: AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) and 2022 (SIP022, blake3), TCP+UDP, copy `ss://` links
+- **Hysteria2**: interoperates both ways with the official implementation (TCP and UDP), certificate pinning, copy `hysteria2://` links
+- **Settings**: global defaults + per-proxy local settings (local wins) - allowed domains, private network blocking, idle timeout, logging
+- **Check connection** in the editor: tests the outbound (upstream/tunnel, passwords) and the inbound port before saving
+- **Connection test**: connects to 21 sites in many countries over HTTPS through a running proxy and measures response times
+- **Logs / statistics** per proxy, live throughput graph, optional log file
+- **Security**: passwords stored with Windows DPAPI (0600 files on other OSes), per-IP connection limits,
+  temporary bans after repeated authentication failures, proxy chain loop detection, Windows Firewall block button
+- **Languages**: English (default), 한국어, 日本語, 简体中文, 繁體中文, Deutsch, Français, Español (Settings → Display → Language)
+- Tray, start at login, light/dark theme, built-in fonts (Pretendard / JetBrains Mono)
 
-## 실행
+## Running
 
-[Releases](https://github.com/NenkaLab/proxy-dock/releases) 에 빌드된 파일이 있으면 그것을 쓰거나, 소스에서 바로 실행합니다.
+Use a build from [Releases](https://github.com/NenkaLab/proxy-dock/releases) if there is one, or run from source:
 
 ```bash
 python -m venv .venv
-# Windows: .venv\Scripts\activate   /   macOS·Linux: source .venv/bin/activate
+# Windows: .venv\Scripts\activate   /   macOS, Linux: source .venv/bin/activate
 pip install -r requirements.txt
-python proxydock.py            # --hidden : 창 없이 트레이로 시작
+python proxydock.py            # --hidden : start in the tray without a window
 ```
 
-Python 3.14 기준으로 개발·테스트했습니다.
+Developed and tested with Python 3.14.
 
-처음 실행하면 프록시가 없습니다. **새 프록시** 에서 템플릿(로컬 SOCKS5, 로컬 HTTP, Shadowsocks 서버,
-로컬 → Shadowsocks 터널 등)을 골라 만들고, 카드의 스위치로 실행합니다. 자세한 사용법은 앱의 **사용 방법** 화면에 있습니다.
+There are no proxies on first launch. Pick a template under **New proxy** (Local SOCKS5, Local HTTP,
+Shadowsocks server, Local → Shadowsocks tunnel, ...) and start it with the switch on its card.
+The **How to use** page in the app has the details.
 
-설정 위치
+Settings location
 
-| OS | 경로 |
+| OS | Path |
 |---|---|
 | Windows | `%APPDATA%\ProxyDock` |
 | macOS | `~/Library/Application Support/ProxyDock` |
-| Linux | `$XDG_CONFIG_HOME/ProxyDock` (기본 `~/.config/ProxyDock`) |
+| Linux | `$XDG_CONFIG_HOME/ProxyDock` (default `~/.config/ProxyDock`) |
 
-## 빌드
+## Building
 
-PyInstaller 로 단일 실행 파일(macOS 는 `.app`)을 만듭니다. 스크립트가 OS 별 가상환경을 만들고
-`requirements.txt` 와 다른 패키지만 설치한 뒤 빌드합니다.
+Everything for building lives in [`tools/`](tools/). PyInstaller produces a single executable (an `.app` on macOS).
+The scripts create a virtual environment per OS, install only the packages that differ from `requirements.txt`,
+and build with `tools/ProxyDock.spec`. They can be run from any folder.
 
-| 명령 | 결과 |
+| Command | Output |
 |---|---|
-| `build_win.bat` | `dist/win/ProxyDock.exe` (Windows 에서) |
-| `build_linux.bat` / `build_linux.sh` | `dist/linux/ProxyDock` (Linux 에서는 직접, Windows·macOS 에서는 Docker 로) |
-| `build_mac.sh` | `dist/mac/ProxyDock.app` (macOS 에서만) |
-| `build.bat` / `build.sh` | 이 컴퓨터에서 가능한 것을 모두 빌드하고 결과 요약 |
+| `tools\build_win.bat` | `dist/win/ProxyDock.exe` (on Windows) |
+| `tools\build_linux.bat` / `tools/build_linux.sh` | `dist/linux/ProxyDock` (natively on Linux, with Docker on Windows/macOS) |
+| `tools/build_mac.sh` | `dist/mac/ProxyDock.app` (on macOS only) |
+| `tools\build.bat` / `tools/build.sh` | everything this computer can build, with a summary |
 
-macOS 빌드는 아직 실제 Mac 에서 확인하지 않았습니다.
+The macOS build has not been tried on a real Mac yet.
 
-## 알려진 제한
+## Known limitations
 
-- Hysteria2 는 Python QUIC 구현(aioquic) 위에서 동작해 약 100 Mbps 수준입니다. 대역폭 지정(Brutal),
-  Salamander 난독화, 포트 호핑은 지원하지 않습니다.
-- 공식 Hysteria2 서버는 SNI 와 인증서 도메인이 다르면 연결을 거부합니다 - 내보내는 쪽 SNI 에 서버 인증서 도메인을 넣으세요.
-- HTTP 받는 쪽의 일반(비 CONNECT) 요청은 연결당 요청 하나만 처리합니다.
-- SOCKS4 는 프로토콜에 비밀번호 인증이 없으므로 이 PC 에서만 쓰세요.
+- Hysteria2 runs on a Python QUIC implementation (aioquic), so expect about 100 Mbps. Bandwidth settings (Brutal),
+  Salamander obfuscation and port hopping are not supported.
+- The official Hysteria2 server rejects connections whose SNI does not match its certificate - put the server
+  certificate's domain into the outbound SNI field.
+- The HTTP inbound handles one plain (non-CONNECT) request per connection.
+- SOCKS4 has no password authentication, so only use it on this PC.
+- Japanese and Chinese use the system UI font (the built-in Pretendard covers Korean and Latin).
 
-## 구조
+## Layout
 
 ```
-proxydock.py            진입점
+proxydock.py            entry point
 proxydock/
-  common.py             공통 상수·로그·주소 처리·차단 목록
-  config.py             설정 형식(v2), 검증, 전역/로컬 병합, 비밀번호 보관, 이전 버전 설정 이전
-  runtime.py            ProxyInstance / ProxyManager (asyncio 스레드 하나에서 여러 프록시 실행)
-  relay.py              TCP/UDP 중계 코어
-  inbound.py            받는 쪽 프로토콜
-  outbound.py           내보내는 쪽 프로토콜
-  ss.py                 Shadowsocks 2018/2022 암호화
-  hysteria2.py          Hysteria2 서버·클라이언트 (aioquic)
-  tls.py                자체 서명 인증서, TLS 컨텍스트
-  probe.py              연결 테스트 / 연결 확인
-  platform_utils.py     시작 프로그램, 방화벽, 포트 확인
-  ui/                   PySide6 + Fluent Widgets 화면
-tools/build.py          빌드 도구 (build*.bat / build*.sh 가 호출)
-licenses/               포함된 제3자 구성요소 라이선스
+  common.py             shared constants, logging, address handling, bans
+  config.py             settings format (v2), validation, global/local merge, password storage, migration
+  runtime.py            ProxyInstance / ProxyManager (many proxies on one asyncio thread)
+  relay.py              TCP/UDP relay core
+  inbound.py            inbound protocols
+  outbound.py           outbound protocols
+  ss.py                 Shadowsocks 2018/2022 encryption
+  hysteria2.py          Hysteria2 server and client (aioquic)
+  tls.py                self-signed certificates, TLS contexts
+  probe.py              connection test / connection check
+  platform_utils.py     start at login, firewall, port check
+  i18n.py, locales/     translations (English source strings -> <language>.json)
+  ui/                   PySide6 + Fluent Widgets UI
+tools/                  build scripts, PyInstaller spec, Linux build Dockerfile
+licenses/               licenses of the bundled third-party components
+docs/                   translated READMEs, screenshots
 ```
 
-## 라이선스
+### Translations
 
-[GPL-3.0](LICENSE). UI 라이브러리 [PySide6-Fluent-Widgets](https://github.com/zhiyiYo/PyQt-Fluent-Widgets) 가
-GPL v3 이므로 이 프로그램도 GPL v3 로 배포합니다. 빌드한 실행 파일을 배포할 때도 GPL v3 조건(소스 제공 등)을 따라야 합니다.
+UI strings are written in English in the code (`_t("...")`) and translated through
+`proxydock/locales/<language>.json`. A missing entry falls back to English.
 
-포함된 글꼴·라이브러리의 라이선스는 [`licenses/`](licenses/) 폴더에 있습니다.
+## License
 
-| 구성요소 | 라이선스 |
+[GPL-3.0](LICENSE). The UI library [PySide6-Fluent-Widgets](https://github.com/zhiyiYo/PyQt-Fluent-Widgets) is
+GPL v3, so this program is distributed under GPL v3 as well; distributing built executables must follow the GPL v3
+terms (providing the source, etc.).
+
+Licenses of the bundled fonts and libraries are in [`licenses/`](licenses/).
+
+| Component | License |
 |---|---|
-| Pretendard, JetBrains Mono (내장 글꼴) | SIL OFL 1.1 |
+| Pretendard, JetBrains Mono (bundled fonts) | SIL OFL 1.1 |
 | PySide6-Fluent-Widgets | GPL v3 |
 | Qt 6 / PySide6 / Shiboken6, PySideSix-Frameless-Window | LGPL v3 |
 | aioquic, pylsqpack, darkdetect | BSD 3-Clause |
@@ -112,7 +128,7 @@ GPL v3 이므로 이 프로그램도 GPL v3 로 배포합니다. 빌드한 실�
 | pyOpenSSL | Apache 2.0 |
 | service-identity, attrs | MIT |
 | certifi | MPL 2.0 |
-| Python 런타임 | PSF License |
-| PyInstaller 부트로더 | GPL v2+ (부트로더 예외) |
+| Python runtime | PSF License |
+| PyInstaller bootloader | GPL v2+ (bootloader exception) |
 
 Copyright (C) 2026 NenkaLab

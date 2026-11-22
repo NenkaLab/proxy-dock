@@ -1,4 +1,6 @@
-"""UI 공통: 글꼴·테마·아이콘·색·텍스트 뷰·프록시 선택 드롭다운."""
+"""Shared UI: fonts, theme, icon, colors, text view, proxy selector."""
+from .. import i18n
+from ..i18n import _t
 import os
 import sys
 
@@ -18,10 +20,11 @@ LICENSE_DIR = "licenses"
 
 
 class Fonts:
-    builtin_ui = "Segoe UI"         # load_fonts() 성공 시 내장 Pretendard 패밀리명
-    builtin_mono = "Cascadia Mono"  # load_fonts() 성공 시 내장 JetBrains Mono 패밀리명
-    ui = "Segoe UI"                 # 실제 사용 중인 UI 글꼴
-    startup_scale = 100             # 이번 실행에 적용된 앱 크기(%)
+    builtin_ui = "Segoe UI"         # built-in Pretendard family name after load_fonts() succeeds
+    builtin_mono = "Cascadia Mono"  # built-in JetBrains Mono family name after load_fonts() succeeds
+    ui = "Segoe UI"                 # UI font actually in use
+    ui_choice = ""                  # ui_font setting this run started with ("" = built-in)
+    startup_scale = 100             # app scale (%) applied for this run
     theme = "auto"
 
 
@@ -34,21 +37,33 @@ def _register_font(rel):
     fid = QFontDatabase.addApplicationFont(resource_path(rel))
     fams = QFontDatabase.applicationFontFamilies(fid) if fid >= 0 else []
     if not fams:
-        log(LOG_WARN, f"내장 글꼴을 불러오지 못해 시스템 글꼴 사용: {rel}")
+        log(LOG_WARN, _t("Could not load the built-in font, using the system font: {rel}").format(rel=rel))
     return fams[0] if fams else None
 
 
+_CJK_UI_FONTS = {
+    "ja": ["Yu Gothic UI", "Meiryo UI", "Meiryo", "Hiragino Sans", "Noto Sans CJK JP", "Noto Sans JP"],
+    "zh_CN": ["Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "Noto Sans SC"],
+    "zh_TW": ["Microsoft JhengHei UI", "Microsoft JhengHei", "PingFang TC", "Noto Sans CJK TC", "Noto Sans TC"],
+}
+
+
 def load_fonts(app, glob):
-    """내장 글꼴을 등록하고 UI 글꼴을 앱 전체(Fluent 위젯 포함)에 지정한다. QWidget 을 만들기 전에 호출."""
+    """Register the built-in fonts and set the UI font app-wide (Fluent widgets included). Call before creating any QWidget."""
     Fonts.builtin_mono = _register_font(MONO_FONT_FILE) or Fonts.builtin_mono
     Fonts.builtin_ui = _register_font(FONT_FILE) or Fonts.builtin_ui
     chosen = glob["ui_font"]
     if chosen and chosen not in QFontDatabase.families():
-        log(LOG_WARN, f"UI 글꼴 '{chosen}' 이(가) 없어 내장 글꼴 사용")
+        log(LOG_WARN, _t("UI font '{chosen}' not found, using the built-in font").format(chosen=chosen))
         chosen = ""
-    Fonts.ui = chosen or Fonts.builtin_ui
-    families = [Fonts.ui, Fonts.builtin_ui, "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo",
-                "Noto Sans CJK KR", "Noto Sans KR"]
+    # Pretendard only has Korean-style Hanja, so Japanese/Chinese use the system font of that language
+    # (when the built-in font is selected); otherwise kanji/hanzi would mix two glyph styles.
+    cjk = _CJK_UI_FONTS.get(i18n.current(), [])
+    native = next((f for f in cjk if f in QFontDatabase.families()), "")
+    Fonts.ui_choice = chosen
+    Fonts.ui = chosen or native or Fonts.builtin_ui
+    families = [Fonts.ui] + cjk + [Fonts.builtin_ui, "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo",
+                                   "Noto Sans CJK KR", "Noto Sans KR"]
     setFontFamilies(families)
     font = QFont()
     font.setFamilies(families)
@@ -63,7 +78,7 @@ def apply_theme(name):
 
 
 def make_mono_font(glob):
-    """로그·라이선스 글꼴: 고정폭(기본 내장 JetBrains Mono) + 한글은 UI 글꼴로 대체."""
+    """Log/license font: monospace (built-in JetBrains Mono by default), with the UI font as fallback for CJK text."""
     font = QFont()
     font.setFamilies([glob["mono_font"] or Fonts.builtin_mono, Fonts.builtin_mono,
                       "Cascadia Mono", "Consolas", "Menlo", "DejaVu Sans Mono", Fonts.ui])
@@ -76,7 +91,7 @@ def make_mono_font(glob):
 
 
 def make_icon():
-    """앱 아이콘: 둥근 사각형 위에 도크(받침) 위의 상자 세 개."""
+    """App icon: three boxes on a dock over a rounded square."""
     pm = QPixmap(256, 256)
     pm.fill(Qt.transparent)
     p = QPainter(pm)
@@ -85,8 +100,8 @@ def make_icon():
     p.setBrush(QColor(0, 120, 212))
     p.drawRoundedRect(16, 16, 224, 224, 52, 52)
     p.setBrush(QColor(255, 255, 255))
-    p.drawRoundedRect(52, 170, 152, 20, 8, 8)              # 도크
-    for i, h in enumerate((54, 84, 64)):                      # 상자 (프록시들)
+    p.drawRoundedRect(52, 170, 152, 20, 8, 8)              # dock
+    for i, h in enumerate((54, 84, 64)):                      # boxes (the proxies)
         x = 62 + i * 46
         p.drawRoundedRect(x, 160 - h, 38, h, 8, 8)
     p.end()
@@ -95,17 +110,17 @@ def make_icon():
 
 _PROBLEMS = frozenset((LOG_BLOCKED, LOG_AUTH, LOG_FAIL, LOG_ERROR, LOG_WARN))
 LEVEL_FILTERS = [
-    ("전체", None),
-    ("연결 (TCP+UDP)", frozenset((LOG_TCP, LOG_UDP))),
+    (_t("All"), None),
+    (_t("Connections (TCP+UDP)"), frozenset((LOG_TCP, LOG_UDP))),
     ("TCP", frozenset((LOG_TCP,))),
     ("UDP", frozenset((LOG_UDP,))),
-    ("문제 전체", _PROBLEMS),
-    ("차단", frozenset((LOG_BLOCKED,))),
-    ("인증 실패", frozenset((LOG_AUTH,))),
-    ("연결 실패", frozenset((LOG_FAIL,))),
-    ("오류·경고", frozenset((LOG_ERROR, LOG_WARN))),
-    ("설정", frozenset((LOG_SETTING,))),
-    ("정보", frozenset((LOG_INFO,))),
+    (_t("All problems"), _PROBLEMS),
+    (_t("Blocked"), frozenset((LOG_BLOCKED,))),
+    (_t("Auth failures"), frozenset((LOG_AUTH,))),
+    (_t("Connection failures"), frozenset((LOG_FAIL,))),
+    (_t("Errors & warnings"), frozenset((LOG_ERROR, LOG_WARN))),
+    (_t("Settings"), frozenset((LOG_SETTING,))),
+    (_t("Info"), frozenset((LOG_INFO,))),
 ]
 LOG_COLORS_DARK = {
     LOG_TCP: "#6CCB5F", LOG_UDP: "#60CDFF", LOG_BLOCKED: "#FFB86C",
@@ -117,7 +132,7 @@ LOG_COLORS_LIGHT = {
     LOG_AUTH: "#8764B8", LOG_FAIL: "#A4262C", LOG_ERROR: "#C42B1C",
     LOG_WARN: "#8A6D00", LOG_SETTING: "#9D5D00", LOG_INFO: "#605E5C",
 }
-STATE_TEXT = {"running": "실행 중", "starting": "시작 중…", "stopped": "중지됨", "error": "오류"}
+STATE_TEXT = {"running": _t("Running"), "starting": _t("Starting…"), "stopped": _t("Stopped"), "error": _t("error")}
 STATE_COLORS = {"running": "#16A34A", "starting": "#CA8A04", "stopped": "#8A8A8A", "error": "#DC2626"}
 
 
@@ -126,7 +141,7 @@ def level_color(level):
 
 
 class TextView(PlainTextEdit):
-    """로그·라이선스용 읽기 전용 텍스트 뷰. 뷰포트를 불투명하게 직접 칠해 스크롤 때 창 전체가 다시 그려지지 않게."""
+    """Read-only text view for logs/licenses. Paints its viewport opaquely so scrolling does not repaint the whole window."""
 
     BG_DARK = QColor("#343434")
     BG_LIGHT = QColor("#FBFBFB")
@@ -148,16 +163,16 @@ class TextView(PlainTextEdit):
 
 
 class ProxyCombo(ComboBox):
-    """프록시 선택 드롭다운. all_label 이 있으면 맨 위에 '전체' 항목 (값 "")."""
+    """Proxy selector. With all_label, an 'all' item (value "") comes first."""
 
-    def __init__(self, parent=None, all_label="전체 프록시", width=260):
+    def __init__(self, parent=None, all_label=_t("All proxies"), width=260):
         super().__init__(parent)
         self.all_label = all_label
         self.ids = []
         self.setFixedWidth(width)
 
     def set_proxies(self, proxies, only=None):
-        """only: 표시할 프록시 ID 집합 (None 이면 모두). 선택은 가능하면 유지."""
+        """only: set of proxy ids to show (None = all). Keeps the selection when possible."""
         cur = self.current_id()
         self.blockSignals(True)
         self.clear()

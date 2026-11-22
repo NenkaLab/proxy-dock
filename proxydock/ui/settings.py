@@ -1,4 +1,5 @@
-"""전역 설정 페이지: 프록시 기본값(로컬 설정이 우선) + 앱 설정(로그·화면·글꼴·시작·방화벽)."""
+"""Global settings page: proxy defaults (local settings take precedence) + app settings (logs, display, fonts, startup, firewall)."""
+from ..i18n import LANGUAGE_CODES, LANGUAGES, _t
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFontDatabase
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
@@ -26,87 +27,90 @@ class SettingsInterface(ScrollArea):
         self.enableTransparentBackground()
         v = self.view
 
-        title = TitleLabel("설정", v)
-        self.btn_apply = PrimaryPushButton("적용", v, FIF.SAVE)
+        title = TitleLabel(_t("Settings"), v)
+        self.btn_apply = PrimaryPushButton(_t("Apply"), v, FIF.SAVE)
         self.btn_apply.clicked.connect(self.apply)
 
-        # 프록시 기본값
-        s_def = Section("프록시 기본값 (각 프록시에서 '전역 따름' 인 항목에 적용)", v)
+        # proxy defaults
+        s_def = Section(_t("Proxy defaults (apply to items set to 'Use global' in each proxy)"), v)
         self.ed_allow = LineEdit(v)
         self.ed_allow.setFixedWidth(300)
-        s_def.add(Row("허용 도메인", "쉼표로 구분 · * = 전체 · *.example.com = 하위 도메인 포함", v).right(self.ed_allow))
+        s_def.add(Row(_t("Allowed domains"), _t("Comma separated · * = all · *.example.com = including subdomains"), v).right(self.ed_allow))
         self.sw_private = _switch(v)
-        s_def.add(Row("내부망 목적지 차단", "루프백·사설 IP·링크로컬 주소로의 연결을 거부합니다", v).right(self.sw_private))
+        s_def.add(Row(_t("Block private network destinations"), _t("Refuses connections to loopback, private and link-local addresses"), v).right(self.sw_private))
         self.sp_timeout = SpinBox(v)
         self.sp_timeout.setRange(10, 86400)
         self.sp_timeout.setFixedWidth(150)
-        s_def.add(Row("유휴 타임아웃(초)", "데이터가 오가지 않는 TCP 연결을 끊는 시간", v).right(self.sp_timeout))
+        s_def.add(Row(_t("Idle timeout (s)"), _t("Time after which an idle TCP connection is closed"), v).right(self.sp_timeout))
         self.sw_logconn = _switch(v)
-        s_def.add(Row("연결 로그 기록", "끄면 성공한 연결은 기록하지 않습니다 (오류는 항상 기록)", v).right(self.sw_logconn))
+        s_def.add(Row(_t("Log connections"), _t("When off, successful connections are not logged (errors always are)"), v).right(self.sw_logconn))
         self.sw_logclose = _switch(v)
-        s_def.add(Row("연결 종료 상세 기록", "연결이 끝날 때 업/다운로드 양, 지속 시간, 종료 사유", v).right(self.sw_logclose))
+        s_def.add(Row(_t("Log connection close details"), _t("Upload/download amount, duration and reason when a connection ends"), v).right(self.sw_logclose))
 
-        # 로그
-        s_log = Section("로그", v)
-        btn_folder = PushButton("폴더 열기", v, FIF.FOLDER)
+        # logs
+        s_log = Section(_t("Logs"), v)
+        btn_folder = PushButton(_t("Open folder"), v, FIF.FOLDER)
         btn_folder.clicked.connect(self._open_log_dir)
         self.sw_logfile = _switch(v)
-        s_log.add(Row("파일로 저장", config.LOG_DIR, v).right(btn_folder, self.sw_logfile))
+        s_log.add(Row(_t("Save to file"), config.LOG_DIR, v).right(btn_folder, self.sw_logfile))
 
-        # 화면
-        s_view = Section("화면", v)
+        # display
+        s_view = Section(_t("Display"), v)
+        self.cb_lang = ComboBox(v)
+        self.cb_lang.addItems([name for _, name in LANGUAGES])
+        self.cb_lang.setFixedWidth(160)
+        s_view.add(Row(_t("Language"), _t("Applies after restart"), v).right(self.cb_lang))
         self.cb_theme = ComboBox(v)
         self.cb_theme.addItems([label for _, label in config.THEMES])
         self.cb_theme.setFixedWidth(160)
-        s_view.add(Row("테마", "기기 설정을 따르거나 라이트/다크로 고정합니다", v).right(self.cb_theme))
+        s_view.add(Row(_t("Theme"), _t("Follow the system or force light/dark"), v).right(self.cb_theme))
         self.cb_scale = ComboBox(v)
-        self.cb_scale.addItems([f"{s}%" + (" (기본)" if s == 100 else "") for s in config.UI_SCALES])
+        self.cb_scale.addItems([f"{s}%" + (_t(" (default)") if s == 100 else "") for s in config.UI_SCALES])
         self.cb_scale.setFixedWidth(160)
-        s_view.add(Row("앱 크기", "글자와 화면 요소를 함께 키우거나 줄입니다 (재시작 후 적용)", v).right(self.cb_scale))
+        s_view.add(Row(_t("App scale"), _t("Scales text and UI elements together (applies after restart)"), v).right(self.cb_scale))
         self.sp_logsize = SpinBox(v)
         self.sp_logsize.setRange(8, 20)
         self.sp_logsize.setFixedWidth(150)
-        s_view.add(Row("로그 글자 크기", "로그·라이선스 창의 글자 크기(pt)", v).right(self.sp_logsize))
+        s_view.add(Row(_t("Log font size"), _t("Font size of the log and license views (pt)"), v).right(self.sp_logsize))
         self.sw_close = _switch(v)
-        s_view.add(Row("X 버튼으로 종료", "끄면 X 를 눌러도 트레이에서 계속 동작합니다", v).right(self.sw_close))
+        s_view.add(Row(_t("Quit with the X button"), _t("When off, the app keeps running in the tray after X"), v).right(self.sw_close))
 
-        # 글꼴
-        s_font = Section("글꼴", v)
+        # fonts
+        s_font = Section(_t("Fonts"), v)
         fams = sorted({f for f in QFontDatabase.families() if not f.startswith("@")}, key=str.lower)
         self.ui_fonts = [""] + [f for f in fams if f != Fonts.builtin_ui]
         self.mono_fonts = [""] + [f for f in fams if f != Fonts.builtin_mono and QFontDatabase.isFixedPitch(f)]
         self.cb_uifont = ComboBox(v)
-        self.cb_uifont.addItems([f"내장 · {Fonts.builtin_ui}"] + self.ui_fonts[1:])
+        self.cb_uifont.addItems([_t("Built-in · {builtin_ui}").format(builtin_ui=Fonts.builtin_ui)] + self.ui_fonts[1:])
         self.cb_uifont.setFixedWidth(240)
         self.cb_uifont.setMaxVisibleItems(12)
-        s_font.add(Row("UI 글꼴", "메뉴·설정 등 화면 전체 (재시작 후 적용)", v).right(self.cb_uifont))
+        s_font.add(Row(_t("UI font"), _t("Menus, settings and the whole UI (applies after restart)"), v).right(self.cb_uifont))
         self.cb_monofont = ComboBox(v)
-        self.cb_monofont.addItems([f"내장 · {Fonts.builtin_mono}"] + self.mono_fonts[1:])
+        self.cb_monofont.addItems([_t("Built-in · {builtin_mono}").format(builtin_mono=Fonts.builtin_mono)] + self.mono_fonts[1:])
         self.cb_monofont.setFixedWidth(240)
         self.cb_monofont.setMaxVisibleItems(12)
-        s_font.add(Row("로그 글꼴", "로그 창의 고정폭 글꼴 (한글은 UI 글꼴로 표시)", v).right(self.cb_monofont))
+        s_font.add(Row(_t("Log font"), _t("Monospace font of the log view (CJK text uses the UI font)"), v).right(self.cb_monofont))
         self.sw_liga = _switch(v)
-        s_font.add(Row("합자(리거처) 끄기", "로그 창에서 기호를 합쳐 그리지 않습니다 (예: -> 를 화살표로)", v).right(self.sw_liga))
+        s_font.add(Row(_t("Disable ligatures"), _t("Do not merge symbols in the log view (e.g. -> into an arrow)"), v).right(self.sw_liga))
 
-        # 시작 (즉시 적용)
-        s_start = Section("시작 (바로 적용)", v)
+        # startup (applied immediately)
+        s_start = Section(_t("Startup (applied immediately)"), v)
         self.sw_startup = _switch(v)
-        s_start.add(Row("시작프로그램 등록", "로그인할 때 ProxyDock 을 자동으로 실행합니다", v).right(self.sw_startup))
+        s_start.add(Row(_t("Start at login"), _t("Runs ProxyDock automatically when you sign in"), v).right(self.sw_startup))
         self.sw_hidden = _switch(v)
-        s_start.add(Row("시작 알림 숨기기", "자동 실행 시 '실행 중' 알림을 표시하지 않습니다", v).right(self.sw_hidden))
+        s_start.add(Row(_t("Hide startup notification"), _t("Do not show the 'running' notification when started automatically"), v).right(self.sw_hidden))
         self.sw_startup.checkedChanged.connect(ctl.set_startup)
         self.sw_hidden.checkedChanged.connect(ctl.set_hidden)
 
         sections = [s_def, s_log, s_view, s_font, s_start]
         if IS_WIN:
-            s_fw = Section("Windows 방화벽", v)
-            self.fw_label = BodyLabel("확인 중…", v)
-            self.btn_fw_on = PushButton("차단 켜기", v)
-            self.btn_fw_off = PushButton("차단 끄기", v)
+            s_fw = Section(_t("Windows Firewall"), v)
+            self.fw_label = BodyLabel(_t("Checking…"), v)
+            self.btn_fw_on = PushButton(_t("Turn block on"), v)
+            self.btn_fw_off = PushButton(_t("Turn block off"), v)
             self.btn_fw_on.clicked.connect(lambda: ctl.firewall(True))
             self.btn_fw_off.clicked.connect(lambda: ctl.firewall(False))
-            s_fw.add(Row("외부 접속 차단", "다른 PC 에서 ProxyDock 으로 들어오는 연결을 막습니다 (모든 프록시, 관리자 권한 필요). "
-                         "다른 기기용 서버(Shadowsocks·Hysteria2 등)를 쓰려면 끄세요", v)
+            s_fw.add(Row(_t("Block external access"), _t("Blocks connections from other PCs to ProxyDock (all proxies, needs administrator rights). Turn off to use servers for other devices (Shadowsocks, Hysteria2, etc.)"), v)
                      .right(self.fw_label, self.btn_fw_on, self.btn_fw_off))
             sections.append(s_fw)
 
@@ -130,6 +134,7 @@ class SettingsInterface(ScrollArea):
         self.sw_logconn.setChecked(g["log_connections"])
         self.sw_logclose.setChecked(g["log_close"])
         self.sw_logfile.setChecked(g["log_to_file"])
+        self.cb_lang.setCurrentIndex(LANGUAGE_CODES.index(g["language"]))
         self.cb_theme.setCurrentIndex([k for k, _ in config.THEMES].index(g["theme"]))
         self.cb_scale.setCurrentIndex(config.UI_SCALES.index(g["ui_scale"]))
         self.sp_logsize.setValue(g["log_font_size"])
@@ -141,13 +146,14 @@ class SettingsInterface(ScrollArea):
     def apply(self):
         domains = [d.strip() for d in self.ed_allow.text().replace(";", ",").split(",") if d.strip()]
         if not domains:
-            info(self.window(), "error", "허용 도메인", "하나 이상 입력하세요 (전체 허용은 *)")
+            info(self.window(), "error", _t("Allowed domains"), _t("Enter at least one (* allows all)"))
             return
         g = dict(self.ctl.glob)
         g.update(
             allowed_domains=domains, block_private=self.sw_private.isChecked(), timeout=self.sp_timeout.value(),
             log_connections=self.sw_logconn.isChecked(), log_close=self.sw_logclose.isChecked(),
             log_to_file=self.sw_logfile.isChecked(),
+            language=LANGUAGE_CODES[max(self.cb_lang.currentIndex(), 0)],
             theme=config.THEMES[max(self.cb_theme.currentIndex(), 0)][0],
             ui_scale=config.UI_SCALES[max(self.cb_scale.currentIndex(), 0)],
             log_font_size=self.sp_logsize.value(), close_exits=self.sw_close.isChecked(),
@@ -167,7 +173,7 @@ class SettingsInterface(ScrollArea):
     def set_firewall_status(self, state):
         if not IS_WIN:
             return
-        self.fw_label.setText({True: "켜짐", False: "꺼짐", None: "확인 중…"}[state])
+        self.fw_label.setText({True: _t("On"), False: _t("Off"), None: _t("Checking…")}[state])
         busy = state is None
         self.btn_fw_on.setEnabled(not busy and state is not True)
         self.btn_fw_off.setEnabled(not busy and state is not False)
@@ -176,4 +182,4 @@ class SettingsInterface(ScrollArea):
         try:
             open_path(config.LOG_DIR)
         except OSError as e:
-            info(self.window(), "error", "폴더를 열 수 없습니다", str(e))
+            info(self.window(), "error", _t("Cannot open the folder"), str(e))

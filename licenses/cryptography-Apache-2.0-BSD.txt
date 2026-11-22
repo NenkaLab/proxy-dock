@@ -1,5 +1,5 @@
 cryptography 50.0.2 (https://github.com/pyca/cryptography)
-Apache License 2.0 또는 BSD 3-Clause 중 선택. 휠에 포함된 OpenSSL 3 은 Apache License 2.0.
+Apache License 2.0 or BSD 3-Clause, at your choice. The OpenSSL 3 bundled in the wheel is under the Apache License 2.0.
 
 ===== LICENSE =====
 

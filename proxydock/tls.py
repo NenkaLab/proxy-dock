@@ -1,4 +1,4 @@
-"""TLS: 자체 서명 인증서 생성·보관과 SSL 컨텍스트 (HTTPS 받기, Hysteria2 서버/클라이언트, HTTPS 상위 프록시)."""
+"""TLS: self-signed certificate generation/storage and SSL contexts (HTTPS inbound, Hysteria2 server/client, HTTPS upstream)."""
 import datetime
 import hashlib
 import ipaddress
@@ -14,7 +14,7 @@ from .common import APP_NAME
 
 
 def ensure_self_signed(directory, name="proxy"):
-    """directory/<name>.crt, .key 가 없으면 만든다 (ECDSA P-256, 10년). (cert, key) 경로."""
+    """Create directory/<name>.crt and .key if missing (ECDSA P-256, 10 years). Returns (cert, key) paths."""
     cert_path = os.path.join(directory, f"{name}.crt")
     key_path = os.path.join(directory, f"{name}.key")
     if os.path.exists(cert_path) and os.path.exists(key_path):
@@ -48,7 +48,7 @@ def ensure_self_signed(directory, name="proxy"):
 
 
 def cert_sha256(cert_path):
-    """인증서(DER) SHA-256 지문 (hex). 클라이언트 쪽 인증서 고정(pin)에 쓴다."""
+    """SHA-256 fingerprint (hex) of the certificate (DER). Used for client-side certificate pinning."""
     with open(cert_path, "rb") as f:
         cert = x509.load_pem_x509_certificate(f.read())
     return hashlib.sha256(cert.public_bytes(serialization.Encoding.DER)).hexdigest()

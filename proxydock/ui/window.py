@@ -1,4 +1,5 @@
-"""메인 창, 컨트롤러(상태·동작), 트레이, 단일 실행, 진입점."""
+"""Main window, controller (state and actions), tray, single instance, entry point."""
+from ..i18n import _t
 import argparse
 import copy
 import json
@@ -66,20 +67,20 @@ class MainWindow(FluentWindow):
         self.help_page = HelpInterface(ctl, self)
         self.license_page = LicenseInterface(g, self)
         self.settings_page = SettingsInterface(ctl, self)
-        self.addSubInterface(self.proxies_page, FIF.TILES, "프록시")
-        self.addSubInterface(self.log_page, FIF.COMMAND_PROMPT, "로그")
-        self.addSubInterface(self.stats_page, FIF.MARKET, "통계")
-        self.addSubInterface(self.test_page, FIF.SPEED_HIGH, "연결 테스트")
-        self.addSubInterface(self.help_page, FIF.HELP, "사용 방법", NavigationItemPosition.BOTTOM)
-        self.addSubInterface(self.license_page, FIF.CERTIFICATE, "라이선스", NavigationItemPosition.BOTTOM)
-        self.addSubInterface(self.settings_page, FIF.SETTING, "설정", NavigationItemPosition.BOTTOM)
-        self.stackedWidget.addWidget(self.editor)       # 탐색 메뉴에는 없는 편집 화면
+        self.addSubInterface(self.proxies_page, FIF.TILES, _t("Proxy"))
+        self.addSubInterface(self.log_page, FIF.COMMAND_PROMPT, _t("Logs"))
+        self.addSubInterface(self.stats_page, FIF.MARKET, _t("Statistics"))
+        self.addSubInterface(self.test_page, FIF.SPEED_HIGH, _t("Connection test"))
+        self.addSubInterface(self.help_page, FIF.HELP, _t("How to use"), NavigationItemPosition.BOTTOM)
+        self.addSubInterface(self.license_page, FIF.CERTIFICATE, _t("Licenses"), NavigationItemPosition.BOTTOM)
+        self.addSubInterface(self.settings_page, FIF.SETTING, _t("Settings"), NavigationItemPosition.BOTTOM)
+        self.stackedWidget.addWidget(self.editor)       # editor page that is not in the navigation menu
         self.editor.closed.connect(lambda: self.switchTo(self.proxies_page))
         self.navigationInterface.setExpandWidth(180)
         self._install_fade()
         self.restore_state()
 
-    # --- 창 크기/위치 기억 ---
+    # --- remember window size/position ---
     def restore_state(self):
         try:
             with open(config.WINDOW_STATE_PATH, encoding="utf-8") as f:
@@ -113,7 +114,7 @@ class MainWindow(FluentWindow):
         super().showEvent(event)
         self.visibilityChanged.emit(True)
 
-    # --- 페이지 전환: 슬라이드 + 페이드 ---
+    # --- page transitions: slide + fade ---
     def _install_fade(self):
         sw = self.stackedWidget
         view = sw.view
@@ -197,11 +198,11 @@ class MainWindow(FluentWindow):
         if self.ctl.glob["close_exits"] or not self.ctl.has_tray:
             self.ctl.exit()
         else:
-            self.hide()     # 기본: X 는 창만 숨기고 프록시와 트레이는 계속 동작
+            self.hide()     # default: X only hides the window; proxies and the tray keep running
 
 
 class _Bridge(QObject):
-    status = Signal(str, str, str)      # 프록시 ID, 상태, 메시지 (루프 스레드 -> UI)
+    status = Signal(str, str, str)      # proxy id, state, message (loop thread -> UI)
     notify = Signal(str)
     firewall = Signal(object, str)
 
@@ -229,12 +230,12 @@ class Controller:
         self.tray = QSystemTrayIcon(make_icon(), self.window)
         self.tray.setToolTip(APP_NAME)
         self.menu = SystemTrayMenu(parent=self.window)
-        self.act_show = Action(FIF.VIEW, "창 열기", self.menu)
-        self.act_stop_all = Action(FIF.PAUSE, "모든 프록시 중지", self.menu)
-        self.act_startup = Action(FIF.POWER_BUTTON, "시작프로그램 등록", self.menu)
-        self.act_hidden = Action(FIF.INFO, "시작 알림 숨기기", self.menu)
-        self.act_restart = Action(FIF.SYNC, "재시작", self.menu)
-        self.act_exit = Action(FIF.CLOSE, "종료", self.menu)
+        self.act_show = Action(FIF.VIEW, _t("Open window"), self.menu)
+        self.act_stop_all = Action(FIF.PAUSE, _t("Stop all proxies"), self.menu)
+        self.act_startup = Action(FIF.POWER_BUTTON, _t("Start at login"), self.menu)
+        self.act_hidden = Action(FIF.INFO, _t("Hide startup notification"), self.menu)
+        self.act_restart = Action(FIF.SYNC, _t("Restart"), self.menu)
+        self.act_exit = Action(FIF.CLOSE, _t("Quit"), self.menu)
         for act in (self.act_startup, self.act_hidden):
             act.setCheckable(True)
         self.act_show.triggered.connect(self.toggle_window)
@@ -272,16 +273,16 @@ class Controller:
         if self.has_tray:
             self.tray.show()
         else:
-            log(LOG_WARN, "시스템 트레이를 쓸 수 없어 창을 닫으면 프로그램이 종료됩니다")
+            log(LOG_WARN, _t("The system tray is not available, so closing the window quits the program"))
             QTimer.singleShot(0, self.window.show_window)
         auto = [p for p in self.proxies if p["autostart"]]
         for p in auto:
             self.manager.start(p, self.glob)
         if show_start_notice:
             QTimer.singleShot(800, lambda: self.tray.showMessage(
-                APP_NAME, f"실행 중 · 자동 시작 프록시 {len(auto)}개", QSystemTrayIcon.Information, 3000))
+                APP_NAME, _t("Running · {len} autostart proxies").format(len=len(auto)), QSystemTrayIcon.Information, 3000))
 
-    # --- 프록시 목록 ---
+    # --- proxy list ---
     def proxy_by_id(self, pid):
         return next((p for p in self.proxies if p["id"] == pid), None)
 
@@ -301,7 +302,7 @@ class Controller:
 
     def _persist(self):
         if not config.save(self.glob, self.proxies):
-            info(self.window, "error", "저장 실패", "설정 파일을 저장하지 못했습니다. 로그를 확인하세요.")
+            info(self.window, "error", _t("Save failed"), _t("Could not save the settings file. Check the log."))
 
     def _unique_name(self, base):
         names = {p["name"] for p in self.proxies}
@@ -335,10 +336,10 @@ class Controller:
     def save_proxy(self, p, is_new):
         if is_new:
             self.proxies.append(p)
-            log(LOG_SETTING, f"프록시 '{p['name']}' 을(를) 만들었습니다")
+            log(LOG_SETTING, _t("Created proxy '{name}'").format(name=p['name']))
         else:
             self.proxies = [p if x["id"] == p["id"] else x for x in self.proxies]
-            log(LOG_SETTING, f"프록시 '{p['name']}' 설정을 저장했습니다")
+            log(LOG_SETTING, _t("Saved proxy '{name}'").format(name=p['name']))
             self.manager.apply(p, self.glob)
         self._persist()
         self.refresh_lists()
@@ -349,7 +350,7 @@ class Controller:
             return
         p = copy.deepcopy(src)
         p["inbound"]["port"] = self._free_port(p["inbound"]["port"] + 1)
-        p = config.new_proxy(self._unique_name(src["name"] + " 복사본"), p["inbound"], p["outbound"])
+        p = config.new_proxy(self._unique_name(src["name"] + _t(" copy")), p["inbound"], p["outbound"])
         p["overrides"] = copy.deepcopy(src["overrides"])
         self.window.editor.load(p, is_new=True)
         self.window.switchTo(self.window.editor)
@@ -361,7 +362,7 @@ class Controller:
         self.manager.stop(pid)
         self.proxies = [x for x in self.proxies if x["id"] != pid]
         self._persist()
-        log(LOG_SETTING, f"프록시 '{p['name']}' 을(를) 삭제했습니다")
+        log(LOG_SETTING, _t("Deleted proxy '{name}'").format(name=p['name']))
         self.refresh_lists()
 
     def toggle_proxy(self, pid, on):
@@ -371,7 +372,7 @@ class Controller:
         if on:
             errs = config.check_proxy(p, [x for x in self.proxies if x["id"] != pid])
             if errs:
-                info(self.window, "error", f"'{p['name']}' 을(를) 시작할 수 없습니다", "\n".join(errs[:3]), 5000)
+                info(self.window, "error", _t("Cannot start '{name}'").format(name=p['name']), "\n".join(errs[:3]), 5000)
                 self.window.proxies_page.set_status(pid, self.manager.state(pid), p)
                 return
             self.manager.start(p, self.glob)
@@ -385,15 +386,15 @@ class Controller:
 
     def _on_status(self, pid, state, msg):
         if pid.startswith("__"):
-            return      # 연결 테스트용 임시 프록시
+            return      # temporary proxy used by the connection test
         p = self.proxy_by_id(pid)
         self.window.proxies_page.set_status(pid, (state, msg), p)
         self.window.test_page.set_proxies(self.proxies, self.running_ids())
         self._rebuild_tray_proxies()
         if state == "error" and p is not None:
-            self.on_notify(f"'{p['name']}' 시작 실패: {msg}")
+            self.on_notify(_t("'{name}' failed to start: {msg}").format(name=p['name'], msg=msg))
 
-    # --- 전역 설정 ---
+    # --- global settings ---
     def apply_global(self, g):
         old = self.glob
         self.glob = g
@@ -406,21 +407,24 @@ class Controller:
         if g["theme"] != Fonts.theme:
             apply_theme(g["theme"])
         pending = []
-        if (g["ui_font"] or Fonts.builtin_ui) != Fonts.ui:
-            pending.append("UI 글꼴")
+        if g["ui_font"] != Fonts.ui_choice:
+            pending.append(_t("UI font"))
+        from ..i18n import current as current_language
+        if g["language"] != current_language():
+            pending.append(_t("Language"))
         if g["ui_scale"] != Fonts.startup_scale:
-            pending.append("앱 크기")
-        log(LOG_SETTING, "설정을 저장했습니다" + (f" (재시작 후 적용: {', '.join(pending)})" if pending else ""))
+            pending.append(_t("App scale"))
+        log(LOG_SETTING, _t("Settings saved") + (_t(" (applies after restart: {join})").format(join=', '.join(pending)) if pending else ""))
         if pending:
-            bar = info(self.window, "warning", "재시작 필요", f"재시작해야 적용되는 항목: {', '.join(pending)}", -1)
-            btn = PushButton("지금 재시작", bar, FIF.SYNC)
+            bar = info(self.window, "warning", _t("Restart required"), _t("Applies after a restart: {join}").format(join=', '.join(pending)), -1)
+            btn = PushButton(_t("Restart now"), bar, FIF.SYNC)
             btn.clicked.connect(self.restart)
             bar.addWidget(btn)
         if self.window.editor.isVisible():
             pass
         _ = old
 
-    # --- 로그 / 통계 ---
+    # --- logs / statistics ---
     def drain_logs(self):
         q = common.pending_logs
         if not q:
@@ -444,7 +448,7 @@ class Controller:
                     os.path.join(config.LOG_DIR, "proxydock.log"), maxBytes=2 * 1024 * 1024,
                     backupCount=3, encoding="utf-8", delay=True)
             except OSError as e:
-                log(LOG_ERROR, f"로그 파일을 열 수 없습니다: {e}")
+                log(LOG_ERROR, _t("Cannot open the log file: {e}").format(e=e))
                 return
             h.setFormatter(logging.Formatter("%(message)s"))
             self.file_logger.addHandler(h)
@@ -470,10 +474,9 @@ class Controller:
         snaps[""] = (total, up, down)
         self.window.stats_page.push(snaps)
         running = len(self.running_ids())
-        self.tray.setToolTip(f"{APP_NAME}\n실행 중 프록시 {running}개\n↓ {fmt_rate(down)}  ↑ {fmt_rate(up)}"
-                             f"  · 연결 {total.tcp_active + total.udp_active}")
+        self.tray.setToolTip(_t("{APP_NAME}\n{running} proxies running\n↓ {fmt_rate}  ↑ {fmt_rate2}  · connections {value}").format(APP_NAME=APP_NAME, running=running, fmt_rate=fmt_rate(down), fmt_rate2=fmt_rate(up), value=total.tcp_active + total.udp_active))
 
-    # --- 트레이 ---
+    # --- tray ---
     def _rebuild_tray_proxies(self):
         m = self.menu
         m.clear()
@@ -502,7 +505,7 @@ class Controller:
             self.window.show_window()
 
     def _sync_show_action(self, visible):
-        self.act_show.setText("창 닫기" if visible else "창 열기")
+        self.act_show.setText(_t("Close window") if visible else _t("Open window"))
         self.act_show.setIcon(FIF.HIDE.icon() if visible else FIF.VIEW.icon())
 
     def _on_tray_activated(self, reason):
@@ -518,20 +521,20 @@ class Controller:
         elif self.has_tray:
             self.tray.showMessage(APP_NAME, message, QSystemTrayIcon.Information, 3000)
 
-    # --- 시작프로그램 ---
+    # --- start at login ---
     def refresh_states(self):
         reg = is_startup_registered()
         hid = is_startup_hidden()
         self.act_startup.setChecked(reg)
-        self.act_startup.setText(f"시작프로그램 등록  ·  {'켜짐' if reg else '꺼짐'}")
+        self.act_startup.setText(_t("Start at login  ·  {value}").format(value=_t("On") if reg else _t("Off")))
         self.act_hidden.setChecked(hid)
-        self.act_hidden.setText(f"시작 알림 숨기기  ·  {'켜짐' if hid else '꺼짐'}")
+        self.act_hidden.setText(_t("Hide startup notification  ·  {value}").format(value=_t("On") if hid else _t("Off")))
         self.act_hidden.setEnabled(reg)
         self.window.settings_page.refresh_startup(reg, hid)
 
     def set_startup(self, checked):
         if update_startup_registry(bool(checked), hidden=is_startup_hidden()):
-            log(LOG_SETTING, "시작프로그램 등록" if checked else "시작프로그램 해제")
+            log(LOG_SETTING, _t("Start at login") if checked else _t("Removed from startup"))
         self.refresh_states()
 
     def set_hidden(self, checked):
@@ -539,10 +542,10 @@ class Controller:
             self.refresh_states()
             return
         if update_startup_registry(True, hidden=bool(checked)):
-            log(LOG_SETTING, f"시작 알림 숨기기 {'ON' if checked else 'OFF'}")
+            log(LOG_SETTING, _t("Hide startup notification {value}").format(value='ON' if checked else 'OFF'))
         self.refresh_states()
 
-    # --- 방화벽 (Windows) ---
+    # --- firewall (Windows) ---
     def _fw_set_ui(self, state):
         self.window.settings_page.set_firewall_status(state)
         self.window.help_page.set_firewall_status(state)
@@ -557,8 +560,8 @@ class Controller:
         if self._fw_busy:
             return
         if not getattr(sys, "frozen", False):
-            info(self.window, "warning", "스크립트 실행 중",
-                 f"규칙이 {os.path.basename(sys.executable)} 전체에 적용됩니다. exe 로 실행할 때 사용하세요.", 5000)
+            info(self.window, "warning", _t("Running as a script"),
+                 _t("The rule would apply to all of {basename}. Use it when running the exe.").format(basename=os.path.basename(sys.executable)), 5000)
         self._fw_busy = True
         self._fw_set_ui(None)
 
@@ -571,11 +574,11 @@ class Controller:
         self._fw_busy = False
         self._fw_set_ui(bool(exists))
         if msg.startswith("!"):
-            info(self.window, "error", "방화벽 설정 실패", msg[1:], 4000)
+            info(self.window, "error", _t("Firewall change failed"), msg[1:], 4000)
         elif msg:
-            log(LOG_SETTING, f"방화벽: {msg}")
+            log(LOG_SETTING, _t("Firewall: {msg}").format(msg=msg))
 
-    # --- 기타 ---
+    # --- misc ---
     def _on_second_instance(self):
         conn = self.server.nextPendingConnection()
         if conn is not None:
@@ -591,7 +594,7 @@ class Controller:
             else:
                 subprocess.Popen(cmd, close_fds=True, start_new_session=True)
         except OSError as e:
-            log(LOG_ERROR, f"재시작 실패: {e}")
+            log(LOG_ERROR, _t("Restart failed: {e}").format(e=e))
             return
         self.exit()
 
@@ -604,13 +607,13 @@ class Controller:
         os._exit(0)
 
 
-# --- 단일 실행 ---
+# --- single instance ---
 
 SERVER_NAME = f"{APP_ID}-single-instance"
 
 
 def become_primary(wait=False):
-    """첫 인스턴스면 QLocalServer 를 반환. 이미 실행 중이면 기존 창을 띄우고 None."""
+    """Returns a QLocalServer for the first instance. If already running, shows the existing window and returns None."""
     deadline = time.monotonic() + (10 if wait else 0)
     while True:
         sock = QLocalSocket()
@@ -635,7 +638,7 @@ def become_primary(wait=False):
 
 def main():
     parser = argparse.ArgumentParser(prog="ProxyDock")
-    parser.add_argument("--hidden", action="store_true", help="시작 알림 없이 트레이로 시작")
+    parser.add_argument("--hidden", action="store_true", help=_t("Start in the tray without a notification"))
     parser.add_argument("--restart", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
@@ -655,13 +658,21 @@ def main():
     app = QApplication([sys.argv[0]])
     app.setApplicationName(APP_NAME)
     app.setQuitOnLastWindowClosed(False)
+    # Built-in texts of Qt / Fluent widgets follow the app language
+    from PySide6.QtCore import QLocale
+    from qfluentwidgets import FluentTranslator
+    from .. import i18n
+    locale = QLocale(i18n.current())
+    QLocale.setDefault(locale)
+    app._fluent_translator = FluentTranslator(locale)
+    app.installTranslator(app._fluent_translator)
     apply_theme(glob["theme"])
     load_fonts(app, glob)
 
     single = become_primary(wait=args.restart)
     if single is None:
         sys.exit(0)
-    log(LOG_INFO, f"{APP_NAME} 시작 - 프록시 {len(proxies)}개")
+    log(LOG_INFO, _t("{APP_NAME} started - {len} proxies").format(APP_NAME=APP_NAME, len=len(proxies)))
     controller = Controller(single, show_start_notice=not args.hidden, glob=glob, proxies=proxies)
     _ = controller
     sys.exit(app.exec())

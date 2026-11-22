@@ -1,2 +1,2 @@
-"""ProxyDock - 여러 프록시(받는 쪽 + 내보내는 쪽)를 만들어 실행하는 데스크톱 앱."""
+"""ProxyDock - desktop app that creates and runs multiple proxies (inbound + outbound)."""
 __version__ = "2.0.0"

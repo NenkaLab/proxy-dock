@@ -1,8 +1,9 @@
-"""내보내는 쪽: 목적지까지의 연결을 만든다.
+"""Outbound: builds the connection to the destination.
 
-connect(inst, host, port) -> 목적지와 이어진 Pipe (상위 프록시/터널 협상까지 끝난 상태, 바로 link 가능)
-make_udp_egress(inst, session) -> UDP 내보내기 객체 (Direct / Shadowsocks / Hysteria2)
+connect(inst, host, port) -> Pipe connected to the destination (upstream/tunnel handshake done, ready to link)
+make_udp_egress(inst, session) -> UDP egress object (Direct / Shadowsocks / Hysteria2)
 """
+from .i18n import _t
 import asyncio
 import base64
 import re
@@ -22,8 +23,8 @@ _LOOSE_IPV4 = re.compile(r"(?:0x[0-9a-f]+|[0-9]+)(?:\.(?:0x[0-9a-f]+|[0-9]+)){0,
 
 
 def _as_ip(h):
-    """IP 로 해석될 수 있는 문자열이면 표준 표기 IP. 127.1, 0x7f.0.0.1, 2130706433 같은 옛 IPv4 표기도
-    상위 프록시/OS 가 IP 로 받아들이므로 같이 처리한다."""
+    """Canonical IP if the string can be read as an IP. Legacy IPv4 forms such as 127.1, 0x7f.0.0.1 and
+    2130706433 are accepted as IPs by upstream proxies/the OS, so they are handled too."""
     if is_ip_literal(h):
         return h
     if _LOOSE_IPV4.fullmatch(h):
@@ -35,17 +36,17 @@ def _as_ip(h):
 
 
 def check_destination(inst, host):
-    """상위 프록시/터널을 쓸 때 내부망 차단: 도메인은 상위가 해석하므로 IP 직접 지정과 localhost 만 검사."""
+    """Private network blocking via an upstream/tunnel: the upstream resolves domains, so only literal IPs and localhost are checked."""
     if not inst.cfg["block_private"]:
         return
     h = host.lower().rstrip(".")
     ip = _as_ip(h)
     if h == "localhost" or h.endswith(".localhost") or (ip is not None and is_internal_ip(ip)):
-        raise BlockedDestination(f"내부망 주소 {host}")
+        raise BlockedDestination(_t("private address {host}").format(host=host))
 
 
 def _is_self(inst, host, port):
-    """목적지가 이 프록시 자신의 받는 쪽이면 True (자기 자신으로의 무한 연결 방지)."""
+    """True if the destination is this proxy's own inbound (prevents connecting to itself endlessly)."""
     ib = inst.inbound
     if port != ib["port"]:
         return False
@@ -70,7 +71,7 @@ async def _tcp(inst, ob, tls):
         _, pipe = await loop.create_connection(lambda: Pipe(inst), ob["host"], ob["port"],
                                                happy_eyeballs_delay=0.25, **kw)
     except OSError as e:
-        raise UpstreamError(f"상위 프록시 {host_port(ob['host'], ob['port'])} 접속 실패: {e.strerror or e}",
+        raise UpstreamError(_t("Could not connect to upstream proxy {host_port}: {value}").format(host_port=host_port(ob['host'], ob['port']), value=e.strerror or e),
                             "net") from e
     return pipe
 
@@ -90,7 +91,7 @@ async def _http_connect(inst, ob, host, port, tls):
         code = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
         if code // 100 != 2:
             reason = {407: "auth", 403: "denied", 502: "host", 504: "timeout"}.get(code, "general")
-            raise UpstreamError(f"상위 HTTP 프록시 응답: {status_line.strip()}", reason)
+            raise UpstreamError(_t("Upstream HTTP proxy replied: {strip}").format(strip=status_line.strip()), reason)
         return pipe
     except BaseException:
         pipe.transport.abort()
@@ -99,18 +100,18 @@ async def _http_connect(inst, ob, host, port, tls):
 
 async def _socks4_connect(inst, ob, host, port):
     if ":" in host:
-        raise UpstreamError("SOCKS4 는 IPv6 주소를 지원하지 않습니다", "general")
+        raise UpstreamError(_t("SOCKS4 does not support IPv6 addresses"), "general")
     pipe = await _tcp(inst, ob, False)
     try:
         user = (ob.get("username") or "").encode()
         if is_ip_literal(host):
             req = struct.pack("!BBH", 4, 1, port) + socket.inet_aton(host) + user + b"\0"
-        else:       # SOCKS4a: IP 자리에 0.0.0.1, 뒤에 도메인
+        else:       # SOCKS4a: 0.0.0.1 in place of the IP, then the domain
             req = struct.pack("!BBH", 4, 1, port) + b"\0\0\0\1" + user + b"\0" + host.encode("idna") + b"\0"
         pipe.write(req)
         rep = await pipe.readexactly(8)
         if rep[1] != 0x5A:
-            raise UpstreamError(f"상위 SOCKS4 프록시가 거부함 (코드 0x{rep[1]:02x})", "refused")
+            raise UpstreamError(_t("Rejected by the upstream SOCKS4 proxy (code 0x{rep:02x})").format(rep=rep[1]), "refused")
         return pipe
     except BaseException:
         pipe.transport.abort()
@@ -130,13 +131,13 @@ async def _socks5_connect(inst, ob, host, port):
             u, p = user.encode(), pw.encode()
             pipe.write(bytes([1, len(u)]) + u + bytes([len(p)]) + p)
             if (await pipe.readexactly(2))[1] != 0:
-                raise UpstreamError("상위 SOCKS5 프록시 인증 실패", "auth")
+                raise UpstreamError(_t("Upstream SOCKS5 proxy authentication failed"), "auth")
         elif method != 0x00:
-            raise UpstreamError("상위 SOCKS5 프록시가 인증 방식을 거부함", "auth")
+            raise UpstreamError(_t("The upstream SOCKS5 proxy rejected the authentication method"), "auth")
         pipe.write(b"\x05\x01\x00" + encode_address(host, port))
         head = await pipe.readexactly(4)
         if head[1] != 0:
-            raise UpstreamError(f"상위 SOCKS5 프록시 응답 코드 {head[1]}", _SOCKS5_REASONS.get(head[1], "general"))
+            raise UpstreamError(_t("Upstream SOCKS5 proxy reply code {head}").format(head=head[1]), _SOCKS5_REASONS.get(head[1], "general"))
         atyp = head[3]
         if atyp == ATYP_IPV4:
             await pipe.readexactly(6)
@@ -152,7 +153,7 @@ async def _socks5_connect(inst, ob, host, port):
 
 
 class SSClientPipe(Pipe):
-    """원격 Shadowsocks 서버와의 연결 (클라이언트 역할): 보낼 때 암호화, 받을 때 복호화."""
+    """Connection to a remote Shadowsocks server (client role): encrypts on send, decrypts on receive."""
 
     def __init__(self, inst, enc, dec):
         super().__init__(inst)
@@ -163,7 +164,7 @@ class SSClientPipe(Pipe):
             plain = self.dec.feed(data)
         except Exception as e:
             from .common import LOG_FAIL, log
-            log(LOG_FAIL, f"Shadowsocks 터널 응답 복호화 실패 ({e}) - 비밀번호/방식 확인", self.inst)
+            log(LOG_FAIL, _t("Could not decrypt the Shadowsocks tunnel reply ({e}) - check the password/cipher").format(e=e), self.inst)
             self.transport.abort()
             return
         if plain:
@@ -181,9 +182,9 @@ async def _ss_connect(inst, ob, host, port):
         _, pipe = await loop.create_connection(lambda: SSClientPipe(inst, enc, dec), ob["host"], ob["port"],
                                                happy_eyeballs_delay=0.25)
     except OSError as e:
-        raise UpstreamError(f"Shadowsocks 서버 {host_port(ob['host'], ob['port'])} 접속 실패: {e.strerror or e}",
+        raise UpstreamError(_t("Could not connect to Shadowsocks server {host_port}: {value}").format(host_port=host_port(ob['host'], ob['port']), value=e.strerror or e),
                             "net") from e
-    pipe.send(b"")      # 목적지 주소(헤더)를 바로 보낸다 - 서버가 먼저 말하는 프로토콜도 동작하도록
+    pipe.send(b"")      # send the destination address (header) right away so server-speaks-first protocols work
     return pipe
 
 
@@ -191,7 +192,7 @@ async def connect(inst, host, port):
     ob = inst.outbound
     t = ob["type"]
     if _is_self(inst, host, port):
-        raise BlockedDestination("이 프록시 자신의 주소")
+        raise BlockedDestination(_t("this proxy's own address"))
     if t == "direct":
         return await open_direct(inst, host, port)
     check_destination(inst, host)
@@ -206,13 +207,13 @@ async def connect(inst, host, port):
     if t == "hysteria2":
         from .hysteria2 import open_tcp
         return await open_tcp(inst, host, port)
-    raise UpstreamError(f"알 수 없는 내보내기 방식: {t}")
+    raise UpstreamError(_t("Unknown outbound type: {t}").format(t=t))
 
 
-# --- UDP 내보내기 ---
+# --- UDP egress ---
 
 class SSEgress:
-    """Shadowsocks 서버로 UDP 를 터널링."""
+    """Tunnel UDP through a Shadowsocks server."""
 
     def __init__(self, session):
         self.session = session
@@ -259,4 +260,4 @@ async def make_udp_egress(inst, session):
     if t == "hysteria2":
         from .hysteria2 import Hy2Egress
         return await Hy2Egress(session).start()
-    raise UpstreamError(f"{t} 상위 프록시로는 UDP 를 보낼 수 없습니다", "general")
+    raise UpstreamError(_t("UDP cannot be sent through a {t} upstream proxy").format(t=t), "general")

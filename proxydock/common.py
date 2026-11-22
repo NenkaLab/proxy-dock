@@ -1,4 +1,5 @@
-"""공통: 상수, 로그, 주소 처리, IP 차단. Qt 에 의존하지 않는다 (프록시 스레드·테스트에서도 사용)."""
+"""Shared: constants, logging, address handling, IP bans. No Qt dependency (used by the proxy thread and tests)."""
+from .i18n import _t
 import asyncio
 import errno
 import ipaddress
@@ -10,24 +11,24 @@ from collections import deque
 from datetime import datetime
 
 APP_NAME = "ProxyDock"
-APP_ID = "ProxyDock"                    # 설정 폴더, 자동 실행 이름 등
-OLD_APP_ID = "ProxyLocal"               # 이전 버전(SOCKS5 Proxy) 설정 폴더 이름
+APP_ID = "ProxyDock"                    # settings folder, autostart name, etc.
+OLD_APP_ID = "ProxyLocal"               # settings folder name of the previous version (SOCKS5 Proxy)
 
 IS_WIN = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
 IS_LINUX = sys.platform.startswith("linux")
 
 BUFSIZE = 65536
-MAX_CONN = 4096             # 동시 클라이언트 연결 상한 (전체)
-MAX_CONN_PER_IP = 256       # 같은 IP(루프백 제외)의 동시 연결 상한
-AUTH_FAIL_LIMIT = 10        # 이 횟수만큼 인증 실패하면
-AUTH_FAIL_WINDOW = 60       # (이 시간(초) 안에)
-BAN_SECONDS = 300           # 이 시간 동안 해당 IP 차단
+MAX_CONN = 4096             # max concurrent client connections (total)
+MAX_CONN_PER_IP = 256       # max concurrent connections from one IP (loopback excluded)
+AUTH_FAIL_LIMIT = 10        # after this many authentication failures
+AUTH_FAIL_WINDOW = 60       # (within this many seconds)
+BAN_SECONDS = 300           # ban that IP for this long
 UDP_BUF = 4 * 1024 * 1024
 DNS_TTL = 60
-HANDSHAKE_TIMEOUT = 15      # 받는 쪽 협상 전체 제한 시간(초)
-CONNECT_TIMEOUT = 10        # 내보내는 쪽 연결(상위 프록시 협상 포함) 제한 시간(초)
-HANDSHAKE_LIMIT = 16 * 1024 # 협상 중 버퍼 상한 (넘으면 읽기 일시정지)
+HANDSHAKE_TIMEOUT = 15      # time limit for the whole inbound handshake (s)
+CONNECT_TIMEOUT = 10        # time limit for the outbound connection, including upstream handshakes (s)
+HANDSHAKE_LIMIT = 16 * 1024 # buffer limit during the handshake (reading pauses above it)
 MAX_LOG = 2000
 
 SOCKS5_VER = 0x05
@@ -45,8 +46,8 @@ REP_REFUSED = 0x05
 REP_UNSUPPORTED = 0x07
 REP_ATYP_UNSUPPORTED = 0x08
 
-# --- 프로토콜 이름 ---
-INBOUND_TYPES = {           # 받는 쪽
+# --- protocol names ---
+INBOUND_TYPES = {           # inbound
     "socks5": "SOCKS5",
     "socks4": "SOCKS4",
     "http": "HTTP",
@@ -54,32 +55,32 @@ INBOUND_TYPES = {           # 받는 쪽
     "shadowsocks": "Shadowsocks",
     "hysteria2": "Hysteria2",
 }
-OUTBOUND_TYPES = {          # 내보내는 쪽
+OUTBOUND_TYPES = {          # outbound
     "direct": "Direct",
-    "http": "HTTP 프록시",
-    "https": "HTTPS 프록시",
-    "socks4": "SOCKS4 프록시",
-    "socks5": "SOCKS5 프록시",
-    "shadowsocks": "Shadowsocks 터널",
-    "hysteria2": "Hysteria2 터널",
+    "http": _t("HTTP proxy"),
+    "https": _t("HTTPS proxy"),
+    "socks4": _t("SOCKS4 proxy"),
+    "socks5": _t("SOCKS5 proxy"),
+    "shadowsocks": _t("Shadowsocks tunnel"),
+    "hysteria2": _t("Hysteria2 tunnel"),
 }
-UDP_INBOUNDS = ("socks5", "shadowsocks", "hysteria2")     # UDP 를 받을 수 있는 받는 쪽
-UDP_OUTBOUNDS = ("direct", "shadowsocks", "hysteria2")    # UDP 를 내보낼 수 있는 내보내는 쪽
+UDP_INBOUNDS = ("socks5", "shadowsocks", "hysteria2")     # inbound types that can receive UDP
+UDP_OUTBOUNDS = ("direct", "shadowsocks", "hysteria2")    # outbound types that can send UDP
 
 
-# --- 로그 ---
-# 프록시 스레드는 _pending 에 넣기만 하고, UI 스레드가 타이머로 묶어서 가져간다.
-# 항목: (시각, 종류, 메시지, 프록시 ID, 프록시 이름) - 앱 전체 로그는 ID/이름이 "".
+# --- logging ---
+# The proxy thread only appends to pending_logs; the UI thread drains it in batches on a timer.
+# Entry: (time, level, message, proxy id, proxy name) - app-wide entries have an empty id/name.
 
-LOG_TCP = 0        # TCP 연결 / 종료
-LOG_ERROR = 1      # 내부 오류
-LOG_SETTING = 2    # 설정 변경
-LOG_INFO = 3       # 시작/상태 정보
-LOG_UDP = 4        # UDP 세션
-LOG_BLOCKED = 5    # 허용 목록·내부망·IP 차단
-LOG_AUTH = 6       # 인증 실패
-LOG_FAIL = 7       # 원격 연결 실패 (DNS, 거부, 타임아웃, 상위 프록시 오류)
-LOG_WARN = 8       # 경고 (오픈 프록시 등)
+LOG_TCP = 0        # TCP connect / close
+LOG_ERROR = 1      # internal error
+LOG_SETTING = 2    # settings change
+LOG_INFO = 3       # startup / status info
+LOG_UDP = 4        # UDP session
+LOG_BLOCKED = 5    # allow list, private network, IP ban
+LOG_AUTH = 6       # authentication failure
+LOG_FAIL = 7       # remote connection failure (DNS, refused, timeout, upstream proxy error)
+LOG_WARN = 8       # warning (open proxy, etc.)
 LEVEL_TAGS = {
     LOG_TCP: "TCP", LOG_UDP: "UDP", LOG_BLOCKED: "BLOCK", LOG_AUTH: "AUTH",
     LOG_FAIL: "FAIL", LOG_ERROR: "ERROR", LOG_WARN: "WARN", LOG_SETTING: "SET",
@@ -87,18 +88,18 @@ LEVEL_TAGS = {
 }
 
 pending_logs = deque(maxlen=5000)
-notify_hook = None          # UI 가 설정: 설정 변경 알림을 띄우는 함수(message)
+notify_hook = None          # set by the UI: function(message) that shows a settings-change notification
 
 _CTRL = {i: " " for i in range(32)}
 _CTRL[0x7F] = " "
 
 
 def log(level, message, inst=None):
-    """inst: 이 로그가 속한 ProxyInstance (없으면 앱 전체 로그)."""
+    """inst: the ProxyInstance this entry belongs to (None for app-wide entries)."""
     message = message.translate(_CTRL)
     pid, pname = (inst.id, inst.name) if inst is not None else ("", "")
     if inst is not None and level in (LOG_FAIL, LOG_AUTH, LOG_BLOCKED, LOG_ERROR):
-        inst.last_error = message       # 연결 확인 결과에 구체적인 실패 이유로 보여 준다
+        inst.last_error = message       # shown as the concrete failure reason in the connection check
     pending_logs.append((datetime.now().strftime("%Y-%m-%d %H:%M:%S"), level, message, pid, pname))
     if level == LOG_SETTING and notify_hook is not None:
         notify_hook(message)
@@ -124,28 +125,28 @@ def fmt_rate(n):
 
 def describe_error(e):
     if isinstance(e, asyncio.TimeoutError):
-        return "연결 시간 초과"
+        return _t("Connection timed out")
     if isinstance(e, socket.gaierror):
-        return "DNS 해석 실패"
+        return _t("DNS lookup failed")
     if isinstance(e, ConnectionRefusedError):
-        return "연결 거부됨"
+        return _t("Connection refused")
     if isinstance(e, UpstreamError):
         return str(e)
     code = getattr(e, "winerror", None)
     err = getattr(e, "errno", None)
     if code in (10051, 10050) or err in (errno.ENETUNREACH, errno.ENETDOWN):
-        return "네트워크 연결 불가" + (f" (WinError {code})" if code else "")
+        return _t("Network unreachable") + (f" (WinError {code})" if code else "")
     if code in (10060, 10065) or err in (errno.EHOSTUNREACH, errno.ETIMEDOUT):
-        return "호스트 연결 불가" + (f" (WinError {code})" if code else "")
+        return _t("Host unreachable") + (f" (WinError {code})" if code else "")
     return f"{type(e).__name__}" + (f" (WinError {code})" if code else "") + (f": {e}" if str(e) else "")
 
 
 class BlockedDestination(Exception):
-    """허용 목록 밖 / 내부망 목적지."""
+    """Destination outside the allow list / on the private network."""
 
 
 class UpstreamError(OSError):
-    """상위 프록시·터널이 연결을 거부/실패함. reason: refused/host/net/denied/auth/general"""
+    """An upstream proxy or tunnel refused/failed the connection. reason: refused/host/net/denied/auth/general"""
 
     def __init__(self, message, reason="general"):
         super().__init__(message)
@@ -153,7 +154,7 @@ class UpstreamError(OSError):
 
 
 def fail_reason(exc):
-    """예외 -> 받는 쪽 응답 종류: denied / refused / host / net / timeout / general"""
+    """Exception -> inbound reply kind: denied / refused / host / net / timeout / general"""
     if isinstance(exc, BlockedDestination):
         return "denied"
     if isinstance(exc, UpstreamError):
@@ -175,7 +176,7 @@ def fail_reason(exc):
     return "general"
 
 
-# --- 통계 (프록시 스레드에서만 증가, UI 는 1초마다 읽기만 한다) ---
+# --- statistics (only incremented on the proxy thread; the UI reads them once a second) ---
 
 class Stats:
     __slots__ = ("tcp_active", "udp_active", "total", "failed", "blocked", "up", "down")
@@ -193,14 +194,14 @@ class Stats:
         return out
 
 
-# --- 주소 ---
+# --- addresses ---
 
 def strip_scope(addr):
     return addr.split("%", 1)[0]
 
 
 def is_internal_ip(ip):
-    """루프백/사설/링크로컬/CGNAT/멀티캐스트 등 공인 인터넷 주소가 아닌 경우 True."""
+    """True for addresses that are not public internet addresses (loopback, private, link-local, CGNAT, multicast, ...)."""
     try:
         a = ipaddress.ip_address(strip_scope(ip))
     except ValueError:
@@ -234,7 +235,7 @@ def valid_domain(addr):
 
 
 def parse_address(data, offset):
-    """SOCKS5 형식 주소(ATYP+주소+포트) -> (주소, 포트, 끝 위치)."""
+    """SOCKS5-style address (ATYP + address + port) -> (address, port, end offset)."""
     try:
         atyp = data[offset]
         if atyp == ATYP_IPV4:
@@ -265,7 +266,7 @@ def pack_addr(addr):
 
 
 def encode_address(host, port):
-    """임의 호스트(IP 또는 도메인) -> SOCKS5 형식 주소 바이트."""
+    """Any host (IP or domain) -> SOCKS5-style address bytes."""
     try:
         atyp, raw = pack_addr(host)
         return bytes([atyp]) + raw + struct.pack("!H", port)
@@ -314,7 +315,7 @@ def split_host_port(s, default_port=None):
     return host, p
 
 
-# --- IP 별 연결 상한 / 인증 실패 반복 시 일시 차단 (모든 프록시 공용) ---
+# --- per-IP connection limit / temporary ban after repeated auth failures (shared by all proxies) ---
 
 per_ip = {}
 _auth_fails = {}
@@ -322,7 +323,7 @@ _banned = {}
 
 
 def note_auth_failure(ip, inst=None):
-    """인증/복호화 실패 기록. 짧은 시간에 너무 많으면 그 IP 를 잠시 차단 (루프백 제외)."""
+    """Record an authentication/decryption failure. Too many in a short time bans the IP for a while (loopback excluded)."""
     if not ip or is_loopback_ip(ip):
         return
     now = time.monotonic()
@@ -333,7 +334,7 @@ def note_auth_failure(ip, inst=None):
     if len(q) >= AUTH_FAIL_LIMIT:
         q.clear()
         _banned[ip] = now + BAN_SECONDS
-        log(LOG_BLOCKED, f"{ip} 인증 실패가 반복되어 {BAN_SECONDS // 60}분간 차단합니다", inst)
+        log(LOG_BLOCKED, _t("Blocking {ip} for {value} min after repeated authentication failures").format(ip=ip, value=BAN_SECONDS // 60), inst)
     if len(_auth_fails) > 10000:
         _auth_fails.clear()
 
