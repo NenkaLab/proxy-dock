@@ -23,7 +23,7 @@ jobs:
             experimental: false
           - os: ubuntu-22.04
             experimental: false
-          - os: macos-14
+          - os: macos-latest
             experimental: true      # macOS has not been verified on a real Mac yet
     env:
       QT_QPA_PLATFORM: offscreen

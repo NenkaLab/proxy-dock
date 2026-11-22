@@ -296,6 +296,16 @@ class _SlideFadeEffect(QGraphicsEffect):
         painter.restore()
 
 
+class _ThemeListener(SystemThemeListener):
+    """System theme watcher; quietly stops where the OS offers no theme notifications (e.g. Windows Server)."""
+
+    def run(self):
+        try:
+            super().run()
+        except Exception:
+            pass
+
+
 class _MouseNavFilter(QObject):
     """Mouse back/forward (X1/X2) buttons anywhere in the main window."""
 
@@ -362,7 +372,7 @@ class Controller:
         self.tray.setContextMenu(self.menu)
         self.tray.activated.connect(self._on_tray_activated)
 
-        self.theme_listener = SystemThemeListener()
+        self.theme_listener = _ThemeListener()
         self.theme_listener.systemThemeChanged.connect(
             lambda: self.glob["theme"] == "auto" and apply_theme("auto"))
         self.theme_listener.start()
