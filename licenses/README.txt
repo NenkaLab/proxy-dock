@@ -15,8 +15,10 @@ This program (ProxyDock) includes the components below.
 The full license texts are in the files in this folder.
 
 [Fonts]
-- Pretendard : SIL Open Font License 1.1
+- Pretendard, Pretendard JP : SIL Open Font License 1.1
   -> Pretendard-OFL-1.1.txt
+- Noto Sans SC, Noto Sans TC : SIL Open Font License 1.1
+  -> NotoSans-OFL-1.1.txt
 - JetBrains Mono : SIL Open Font License 1.1
   -> JetBrainsMono-OFL-1.1.txt
 

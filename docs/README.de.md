@@ -36,7 +36,7 @@ Shadowsocks-Server" eine einzige Karte.
 - **Sicherheit**: Passwörter per Windows DPAPI gespeichert (auf anderen Systemen 0600-Dateien), Verbindungslimit pro IP,
   vorübergehende Sperre nach wiederholten Anmeldefehlern, Erkennung von Schleifen in Proxy-Ketten, Windows-Firewall-Sperre per Knopfdruck
 - **Sprachen**: English (Standard), 한국어, 日本語, 简体中文, 繁體中文, Deutsch, Français, Español (Einstellungen → Anzeige → Sprache)
-- Infobereich, Start bei Anmeldung, helles/dunkles Design, integrierte Schriften (Pretendard / JetBrains Mono)
+- Infobereich, Start bei Anmeldung, helles/dunkles Design, integrierte Schriften (Pretendard / Pretendard JP / Noto Sans SC·TC / JetBrains Mono)
 
 ## Ausführen
 
@@ -98,7 +98,6 @@ Der macOS-Build wurde noch nicht auf einem echten Mac getestet.
   Serverzertifikats im SNI-Feld des Ausgangs ein.
 - Der HTTP-Eingang bearbeitet pro Verbindung nur eine normale (Nicht-CONNECT-)Anfrage.
 - SOCKS4 hat keine Passwort-Anmeldung, nutzen Sie es daher nur auf diesem PC.
-- Japanisch und Chinesisch verwenden die UI-Schrift des Systems (das integrierte Pretendard deckt Koreanisch und Latein ab).
 
 ## Aufbau
 
@@ -140,7 +139,7 @@ Die Lizenzen der enthaltenen Schriften und Bibliotheken liegen im Ordner [`licen
 
 | Komponente | Lizenz |
 |---|---|
-| Pretendard, JetBrains Mono (integrierte Schriften) | SIL OFL 1.1 |
+| Pretendard, Pretendard JP, Noto Sans SC/TC, JetBrains Mono (integrierte Schriften) | SIL OFL 1.1 |
 | PySide6-Fluent-Widgets | GPL v3 |
 | Qt 6 / PySide6 / Shiboken6, PySideSix-Frameless-Window | LGPL v3 |
 | aioquic, pylsqpack, darkdetect | BSD 3-Clause |

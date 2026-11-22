@@ -35,7 +35,7 @@
 - **安全**：密码用 Windows DPAPI 保存 (其他系统为 0600 权限文件)，按 IP 限制连接数，
   多次认证失败后临时封禁，防止代理链循环，Windows 防火墙外部阻止按钮
 - **语言**：English (默认)、한국어、日本語、简体中文、繁體中文、Deutsch、Français、Español (设置 → 显示 → 语言)
-- 托盘常驻、开机启动、浅色/深色主题、内置字体 (Pretendard / JetBrains Mono)
+- 托盘常驻、开机启动、浅色/深色主题、内置字体 (Pretendard / Pretendard JP / Noto Sans SC·TC / JetBrains Mono)
 
 ## 运行
 
@@ -94,7 +94,6 @@ macOS 构建尚未在真实的 Mac 上验证。
 - 官方 Hysteria2 服务器会拒绝 SNI 与证书不符的连接 - 请在出站的 SNI 中填写服务器证书的域名。
 - HTTP 入站的普通 (非 CONNECT) 请求每个连接只处理一个。
 - SOCKS4 协议没有密码认证，请仅在本机使用。
-- 日文和中文使用系统界面字体 (内置的 Pretendard 用于韩文和拉丁字母)。
 
 ## 结构
 
@@ -135,7 +134,7 @@ GPL v3，因此本程序也以 GPL v3 发布；分发构建好的可执行文件
 
 | 组件 | 许可证 |
 |---|---|
-| Pretendard, JetBrains Mono (内置字体) | SIL OFL 1.1 |
+| Pretendard, Pretendard JP, Noto Sans SC/TC, JetBrains Mono (内置字体) | SIL OFL 1.1 |
 | PySide6-Fluent-Widgets | GPL v3 |
 | Qt 6 / PySide6 / Shiboken6, PySideSix-Frameless-Window | LGPL v3 |
 | aioquic, pylsqpack, darkdetect | BSD 3-Clause |

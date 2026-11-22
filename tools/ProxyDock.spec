@@ -54,6 +54,8 @@ EXCLUDES = [
 
 DATAS = collect_data_files('qfluentwidgets') + collect_data_files('certifi') + collect_data_files('NodeGraphQt') + [
     (src('fonts', 'PretendardVariable.ttf'), 'fonts'), (src('fonts', 'JetBrainsMono.ttf'), 'fonts'),
+    (src('fonts', 'PretendardJPVariable.ttf'), 'fonts'),
+    (src('fonts', 'NotoSansSC.ttf'), 'fonts'), (src('fonts', 'NotoSansTC.ttf'), 'fonts'),
     (src('licenses', '*.txt'), 'licenses'), (src('proxydock', 'locales', '*.json'), 'proxydock/locales'),
 ]
 

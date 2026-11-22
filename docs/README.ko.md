@@ -35,7 +35,7 @@
 - **보안**: 비밀번호는 Windows DPAPI(그 외 OS 는 0600 권한 파일)로 보관, IP 별 연결 상한,
   인증 실패가 반복되면 일시 차단, 프록시 체인 순환 방지, Windows 방화벽 외부 차단 버튼
 - **언어**: English(기본), 한국어, 日本語, 简体中文, 繁體中文, Deutsch, Français, Español (설정 → 화면 → 언어)
-- 트레이 상주, 시작 프로그램 등록, 라이트/다크 테마, 내장 글꼴(Pretendard / JetBrains Mono)
+- 트레이 상주, 시작 프로그램 등록, 라이트/다크 테마, 내장 글꼴(Pretendard / Pretendard JP / Noto Sans SC·TC / JetBrains Mono)
 
 ## 실행
 
@@ -95,7 +95,6 @@ macOS 빌드는 아직 실제 Mac 에서 확인하지 않았습니다.
 - 공식 Hysteria2 서버는 SNI 와 인증서 도메인이 다르면 연결을 거부합니다 - 내보내는 쪽 SNI 에 서버 인증서 도메인을 넣으세요.
 - HTTP 받는 쪽의 일반(비 CONNECT) 요청은 연결당 요청 하나만 처리합니다.
 - SOCKS4 는 프로토콜에 비밀번호 인증이 없으므로 이 PC 에서만 쓰세요.
-- 일본어·중국어는 시스템 UI 글꼴을 씁니다 (내장 Pretendard 는 한글·라틴 문자용).
 
 ## 구조
 
@@ -136,7 +135,7 @@ GPL v3 이므로 이 프로그램도 GPL v3 로 배포합니다. 빌드한 실�
 
 | 구성요소 | 라이선스 |
 |---|---|
-| Pretendard, JetBrains Mono (내장 글꼴) | SIL OFL 1.1 |
+| Pretendard, Pretendard JP, Noto Sans SC/TC, JetBrains Mono (내장 글꼴) | SIL OFL 1.1 |
 | PySide6-Fluent-Widgets | GPL v3 |
 | Qt 6 / PySide6 / Shiboken6, PySideSix-Frameless-Window | LGPL v3 |
 | aioquic, pylsqpack, darkdetect | BSD 3-Clause |

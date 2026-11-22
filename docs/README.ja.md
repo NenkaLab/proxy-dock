@@ -35,7 +35,7 @@
 - **セキュリティ**: パスワードは Windows DPAPI (他の OS は 0600 権限のファイル) で保管、IP ごとの接続上限、
   認証失敗が続いたら一時ブロック、プロキシチェーンのループ防止、Windows ファイアウォールの外部ブロックボタン
 - **言語**: English (既定)、한국어、日本語、简体中文、繁體中文、Deutsch、Français、Español (設定 → 表示 → 言語)
-- トレイ常駐、ログイン時に起動、ライト/ダークテーマ、内蔵フォント (Pretendard / JetBrains Mono)
+- トレイ常駐、ログイン時に起動、ライト/ダークテーマ、内蔵フォント (Pretendard / Pretendard JP / Noto Sans SC·TC / JetBrains Mono)
 
 ## 実行
 
@@ -95,7 +95,6 @@ macOS ビルドはまだ実機の Mac で確認していません。
 - 公式 Hysteria2 サーバーは SNI が証明書と一致しないと接続を拒否します - 送信側の SNI にサーバー証明書のドメインを入力してください。
 - HTTP 受信側の通常 (CONNECT 以外) のリクエストは 1 接続につき 1 件のみ処理します。
 - SOCKS4 にはパスワード認証がないため、この PC だけで使ってください。
-- 日本語・中国語はシステムの UI フォントを使います (内蔵の Pretendard はハングル・ラテン文字用)。
 
 ## 構成
 
@@ -136,7 +135,7 @@ GPL v3 のため、このプログラムも GPL v3 で配布します。ビル�
 
 | コンポーネント | ライセンス |
 |---|---|
-| Pretendard, JetBrains Mono (内蔵フォント) | SIL OFL 1.1 |
+| Pretendard, Pretendard JP, Noto Sans SC/TC, JetBrains Mono (内蔵フォント) | SIL OFL 1.1 |
 | PySide6-Fluent-Widgets | GPL v3 |
 | Qt 6 / PySide6 / Shiboken6, PySideSix-Frameless-Window | LGPL v3 |
 | aioquic, pylsqpack, darkdetect | BSD 3-Clause |

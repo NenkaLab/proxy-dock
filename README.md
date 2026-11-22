@@ -36,7 +36,7 @@ Shadowsocks server" is a single card.
 - **Security**: passwords stored with Windows DPAPI (0600 files on other OSes), per-IP connection limits,
   temporary bans after repeated authentication failures, proxy chain loop detection, Windows Firewall block button
 - **Languages**: English (default), 한국어, 日本語, 简体中文, 繁體中文, Deutsch, Français, Español (Settings → Display → Language)
-- Tray, start at login, light/dark theme, built-in fonts (Pretendard / JetBrains Mono)
+- Tray, start at login, light/dark theme, built-in fonts (Pretendard / Pretendard JP / Noto Sans SC·TC / JetBrains Mono)
 
 ## Running
 
@@ -97,7 +97,6 @@ The macOS build has not been tried on a real Mac yet.
   certificate's domain into the outbound SNI field.
 - The HTTP inbound handles one plain (non-CONNECT) request per connection.
 - SOCKS4 has no password authentication, so only use it on this PC.
-- Japanese and Chinese use the system UI font (the built-in Pretendard covers Korean and Latin).
 
 ## Layout
 
@@ -139,7 +138,7 @@ Licenses of the bundled fonts and libraries are in [`licenses/`](licenses/).
 
 | Component | License |
 |---|---|
-| Pretendard, JetBrains Mono (bundled fonts) | SIL OFL 1.1 |
+| Pretendard, Pretendard JP, Noto Sans SC/TC, JetBrains Mono (bundled fonts) | SIL OFL 1.1 |
 | PySide6-Fluent-Widgets | GPL v3 |
 | Qt 6 / PySide6 / Shiboken6, PySideSix-Frameless-Window | LGPL v3 |
 | aioquic, pylsqpack, darkdetect | BSD 3-Clause |

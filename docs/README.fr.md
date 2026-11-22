@@ -36,7 +36,7 @@ Shadowsocks distant » tient sur une seule carte.
 - **Sécurité** : mots de passe stockés avec Windows DPAPI (fichiers 0600 sur les autres systèmes), limite de connexions par IP,
   blocage temporaire après des échecs d'authentification répétés, détection des boucles dans les chaînes de proxys, bouton de blocage du pare-feu Windows
 - **Langues** : English (par défaut), 한국어, 日本語, 简体中文, 繁體中文, Deutsch, Français, Español (Paramètres → Affichage → Langue)
-- Zone de notification, démarrage à l'ouverture de session, thème clair/sombre, polices intégrées (Pretendard / JetBrains Mono)
+- Zone de notification, démarrage à l'ouverture de session, thème clair/sombre, polices intégrées (Pretendard / Pretendard JP / Noto Sans SC·TC / JetBrains Mono)
 
 ## Lancement
 
@@ -98,7 +98,6 @@ La compilation macOS n'a pas encore été essayée sur un vrai Mac.
   certificat du serveur dans le champ SNI de la sortie.
 - L'entrée HTTP ne traite qu'une requête ordinaire (non CONNECT) par connexion.
 - SOCKS4 n'a pas d'authentification par mot de passe : ne l'utilisez que sur ce PC.
-- Le japonais et le chinois utilisent la police d'interface du système (le Pretendard intégré couvre le coréen et l'alphabet latin).
 
 ## Organisation
 
@@ -140,7 +139,7 @@ Les licences des polices et bibliothèques incluses se trouvent dans le dossier 
 
 | Composant | Licence |
 |---|---|
-| Pretendard, JetBrains Mono (polices intégrées) | SIL OFL 1.1 |
+| Pretendard, Pretendard JP, Noto Sans SC/TC, JetBrains Mono (polices intégrées) | SIL OFL 1.1 |
 | PySide6-Fluent-Widgets | GPL v3 |
 | Qt 6 / PySide6 / Shiboken6, PySideSix-Frameless-Window | LGPL v3 |
 | aioquic, pylsqpack, darkdetect | BSD 3-Clause |

@@ -36,7 +36,7 @@ es una sola tarjeta.
 - **Seguridad**: contraseñas guardadas con Windows DPAPI (archivos 0600 en otros sistemas), límite de conexiones por IP,
   bloqueo temporal tras fallos de autenticación repetidos, detección de bucles en cadenas de proxies, botón de bloqueo del firewall de Windows
 - **Idiomas**: English (predeterminado), 한국어, 日本語, 简体中文, 繁體中文, Deutsch, Français, Español (Configuración → Pantalla → Idioma)
-- Bandeja del sistema, inicio al iniciar sesión, tema claro/oscuro, fuentes integradas (Pretendard / JetBrains Mono)
+- Bandeja del sistema, inicio al iniciar sesión, tema claro/oscuro, fuentes integradas (Pretendard / Pretendard JP / Noto Sans SC·TC / JetBrains Mono)
 
 ## Ejecución
 
@@ -98,7 +98,6 @@ La compilación para macOS aún no se ha probado en un Mac real.
   certificado del servidor en el campo SNI de la salida.
 - La entrada HTTP atiende una sola solicitud normal (no CONNECT) por conexión.
 - SOCKS4 no tiene autenticación por contraseña, así que úsalo solo en este PC.
-- El japonés y el chino usan la fuente de interfaz del sistema (el Pretendard integrado cubre el coreano y el alfabeto latino).
 
 ## Estructura
 
@@ -140,7 +139,7 @@ Las licencias de las fuentes y bibliotecas incluidas están en la carpeta [`lice
 
 | Componente | Licencia |
 |---|---|
-| Pretendard, JetBrains Mono (fuentes integradas) | SIL OFL 1.1 |
+| Pretendard, Pretendard JP, Noto Sans SC/TC, JetBrains Mono (fuentes integradas) | SIL OFL 1.1 |
 | PySide6-Fluent-Widgets | GPL v3 |
 | Qt 6 / PySide6 / Shiboken6, PySideSix-Frameless-Window | LGPL v3 |
 | aioquic, pylsqpack, darkdetect | BSD 3-Clause |

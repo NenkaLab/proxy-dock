@@ -16,7 +16,8 @@ LICENSES = []
 def _tr_licenses():
     LICENSES[:] = [
         (_t("Overview"), "README.txt"),
-        ("Pretendard · OFL 1.1", "Pretendard-OFL-1.1.txt"),
+        ("Pretendard · Pretendard JP · OFL 1.1", "Pretendard-OFL-1.1.txt"),
+        ("Noto Sans SC · Noto Sans TC · OFL 1.1", "NotoSans-OFL-1.1.txt"),
         ("JetBrains Mono · OFL 1.1", "JetBrainsMono-OFL-1.1.txt"),
         ("PySide6-Fluent-Widgets · GPL v3", "PySide6-Fluent-Widgets-GPL-3.0.txt"),
         ("Qt 6 · PySide6 · Frameless Window · LGPL v3", "LGPL-3.0.txt"),
