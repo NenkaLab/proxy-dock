@@ -56,6 +56,34 @@ def _tls(ob):
     return {"enabled": True, "server_name": ob.get("sni") or ob["host"], "insecure": not ob.get("tls_verify", True)}
 
 
+def _tls_full(ob, default_alpn=None):
+    """TLS for VLESS / Trojan / TUIC: SNI, verification, ALPN, uTLS fingerprint, REALITY."""
+    from ..wgconf import split
+    t = _tls(ob)
+    alpn = split(ob.get("alpn", "")) or default_alpn
+    if alpn:
+        t["alpn"] = alpn
+    if ob.get("fingerprint") and ob["type"] != "tuic":      # (uTLS does not apply to QUIC)
+        t["utls"] = {"enabled": True, "fingerprint": ob["fingerprint"]}
+    if ob.get("security") == "reality" and ob["type"] == "vless":
+        t["reality"] = {"enabled": True, "public_key": ob["reality_public_key"].strip(),
+                        "short_id": ob.get("reality_short_id", "").strip()}
+        t.pop("insecure", None)
+    return t
+
+
+def _transport(ob):
+    t = ob.get("transport", "tcp")
+    if t == "ws":
+        d = {"type": "ws", "path": ob.get("transport_path") or "/"}
+        if ob.get("transport_host"):
+            d["headers"] = {"Host": ob["transport_host"]}
+        return d
+    if t == "grpc":
+        return {"type": "grpc", "service_name": ob.get("transport_path", "")}
+    return None
+
+
 def outbound(ob, tag):
     t = ob["type"]
     if t == "direct":
@@ -86,6 +114,26 @@ def outbound(ob, tag):
         return {"type": "shadowsocks", **srv, "method": ob["ss_method"], "password": ob["ss_password"]}
     if t == "hysteria2":
         return {"type": "hysteria2", **srv, "password": ob["hy2_password"], "tls": _tls(ob)}
+    if t == "vless":
+        d = {"type": "vless", **srv, "uuid": ob["uuid"].strip(), "packet_encoding": "xudp"}
+        if ob.get("vless_flow"):
+            d["flow"] = ob["vless_flow"]
+        if ob.get("security", "tls") != "none":
+            d["tls"] = _tls_full(ob)
+        tr = _transport(ob)
+        if tr:
+            d["transport"] = tr
+        return d
+    if t == "trojan":
+        d = {"type": "trojan", **srv, "password": ob["password"], "tls": _tls_full(ob)}
+        tr = _transport(ob)
+        if tr:
+            d["transport"] = tr
+        return d
+    if t == "tuic":
+        return {"type": "tuic", **srv, "uuid": ob["uuid"].strip(), "password": ob["password"],
+                "congestion_control": ob.get("tuic_congestion") or "bbr",
+                "udp_relay_mode": ob.get("tuic_udp_relay") or "native", "tls": _tls_full(ob, ["h3"])}
     if t == "wireguard":            # a sing-box endpoint (goes into "endpoints", used like an outbound)
         from ..wgconf import split
         peer = {"address": ob["host"], "port": ob["port"], "public_key": ob["wg_peer_public_key"].strip(),

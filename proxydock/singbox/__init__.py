@@ -11,7 +11,7 @@ import os
 import shutil
 import sys
 
-from ..common import IS_WIN, is_loopback_host
+from ..common import IS_WIN, SINGBOX_ONLY_OUTBOUNDS, is_loopback_host
 
 SINGBOX_VERSION = "1.14.4"
 HYSTERIA_VERSION = "2.14.0"         # official Hysteria2 core (apernet/hysteria, app/v...)
@@ -65,7 +65,7 @@ def needs_singbox(proxy):
     a sing-box dial option."""
     chains = [proxy["outbound"]] + [r["outbound"] for r in proxy.get("routes") or []]
     return (bool(proxy.get("routes")) or proxy["outbound"]["type"] == "block" or proxy["inbound"]["type"] == "tun"
-            or any(ob.get("interface") or ob["type"] == "wireguard" for c in chains for ob in _chain(c)))
+            or any(ob.get("interface") or ob["type"] in SINGBOX_ONLY_OUTBOUNDS for c in chains for ob in _chain(c)))
 
 
 def engine_for(proxy, glob):

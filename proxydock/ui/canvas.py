@@ -215,11 +215,28 @@ class CanvasInterface(QWidget):
 
     def _outbound_menu(self, pos=None, parent=None):
         menu = RoundMenu(_t("Add outbound"), parent or self)
+        link = Action(FIF.PASTE, _t("From a share link (clipboard)"), menu)
+        link.triggered.connect(lambda: self.add_from_link(pos))
+        menu.addAction(link)
+        menu.addSeparator()
         for t, label in OUTBOUND_NEW:
             act = Action(label, menu)
             act.triggered.connect(lambda _=False, t=t: self.ctl.new_outbound({"type": t}, pos))
             menu.addAction(act)
         return menu
+
+    def add_from_link(self, pos=None):
+        from PySide6.QtWidgets import QApplication
+        from ..links import parse
+        try:
+            fields, name = parse(QApplication.clipboard().text())
+        except ValueError as e:
+            info(self.window(), "error", _t("Cannot use the clipboard"),
+                 f"{e}\n" + _t("Copy a vless://, trojan://, tuic://, ss:// or hysteria2:// link first"), 6000)
+            return
+        n = self.ctl.new_outbound(fields, pos, edit=False)
+        self.ctl.rename_node(n["id"], name)
+        self.ctl.edit_node(n["id"])
 
     def add_inbound(self, t, pos=None):
         host = "0.0.0.0" if t in ("shadowsocks", "hysteria2") else "127.0.0.1"

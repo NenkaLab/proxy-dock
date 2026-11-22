@@ -114,6 +114,19 @@ OUTBOUND_DEFAULTS = {
     "wg_allowed_ips": "0.0.0.0/0, ::/0",
     "wg_mtu": 1408,
     "wg_keepalive": 0,          # persistent keepalive (s), 0 = off
+    # VLESS / Trojan / TUIC (Trojan and TUIC use "password"; tls_verify / sni are shared with HTTPS and Hysteria2)
+    "uuid": "",                 # VLESS / TUIC user id
+    "security": "tls",          # VLESS: "none", "tls" or "reality"
+    "vless_flow": "",           # VLESS: "" or "xtls-rprx-vision"
+    "reality_public_key": "",
+    "reality_short_id": "",
+    "fingerprint": "chrome",    # uTLS client fingerprint ("" = Go's own TLS); REALITY needs one
+    "alpn": "",                 # comma separated, "" = default (TUIC: h3)
+    "transport": "tcp",         # VLESS / Trojan: "tcp", "ws" or "grpc"
+    "transport_path": "",       # ws: path, grpc: service name
+    "transport_host": "",       # ws: Host header
+    "tuic_congestion": "bbr",   # cubic / new_reno / bbr
+    "tuic_udp_relay": "native",  # native / quic
 }
 SECRET_FIELDS = ("password", "ss_password", "hy2_password", "wg_private_key", "wg_preshared_key")
 
@@ -351,8 +364,9 @@ def outbound_errors(ob):
     if via:
         if ob["type"] == "hysteria2":
             errs.append(_t("Hysteria2 uses QUIC (UDP), so it cannot go through another outbound"))
-        if ob["type"] == "wireguard" and via["type"] not in ("shadowsocks", "hysteria2", "wireguard", "socks5"):
-            errs.append(_t("WireGuard needs UDP, so it can only go through Shadowsocks, Hysteria2, WireGuard or SOCKS5"))
+        from .common import NEEDS_UDP_VIA, UDP_VIA_OK
+        if ob["type"] in NEEDS_UDP_VIA and via["type"] not in UDP_VIA_OK:
+            errs.append(_t("{type} needs UDP, so it cannot go through an HTTP or SOCKS4 proxy").format(type=OUTBOUND_TYPES[ob["type"]]))
         errs += outbound_errors(via)
     if ob["type"] == "block":
         pass
@@ -371,6 +385,34 @@ def outbound_errors(ob):
                 errs.append(_t("Outbound: {e}").format(e=e))
         if ob["type"] == "hysteria2" and not ob["hy2_password"]:
             errs.append(_t("Enter the outbound Hysteria2 password"))
+        if ob["type"] in ("vless", "tuic"):
+            import uuid as _uuid
+            try:
+                _uuid.UUID(ob["uuid"].strip())
+            except ValueError:
+                errs.append(_t("Enter the user UUID (e.g. 0b5b8d9e-...)"))
+        if ob["type"] in ("trojan", "tuic") and not ob["password"]:
+            errs.append(_t("Enter the password"))
+        if ob["type"] == "vless":
+            if ob["security"] not in ("none", "tls", "reality"):
+                errs.append(_t("Choose the VLESS security (none, TLS or REALITY)"))
+            if ob["security"] == "reality":
+                import base64 as _b64
+                try:
+                    ok = len(_b64.urlsafe_b64decode(ob["reality_public_key"].strip() + "==")) == 32
+                except ValueError:
+                    ok = False
+                if not ok:
+                    errs.append(_t("REALITY: enter the server's public key"))
+                sid = ob["reality_short_id"].strip()
+                if len(sid) > 16 or len(sid) % 2 or any(c not in "0123456789abcdefABCDEF" for c in sid):
+                    errs.append(_t("REALITY: the short ID is up to 16 hex digits"))
+                if not ob["sni"].strip():
+                    errs.append(_t("REALITY: enter the server name (SNI) of the site the server imitates"))
+                if not ob["fingerprint"]:
+                    errs.append(_t("REALITY needs a browser fingerprint"))
+        if ob["type"] in ("vless", "trojan") and ob["transport"] not in ("tcp", "ws", "grpc"):
+            errs.append(_t("Choose the transport (TCP, WebSocket or gRPC)"))
         if ob["type"] == "wireguard":
             from .wgconf import valid_cidrs, valid_key
             if not valid_key(ob["wg_private_key"]):

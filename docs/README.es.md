@@ -21,8 +21,8 @@ es una sola tarjeta.
 | | Compatible |
 |---|---|
 | Entrada | SOCKS5 · SOCKS4/4a · HTTP · HTTPS (TLS) · servidor Shadowsocks · servidor Hysteria2 · TUN (todas las apps) |
-| Salida | Direct · proxy superior HTTP / HTTPS / SOCKS4 / SOCKS5 · túnel Shadowsocks · túnel Hysteria2 (QUIC) · WireGuard |
-| UDP | entrada SOCKS5 · Shadowsocks · Hysteria2, salida Direct · Shadowsocks · Hysteria2 · WireGuard |
+| Salida | Direct · proxy superior HTTP / HTTPS / SOCKS4 / SOCKS5 · túnel Shadowsocks · túnel Hysteria2 (QUIC) · WireGuard · VLESS (TLS / REALITY) · Trojan · TUIC |
+| UDP | entrada SOCKS5 · Shadowsocks · Hysteria2, salida Direct · Shadowsocks · Hysteria2 · WireGuard · VLESS · Trojan · TUIC |
 
 - **Lienzo**: editor estilo blueprint - arrastra líneas de los bloques de entrada a los de salida; varias entradas pueden compartir una salida, una entrada conectada a otra entrada pasa por ella, y Direct puede salir desde una IP de origen elegida
 - **Bloque PC**: conecta una entrada HTTP para usarla como proxy del sistema de Windows mientras se ejecuta; la configuración anterior se guarda y se restaura al detenerla o cerrar la aplicación (botones Restaurar anterior / Desactivado)
@@ -33,6 +33,7 @@ es una sola tarjeta.
 - **Interfaz de red**: cualquier salida puede salir por una tarjeta de red elegida (Tailscale, WireGuard, una app de VPN, Wi-Fi) sin cambiar las rutas del PC; solo el tráfico conectado a ella la usa (motor sing-box)
 - **WireGuard**: un bloque de túnel WireGuard que funciona dentro de ProxyDock: sin app de VPN, así que varios países pueden estar activos a la vez para apps distintas; importa el `.conf` de un proveedor; un bloque WireGuard «por» otro da una VPN doble (motor sing-box)
 - **TUN**: una tarjeta de red virtual que captura todas las apps de este PC, incluso sin ajustes de proxy; conectada a un enrutador, las reglas de programa (game.exe, chrome.exe) se aplican a todas. Pide permisos de administrador (UAC) al iniciarse, salvo que ProxyDock ya se ejecute como administrador (motor sing-box)
+- **VLESS / Trojan / TUIC**: VLESS con TLS o REALITY (flow Vision), Trojan y TUIC v5, sobre TCP, WebSocket o gRPC. Copia el enlace `vless://`, `trojan://`, `tuic://`, `ss://` o `hysteria2://` de un proveedor y usa **Añadir salida → Desde un enlace compartido** (o **Pegar enlace compartido** en el editor). Cloudflare WARP: importa un perfil WireGuard de WARP (p. ej. hecho con wgcf) en un bloque WireGuard (motor sing-box)
 - **Motor**: sing-box (predeterminado) ejecuta cada proxy en su propio proceso: varios núcleos, UDP a través de cadenas, Hysteria2 por otras salidas. El motor Python integrado queda de respaldo (Ajustes → Motor de proxy)
 - **Shadowsocks**: AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) y 2022 (SIP022, blake3), TCP+UDP, copia de enlaces `ss://`
 - **Hysteria2**: compatible en ambos sentidos con la implementación oficial (TCP y UDP), fijación del certificado, copia de enlaces `hysteria2://`

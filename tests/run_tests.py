@@ -314,6 +314,18 @@ def test_ui():
     w.editor.cancel()
     wait(300)
     ctl.delete_node(t["id"])
+    vb = ctl.new_outbound({"type": "vless"}, edit=False)
+    ctl.edit_node(vb["id"])
+    wait(300)
+    QApplication.clipboard().setText(VLESS_LINK)
+    w.editor._paste_link()
+    wait(200)
+    got = w.editor.collect()["outbound"]
+    check("ui: paste share link fills the editor", got["security"] == "reality" and got["host"] == "a.example"
+          and w.editor.r_out_reality.isVisible() and w.editor.ed_name.text() == "JP Reality", got)
+    w.editor.cancel()
+    wait(300)
+    ctl.delete_node(vb["id"])
     w.switchTo(w.settings_page)
     wait(200)
     w.settings_page.sw_admin.setChecked(True)
@@ -851,13 +863,144 @@ def test_run_as_admin():
         helper.runas, common.is_admin, winmod.IS_WIN = real_runas, real_admin, real_win
 
 
+VLESS_LINK = ("vless://0b5b8d9e-1111-2222-3333-444455556666@a.example:443?security=reality&sni=www.microsoft.com"
+              "&fp=chrome&pbk=hDNje6eG6lfpI7mTJVGTTFZmGw7VS0RJRHFwWQzu2iM&sid=6ba85179&flow=xtls-rprx-vision&type=tcp#JP%20Reality")
+
+
+def test_protocols():
+    from proxydock import links
+    from proxydock.singbox import compile as sbc, engine_for
+    ob, name = links.parse(VLESS_LINK)
+    check("links: vless reality", name == "JP Reality" and ob["security"] == "reality" and ob["vless_flow"] == "xtls-rprx-vision"
+          and ob["reality_short_id"] == "6ba85179" and ob["sni"] == "www.microsoft.com", ob)
+    ob2, _ = links.parse("trojan://p%40ss@b.example:443?sni=b.example&type=ws&path=%2Fws&host=cdn.example&allowInsecure=1#T")
+    check("links: trojan over websocket", ob2["password"] == "p@ss" and ob2["transport"] == "ws"
+          and ob2["transport_host"] == "cdn.example" and ob2["tls_verify"] is False, ob2)
+    ob3, _ = links.parse("tuic://0b5b8d9e-1111-2222-3333-444455556666:pw@[2001:db8::1]:443?congestion_control=cubic&alpn=h3#T")
+    check("links: tuic with IPv6 server", ob3["host"] == "2001:db8::1" and ob3["password"] == "pw"
+          and ob3["tuic_congestion"] == "cubic", ob3)
+    ss, _ = links.parse("ss://YWVzLTI1Ni1nY206cGFzcw@1.2.3.4:8388#SS")
+    hy, _ = links.parse("hy2://pw@h.example:443?sni=x&insecure=1#H")
+    check("links: ss and hy2", ss["ss_method"] == "aes-256-gcm" and ss["ss_password"] == "pass"
+          and hy["type"] == "hysteria2" and hy["tls_verify"] is False)
+    for bad in ("http://example.com", "vless://nouser"):
+        try:
+            links.parse(bad)
+            check(f"links: refuses {bad}", False)
+        except ValueError:
+            check(f"links: refuses {bad}", True)
+    full = dict(config.OUTBOUND_DEFAULTS, **ob, via=None)
+    check("protocols: valid VLESS/REALITY has no errors", config.outbound_errors(full) == [], config.outbound_errors(full))
+    check("protocols: bad UUID and REALITY key reported",
+          len(config.outbound_errors(dict(full, uuid="x", reality_public_key="nope"))) >= 2)
+    tuic_over_http = dict(config.OUTBOUND_DEFAULTS, **ob3, via=dict(config.OUTBOUND_DEFAULTS, type="http", host="h", port=80, via=None))
+    check("protocols: TUIC cannot go through an HTTP proxy", any("UDP" in e for e in config.outbound_errors(tuic_over_http)))
+    d = sbc.outbound(full, "out0")
+    check("protocols: sing-box vless reality", d["type"] == "vless" and d["flow"] == "xtls-rprx-vision"
+          and d["tls"]["reality"]["public_key"] == ob["reality_public_key"] and d["tls"]["utls"]["fingerprint"] == "chrome", d)
+    t = sbc.outbound(dict(config.OUTBOUND_DEFAULTS, **ob2, via=None), "out0")
+    check("protocols: sing-box trojan ws", t["transport"] == {"type": "ws", "path": "/ws", "headers": {"Host": "cdn.example"}}
+          and t["tls"]["insecure"] is True, t)
+    u = sbc.outbound(dict(config.OUTBOUND_DEFAULTS, **ob3, via=None), "out0")
+    check("protocols: sing-box tuic", u["congestion_control"] == "cubic" and u["tls"]["alpn"] == ["h3"] and "utls" not in u["tls"], u)
+    p = config.new_proxy("v", {"type": "socks5", "port": 1080})
+    p["outbound"] = full
+    check("protocols: need sing-box", engine_for(p, config.validate_global({"engine": "python"}))[0] == "none")
+
+
+def test_protocols_e2e():
+    """SOCKS5 card -> VLESS (TLS, REALITY, WebSocket) / Trojan (TLS, gRPC) / TUIC -> local sing-box servers -> origin."""
+    import ssl
+    import subprocess
+    import uuid as _uuid
+    from proxydock.runtime import ProxyManager
+    from proxydock.singbox import find_binary
+    from proxydock.tls import ensure_self_signed
+    exe = find_binary()
+    cert, key = ensure_self_signed(TMP, "proto-test")
+    origin = ThreadingHTTPServer(("127.0.0.1", 0), Origin)
+    threading.Thread(target=origin.serve_forever, daemon=True).start()
+    oport = origin.server_address[1]
+    # a TLS 1.3 site for REALITY to imitate
+    tls_port = free_port()
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(cert, key)
+    lsock = socket.socket()
+    lsock.bind(("127.0.0.1", tls_port))
+    lsock.listen()
+
+    def tls_site():
+        while True:
+            try:
+                c, _ = lsock.accept()
+            except OSError:
+                return
+            try:
+                with ctx.wrap_socket(c, server_side=True) as sc:
+                    sc.recv(100)
+            except Exception:
+                pass
+    threading.Thread(target=tls_site, daemon=True).start()
+    kp = subprocess.run([exe, "generate", "reality-keypair"], capture_output=True, text=True).stdout
+    priv = kp.split("PrivateKey:")[1].split()[0]
+    pub = kp.split("PublicKey:")[1].split()[0]
+    uid, pw = str(_uuid.uuid4()), "test-pass-123"
+    tls_in = {"enabled": True, "certificate_path": cert, "key_path": key}
+    servers = {
+        "vless-tls": ({"type": "vless", "users": [{"uuid": uid}], "tls": tls_in},
+                      {"type": "vless", "uuid": uid, "security": "tls", "tls_verify": False, "sni": "localhost"}),
+        "vless-reality": ({"type": "vless", "users": [{"uuid": uid, "flow": "xtls-rprx-vision"}], "tls": {
+                              "enabled": True, "server_name": "localhost",
+                              "reality": {"enabled": True, "handshake": {"server": "127.0.0.1", "server_port": tls_port},
+                                          "private_key": priv, "short_id": ["6ba85179"]}}},
+                          {"type": "vless", "uuid": uid, "security": "reality", "vless_flow": "xtls-rprx-vision",
+                           "sni": "localhost", "reality_public_key": pub, "reality_short_id": "6ba85179"}),
+        "vless-ws": ({"type": "vless", "users": [{"uuid": uid}], "transport": {"type": "ws", "path": "/ws"}},
+                     {"type": "vless", "uuid": uid, "security": "none", "transport": "ws", "transport_path": "/ws"}),
+        "trojan-tls": ({"type": "trojan", "users": [{"password": pw}], "tls": tls_in},
+                       {"type": "trojan", "password": pw, "tls_verify": False, "sni": "localhost"}),
+        "trojan-grpc": ({"type": "trojan", "users": [{"password": pw}], "tls": tls_in,
+                         "transport": {"type": "grpc", "service_name": "svc"}},
+                        {"type": "trojan", "password": pw, "tls_verify": False, "sni": "localhost", "transport": "grpc",
+                         "transport_path": "svc"}),
+        "tuic": ({"type": "tuic", "users": [{"uuid": uid, "password": pw}], "congestion_control": "bbr",
+                  "tls": dict(tls_in, alpn=["h3"])},
+                 {"type": "tuic", "uuid": uid, "password": pw, "tls_verify": False, "sni": "localhost"}),
+    }
+    inbounds, clients = [], {}
+    for i, (name, (srv, cli)) in enumerate(servers.items()):
+        port = free_port()
+        inbounds.append(dict(srv, tag=f"s{i}", listen="127.0.0.1", listen_port=port))
+        clients[name] = dict(config.OUTBOUND_DEFAULTS, host="127.0.0.1", port=port, fingerprint="chrome", via=None, **cli)
+    path = os.path.join(TMP, "proto-servers.json")
+    json.dump({"log": {"level": "warn"}, "inbounds": inbounds, "outbounds": [{"type": "direct", "tag": "d"}]}, open(path, "w"))
+    srv_proc = subprocess.Popen([exe, "run", "-c", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(1.5)
+    try:
+        glob = config.validate_global({"engine": "sing-box"})
+        mgr = ProxyManager()
+        for name, ob in clients.items():
+            errs = config.outbound_errors(ob)
+            p = config.new_proxy(name, {"type": "socks5", "port": free_port()})
+            p["outbound"] = ob
+            mgr.start(p, glob).result(20)
+            r = socks5_get(p["inbound"]["port"], "127.0.0.1", oport)
+            check(f"[sing-box] protocol {name} -> origin", r == "200" and not errs, (r, errs, mgr.state(p["id"])))
+        mgr.stop_all()
+    finally:
+        srv_proc.terminate()
+        lsock.close()
+        origin.shutdown()
+
+
 def main():
     t0 = time.time()
     tests = [test_translations, test_graph, test_engine, test_singbox_compile, test_router_graph, test_router_singbox, test_interface,
-             test_wireguard, test_tun, test_run_as_admin]
+             test_wireguard, test_tun, test_run_as_admin, test_protocols]
     from proxydock.singbox import find_binary
     if find_binary():
-        tests += [lambda: test_engine("sing-box"), test_singbox_guard, test_router_e2e, test_interface_e2e, test_wireguard_e2e, test_helper]
+        tests += [lambda: test_engine("sing-box"), test_singbox_guard, test_router_e2e, test_interface_e2e, test_wireguard_e2e, test_helper,
+                  test_protocols_e2e]
         from proxydock.singbox import find_hysteria
         if find_hysteria():
             tests.append(test_hysteria)

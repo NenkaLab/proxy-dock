@@ -20,8 +20,8 @@
 | | 支持 |
 |---|---|
 | 入站 | SOCKS5 · SOCKS4/4a · HTTP · HTTPS (TLS) · Shadowsocks 服务器 · Hysteria2 服务器 · TUN (所有应用) |
-| 出站 | Direct · 上游 HTTP / HTTPS / SOCKS4 / SOCKS5 代理 · Shadowsocks 隧道 · Hysteria2 (QUIC) 隧道 · WireGuard |
-| UDP | 入站 SOCKS5 · Shadowsocks · Hysteria2，出站 Direct · Shadowsocks · Hysteria2 · WireGuard |
+| 出站 | Direct · 上游 HTTP / HTTPS / SOCKS4 / SOCKS5 代理 · Shadowsocks 隧道 · Hysteria2 (QUIC) 隧道 · WireGuard · VLESS (TLS / REALITY) · Trojan · TUIC |
+| UDP | 入站 SOCKS5 · Shadowsocks · Hysteria2，出站 Direct · Shadowsocks · Hysteria2 · WireGuard · VLESS · Trojan · TUIC |
 
 - **画布**：蓝图式编辑器 - 从入站块拖线到出站块；多个入站可共用一个出站，把入站连到另一个入站会经由它中继，Direct 可以指定源 IP
 - **PC 块**：连接一个 HTTP 入站，在其运行期间用作 Windows 系统代理；之前的设置会被保存，停止或退出应用时恢复 (恢复之前的设置 / 关闭 按钮)
@@ -31,6 +31,7 @@
 - **网络接口**: 任何出站都可以从选定的网卡 (Tailscale、WireGuard、VPN 应用、Wi-Fi) 发出，不改变电脑的路由，只有连到那里的流量才使用它 (sing-box 引擎)
 - **WireGuard**: 在 ProxyDock 内运行的 WireGuard 隧道块 - 不需要 VPN 应用，可同时开启多个国家的隧道并按应用分配；可导入服务商的 `.conf`；把一个 WireGuard 块经由另一个即为双重 VPN (sing-box 引擎)
 - **TUN**: 捕获本机所有应用 (包括没有代理设置的应用) 的虚拟网卡——连到路由后，程序规则 (game.exe、chrome.exe) 对所有应用生效。若 ProxyDock 不是以管理员身份运行，启动时会请求管理员权限 (UAC) (sing-box 引擎)
+- **VLESS / Trojan / TUIC**: 支持 TLS 或 REALITY (Vision flow) 的 VLESS、Trojan、TUIC v5，可走 TCP、WebSocket 或 gRPC。复制服务商的 `vless://`、`trojan://`、`tuic://`、`ss://` 或 `hysteria2://` 链接，然后点 **添加出站 → 从分享链接** (或编辑器里的 **粘贴分享链接**)。Cloudflare WARP：把 WARP 的 WireGuard 配置 (例如用 wgcf 生成) 导入 WireGuard 块 (sing-box 引擎)
 - **引擎**: 默认的 sing-box 为每个代理单独运行一个进程 - 多核、经过链路的 UDP、经由其他出站的 Hysteria2。内置 Python 引擎作为备用 (设置 → 代理引擎)
 - **Shadowsocks**：AEAD 2018 (aes-128/256-gcm、chacha20-ietf-poly1305) 和 2022 (SIP022、blake3)，TCP+UDP，复制 `ss://` 链接
 - **Hysteria2**：已确认与官方实现双向互通 (TCP、UDP)，证书指纹固定，复制 `hysteria2://` 链接

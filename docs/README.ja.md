@@ -20,8 +20,8 @@
 | | 対応 |
 |---|---|
 | 受信側 | SOCKS5 · SOCKS4/4a · HTTP · HTTPS (TLS) · Shadowsocks サーバー · Hysteria2 サーバー · TUN (すべてのアプリ) |
-| 送信側 | Direct · 上位 HTTP / HTTPS / SOCKS4 / SOCKS5 プロキシ · Shadowsocks トンネル · Hysteria2 (QUIC) トンネル · WireGuard |
-| UDP | 受信 SOCKS5 · Shadowsocks · Hysteria2、送信 Direct · Shadowsocks · Hysteria2 · WireGuard |
+| 送信側 | Direct · 上位 HTTP / HTTPS / SOCKS4 / SOCKS5 プロキシ · Shadowsocks トンネル · Hysteria2 (QUIC) トンネル · WireGuard · VLESS (TLS / REALITY) · Trojan · TUIC |
+| UDP | 受信 SOCKS5 · Shadowsocks · Hysteria2、送信 Direct · Shadowsocks · Hysteria2 · WireGuard · VLESS · Trojan · TUIC |
 
 - **キャンバス**: ブループリント風エディター - 受信側ブロックから送信側ブロックへ線を引いてつなぎます。複数の受信側で 1 つの送信側を共有でき、受信側を別の受信側につなぐとそこを経由して中継し、Direct は送信元 IP を選べます
 - **PC ブロック**: HTTP 受信側をつなぐと、実行中は Windows のシステムプロキシとして使います。以前の設定は保存しておき、停止時やアプリ終了時に元に戻します (以前に戻す / オフ ボタン)
@@ -32,6 +32,7 @@
 - **ネットワークインターフェース**: どの送信側も選んだネットワークカード (Tailscale、WireGuard、VPN アプリ、Wi-Fi) から出せます。PC のルートは変えないので、そこにつないだ通信だけがそのカードを使います (sing-box エンジン)
 - **WireGuard**: ProxyDock の中で動く WireGuard トンネルブロック - VPN アプリ不要なので、複数の国のトンネルを同時に使いアプリごとに分けられます。事業者の `.conf` を読み込めて、WireGuard ブロックを別の WireGuard ブロック経由にすると二重 VPN になります (sing-box エンジン)
 - **TUN**: この PC のすべてのアプリ (プロキシ設定のないアプリも) を捕まえる仮想ネットワークカード。Router につなぐとプログラムのルール (game.exe、chrome.exe) がすべてのアプリに効きます。ProxyDock が管理者でなければ起動時に管理者権限 (UAC) を求めます (sing-box エンジン)
+- **VLESS / Trojan / TUIC**: TLS または REALITY (Vision flow) の VLESS、Trojan、TUIC v5 を TCP・WebSocket・gRPC で使えます。事業者の `vless://`、`trojan://`、`tuic://`、`ss://`、`hysteria2://` リンクをコピーして **送信側を追加 → 共有リンクから** (またはエディターの **共有リンクを貼り付け**) を押します。Cloudflare WARP は WARP の WireGuard プロファイル (wgcf などで作成) を WireGuard ブロックに読み込みます (sing-box エンジン)
 - **エンジン**: 既定の sing-box はプロキシごとに別プロセスで動きます - マルチコア、チェーン経由の UDP、他の送信側を経由する Hysteria2。内蔵の Python エンジンは代替用です (設定 → プロキシエンジン)
 - **Shadowsocks**: AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) と 2022 (SIP022, blake3)、TCP+UDP、`ss://` リンクのコピー
 - **Hysteria2**: 公式実装と双方向で互換性を確認 (TCP・UDP)、証明書フィンガープリントの固定、`hysteria2://` リンクのコピー

@@ -98,6 +98,9 @@ def _tr_outbound_new():
         ("shadowsocks", _t("Shadowsocks tunnel (remote server)")),
         ("hysteria2", _t("Hysteria2 tunnel (remote server)")),
         ("wireguard", _t("WireGuard tunnel (no VPN app needed)")),
+        ("vless", _t("VLESS tunnel (TLS / REALITY)")),
+        ("trojan", _t("Trojan tunnel")),
+        ("tuic", _t("TUIC tunnel (QUIC)")),
         ("block", _t("Block (refuse connections, for router rules)")),
     ]
 
@@ -582,7 +585,10 @@ class EditorInterface(ScrollArea):
         self.out_types = list(OUTBOUND_TYPES)
         self.cb_out.addItems([OUTBOUND_TYPES[t] for t in self.out_types])
         self.cb_out.setFixedWidth(200)
-        s_out.add(Row(_t("Type"), _t("Direct = connect straight from this PC. The others go through another proxy/server"), v).right(self.cb_out))
+        b_link = PushButton(_t("Paste share link"), v, FIF.PASTE)
+        b_link.clicked.connect(self._paste_link)
+        s_out.add(Row(_t("Type"), _t("Direct = connect straight from this PC. The others go through another proxy/server"), v)
+                  .right(b_link, self.cb_out))
         self.ed_out_host = LineEdit(v)
         self.ed_out_host.setPlaceholderText(_t("Server address"))
         self.ed_out_host.setFixedWidth(220)
@@ -615,6 +621,60 @@ class EditorInterface(ScrollArea):
         self.ed_out_pass.setPlaceholderText(_t("Password"))
         self.ed_out_pass.setFixedWidth(180)
         self.r_out_cred = s_out.add(Row(_t("Upstream proxy account"), "", v).right(self.ed_out_user, self.ed_out_pass))
+        # VLESS / Trojan / TUIC
+        self.ed_out_uuid = LineEdit(v)
+        self.ed_out_uuid.setPlaceholderText("0b5b8d9e-xxxx-xxxx-xxxx-xxxxxxxxxxxx")
+        self.ed_out_uuid.setFixedWidth(330)
+        self.r_out_uuid = s_out.add(Row(_t("User UUID"), "", v).right(self.ed_out_uuid))
+        self.securities = ["none", "tls", "reality"]
+        self.cb_out_sec = ComboBox(v)
+        self.cb_out_sec.addItems([_t("None"), "TLS", "REALITY"])
+        self.cb_out_sec.setFixedWidth(150)
+        self.flows = ["", "xtls-rprx-vision"]
+        self.cb_out_flow = ComboBox(v)
+        self.cb_out_flow.addItems([_t("(no flow)"), "xtls-rprx-vision"])
+        self.cb_out_flow.setFixedWidth(180)
+        self.r_out_sec = s_out.add(Row(_t("Security · flow"), _t("Use what the server is set up with (REALITY usually with xtls-rprx-vision)"), v)
+                                   .right(self.cb_out_sec, self.cb_out_flow))
+        self.ed_out_pbk = LineEdit(v)
+        self.ed_out_pbk.setPlaceholderText(_t("Public key (pbk)"))
+        self.ed_out_pbk.setFixedWidth(330)
+        self.ed_out_sid = LineEdit(v)
+        self.ed_out_sid.setPlaceholderText(_t("Short ID (sid)"))
+        self.ed_out_sid.setFixedWidth(140)
+        self.r_out_reality = s_out.add(Row(_t("REALITY"), _t("The server's public key and short ID. SNI = the site the server imitates"), v)
+                                       .right(self.ed_out_pbk, self.ed_out_sid))
+        self.fingerprints = ["", "chrome", "firefox", "safari", "edge", "ios", "android", "random", "randomized"]
+        self.cb_out_fp = ComboBox(v)
+        self.cb_out_fp.addItems([_t("(none)")] + self.fingerprints[1:])
+        self.cb_out_fp.setFixedWidth(150)
+        self.ed_out_alpn = LineEdit(v)
+        self.ed_out_alpn.setPlaceholderText(_t("ALPN (e.g. h2, http/1.1)"))
+        self.ed_out_alpn.setFixedWidth(180)
+        self.r_out_fp = s_out.add(Row(_t("Fingerprint · ALPN"), _t("Look like this browser's TLS (uTLS). Empty ALPN = default"), v)
+                                  .right(self.cb_out_fp, self.ed_out_alpn))
+        self.transports = ["tcp", "ws", "grpc"]
+        self.cb_out_tr = ComboBox(v)
+        self.cb_out_tr.addItems(["TCP", "WebSocket", "gRPC"])
+        self.cb_out_tr.setFixedWidth(130)
+        self.ed_out_tr_path = LineEdit(v)
+        self.ed_out_tr_path.setPlaceholderText(_t("Path / service name"))
+        self.ed_out_tr_path.setFixedWidth(160)
+        self.ed_out_tr_host = LineEdit(v)
+        self.ed_out_tr_host.setPlaceholderText(_t("Host header"))
+        self.ed_out_tr_host.setFixedWidth(160)
+        self.r_out_tr = s_out.add(Row(_t("Transport"), _t("WebSocket and gRPC are used behind CDNs. Path for WebSocket, service name for gRPC"), v)
+                                  .right(self.cb_out_tr, self.ed_out_tr_path, self.ed_out_tr_host))
+        self.congestions = ["bbr", "cubic", "new_reno"]
+        self.cb_out_cc = ComboBox(v)
+        self.cb_out_cc.addItems(self.congestions)
+        self.cb_out_cc.setFixedWidth(130)
+        self.relays = ["native", "quic"]
+        self.cb_out_relay = ComboBox(v)
+        self.cb_out_relay.addItems(self.relays)
+        self.cb_out_relay.setFixedWidth(130)
+        self.r_out_tuic = s_out.add(Row(_t("Congestion control · UDP relay"), _t("Use what the TUIC server expects"), v)
+                                    .right(self.cb_out_cc, self.cb_out_relay))
         self.sw_out_verify = _switch(v, _t("Verify"), _t("Off"))
         self.r_out_verify = s_out.add(Row(_t("Verify server certificate"), _t("Turn off for servers with self-signed certificates (pinning the fingerprint is recommended)"), v)
                                       .right(self.sw_out_verify))
@@ -733,6 +793,8 @@ class EditorInterface(ScrollArea):
         self.cb_in.currentIndexChanged.connect(lambda *_: self._sync())
         self.cb_out.currentIndexChanged.connect(lambda *_: self._sync())
         self.cb_via.currentIndexChanged.connect(lambda *_: self._sync())
+        self.cb_out_sec.currentIndexChanged.connect(lambda *_: self._sync())
+        self.cb_out_tr.currentIndexChanged.connect(lambda *_: self._sync())
         self.sw_in_auth.checkedChanged.connect(lambda *_: self._sync())
 
     def _ss_labels(self):
@@ -787,6 +849,18 @@ class EditorInterface(ScrollArea):
         self.ed_in_hy.setText(ib["hy2_password"])
         self.cb_tun_stack.setCurrentIndex(self.tun_stacks.index(ib["tun_stack"]))
         self.sw_tun_strict.setChecked(ib["tun_strict_route"])
+        self._fill_outbound(ob)
+        glob = self.ctl.glob
+        for key, (follow, w) in self.ov.items():
+            follow.blockSignals(True)
+            follow.setChecked(ov.get(key) is None)
+            follow.blockSignals(False)
+            self._set_value(key, ov[key] if ov.get(key) is not None else glob[key])
+            w.setEnabled(ov.get(key) is not None)
+        self._after_fill(n, inbound, ib)
+
+    def _fill_outbound(self, ob):
+        """Put an outbound's settings into the outbound widgets (also used by 'Paste share link')."""
         self.cb_out.setCurrentIndex(self.out_types.index(ob["type"]))
         self.ed_out_host.setText(ob["host"])
         self.sp_out_port.setValue(ob["port"])
@@ -807,13 +881,36 @@ class EditorInterface(ScrollArea):
         self.sp_wg_keep.setValue(ob["wg_keepalive"])
         self.ed_out_bind.setText(ob.get("bind", ""))
         self._fill_ifaces(ob.get("interface", ""))
-        glob = self.ctl.glob
-        for key, (follow, w) in self.ov.items():
-            follow.blockSignals(True)
-            follow.setChecked(ov.get(key) is None)
-            follow.blockSignals(False)
-            self._set_value(key, ov[key] if ov.get(key) is not None else glob[key])
-            w.setEnabled(ov.get(key) is not None)
+        self.ed_out_uuid.setText(ob["uuid"])
+        self.cb_out_sec.setCurrentIndex(self.securities.index(ob["security"]) if ob["security"] in self.securities else 1)
+        self.cb_out_flow.setCurrentIndex(self.flows.index(ob["vless_flow"]) if ob["vless_flow"] in self.flows else 0)
+        self.ed_out_pbk.setText(ob["reality_public_key"])
+        self.ed_out_sid.setText(ob["reality_short_id"])
+        self.cb_out_fp.setCurrentIndex(self.fingerprints.index(ob["fingerprint"]) if ob["fingerprint"] in self.fingerprints else 1)
+        self.ed_out_alpn.setText(ob["alpn"])
+        self.cb_out_tr.setCurrentIndex(self.transports.index(ob["transport"]) if ob["transport"] in self.transports else 0)
+        self.ed_out_tr_path.setText(ob["transport_path"])
+        self.ed_out_tr_host.setText(ob["transport_host"])
+        self.cb_out_cc.setCurrentIndex(self.congestions.index(ob["tuic_congestion"]) if ob["tuic_congestion"] in self.congestions else 0)
+        self.cb_out_relay.setCurrentIndex(self.relays.index(ob["tuic_udp_relay"]) if ob["tuic_udp_relay"] in self.relays else 0)
+
+    def _paste_link(self):
+        from ..links import parse
+        text = QApplication.clipboard().text().strip()
+        try:
+            fields, name = parse(text)
+        except ValueError as e:
+            info(self.window(), "error", _t("Cannot use the clipboard"),
+                 f"{e}\n" + _t("Copy a vless://, trojan://, tuic://, ss:// or hysteria2:// link first"), 6000)
+            return
+        ob = dict(config.OUTBOUND_DEFAULTS, **fields)
+        self._fill_outbound(ob)
+        if not self.ed_name.text().strip() or self.ed_name.text().startswith(tuple(OUTBOUND_TYPES.values())):
+            self.ed_name.setText(name[:60])
+        self._sync()
+        info(self.window(), "success", _t("Filled in from the link"), name, 3000)
+
+    def _after_fill(self, n, inbound, ib):
         if not inbound:
             g = self.ctl.graph
             others = [x for x in g["outbounds"] if x["id"] != n["id"] and x["outbound"]["type"] != "direct"]
@@ -948,10 +1045,23 @@ class EditorInterface(ScrollArea):
         vi = self.cb_via.currentIndex()
         has_via = ot not in ("direct", "hysteria2", "block") and 0 < vi < len(self.vias)
         self.r_out_iface.setVisible(ot != "block" and not has_via)    # only the hop that dials out itself
-        self.r_out_cred.setVisible(ot in ("http", "https", "socks4", "socks5"))
+        self.r_out_cred.setVisible(ot in ("http", "https", "socks4", "socks5", "trojan", "tuic"))
+        self.ed_out_user.setVisible(ot not in ("trojan", "tuic"))
         self.ed_out_pass.setVisible(ot != "socks4")
-        self.r_out_verify.setVisible(ot in ("https", "hysteria2"))
-        self.r_out_sni.setVisible(ot in ("https", "hysteria2"))
+        sec = self.securities[max(self.cb_out_sec.currentIndex(), 0)]
+        tls = ot in ("https", "hysteria2", "trojan", "tuic") or (ot == "vless" and sec != "none")
+        self.r_out_verify.setVisible(tls and not (ot == "vless" and sec == "reality"))
+        self.r_out_sni.setVisible(tls)
+        self.r_out_uuid.setVisible(ot in ("vless", "tuic"))
+        self.r_out_sec.setVisible(ot == "vless")
+        self.r_out_reality.setVisible(ot == "vless" and sec == "reality")
+        self.r_out_fp.setVisible(ot in ("vless", "trojan") and sec != "none" or ot == "tuic")
+        self.cb_out_fp.setVisible(ot != "tuic")
+        self.r_out_tr.setVisible(ot in ("vless", "trojan"))
+        tr = self.transports[max(self.cb_out_tr.currentIndex(), 0)]
+        self.ed_out_tr_path.setVisible(tr != "tcp")
+        self.ed_out_tr_host.setVisible(tr == "ws")
+        self.r_out_tuic.setVisible(ot == "tuic")
         self.r_out_pin.setVisible(ot == "hysteria2")
         self.r_out_ss_method.setVisible(ot == "shadowsocks")
         self.r_out_ss_pw.setVisible(ot == "shadowsocks")
@@ -967,6 +1077,9 @@ class EditorInterface(ScrollArea):
             "shadowsocks": _t("Encrypted tunnel to a remote Shadowsocks server (TCP+UDP)."),
             "hysteria2": _t("QUIC tunnel to a remote Hysteria2 server (TCP+UDP). Bandwidth settings (Brutal), obfuscation and port hopping are not supported."),
             "block": _t("Refuses every connection. Connect router rules to it (e.g. ads, trackers). Needs the sing-box engine."),
+            "vless": _t("VLESS tunnel (TCP+UDP) with TLS or REALITY, optionally over WebSocket/gRPC. Paste a vless:// link to fill everything in. Needs the sing-box engine."),
+            "trojan": _t("Trojan tunnel over TLS (TCP+UDP), optionally over WebSocket/gRPC. Paste a trojan:// link to fill everything in. Needs the sing-box engine."),
+            "tuic": _t("TUIC v5 tunnel over QUIC (TCP+UDP). Paste a tuic:// link to fill everything in. Needs the sing-box engine."),
             "wireguard": _t("WireGuard tunnel run inside ProxyDock (TCP+UDP): no VPN app and no change to the PC's network, so several can run at once. 'Through' another WireGuard block makes a double VPN. Needs the sing-box engine."),
         }
         note = out_notes[ot]
@@ -1100,7 +1213,17 @@ class EditorInterface(ScrollArea):
                              wg_private_key=self.ed_wg_key.text().strip(), wg_address=self.ed_wg_addr.text().strip(),
                              wg_peer_public_key=self.ed_wg_peer.text().strip(), wg_preshared_key=self.ed_wg_psk.text().strip(),
                              wg_allowed_ips=self.ed_wg_allowed.text().strip(), wg_mtu=self.sp_wg_mtu.value(),
-                             wg_keepalive=self.sp_wg_keep.value())
+                             wg_keepalive=self.sp_wg_keep.value(),
+                             uuid=self.ed_out_uuid.text().strip(),
+                             security=self.securities[max(self.cb_out_sec.currentIndex(), 0)],
+                             vless_flow=self.flows[max(self.cb_out_flow.currentIndex(), 0)],
+                             reality_public_key=self.ed_out_pbk.text().strip(), reality_short_id=self.ed_out_sid.text().strip(),
+                             fingerprint=self.fingerprints[max(self.cb_out_fp.currentIndex(), 0)],
+                             alpn=self.ed_out_alpn.text().strip(),
+                             transport=self.transports[max(self.cb_out_tr.currentIndex(), 0)],
+                             transport_path=self.ed_out_tr_path.text().strip(), transport_host=self.ed_out_tr_host.text().strip(),
+                             tuic_congestion=self.congestions[max(self.cb_out_cc.currentIndex(), 0)],
+                             tuic_udp_relay=self.relays[max(self.cb_out_relay.currentIndex(), 0)])
         idx = self.cb_via.currentIndex()
         n["via"] = self.vias[idx] if 0 <= idx < len(self.vias) and ot not in graph_mod.NO_VIA else None
         if n["via"]:

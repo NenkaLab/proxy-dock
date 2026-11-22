@@ -565,6 +565,12 @@ class Controller:
         self._recompile()
         return True
 
+    def rename_node(self, nid, name):
+        kind, n = graph_mod.find(self.graph, nid)
+        if n is not None and name.strip():
+            n["name"] = self._unique_name(name.strip()[:60])
+            self._recompile()
+
     def new_proxy(self, name, inbound, outbound):
         """List page templates: inbound + outbound (shared Direct or a new outbound block)."""
         self.new_inbound(name, inbound, outbound)
@@ -622,11 +628,12 @@ class Controller:
                  if n["outbound"]["type"] == "hysteria2" else _t("Direct is the end of a chain"), 5000)
             self.refresh_lists()
             return False
-        if vid and n["outbound"]["type"] == "wireguard":
+        from ..common import NEEDS_UDP_VIA, OUTBOUND_TYPES, UDP_VIA_OK
+        if vid and n["outbound"]["type"] in NEEDS_UDP_VIA:
             _, v = graph_mod.find(self.graph, vid)
-            if v is not None and v["outbound"]["type"] not in ("shadowsocks", "hysteria2", "wireguard", "socks5"):
+            if v is not None and v["outbound"]["type"] not in UDP_VIA_OK:
                 info(self.window, "error", _t("Cannot connect"),
-                     _t("WireGuard needs UDP, so it can only go through Shadowsocks, Hysteria2, WireGuard or SOCKS5"), 5000)
+                     _t("{type} needs UDP, so it cannot go through an HTTP or SOCKS4 proxy").format(type=OUTBOUND_TYPES[n["outbound"]["type"]]), 5000)
                 self.refresh_lists()
                 return False
         old = n["via"]
