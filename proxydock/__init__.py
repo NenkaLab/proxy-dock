@@ -1,2 +1,2 @@
 """ProxyDock - desktop app that creates and runs multiple proxies (inbound + outbound)."""
-__version__ = "2.0.0"
+__version__ = "2.1.0"
