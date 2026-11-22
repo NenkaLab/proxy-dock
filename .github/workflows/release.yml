@@ -80,6 +80,7 @@ jobs:
         with:
           name: proxydock-${{ matrix.target }}
           path: dist/release/*
+          retention-days: 1
           if-no-files-found: error
 
   release:
