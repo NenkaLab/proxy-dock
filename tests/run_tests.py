@@ -47,11 +47,20 @@ def check(name, cond, extra=""):
 
 
 def free_port():
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    p = s.getsockname()[1]
-    s.close()
-    return p
+    """A port free for both TCP and UDP (Shadowsocks/Hysteria2 inbounds also listen on UDP)."""
+    while True:
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        p = s.getsockname()[1]
+        u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            u.bind(("0.0.0.0", p))
+            return p
+        except OSError:
+            continue
+        finally:
+            u.close()
+            s.close()
 
 
 # --- translations ---
@@ -126,11 +135,19 @@ class Origin(BaseHTTPRequestHandler):
         pass
 
 
-def socks5_get(port, host, dport):
+def socks5_get(port, host, dport, auth=None):
     s = socket.create_connection(("127.0.0.1", port), timeout=15)
     try:
-        s.sendall(b"\x05\x01\x00")
-        s.recv(2)
+        if auth:
+            s.sendall(b"\x05\x01\x02")
+            s.recv(2)
+            u, pw = (x.encode() for x in auth)
+            s.sendall(b"\x01" + bytes([len(u)]) + u + bytes([len(pw)]) + pw)
+            if s.recv(2)[1:2] != b"\x00":
+                return "auth failed"
+        else:
+            s.sendall(b"\x05\x01\x00")
+            s.recv(2)
         h = host.encode()
         s.sendall(b"\x05\x01\x00\x03" + bytes([len(h)]) + h + struct.pack("!H", dport))
         rep = s.recv(10)
@@ -148,13 +165,14 @@ def socks5_get(port, host, dport):
         s.close()
 
 
-def test_engine():
+def test_engine(engine="python"):
     from proxydock.runtime import ProxyManager
     from proxydock.ss import ss_generate_password
     origin = ThreadingHTTPServer(("127.0.0.1", 0), Origin)
     threading.Thread(target=origin.serve_forever, daemon=True).start()
     oport = origin.server_address[1]
-    glob = config.validate_global({})
+    glob = config.validate_global({"engine": engine})
+    tag = "" if engine == "python" else f"[{engine}] "
     k22 = ss_generate_password("2022-blake3-aes-256-gcm")
     servers = {
         "http": {"type": "http"}, "https": {"type": "https"}, "socks5": {"type": "socks5"},
@@ -169,7 +187,7 @@ def test_engine():
         port = free_port()
         p = config.new_proxy(name, dict(ib, port=port))
         mgr.start(p, glob).result(15)
-        check(f"server {name} starts", mgr.state(p["id"])[0] == "running", mgr.state(p["id"]))
+        check(f"{tag}server {name} starts", mgr.state(p["id"])[0] == "running", mgr.state(p["id"]))
         ob = {"type": ib["type"] if ib["type"] != "shadowsocks" else "shadowsocks", "host": "127.0.0.1", "port": port,
               "tls_verify": False, "ss_method": ib.get("ss_method", "2022-blake3-aes-256-gcm"),
               "ss_password": ib.get("ss_password", ""), "hy2_password": ib.get("hy2_password", "")}
@@ -189,13 +207,15 @@ def test_engine():
         ("http via hy2", ("http", "hy2")), ("ss18 via socks4", ("ss18", "socks4")),
         ("ss22 via https via socks5", ("ss22", "https", "socks5")),
     ]
+    if engine == "sing-box":     # only sing-box can send Hysteria2 (QUIC) through another outbound
+        cases.append(("hy2 via ss22", ("hy2", "ss22")))
     for label, names in cases:
         p = config.new_proxy(label, {"type": "socks5", "port": free_port()})
         if names:
             p["outbound"] = chain(*names)
         mgr.start(p, glob).result(15)
         r = socks5_get(p["inbound"]["port"], "127.0.0.1", oport)
-        check(f"engine: socks5 -> {label} -> origin", r == "200", r)
+        check(f"{tag}engine: socks5 -> {label} -> origin", r == "200", r)
 
     # HTTP inbound, plain request (absolute URI)
     hp = config.new_proxy("plain", {"type": "http", "port": free_port()})
@@ -209,7 +229,7 @@ def test_engine():
             break
         data += d
     s.close()
-    check("engine: http inbound plain GET", b" 200 " in data[:20] and b"Connection: close" in data, data[:80])
+    check(f"{tag}engine: http inbound plain GET", b" 200 " in data[:20] and b"Connection: close" in data, data[:80])
     mgr.stop_all()
     origin.shutdown()
 
@@ -269,9 +289,156 @@ def test_ui():
     ctl.manager.stop_all()
 
 
+def test_singbox_compile():
+    from proxydock.singbox import compile as sbc, python_reason
+    via = dict(config.OUTBOUND_DEFAULTS, type="socks4", host="10.0.0.2", port=1080, via=None)
+    ob = dict(config.OUTBOUND_DEFAULTS, type="https", host="up.example", port=443, tls_verify=False, sni="sni.example",
+              via=dict(config.OUTBOUND_DEFAULTS, type="shadowsocks", host="9.9.9.9", port=8388, via=via))
+    p = config.new_proxy("c", {"type": "socks5", "port": 1080, "auth_enabled": True, "username": "u", "password": "p"})
+    p["outbound"] = ob
+    cfg = dict(config.resolve(p, config.validate_global({})), allowed_domains=["a.example", "*.b.example", "1.2.3.4"],
+               block_private=True)
+    conf, reasons = sbc.build(p, cfg, bans_path="bans.json", api_port=1, api_secret="s")
+    outs = conf["outbounds"]
+    check("sing-box: via chain -> detour tags", [o.get("detour") for o in outs] == ["out1", "out2", None]
+          and conf["route"]["final"] == "out0", outs)
+    check("sing-box: https upstream tls", outs[0]["tls"] == {"enabled": True, "server_name": "sni.example", "insecure": True})
+    check("sing-box: socks4 upstream is 4a", outs[2]["version"] == "4a")
+    check("sing-box: socks5 inbound users", conf["inbounds"][0]["users"] == [{"username": "u", "password": "p"}])
+    rules = conf["route"]["rules"]
+    allow = rules[reasons.index(sbc.R_ALLOW)]
+    check("sing-box: allow list rule", allow["invert"] and allow["domain"] == ["a.example"]
+          and allow["domain_suffix"] == ["b.example"] and allow["ip_cidr"] == ["1.2.3.4/32"], allow)
+    check("sing-box: no resolve through an upstream", not any(r.get("action") == "resolve" for r in rules))
+    check("sing-box: reasons line up with rules", len(rules) == len(reasons) and reasons[1] == sbc.R_BANNED)
+    p2 = config.new_proxy("d", {"type": "http", "port": 8080})
+    p2["outbound"] = dict(config.OUTBOUND_DEFAULTS, type="direct", bind="192.168.0.5", via=None)
+    conf2, _ = sbc.build(p2, cfg, bans_path="bans.json", api_port=1, api_secret="s")
+    check("sing-box: direct bind + resolve before private check",
+          conf2["outbounds"][0].get("inet4_bind_address") == "192.168.0.5"
+          and any(r.get("action") == "resolve" for r in conf2["route"]["rules"]))
+    check("sing-box: ban rule-set", sbc.bans_ruleset(["8.8.8.8", "2001:db8::1"])["rules"][0]["source_ip_cidr"]
+          == ["2001:db8::1/128", "8.8.8.8/32"])
+    g = config.validate_global({})
+    hy = config.new_proxy("h", {"type": "hysteria2", "host": "0.0.0.0", "port": 4443, "hy2_password": "x"})
+    from proxydock.singbox import engine_for, find_hysteria
+    check("engines: exposed Hysteria2 server -> official core (or Python without it)",
+          engine_for(hy, g)[0] == ("hysteria" if find_hysteria() else "python"), engine_for(hy, g))
+    hy_local = config.new_proxy("hl", {"type": "hysteria2", "host": "127.0.0.1", "port": 4444, "hy2_password": "x"})
+    check("engines: loopback Hysteria2 server -> sing-box", engine_for(hy_local, g)[0] == "sing-box")
+    pin = config.new_proxy("pin", {"type": "socks5", "port": 1081})
+    pin["outbound"] = dict(config.OUTBOUND_DEFAULTS, type="hysteria2", host="h", port=443, pin_sha256="ab" * 32, via=None)
+    check("sing-box: pinned certificate stays on Python", python_reason(pin, g) != "")
+    check("sing-box: python engine setting", python_reason(p2, config.validate_global({"engine": "python"})) != "")
+
+
+def test_singbox_guard():
+    """Auth failures from sing-box logs feed the shared ban list; sing-box rejects banned client IPs."""
+    import time as _time
+    from proxydock import common
+    from proxydock.runtime import ProxyManager
+    from proxydock.singbox import guard
+    origin = ThreadingHTTPServer(("127.0.0.1", 0), Origin)
+    threading.Thread(target=origin.serve_forever, daemon=True).start()
+    oport = origin.server_address[1]
+    glob = config.validate_global({"engine": "sing-box"})
+    mgr = ProxyManager()
+    p = config.new_proxy("guard", {"type": "socks5", "port": free_port(), "auth_enabled": True,
+                                    "username": "u", "password": "p"})
+    mgr.start(p, glob).result(15)
+    inst = mgr.instances.get(p["id"])
+    check("[sing-box] guard: card runs on sing-box", getattr(inst, "engine", "") == "sing-box", type(inst).__name__)
+    # log lines from a non-loopback client: ten failures ban the IP (same rule as the Python engine)
+    for i in range(common.AUTH_FAIL_LIMIT):
+        inst._handle("ERROR", str(1000 + i), "inbound/socks[in]: process connection from 203.0.113.7:4000: "
+                     "socks5: authentication failed, username=u, password=bad")
+    data = json.load(open(guard.BANS_PATH, encoding="utf-8"))
+    check("[sing-box] guard: ban written to the rule-set", "203.0.113.7/32" in data["rules"][0]["source_ip_cidr"], data)
+    check("[sing-box] guard: password not logged", not any("password=bad" in e[2] for e in common.pending_logs))
+    port = p["inbound"]["port"]
+    check("[sing-box] guard: allowed before ban", socks5_get(port, "127.0.0.1", oport, auth=("u", "p")) == "200")
+    common._banned["127.0.0.1"] = _time.monotonic() + 60     # loopback is never banned for real; force it to test sing-box
+    guard.write_bans()
+    _time.sleep(2)
+    r = socks5_get(port, "127.0.0.1", oport, auth=("u", "p"))
+    check("[sing-box] guard: banned IP rejected by sing-box", r != "200", r)
+    common._banned.clear()
+    guard.write_bans()
+    _time.sleep(2)
+    check("[sing-box] guard: allowed again after the ban ends", socks5_get(port, "127.0.0.1", oport, auth=("u", "p")) == "200")
+    _time.sleep(1.5)
+    st = mgr.stats_for(p["id"])
+    check("[sing-box] guard: stats counted", st.total >= 2 and st.down > 0 and st.blocked >= 1,
+          (st.total, st.down, st.blocked))
+    mgr.stop_all()
+    check("[sing-box] guard: process ended on stop", inst.proc is None)
+    origin.shutdown()
+
+
+def test_hysteria():
+    """Hysteria2 server open to other PCs: official core + ProxyDock auth server (bans) + sing-box outbound."""
+    from proxydock import common, singbox
+    from proxydock.runtime import ProxyManager
+    origin = ThreadingHTTPServer(("127.0.0.1", 0), Origin)
+    threading.Thread(target=origin.serve_forever, daemon=True).start()
+    oport = origin.server_address[1]
+    glob = config.validate_global({"engine": "sing-box"})
+    singbox.FORCE_HYSTERIA = True       # a real exposed (0.0.0.0) server would trigger the firewall prompt
+    try:
+        mgr = ProxyManager()
+        srv = config.new_proxy("hy-srv", {"type": "hysteria2", "port": free_port(), "hy2_password": "right-pass"})
+        mgr.start(srv, glob).result(20)
+        inst = mgr.instances.get(srv["id"])
+        check("[hysteria] server card runs on the official core", getattr(inst, "engine", "") == "hysteria",
+              (type(inst).__name__, mgr.state(srv["id"])))
+
+        def client(pw):
+            p = config.new_proxy("hy-cli", {"type": "socks5", "port": free_port()})
+            p["outbound"] = dict(config.OUTBOUND_DEFAULTS, type="hysteria2", host="127.0.0.1",
+                                 port=srv["inbound"]["port"], hy2_password=pw, tls_verify=False, via=None)
+            mgr.start(p, glob).result(20)
+            return p
+
+        good = client("right-pass")
+        check("[hysteria] right password -> origin", socks5_get(good["inbound"]["port"], "127.0.0.1", oport) == "200")
+        bad = client("wrong-pass")
+        r = socks5_get(bad["inbound"]["port"], "127.0.0.1", oport)
+        _t = time.time()
+        while time.time() - _t < 3 and not any("authentication failed" in e[2] and e[3] == srv["id"]
+                                               for e in common.pending_logs):
+            time.sleep(0.1)
+        check("[hysteria] wrong password refused and logged", r != "200"
+              and any("authentication failed" in e[2] and e[3] == srv["id"] for e in common.pending_logs), r)
+        ip = "203.0.113.9"
+        for _ in range(common.AUTH_FAIL_LIMIT):
+            inst.check_auth(f"{ip}:5000", "nope")
+        check("[hysteria] repeated failures ban the IP", common.is_banned(ip))
+        check("[hysteria] banned IP refused even with the right password", not inst.check_auth(f"{ip}:5001", "right-pass"))
+        check("[hysteria] other IPs still allowed", inst.check_auth("198.51.100.4:5000", "right-pass"))
+        time.sleep(1.5)                 # statistics come from the Clash API, read once a second
+        st = mgr.stats_for(srv["id"])
+        check("[hysteria] stats from the inner sing-box", st.total >= 1 and st.down > 0, (st.total, st.down))
+        mgr.stop_all()
+        check("[hysteria] processes ended on stop", inst.proc is None and inst.inner is None)
+    finally:
+        singbox.FORCE_HYSTERIA = False
+        common._banned.clear()
+        origin.shutdown()
+
+
 def main():
     t0 = time.time()
-    tests = [test_translations, test_graph, test_engine]
+    tests = [test_translations, test_graph, test_engine, test_singbox_compile]
+    from proxydock.singbox import find_binary
+    if find_binary():
+        tests += [lambda: test_engine("sing-box"), test_singbox_guard]
+        from proxydock.singbox import find_hysteria
+        if find_hysteria():
+            tests.append(test_hysteria)
+        else:
+            print("SKIP official Hysteria2 core tests (no binary: python tools/fetch_singbox.py)")
+    else:
+        print("SKIP sing-box engine tests (no binary: python tools/fetch_singbox.py)")
     if "--no-ui" not in sys.argv:
         tests.append(test_ui)
     for t in tests:

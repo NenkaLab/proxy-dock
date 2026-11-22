@@ -14,6 +14,8 @@ from .common import (
 
 
 class ProxyInstance:
+    engine = "python"
+
     def __init__(self, proxy, glob, stats):
         self.stats = stats
         self.conns = set()
@@ -140,6 +142,27 @@ def _net_key(p):
     return (p["inbound"], p["outbound"])
 
 
+def _make_instance(proxy, glob, stats):
+    """A native engine for the card when one can run it, otherwise the Python engine (with the reason logged)."""
+    from .singbox import engine_for
+    engine, reason = engine_for(proxy, glob)
+    if engine == "sing-box":
+        from .singbox.process import SingBoxInstance
+        return SingBoxInstance(proxy, glob, stats)
+    if engine == "hysteria":
+        from .singbox.hysteria import HysteriaInstance
+        return HysteriaInstance(proxy, glob, stats)
+    inst = ProxyInstance(proxy, glob, stats)
+    if glob.get("engine") == "sing-box" and reason != "internal":
+        inst.log(LOG_INFO, _t("Running on the Python engine: {reason}").format(reason=reason))
+    return inst
+
+
+def _engine_changed(inst, proxy, glob):
+    from .singbox import engine_for
+    return getattr(inst, "engine", "python") != engine_for(proxy, glob)[0]
+
+
 class ProxyManager:
     """Runs every proxy on one event loop thread. Methods called from the UI thread are thread-safe."""
 
@@ -191,8 +214,13 @@ class ProxyManager:
 
         def run():
             for pid, inst in list(self.instances.items()):
-                if pid in by_id:
-                    inst.update(by_id[pid], glob)
+                if pid not in by_id:
+                    continue
+                p = by_id[pid]
+                if _engine_changed(inst, p, glob) or getattr(inst, "needs_restart", lambda *a: False)(p, glob):
+                    self.loop.create_task(self._start(p, glob))
+                else:
+                    inst.update(p, glob)
         self.loop.call_soon_threadsafe(run)
 
     # --- loop thread ---
@@ -203,7 +231,7 @@ class ProxyManager:
         self._set(pid, "starting")
         inst = None
         try:
-            inst = ProxyInstance(proxy, glob, self.stats_for(pid))
+            inst = _make_instance(proxy, glob, self.stats_for(pid))
             await inst.start()
         except Exception as e:
             msg = describe_error(e) if isinstance(e, OSError) else str(e) or type(e).__name__
@@ -251,7 +279,7 @@ class ProxyManager:
         inst = self.instances.get(proxy["id"])
         if inst is None:
             return
-        if _net_key(inst.proxy) != _net_key(proxy):
+        if _net_key(inst.proxy) != _net_key(proxy) or _engine_changed(inst, proxy, glob)                 or getattr(inst, "needs_restart", lambda *a: False)(proxy, glob):
             await self._start(proxy, glob)
         else:
             inst.update(proxy, glob)

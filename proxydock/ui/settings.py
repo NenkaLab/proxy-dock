@@ -47,6 +47,16 @@ class SettingsInterface(ScrollArea):
         self.sw_logclose = _switch(v)
         s_def.add(Row(_t("Log connection close details"), _t("Upload/download amount, duration and reason when a connection ends"), v).right(self.sw_logclose))
 
+        # engine
+        s_eng = Section(_t("Proxy engine"), v)
+        self.cb_engine = ComboBox(v)
+        self.cb_engine.addItems([_t("sing-box (recommended)"), _t("Python (built-in)")])
+        self.cb_engine.setFixedWidth(200)
+        from ..singbox import find_binary
+        exe = find_binary(ctl.glob)
+        s_eng.add(Row(_t("Engine"), _t("sing-box runs each proxy in its own process: faster, uses every CPU core, UDP works through chains. Running proxies restart when this changes.")
+                      + "\n" + (exe or _t("sing-box was not found - proxies use the Python engine")), v).right(self.cb_engine))
+
         # logs
         s_log = Section(_t("Logs"), v)
         btn_folder = PushButton(_t("Open folder"), v, FIF.FOLDER)
@@ -102,7 +112,7 @@ class SettingsInterface(ScrollArea):
         self.sw_startup.checkedChanged.connect(ctl.set_startup)
         self.sw_hidden.checkedChanged.connect(ctl.set_hidden)
 
-        sections = [s_def, s_log, s_view, s_font, s_start]
+        sections = [s_def, s_eng, s_log, s_view, s_font, s_start]
         if IS_WIN:
             s_fw = Section(_t("Windows Firewall"), v)
             self.fw_label = BodyLabel(_t("Checking…"), v)
@@ -142,6 +152,7 @@ class SettingsInterface(ScrollArea):
         self.cb_uifont.setCurrentIndex(self.ui_fonts.index(g["ui_font"]) if g["ui_font"] in self.ui_fonts else 0)
         self.cb_monofont.setCurrentIndex(self.mono_fonts.index(g["mono_font"]) if g["mono_font"] in self.mono_fonts else 0)
         self.sw_liga.setChecked(g["disable_ligatures"])
+        self.cb_engine.setCurrentIndex(config.ENGINES.index(g["engine"]))
 
     def apply(self):
         domains = [d.strip() for d in self.ed_allow.text().replace(";", ",").split(",") if d.strip()]
@@ -160,6 +171,7 @@ class SettingsInterface(ScrollArea):
             ui_font=self.ui_fonts[max(self.cb_uifont.currentIndex(), 0)],
             mono_font=self.mono_fonts[max(self.cb_monofont.currentIndex(), 0)],
             disable_ligatures=self.sw_liga.isChecked(),
+            engine=config.ENGINES[max(self.cb_engine.currentIndex(), 0)],
         )
         self.ctl.apply_global(config.validate_global(g))
 

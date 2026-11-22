@@ -20,6 +20,8 @@ def _tr_licenses():
         ("Noto Sans SC · Noto Sans TC · OFL 1.1", "NotoSans-OFL-1.1.txt"),
         ("JetBrains Mono · OFL 1.1", "JetBrainsMono-OFL-1.1.txt"),
         ("PySide6-Fluent-Widgets · GPL v3", "PySide6-Fluent-Widgets-GPL-3.0.txt"),
+        ("sing-box · GPL v3", "sing-box-GPL-3.0.txt"),
+        ("Hysteria2 · MIT", "Hysteria-MIT.txt"),
         ("Qt 6 · PySide6 · Frameless Window · LGPL v3", "LGPL-3.0.txt"),
         ("NodeGraphQt · MIT", "NodeGraphQt-MIT.txt"),
         ("Qt.py · MIT", "Qt.py-MIT.txt"),

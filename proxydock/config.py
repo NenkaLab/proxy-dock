@@ -51,6 +51,7 @@ def _tr_themes():
 
 
 UI_SCALES = [90, 100, 110, 125, 150]
+ENGINES = ("sing-box", "python")
 
 GLOBAL_DEFAULTS = {
     # app only (global only)
@@ -63,6 +64,9 @@ GLOBAL_DEFAULTS = {
     "log_font_size": 10,
     "close_exits": False,
     "log_to_file": False,
+    "engine": "sing-box",       # "sing-box" (one sing-box process per card) or "python" (built-in engine)
+    "singbox_path": "",         # "" = bundled sing-box (bin/ folder), then PATH
+    "hysteria_path": "",        # "" = bundled official Hysteria2 core (bin/ folder), then PATH
     # proxy defaults (a proxy's local settings take precedence)
     "allowed_domains": ["*"],
     "block_private": False,
@@ -139,6 +143,8 @@ def validate_global(raw):
     g["timeout"] = min(max(g["timeout"], 10), 86400)
     if not g["allowed_domains"]:
         g["allowed_domains"] = ["*"]
+    if g["engine"] not in ENGINES:
+        g["engine"] = "sing-box"
     return g
 
 

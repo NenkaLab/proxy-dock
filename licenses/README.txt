@@ -25,6 +25,10 @@ The full license texts are in the files in this folder.
 [Libraries]
 - PySide6-Fluent-Widgets : GPL v3
   -> PySide6-Fluent-Widgets-GPL-3.0.txt
+- sing-box : GPL v3 (separate program the app starts)
+  -> sing-box-GPL-3.0.txt
+- Hysteria2 (official core) : MIT (separate program the app starts)
+  -> Hysteria-MIT.txt
 - Qt 6 / PySide6 / Shiboken6 : LGPL v3
   -> LGPL-3.0.txt
 - PySideSix-Frameless-Window : LGPL v3

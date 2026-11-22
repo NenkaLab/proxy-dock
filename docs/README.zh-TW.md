@@ -26,6 +26,7 @@
 - **畫布**：藍圖式編輯器 - 從接收端區塊拖線到傳出端區塊；多個接收端可共用一個傳出端，把接收端連到另一個接收端會經由它中繼，Direct 可以指定來源 IP
 - **PC 區塊**：連接一個 HTTP 接收端，在其執行期間用作 Windows 系統代理；先前的設定會被保存，停止或結束應用程式時還原 (還原先前設定 / 關閉 按鈕)
 - **串接**：連接傳出端區塊的「經由」輸出後，它到伺服器的連線會經由另一個傳出端 (例如穿過公司 HTTP 代理的 Shadowsocks、Hysteria2 通道中的 HTTPS 上游代理)，可以串接任意多層
+- **引擎**: 預設的 sing-box 為每個代理各自執行一個處理程序 - 多核心、經過鏈結的 UDP、經由其他傳出端的 Hysteria2。內建 Python 引擎作為備用 (設定 → 代理引擎)
 - **Shadowsocks**：AEAD 2018 (aes-128/256-gcm、chacha20-ietf-poly1305) 與 2022 (SIP022、blake3)，TCP+UDP，複製 `ss://` 連結
 - **Hysteria2**：已確認與官方實作雙向相容 (TCP、UDP)，憑證指紋固定，複製 `hysteria2://` 連結
 - **設定**：全域預設值 + 每個代理的本機設定 (本機優先) - 允許的網域、封鎖內部網路、閒置逾時、記錄
@@ -45,6 +46,7 @@
 python -m venv .venv
 # Windows: .venv\Scripts\activate   /   macOS、Linux: source .venv/bin/activate
 pip install -r requirements.txt
+python tools/fetch_singbox.py   # sing-box 引擎 (沒有時代理改用 Python 引擎)
 python proxydock.py            # --hidden : 不顯示視窗，直接啟動到系統匣
 ```
 
@@ -88,9 +90,11 @@ macOS 建置尚未在實體 Mac 上驗證。
 
 ## 已知限制
 
-- Hysteria2 (QUIC/UDP) 無法*經由*其他傳出端 (其他區塊可以經由 Hysteria2)；串接的傳出端不轉送 UDP。
-- Hysteria2 執行在 Python 的 QUIC 實作 (aioquic) 上，速度約 100 Mbps。不支援頻寬設定 (Brutal)、
-  Salamander 混淆與連接埠跳躍。
+- sing-box 引擎: 對其他電腦開放的 Hysteria2 伺服器以官方 Hysteria2 核心執行，核心每次連線都向 ProxyDock 詢問驗證
+  (sing-box 不回報密碼錯誤，無法封鎖 IP)；收到的流量再經 sing-box 送出。憑證固定的卡片仍以 Python 引擎執行 (需要 sing-box 1.15)。
+  單一 IP 連線上限是事後中斷多出的連線；閒置逾時只作用於 UDP；不支援「記錄連線關閉詳情」。
+- Python 引擎: Hysteria2 無法*經由*其他傳出端，串接的傳出端不轉送 UDP，Hysteria2 (aioquic) 約 100 Mbps。
+  兩種引擎都不支援 Hysteria2 頻寬設定 (Brutal)、Salamander 與連接埠跳躍。
 - 官方 Hysteria2 伺服器會拒絕 SNI 與憑證不符的連線 - 請在傳出端的 SNI 中填入伺服器憑證的網域。
 - HTTP 接收端的一般 (非 CONNECT) 要求每個連線只處理一個。
 - SOCKS4 通訊協定沒有密碼驗證，請只在這台電腦使用。
@@ -109,6 +113,7 @@ proxydock/
   outbound.py           傳出端通訊協定
   ss.py                 Shadowsocks 2018/2022 加密
   hysteria2.py          Hysteria2 伺服器與用戶端 (aioquic)
+  singbox/              sing-box 引擎: 設定轉換、處理程序執行、封鎖與單一 IP 連線上限
   tls.py                自我簽署憑證、TLS 內容
   probe.py              連線測試 / 檢查連線
   platform_utils.py     開機啟動、防火牆、連接埠檢查
@@ -136,6 +141,8 @@ GPL v3，因此本程式也以 GPL v3 發佈；散布建置好的執行檔時同
 |---|---|
 | Pretendard, Pretendard JP, Noto Sans SC/TC, JetBrains Mono (內建字型) | SIL OFL 1.1 |
 | PySide6-Fluent-Widgets | GPL v3 |
+| sing-box | GPL v3 |
+| Hysteria2 | MIT |
 | Qt 6 / PySide6 / Shiboken6, PySideSix-Frameless-Window | LGPL v3 |
 | aioquic, pylsqpack, darkdetect | BSD 3-Clause |
 | cryptography | Apache 2.0 / BSD 3-Clause |

@@ -27,6 +27,7 @@ Shadowsocks server" is a single card.
 - **Canvas**: blueprint-style editor - drag lines from inbound blocks to outbound blocks; several inbounds can share one outbound, an inbound linked into another inbound relays through it, and Direct can leave from a chosen source IP
 - **PC block**: link an HTTP inbound to use it as the Windows system proxy while it runs; the previous settings are saved and put back when it stops or the app quits (Restore previous / Off buttons)
 - **Chaining**: an outbound block's 'via' output sends its own server connection through another outbound (e.g. Shadowsocks through the company HTTP proxy, HTTPS upstream through a Hysteria2 tunnel), as many hops as needed
+- **Engine**: sing-box (default) runs each proxy in its own process - multi-core, UDP through chains, Hysteria2 through other outbounds. The built-in Python engine is the fallback (Settings → Proxy engine)
 - **Shadowsocks**: AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) and 2022 (SIP022, blake3), TCP+UDP, copy `ss://` links
 - **Hysteria2**: interoperates both ways with the official implementation (TCP and UDP), certificate pinning, copy `hysteria2://` links
 - **Settings**: global defaults + per-proxy local settings (local wins) - allowed domains, private network blocking, idle timeout, logging
@@ -46,6 +47,7 @@ Use a build from [Releases](https://github.com/NenkaLab/proxy-dock/releases) if 
 python -m venv .venv
 # Windows: .venv\Scripts\activate   /   macOS, Linux: source .venv/bin/activate
 pip install -r requirements.txt
+python tools/fetch_singbox.py   # sing-box engine (without it proxies use the Python engine)
 python proxydock.py            # --hidden : start in the tray without a window
 ```
 
@@ -90,9 +92,12 @@ The macOS build has not been tried on a real Mac yet.
 
 ## Known limitations
 
-- Hysteria2 (QUIC/UDP) cannot go *through* other outbounds (others can go through it), and UDP is not relayed through chained outbounds.
-- Hysteria2 runs on a Python QUIC implementation (aioquic), so expect about 100 Mbps. Bandwidth settings (Brutal),
-  Salamander obfuscation and port hopping are not supported.
+- sing-box engine: a Hysteria2 server open to other PCs runs on the official Hysteria2 core, which asks ProxyDock about every
+  login (sing-box cannot report wrong passwords, so IP bans would not work); its traffic then goes through sing-box. Certificate
+  pinning still runs on the Python engine (needs sing-box 1.15). The per-IP connection limit closes extra connections after
+  the fact; the idle timeout applies to UDP only; 'Log connection close details' is not available.
+- Python engine: Hysteria2 cannot go *through* other outbounds, UDP is not relayed through chained outbounds, and Hysteria2
+  (aioquic) reaches about 100 Mbps. Neither engine supports Hysteria2 bandwidth settings (Brutal), Salamander or port hopping.
 - The official Hysteria2 server rejects connections whose SNI does not match its certificate - put the server
   certificate's domain into the outbound SNI field.
 - The HTTP inbound handles one plain (non-CONNECT) request per connection.
@@ -112,6 +117,7 @@ proxydock/
   outbound.py           outbound protocols
   ss.py                 Shadowsocks 2018/2022 encryption
   hysteria2.py          Hysteria2 server and client (aioquic)
+  singbox/              sing-box engine: config compiler, process runner, ban / per-IP limit guard
   tls.py                self-signed certificates, TLS contexts
   probe.py              connection test / connection check
   platform_utils.py     start at login, firewall, port check
@@ -140,6 +146,8 @@ Licenses of the bundled fonts and libraries are in [`licenses/`](licenses/).
 |---|---|
 | Pretendard, Pretendard JP, Noto Sans SC/TC, JetBrains Mono (bundled fonts) | SIL OFL 1.1 |
 | PySide6-Fluent-Widgets | GPL v3 |
+| sing-box | GPL v3 |
+| Hysteria2 | MIT |
 | Qt 6 / PySide6 / Shiboken6, PySideSix-Frameless-Window | LGPL v3 |
 | aioquic, pylsqpack, darkdetect | BSD 3-Clause |
 | cryptography | Apache 2.0 / BSD 3-Clause |

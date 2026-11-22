@@ -26,6 +26,7 @@
 - **キャンバス**: ブループリント風エディター - 受信側ブロックから送信側ブロックへ線を引いてつなぎます。複数の受信側で 1 つの送信側を共有でき、受信側を別の受信側につなぐとそこを経由して中継し、Direct は送信元 IP を選べます
 - **PC ブロック**: HTTP 受信側をつなぐと、実行中は Windows のシステムプロキシとして使います。以前の設定は保存しておき、停止時やアプリ終了時に元に戻します (以前に戻す / オフ ボタン)
 - **チェーン**: 送信側ブロックの「経由」出力をつなぐと、そのサーバーへの接続が別の送信側を経由します (例: 会社の HTTP プロキシ越しの Shadowsocks、Hysteria2 トンネル内の HTTPS 上位プロキシ)。何段でもつなげます
+- **エンジン**: 既定の sing-box はプロキシごとに別プロセスで動きます - マルチコア、チェーン経由の UDP、他の送信側を経由する Hysteria2。内蔵の Python エンジンは代替用です (設定 → プロキシエンジン)
 - **Shadowsocks**: AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) と 2022 (SIP022, blake3)、TCP+UDP、`ss://` リンクのコピー
 - **Hysteria2**: 公式実装と双方向で互換性を確認 (TCP・UDP)、証明書フィンガープリントの固定、`hysteria2://` リンクのコピー
 - **設定**: 全体の既定値 + プロキシごとのローカル設定 (ローカル優先) - 許可ドメイン、内部ネットワークのブロック、アイドルタイムアウト、ログ
@@ -45,6 +46,7 @@
 python -m venv .venv
 # Windows: .venv\Scripts\activate   /   macOS・Linux: source .venv/bin/activate
 pip install -r requirements.txt
+python tools/fetch_singbox.py   # sing-box エンジン (ない場合は Python エンジンで動作)
 python proxydock.py            # --hidden : ウィンドウなしでトレイに起動
 ```
 
@@ -89,9 +91,12 @@ macOS ビルドはまだ実機の Mac で確認していません。
 
 ## 既知の制限
 
-- Hysteria2 (QUIC/UDP) は別の送信側を*経由*できません (他のブロックが Hysteria2 を経由するのは可能)。チェーンでつないだ送信側では UDP を送りません。
-- Hysteria2 は Python の QUIC 実装 (aioquic) 上で動くため、約 100 Mbps です。帯域指定 (Brutal)、
-  Salamander 難読化、ポートホッピングには対応していません。
+- sing-box エンジン: 他の PC に公開した Hysteria2 サーバーは公式 Hysteria2 コアで動き、コアが接続ごとに ProxyDock に認証を問い合わせます
+  (sing-box はパスワード誤りを通知しないため IP ブロックが効かない)。受けた通信は sing-box を通って出ます。証明書ピン留めのカードは
+  引き続き Python エンジンで動きます (sing-box 1.15 が必要)。IP ごとの接続上限は超えた接続を後から切断し、
+  アイドルタイムアウトは UDP のみ、「接続終了の詳細を記録」は使えません。
+- Python エンジン: Hysteria2 は別の送信側を*経由*できず、チェーンでつないだ送信側では UDP を送らず、
+  Hysteria2 (aioquic) は約 100 Mbps です。どちらのエンジンも Hysteria2 の帯域指定 (Brutal)、Salamander、ポートホッピングには対応していません。
 - 公式 Hysteria2 サーバーは SNI が証明書と一致しないと接続を拒否します - 送信側の SNI にサーバー証明書のドメインを入力してください。
 - HTTP 受信側の通常 (CONNECT 以外) のリクエストは 1 接続につき 1 件のみ処理します。
 - SOCKS4 にはパスワード認証がないため、この PC だけで使ってください。
@@ -110,6 +115,7 @@ proxydock/
   outbound.py           送信側プロトコル
   ss.py                 Shadowsocks 2018/2022 の暗号化
   hysteria2.py          Hysteria2 サーバー・クライアント (aioquic)
+  singbox/              sing-box エンジン: 設定変換、プロセス実行、ブロック・IP ごとの接続上限
   tls.py                自己署名証明書、TLS コンテキスト
   probe.py              接続テスト / 接続確認
   platform_utils.py     ログイン時の起動、ファイアウォール、ポート確認
@@ -137,6 +143,8 @@ GPL v3 のため、このプログラムも GPL v3 で配布します。ビル�
 |---|---|
 | Pretendard, Pretendard JP, Noto Sans SC/TC, JetBrains Mono (内蔵フォント) | SIL OFL 1.1 |
 | PySide6-Fluent-Widgets | GPL v3 |
+| sing-box | GPL v3 |
+| Hysteria2 | MIT |
 | Qt 6 / PySide6 / Shiboken6, PySideSix-Frameless-Window | LGPL v3 |
 | aioquic, pylsqpack, darkdetect | BSD 3-Clause |
 | cryptography | Apache 2.0 / BSD 3-Clause |

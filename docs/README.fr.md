@@ -27,6 +27,7 @@ Shadowsocks distant » tient sur une seule carte.
 - **Canevas** : éditeur façon blueprint - tirez des liens des blocs d'entrée vers les blocs de sortie ; plusieurs entrées peuvent partager une sortie, une entrée reliée à une autre entrée passe par celle-ci, et Direct peut partir d'une IP source choisie
 - **Bloc PC** : reliez une entrée HTTP pour l'utiliser comme proxy système Windows pendant qu'elle tourne ; les paramètres précédents sont sauvegardés et remis à l'arrêt ou à la fermeture (boutons Restaurer l'état précédent / Désactivé)
 - **Chaînage** : la sortie 'via' d'un bloc de sortie fait passer sa propre connexion au serveur par une autre sortie (ex. Shadowsocks à travers le proxy HTTP de l'entreprise, proxy HTTPS amont dans un tunnel Hysteria2), sur autant d'étapes que nécessaire
+- **Moteur** : sing-box (par défaut) exécute chaque proxy dans son propre processus - multicœur, UDP à travers les chaînes, Hysteria2 via d'autres sorties. Le moteur Python intégré sert de secours (Paramètres → Moteur de proxy)
 - **Shadowsocks** : AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) et 2022 (SIP022, blake3), TCP+UDP, copie des liens `ss://`
 - **Hysteria2** : interopérable dans les deux sens avec l'implémentation officielle (TCP et UDP), épinglage du certificat, copie des liens `hysteria2://`
 - **Paramètres** : valeurs globales par défaut + paramètres locaux par proxy (le local prime) - domaines autorisés, blocage du réseau privé, délai d'inactivité, journal
@@ -46,6 +47,7 @@ Utilisez une version des [Releases](https://github.com/NenkaLab/proxy-dock/relea
 python -m venv .venv
 # Windows : .venv\Scripts\activate   /   macOS, Linux : source .venv/bin/activate
 pip install -r requirements.txt
+python tools/fetch_singbox.py   # moteur sing-box (sans lui, les proxys utilisent le moteur Python)
 python proxydock.py            # --hidden : démarrer dans la zone de notification sans fenêtre
 ```
 
@@ -91,9 +93,12 @@ La compilation macOS n'a pas encore été essayée sur un vrai Mac.
 
 ## Limites connues
 
-- Hysteria2 (QUIC/UDP) ne peut pas passer *par* d'autres sorties (les autres peuvent passer par lui), et l'UDP n'est pas relayé à travers des sorties chaînées.
-- Hysteria2 tourne sur une implémentation QUIC en Python (aioquic) : comptez environ 100 Mbit/s. Les réglages de bande passante (Brutal),
-  l'obfuscation Salamander et le saut de ports ne sont pas pris en charge.
+- Moteur sing-box : un serveur Hysteria2 ouvert aux autres PC tourne sur le cœur Hysteria2 officiel, qui interroge ProxyDock à chaque
+  connexion (sing-box ne signale pas les mauvais mots de passe, le bannissement d'IP ne marcherait pas) ; le trafic passe ensuite par
+  sing-box. L'épinglage de certificat reste sur le moteur Python (sing-box 1.15 requis). La limite par IP ferme les connexions en trop
+  après coup ; le délai d'inactivité ne vaut que pour l'UDP ; « Détails de fermeture » n'existe pas.
+- Moteur Python : Hysteria2 ne peut pas passer *par* d'autres sorties, l'UDP n'est pas relayé à travers les sorties chaînées, et
+  Hysteria2 (aioquic) atteint environ 100 Mbit/s. Aucun moteur ne gère les réglages de bande passante Hysteria2 (Brutal), Salamander ni le saut de ports.
 - Le serveur Hysteria2 officiel refuse les connexions dont le SNI ne correspond pas à son certificat - saisissez le domaine du
   certificat du serveur dans le champ SNI de la sortie.
 - L'entrée HTTP ne traite qu'une requête ordinaire (non CONNECT) par connexion.
@@ -113,6 +118,7 @@ proxydock/
   outbound.py           protocoles de sortie
   ss.py                 chiffrement Shadowsocks 2018/2022
   hysteria2.py          serveur et client Hysteria2 (aioquic)
+  singbox/              moteur sing-box : conversion de configuration, lancement du processus, bannissement / limite par IP
   tls.py                certificats auto-signés, contextes TLS
   probe.py              test de connexion / vérification de connexion
   platform_utils.py     démarrage à l'ouverture de session, pare-feu, vérification de port
@@ -141,6 +147,8 @@ Les licences des polices et bibliothèques incluses se trouvent dans le dossier 
 |---|---|
 | Pretendard, Pretendard JP, Noto Sans SC/TC, JetBrains Mono (polices intégrées) | SIL OFL 1.1 |
 | PySide6-Fluent-Widgets | GPL v3 |
+| sing-box | GPL v3 |
+| Hysteria2 | MIT |
 | Qt 6 / PySide6 / Shiboken6, PySideSix-Frameless-Window | LGPL v3 |
 | aioquic, pylsqpack, darkdetect | BSD 3-Clause |
 | cryptography | Apache 2.0 / BSD 3-Clause |

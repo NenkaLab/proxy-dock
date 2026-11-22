@@ -27,6 +27,7 @@ Shadowsocks-Server" eine einzige Karte.
 - **Fläche**: Editor im Blueprint-Stil - Linien von Eingangsblöcken zu Ausgangsblöcken ziehen; mehrere Eingänge können einen Ausgang teilen, ein mit einem anderen Eingang verbundener Eingang leitet über diesen weiter, und Direct kann eine gewählte Quell-IP nutzen
 - **PC-Block**: einen HTTP-Eingang verbinden, um ihn als Windows-Systemproxy zu nutzen, solange er läuft; die vorherigen Einstellungen werden gesichert und beim Stoppen oder Beenden wiederhergestellt (Knöpfe Vorherige wiederherstellen / Aus)
 - **Verkettung**: der 'via'-Ausgang eines Ausgangsblocks führt dessen eigene Serververbindung über einen anderen Ausgang (z. B. Shadowsocks durch den Firmen-HTTP-Proxy, HTTPS-Upstream durch einen Hysteria2-Tunnel), beliebig viele Stufen
+- **Engine**: sing-box (Standard) führt jeden Proxy in einem eigenen Prozess aus - mehrere Kerne, UDP über Ketten, Hysteria2 über andere Ausgänge. Die integrierte Python-Engine ist der Ersatz (Einstellungen → Proxy-Engine)
 - **Shadowsocks**: AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) und 2022 (SIP022, blake3), TCP+UDP, `ss://`-Links kopieren
 - **Hysteria2**: in beide Richtungen mit der offiziellen Implementierung kompatibel (TCP und UDP), Zertifikats-Pinning, `hysteria2://`-Links kopieren
 - **Einstellungen**: globale Standardwerte + lokale Einstellungen pro Proxy (lokal hat Vorrang) - zugelassene Domains, Blockieren privater Netze, Leerlauf-Timeout, Protokoll
@@ -46,6 +47,7 @@ Nutzen Sie einen Build aus den [Releases](https://github.com/NenkaLab/proxy-dock
 python -m venv .venv
 # Windows: .venv\Scripts\activate   /   macOS, Linux: source .venv/bin/activate
 pip install -r requirements.txt
+python tools/fetch_singbox.py   # sing-box-Engine (ohne sie nutzen Proxys die Python-Engine)
 python proxydock.py            # --hidden : ohne Fenster im Infobereich starten
 ```
 
@@ -91,9 +93,12 @@ Der macOS-Build wurde noch nicht auf einem echten Mac getestet.
 
 ## Bekannte Einschränkungen
 
-- Hysteria2 (QUIC/UDP) kann nicht *über* andere Ausgänge laufen (andere können über Hysteria2 laufen), und UDP wird über verkettete Ausgänge nicht weitergeleitet.
-- Hysteria2 läuft auf einer QUIC-Implementierung in Python (aioquic) und schafft etwa 100 Mbit/s. Bandbreiteneinstellungen (Brutal),
-  Salamander-Verschleierung und Port-Hopping werden nicht unterstützt.
+- sing-box-Engine: Ein für andere PCs offener Hysteria2-Server läuft mit dem offiziellen Hysteria2-Kern, der ProxyDock bei jeder
+  Anmeldung fragt (sing-box meldet falsche Passwörter nicht, IP-Sperren würden also nicht greifen); der Verkehr läuft dann über
+  sing-box. Zertifikat-Pinning läuft weiter mit der Python-Engine (braucht sing-box 1.15). Das Limit pro IP trennt überzählige
+  Verbindungen nachträglich; die Leerlaufzeit gilt nur für UDP; 'Details zum Verbindungsende' gibt es nicht.
+- Python-Engine: Hysteria2 kann nicht *über* andere Ausgänge laufen, UDP wird über verkettete Ausgänge nicht weitergeleitet, und
+  Hysteria2 (aioquic) schafft etwa 100 Mbit/s. Keine Engine unterstützt Hysteria2-Bandbreiteneinstellungen (Brutal), Salamander oder Port-Hopping.
 - Der offizielle Hysteria2-Server lehnt Verbindungen ab, deren SNI nicht zum Zertifikat passt - tragen Sie die Domain des
   Serverzertifikats im SNI-Feld des Ausgangs ein.
 - Der HTTP-Eingang bearbeitet pro Verbindung nur eine normale (Nicht-CONNECT-)Anfrage.
@@ -113,6 +118,7 @@ proxydock/
   outbound.py           Ausgangsprotokolle
   ss.py                 Shadowsocks-2018/2022-Verschlüsselung
   hysteria2.py          Hysteria2-Server und -Client (aioquic)
+  singbox/              sing-box-Engine: Konfigurationsumwandlung, Prozessstart, Sperren / Limit pro IP
   tls.py                selbstsignierte Zertifikate, TLS-Kontexte
   probe.py              Verbindungstest / Verbindungsprüfung
   platform_utils.py     Start bei Anmeldung, Firewall, Portprüfung
@@ -141,6 +147,8 @@ Die Lizenzen der enthaltenen Schriften und Bibliotheken liegen im Ordner [`licen
 |---|---|
 | Pretendard, Pretendard JP, Noto Sans SC/TC, JetBrains Mono (integrierte Schriften) | SIL OFL 1.1 |
 | PySide6-Fluent-Widgets | GPL v3 |
+| sing-box | GPL v3 |
+| Hysteria2 | MIT |
 | Qt 6 / PySide6 / Shiboken6, PySideSix-Frameless-Window | LGPL v3 |
 | aioquic, pylsqpack, darkdetect | BSD 3-Clause |
 | cryptography | Apache 2.0 / BSD 3-Clause |

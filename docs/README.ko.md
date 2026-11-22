@@ -26,6 +26,7 @@
 - **캔버스**: 블루프린트식 편집기 - 받는 쪽 블록에서 내보내는 쪽 블록으로 선을 끌어 잇습니다. 여러 받는 쪽이 내보내는 쪽 하나를 같이 쓸 수 있고, 받는 쪽을 다른 받는 쪽에 이으면 그쪽을 거쳐 중계하며, Direct 는 보낼 IP 를 고를 수 있습니다
 - **PC 블록**: HTTP 받는 쪽을 이으면 실행 중일 때 Windows 시스템 프록시로 씁니다. 이전 설정은 저장해 두었다가 중지하거나 앱을 끄면 되돌립니다 (이전으로 되돌리기 / 끄기 버튼)
 - **체인**: 내보내는 쪽 블록의 '경유' 출력을 이으면 그 서버로의 연결이 다른 내보내는 쪽을 거쳐 나갑니다 (예: 회사 HTTP 프록시 너머의 Shadowsocks, Hysteria2 터널 안의 HTTPS 상위 프록시). 몇 단계든 이을 수 있습니다
+- **엔진**: 기본인 sing-box는 프록시마다 별도 프로세스로 실행합니다 - 멀티코어, 체인을 거치는 UDP, 다른 내보내는 쪽을 거치는 Hysteria2. 내장 Python 엔진은 대체용입니다 (설정 → 프록시 엔진)
 - **Shadowsocks**: AEAD 2018(aes-128/256-gcm, chacha20-ietf-poly1305) 과 2022(SIP022, blake3) 방식, TCP+UDP, `ss://` 링크 복사
 - **Hysteria2**: 공식 구현과 양방향 호환 확인 (TCP·UDP), 인증서 지문 고정, `hysteria2://` 링크 복사
 - **설정**: 전역 기본값 + 프록시별 로컬 설정(로컬 우선) - 허용 도메인, 내부망 차단, 유휴 타임아웃, 로그
@@ -45,6 +46,7 @@
 python -m venv .venv
 # Windows: .venv\Scripts\activate   /   macOS·Linux: source .venv/bin/activate
 pip install -r requirements.txt
+python tools/fetch_singbox.py   # sing-box 엔진 (없으면 프록시는 Python 엔진으로 실행)
 python proxydock.py            # --hidden : 창 없이 트레이로 시작
 ```
 
@@ -89,9 +91,12 @@ macOS 빌드는 아직 실제 Mac 에서 확인하지 않았습니다.
 
 ## 알려진 제한
 
-- Hysteria2 (QUIC/UDP) 는 다른 내보내는 쪽을 *거쳐* 나갈 수 없고 (다른 블록이 Hysteria2 를 거치는 것은 가능), 체인으로 이은 내보내는 쪽으로는 UDP 를 보내지 않습니다.
-- Hysteria2 는 Python QUIC 구현(aioquic) 위에서 동작해 약 100 Mbps 수준입니다. 대역폭 지정(Brutal),
-  Salamander 난독화, 포트 호핑은 지원하지 않습니다.
+- sing-box 엔진: 다른 PC에 연 Hysteria2 서버는 공식 Hysteria2 코어로 실행되며, 코어가 접속마다 ProxyDock에 인증을 묻습니다
+  (sing-box는 비밀번호 오류를 알려주지 않아 IP 차단이 안 됨). 받은 트래픽은 sing-box를 거쳐 나갑니다. 인증서 고정 카드는 계속
+  Python 엔진으로 실행됩니다(sing-box 1.15 필요). IP당 연결 제한은 넘친 연결을 나중에 끊는 방식이고,
+  유휴 시간 제한은 UDP에만 적용되며, '연결 종료 상세 기록'은 지원하지 않습니다.
+- Python 엔진: Hysteria2 는 다른 내보내는 쪽을 *거쳐* 나갈 수 없고, 체인으로 이은 내보내는 쪽으로는 UDP 를 보내지 않으며,
+  Hysteria2(aioquic)는 약 100 Mbps 수준입니다. 두 엔진 모두 Hysteria2 대역폭 지정(Brutal), Salamander, 포트 호핑은 지원하지 않습니다.
 - 공식 Hysteria2 서버는 SNI 와 인증서 도메인이 다르면 연결을 거부합니다 - 내보내는 쪽 SNI 에 서버 인증서 도메인을 넣으세요.
 - HTTP 받는 쪽의 일반(비 CONNECT) 요청은 연결당 요청 하나만 처리합니다.
 - SOCKS4 는 프로토콜에 비밀번호 인증이 없으므로 이 PC 에서만 쓰세요.
@@ -110,6 +115,7 @@ proxydock/
   outbound.py           내보내는 쪽 프로토콜
   ss.py                 Shadowsocks 2018/2022 암호화
   hysteria2.py          Hysteria2 서버·클라이언트 (aioquic)
+  singbox/              sing-box 엔진: 설정 변환, 프로세스 실행, 차단·IP당 연결 제한
   tls.py                자체 서명 인증서, TLS 컨텍스트
   probe.py              연결 테스트 / 연결 확인
   platform_utils.py     시작 프로그램, 방화벽, 포트 확인
@@ -137,6 +143,8 @@ GPL v3 이므로 이 프로그램도 GPL v3 로 배포합니다. 빌드한 실�
 |---|---|
 | Pretendard, Pretendard JP, Noto Sans SC/TC, JetBrains Mono (내장 글꼴) | SIL OFL 1.1 |
 | PySide6-Fluent-Widgets | GPL v3 |
+| sing-box | GPL v3 |
+| Hysteria2 | MIT |
 | Qt 6 / PySide6 / Shiboken6, PySideSix-Frameless-Window | LGPL v3 |
 | aioquic, pylsqpack, darkdetect | BSD 3-Clause |
 | cryptography | Apache 2.0 / BSD 3-Clause |
