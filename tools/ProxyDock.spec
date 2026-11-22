@@ -26,7 +26,7 @@ EXCLUDES = [
     'tkinter', 'scipy', 'numpy',
 ]
 
-DATAS = collect_data_files('qfluentwidgets') + collect_data_files('certifi') + [
+DATAS = collect_data_files('qfluentwidgets') + collect_data_files('certifi') + collect_data_files('NodeGraphQt') + [
     (src('fonts', 'PretendardVariable.ttf'), 'fonts'), (src('fonts', 'JetBrainsMono.ttf'), 'fonts'),
     (src('licenses', '*.txt'), 'licenses'), (src('proxydock', 'locales', '*.json'), 'proxydock/locales'),
 ]
@@ -36,7 +36,7 @@ a = Analysis(
     pathex=[ROOT],
     binaries=[],
     datas=DATAS,
-    hiddenimports=collect_submodules('proxydock') + collect_submodules('aioquic'),
+    hiddenimports=collect_submodules('proxydock') + collect_submodules('aioquic') + collect_submodules('NodeGraphQt') + ['Qt'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

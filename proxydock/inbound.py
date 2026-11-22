@@ -115,16 +115,17 @@ async def relay_to(p, client, host, port, reply, first=b"", tag=""):
     try:
         remote = await asyncio.wait_for(outbound.connect(inst, host, port), CONNECT_TIMEOUT)
     except BlockedDestination as e:
-        reply.fail(p, "denied")
+        # record the reason before replying: the connection check reads it as soon as the reply arrives
         inst.last_reason = "denied"
         inst.stats.blocked += 1
         inst.log(LOG_BLOCKED, f"{who} -> {target} {e}")
+        reply.fail(p, "denied")
         return
     except (asyncio.TimeoutError, OSError, ValueError, asyncio.IncompleteReadError) as e:
         inst.last_reason = fail_reason(e)
-        reply.fail(p, inst.last_reason)
         inst.stats.failed += 1
         inst.log(LOG_FAIL, f"{who} -> {target} {describe_error(e)}")
+        reply.fail(p, inst.last_reason)
         return
     if p.closed:
         remote.transport.close()

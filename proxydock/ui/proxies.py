@@ -11,7 +11,8 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import QApplication, QFileDialog, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 from qfluentwidgets import (
-    Action, BodyLabel, CaptionLabel, CardWidget, CheckBox, ComboBox, FluentIcon as FIF, LineEdit, MessageBox,
+    Action, BodyLabel, CaptionLabel, CardWidget, CheckBox, ComboBox, DropDownPushButton, FluentIcon as FIF, LineEdit,
+    MessageBox,
     PasswordLineEdit, PrimaryDropDownPushButton, PrimaryPushButton, PushButton, RoundMenu, ScrollArea,
     SimpleCardWidget, SpinBox, StrongBodyLabel, SubtitleLabel, SwitchButton, TitleLabel, TransparentToolButton,
     isDarkTheme,
@@ -48,8 +49,61 @@ def client_url(p):
 def summary(p):
     ib, ob = p["inbound"], p["outbound"]
     left = f"{INBOUND_TYPES[ib['type']]} {host_port(ib['host'], ib['port'])}"
-    right = "Direct" if ob["type"] == "direct" else f"{OUTBOUND_TYPES[ob['type']]} {host_port(ob['host'], ob['port'])}"
+    if "target_name" in p:
+        right = p["target_name"]
+    else:
+        right = "Direct" if ob["type"] == "direct" else f"{OUTBOUND_TYPES[ob['type']]} {host_port(ob['host'], ob['port'])}"
     return f"{left}  →  {right}"
+
+
+def outbound_summary(ob):
+    if ob["type"] == "direct":
+        return _t("Direct from this PC") + (f" · {ob['bind']}" if ob.get("bind") else "")
+    return f"{OUTBOUND_TYPES[ob['type']]} · {host_port(ob['host'], ob['port']) if ob['host'] else _t('server not set')}"
+
+
+OUTBOUND_NEW = [
+    ("direct", _t("Direct (optionally from a chosen source IP)")),
+    ("http", _t("Upstream HTTP proxy")),
+    ("https", _t("Upstream HTTPS proxy")),
+    ("socks5", _t("Upstream SOCKS5 proxy")),
+    ("socks4", _t("Upstream SOCKS4 proxy")),
+    ("shadowsocks", _t("Shadowsocks tunnel (remote server)")),
+    ("hysteria2", _t("Hysteria2 tunnel (remote server)")),
+]
+
+
+class PcBar(SimpleCardWidget):
+    """PC (system proxy) status with 'Restore previous' and 'Off (default)' buttons."""
+
+    def __init__(self, ctl, parent=None):
+        super().__init__(parent)
+        self.ctl = ctl
+        self.dot = Dot(self)
+        self.title = StrongBodyLabel(_t("PC (system proxy)"), self)
+        self.text = CaptionLabel("", self)
+        self.btn_restore = PushButton(_t("Restore previous"), self, FIF.HISTORY)
+        self.btn_restore.setToolTip(_t("Disconnect and put back the system proxy settings from before ProxyDock changed them"))
+        self.btn_restore.clicked.connect(ctl.pc_restore)
+        self.btn_off = PushButton(_t("Off (default)"), self, FIF.CANCEL)
+        self.btn_off.setToolTip(_t("Disconnect and turn the system proxy off"))
+        self.btn_off.clicked.connect(ctl.pc_off)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(16, 8, 12, 8)
+        lay.setSpacing(10)
+        lay.addWidget(self.dot, 0, Qt.AlignVCenter)
+        lay.addWidget(self.title, 0, Qt.AlignVCenter)
+        lay.addWidget(self.text, 1, Qt.AlignVCenter)
+        lay.addWidget(self.btn_restore)
+        lay.addWidget(self.btn_off)
+
+    def set_status(self, status):
+        state, text = status
+        self.dot.set_color({"applied": "#2E9E4F", "waiting": "#C99A06", "error": "#C42B1C"}.get(state, "#8A8A8A"))
+        self.text.setText(text)
+        supported = state != "unsupported"
+        self.btn_restore.setEnabled(supported)
+        self.btn_off.setEnabled(supported)
 
 
 class Dot(QWidget):
@@ -149,8 +203,57 @@ class ProxyCard(CardWidget):
         m = RoundMenu(parent=self)
         a1 = Action(FIF.COPY, _t("Duplicate"), m)
         a1.triggered.connect(lambda: self.page.ctl.duplicate_proxy(self.pid))
+        a3 = Action(FIF.GLOBE, _t("Use as the PC proxy"), m)
+        a3.triggered.connect(lambda: self.page.ctl.set_pc(self.pid))
         a2 = Action(FIF.DELETE, _t("Delete"), m)
         a2.triggered.connect(lambda: self.page.confirm_delete(self.pid))
+        m.addActions([a1, a3, a2])
+        m.exec(self.btn_more.mapToGlobal(self.btn_more.rect().bottomLeft()))
+
+
+class OutboundCard(CardWidget):
+    def __init__(self, page, node, parent=None):
+        super().__init__(parent)
+        self.page = page
+        self.nid = node["id"]
+        self.icon = TransparentToolButton(FIF.SEND, self)
+        self.icon.setEnabled(False)
+        self.name = StrongBodyLabel("", self)
+        self.desc = CaptionLabel("", self)
+        self.used = CaptionLabel("", self)
+        self.btn_edit = TransparentToolButton(FIF.EDIT, self)
+        self.btn_edit.setToolTip(_t("Edit"))
+        self.btn_edit.clicked.connect(lambda: page.ctl.edit_node(self.nid))
+        self.btn_more = TransparentToolButton(FIF.MORE, self)
+        self.btn_more.clicked.connect(self._menu)
+        self.clicked.connect(lambda: page.ctl.edit_node(self.nid))
+        text = QVBoxLayout()
+        text.setSpacing(2)
+        top = QHBoxLayout()
+        top.setSpacing(8)
+        top.addWidget(self.name)
+        top.addWidget(self.used)
+        top.addStretch(1)
+        text.addLayout(top)
+        text.addWidget(self.desc)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(12, 10, 12, 10)
+        lay.addWidget(self.icon, 0, Qt.AlignVCenter)
+        lay.addLayout(text, 1)
+        lay.addWidget(self.btn_edit, 0, Qt.AlignVCenter)
+        lay.addWidget(self.btn_more, 0, Qt.AlignVCenter)
+
+    def update_from(self, node, user_names):
+        self.name.setText(node["name"])
+        self.desc.setText(outbound_summary(node["outbound"]))
+        self.used.setText(_t("used by: {names}").format(names=", ".join(user_names)) if user_names else _t("not used"))
+
+    def _menu(self):
+        m = RoundMenu(parent=self)
+        a1 = Action(FIF.COPY, _t("Duplicate"), m)
+        a1.triggered.connect(lambda: self.page.ctl.duplicate_node(self.nid))
+        a2 = Action(FIF.DELETE, _t("Delete"), m)
+        a2.triggered.connect(lambda: self.page.confirm_delete(self.nid))
         m.addActions([a1, a2])
         m.exec(self.btn_more.mapToGlobal(self.btn_more.rect().bottomLeft()))
 
@@ -175,6 +278,15 @@ class ProxiesInterface(ScrollArea):
             act.triggered.connect(lambda _=False, n=name, i=ib, o=ob: ctl.new_proxy(n, i, o))
             menu.addAction(act)
         self.btn_new.setMenu(menu)
+        self.btn_new_out = DropDownPushButton(FIF.SEND, _t("New outbound"), self.view)
+        omenu = RoundMenu(parent=self.btn_new_out)
+        for t, label in OUTBOUND_NEW:
+            act = Action(label, omenu)
+            act.triggered.connect(lambda _=False, t=t: ctl.new_outbound({"type": t}))
+            omenu.addAction(act)
+        self.btn_new_out.setMenu(omenu)
+        self.out_cards = {}
+        self.pc_bar = PcBar(ctl, self.view)
         self.btn_stop = PushButton(_t("Stop all"), self.view, FIF.PAUSE)
         self.btn_stop.clicked.connect(ctl.stop_all)
         self.empty = BodyLabel(_t("No proxies yet. Create one with 'New proxy'."), self.view)
@@ -183,21 +295,45 @@ class ProxiesInterface(ScrollArea):
         header.addWidget(title)
         header.addStretch(1)
         header.addWidget(self.btn_stop)
+        header.addWidget(self.btn_new_out)
         header.addWidget(self.btn_new)
         self.hint = CaptionLabel(_t("Proxy = inbound (how it accepts connections on a port of this PC) → outbound (how it reaches the destination). Click a card to edit; use the switch to start/stop."), self.view)
         self.hint.setWordWrap(True)
         self.list = QVBoxLayout()
         self.list.setSpacing(8)
+        self.out_list = QVBoxLayout()
+        self.out_list.setSpacing(8)
+        self.out_empty = CaptionLabel(_t("No outbound blocks."), self.view)
         root = QVBoxLayout(self.view)
         root.setContentsMargins(36, 20, 36, 28)
         root.setSpacing(12)
         root.addLayout(header)
         root.addWidget(self.hint)
+        root.addWidget(self.pc_bar)
+        root.addWidget(SubtitleLabel(_t("Inbound"), self.view))
         root.addWidget(self.empty)
         root.addLayout(self.list)
+        root.addSpacing(8)
+        root.addWidget(SubtitleLabel(_t("Outbound"), self.view))
+        root.addWidget(self.out_empty)
+        root.addLayout(self.out_list)
         root.addStretch(1)
 
-    def refresh(self, proxies, statuses):
+    def refresh(self, graph, proxies, statuses):
+        from .. import graph as graph_mod
+        out_ids = [n["id"] for n in graph["outbounds"]]
+        for nid in list(self.out_cards):
+            if nid not in out_ids:
+                self.out_cards.pop(nid).deleteLater()
+        for i, n in enumerate(graph["outbounds"]):
+            card = self.out_cards.get(n["id"])
+            if card is None:
+                card = self.out_cards[n["id"]] = OutboundCard(self, n, self.view)
+            self.out_list.removeWidget(card)
+            self.out_list.insertWidget(i, card)
+            card.update_from(n, [u["name"] for u in graph_mod.users(graph, n["id"])])
+        self.out_empty.setVisible(not graph["outbounds"])
+        self.pc_bar.set_status(self.ctl.pc_status())
         ids = [p["id"] for p in proxies]
         for pid in list(self.cards):
             if pid not in ids:
@@ -225,15 +361,22 @@ class ProxiesInterface(ScrollArea):
         shown = url if len(url) < 70 else url[:67] + "…"
         info(self.window(), "success", _t("Copied"), shown, 2500)
 
-    def confirm_delete(self, pid):
-        p = self.ctl.proxy_by_id(pid)
-        if p is None:
-            return
-        box = MessageBox(_t("Delete proxy"), _t("Delete '{name}'? It will be stopped if it is running.").format(name=p['name']), self.window())
-        box.yesButton.setText(_t("Delete"))
-        box.cancelButton.setText(_t("Cancel"))
-        if box.exec():
-            self.ctl.delete_proxy(pid)
+    def confirm_delete(self, nid):
+        confirm_delete(self.ctl, [nid], self.window())
+
+
+def confirm_delete(ctl, ids, parent):
+    """Ask, then delete blocks (inbound blocks are stopped first)."""
+    from .. import graph as graph_mod
+    names = [n["name"] for n in (graph_mod.find(ctl.graph, i)[1] for i in ids) if n is not None]
+    if not names:
+        return
+    box = MessageBox(_t("Delete proxy"), _t("Delete '{name}'? It will be stopped if it is running.").format(name=", ".join(names)), parent)
+    box.yesButton.setText(_t("Delete"))
+    box.cancelButton.setText(_t("Cancel"))
+    if box.exec():
+        for i in ids:
+            ctl.delete_node(i)
 
 
 # --- editor ---
@@ -296,8 +439,8 @@ class EditorInterface(ScrollArea):
         from ..ss import SS_METHODS
         self.setObjectName("editorInterface")
         self.ctl = ctl
-        self.proxy = None
-        self.is_new = False
+        self.kind = "inbound"
+        self.node = None
         self.ss_methods = list(SS_METHODS)
         self.view = QWidget(self)
         self.setWidget(self.view)
@@ -318,7 +461,7 @@ class EditorInterface(ScrollArea):
         self.ed_name.setFixedWidth(260)
         s_basic.add(Row(_t("Name"), parent=v).right(self.ed_name))
         self.sw_auto = _switch(v)
-        s_basic.add(Row(_t("Start with the app"), _t("Starts this proxy when ProxyDock starts"), v).right(self.sw_auto))
+        self.r_auto = s_basic.add(Row(_t("Start with the app"), _t("Starts this proxy when ProxyDock starts"), v).right(self.sw_auto))
 
         # inbound
         s_in = Section(_t("Inbound (how this PC accepts connections)"), v)
@@ -391,6 +534,11 @@ class EditorInterface(ScrollArea):
         self.sp_out_port.setRange(0, 65535)
         self.sp_out_port.setFixedWidth(150)
         self.r_out_server = s_out.add(Row(_t("Server address · port"), "", v).right(self.ed_out_host, self.sp_out_port))
+        self.ed_out_bind = LineEdit(v)
+        self.ed_out_bind.setPlaceholderText(_t("Automatic"))
+        self.ed_out_bind.setFixedWidth(220)
+        self.r_out_bind = s_out.add(Row(_t("Source address"), _t("Connect from this IP of the PC (choose a network card / VPN). Empty = automatic"), v)
+                                    .right(self.ed_out_bind))
         self.ed_out_user = LineEdit(v)
         self.ed_out_user.setPlaceholderText(_t("Username (leave empty if none)"))
         self.ed_out_user.setFixedWidth(170)
@@ -422,9 +570,19 @@ class EditorInterface(ScrollArea):
         self.out_note = CaptionLabel("", v)
         self.out_note.setWordWrap(True)
         s_out.add(self.out_note)
+        # connect to (inbound blocks)
+        s_link = Section(_t("Connect to"), v)
+        self.cb_target = ComboBox(v)
+        self.cb_target.setFixedWidth(320)
+        s_link.add(Row(_t("Outbound block"), _t("Where this inbound sends its traffic. Choosing another inbound relays into it. Also editable on the canvas."), v)
+                   .right(self.cb_target))
+        self.targets = []
+
+        # connection check (both kinds)
+        s_check = Section(_t("Check connection"), v)
         self.btn_probe = PushButton(_t("Check connection"), v, FIF.SPEED_HIGH)
         self.btn_probe.clicked.connect(self._probe)
-        self.r_probe = s_out.add(Row(_t("Check connection"), CHECK_DESC, v).right(self.btn_probe))
+        self.r_probe = s_check.add(Row(_t("Check connection"), CHECK_DESC, v).right(self.btn_probe))
         self.check_done.connect(self._on_probe_done)
         self.probing = False
         self._probe_token = 0
@@ -461,7 +619,8 @@ class EditorInterface(ScrollArea):
         root.setContentsMargins(36, 20, 36, 28)
         root.setSpacing(18)
         root.addLayout(header)
-        for s in (s_basic, s_in, s_out, s_local):
+        self.sections = {"basic": s_basic, "in": s_in, "link": s_link, "out": s_out, "check": s_check, "local": s_local}
+        for s in (s_basic, s_in, s_link, s_out, s_check, s_local):
             root.addWidget(s)
         root.addStretch(1)
 
@@ -483,15 +642,22 @@ class EditorInterface(ScrollArea):
             edit.setText(path)
 
     # --- display ---
-    def load(self, proxy, is_new):
-        self.proxy = copy.deepcopy(proxy)
-        self.is_new = is_new
-        p = self.proxy
-        ib, ob, ov = p["inbound"], p["outbound"], p["overrides"]
-        self.title.setText(_t("New proxy") if is_new else _t("Edit proxy"))
-        self.btn_save.setText(_t("Create") if is_new else _t("Save"))
-        self.ed_name.setText(p["name"])
-        self.sw_auto.setChecked(p["autostart"])
+    def load_node(self, kind, node):
+        """Edit an inbound or outbound block of the graph."""
+        from .. import config as cfg
+        self.kind = kind
+        self.node = copy.deepcopy(node)
+        n = self.node
+        inbound = kind == "inbound"
+        for key, sec in self.sections.items():
+            sec.setVisible(key in (("basic", "in", "link", "check", "local") if inbound else ("basic", "out", "check")))
+        self.r_auto.setVisible(inbound)
+        self.title.setText(_t("Edit inbound") if inbound else _t("Edit outbound"))
+        self.ed_name.setText(n["name"])
+        ib = n["inbound"] if inbound else dict(cfg.INBOUND_DEFAULTS)
+        ob = n["outbound"] if not inbound else dict(cfg.OUTBOUND_DEFAULTS)
+        ov = n.get("overrides") or {k: None for k in cfg.OVERRIDABLE}
+        self.sw_auto.setChecked(n.get("autostart", False))
         self.cb_in.setCurrentIndex(self.in_types.index(ib["type"]))
         self.ed_in_host.setText(ib["host"])
         self.sp_in_port.setValue(ib["port"])
@@ -514,6 +680,7 @@ class EditorInterface(ScrollArea):
         self.cb_out_ss.setCurrentIndex(self.ss_methods.index(ob["ss_method"]))
         self.ed_out_ss_pw.setText(ob["ss_password"])
         self.ed_out_hy.setText(ob["hy2_password"])
+        self.ed_out_bind.setText(ob.get("bind", ""))
         glob = self.ctl.glob
         for key, (follow, w) in self.ov.items():
             follow.blockSignals(True)
@@ -521,12 +688,20 @@ class EditorInterface(ScrollArea):
             follow.blockSignals(False)
             self._set_value(key, ov[key] if ov.get(key) is not None else glob[key])
             w.setEnabled(ov.get(key) is not None)
-        if is_new and ib["type"] == "shadowsocks" and not ib["ss_password"]:
-            self._gen_ss(self.cb_in_ss, self.ed_in_ss_pw)
-        if is_new and ib["type"] == "hysteria2" and not ib["hy2_password"]:
-            self.ed_in_hy.setText(_token())
-        self._probe_token += 1      # opening another proxy discards a check that is still running
-        self._set_probe_text(CHECK_DESC, None)
+        if inbound:
+            g = self.ctl.graph
+            self.targets = [None] + [x["id"] for x in g["outbounds"]] + [x["id"] for x in g["inbounds"] if x["id"] != n["id"]]
+            labels = [_t("(not connected)")] + [x["name"] for x in g["outbounds"]] + \
+                [_t("relay → {name}").format(name=x["name"]) for x in g["inbounds"] if x["id"] != n["id"]]
+            self.cb_target.clear()
+            self.cb_target.addItems(labels)
+            self.cb_target.setCurrentIndex(self.targets.index(n["target"]) if n["target"] in self.targets else 0)
+            if ib["type"] == "shadowsocks" and not ib["ss_password"]:
+                self._gen_ss(self.cb_in_ss, self.ed_in_ss_pw)
+            if ib["type"] == "hysteria2" and not ib["hy2_password"]:
+                self.ed_in_hy.setText(_token())
+        self._probe_token += 1      # opening another block discards a check that is still running
+        self._set_probe_text(CHECK_DESC if inbound else CHECK_DESC_OUT, None)
         self._sync()
         self.verticalScrollBar().setValue(0)
 
@@ -575,6 +750,7 @@ class EditorInterface(ScrollArea):
         self.in_note.setText(notes[it])
         remote = ot != "direct"
         self.r_out_server.setVisible(remote)
+        self.r_out_bind.setVisible(not remote)
         self.r_out_cred.setVisible(ot in ("http", "https", "socks4", "socks5"))
         self.ed_out_pass.setVisible(ot != "socks4")
         self.r_out_verify.setVisible(ot in ("https", "hysteria2"))
@@ -601,8 +777,8 @@ class EditorInterface(ScrollArea):
     def _probe(self):
         if self.probing:
             return
-        p = self.collect()
-        errs = config.check_proxy(p, [x for x in self.ctl.proxies if x["id"] != p["id"]])
+        n = self.collect()
+        errs = self._errors(n, for_check=True)
         if errs:
             info(self.window(), "error", _t("Please fix first"), "\n".join(errs[:4]), 6000)
             return
@@ -610,16 +786,19 @@ class EditorInterface(ScrollArea):
         self.btn_probe.setEnabled(False)
         self.btn_probe.setText(_t("Checking…"))
         self._set_probe_text(_t("Connecting through the outbound…"), None)
-        running = (not self.is_new and self.ctl.manager.state(p["id"])[0] == "running"
-                   and self.proxy["inbound"]["host"] == p["inbound"]["host"]
-                   and self.proxy["inbound"]["port"] == p["inbound"]["port"])
+        p, _ = self._as_proxy(n)
+        inbound = self.kind == "inbound"
+        running = (inbound and self.ctl.manager.state(n["id"])[0] == "running"
+                   and self.node["inbound"]["host"] == n["inbound"]["host"]
+                   and self.node["inbound"]["port"] == n["inbound"]["port"])
+        self._probe_ot = p["outbound"]["type"]
         mgr, glob = self.ctl.manager, self.ctl.glob
         token = self._probe_token
 
         def work():
             from ..probe import check_outbound
             out = check_outbound(mgr, p, glob)
-            inb = _check_inbound(p, running)
+            inb = _check_inbound(p, running) if inbound else None
             out["token"] = token
             self.check_done.emit(out, inb)
         threading.Thread(target=work, daemon=True).start()
@@ -639,7 +818,7 @@ class EditorInterface(ScrollArea):
         self.btn_probe.setText(_t("Check connection"))
         if out.get("token") != self._probe_token or not self.isVisible():
             return
-        ot =self.out_types[max(self.cb_out.currentIndex(), 0)]
+        ot = getattr(self, "_probe_ot", "direct")
         ms = lambda v: f"{v:.0f} ms" if v is not None else "-"
         if out.get("ok"):
             line = (_t("Outbound OK · {site} replied {value} · connect {ms} · total {ms2}").format(site=out['site'], value=out.get('status') or '-', ms=ms(out.get('connect_ms')), ms2=ms(out.get('total_ms'))))
@@ -652,8 +831,10 @@ class EditorInterface(ScrollArea):
             hint = _probe_hint(ot, out)
             if hint:
                 line += f"\n  ↳ {hint}"
-        in_ok, in_msg = inb
-        line += _t("\nInbound {value} · {in_msg}").format(value=_t("OK") if in_ok else _t("problem"), in_msg=in_msg)
+        in_ok = True
+        if inb is not None:
+            in_ok, in_msg = inb
+            line += _t("\nInbound {value} · {in_msg}").format(value=_t("OK") if in_ok else _t("problem"), in_msg=in_msg)
         ok = bool(out.get("ok")) and in_ok
         self._set_probe_text(line, ok)
         self.ensureWidgetVisible(self.r_probe)
@@ -664,8 +845,8 @@ class EditorInterface(ScrollArea):
         host = self.ed_in_host.text().strip() or "127.0.0.1"
         port = self.sp_in_port.value()
         it = self.in_types[max(self.cb_in.currentIndex(), 0)]
-        if self.proxy and not self.is_new and self.ctl.manager.state(self.proxy["id"])[0] == "running" \
-                and self.proxy["inbound"]["port"] == port and self.proxy["inbound"]["host"] == host:
+        if self.node and self.kind == "inbound" and self.ctl.manager.state(self.node["id"])[0] == "running" \
+                and self.node["inbound"]["port"] == port and self.node["inbound"]["host"] == host:
             info(self.window(), "success", _t("Port {port}").format(port=port), _t("This proxy is running on this port."), 3000)
             return
         ok, msg = check_port(host, port, udp=it == "hysteria2")
@@ -673,47 +854,81 @@ class EditorInterface(ScrollArea):
 
     # --- save ---
     def collect(self):
-        p = copy.deepcopy(self.proxy)
-        p["name"] = self.ed_name.text().strip()
-        p["autostart"] = self.sw_auto.isChecked()
-        ib, ob = p["inbound"], p["outbound"]
-        ib.update(type=self.in_types[self.cb_in.currentIndex()], host=self.ed_in_host.text().strip(),
-                  port=self.sp_in_port.value(), auth_enabled=self.sw_in_auth.isChecked(),
-                  username=self.ed_in_user.text(), password=self.ed_in_pass.text(),
-                  tls_cert=self.ed_cert.text().strip(), tls_key=self.ed_key.text().strip(),
-                  ss_method=self.ss_methods[self.cb_in_ss.currentIndex()], ss_password=self.ed_in_ss_pw.text().strip(),
-                  hy2_password=self.ed_in_hy.text())
-        if ib["type"] not in ("socks5", "http", "https"):
-            ib["auth_enabled"] = False
-        ob.update(type=self.out_types[self.cb_out.currentIndex()], host=self.ed_out_host.text().strip(),
-                  port=self.sp_out_port.value(), username=self.ed_out_user.text(),
-                  password="" if self.out_types[self.cb_out.currentIndex()] == "socks4" else self.ed_out_pass.text(),
-                  tls_verify=self.sw_out_verify.isChecked(), sni=self.ed_out_sni.text().strip(),
-                  pin_sha256=self.ed_out_pin.text().strip(),
-                  ss_method=self.ss_methods[self.cb_out_ss.currentIndex()], ss_password=self.ed_out_ss_pw.text().strip(),
-                  hy2_password=self.ed_out_hy.text())
-        for key, (follow, _w) in self.ov.items():
-            p["overrides"][key] = None if follow.isChecked() else self._get_value(key)
-        return config.validate_proxy(p)
+        """The edited block (inbound or outbound node)."""
+        from .. import graph as graph_mod
+        n = copy.deepcopy(self.node)
+        n["name"] = self.ed_name.text().strip()
+        if self.kind == "inbound":
+            n["autostart"] = self.sw_auto.isChecked()
+            ib = n["inbound"]
+            ib.update(type=self.in_types[self.cb_in.currentIndex()], host=self.ed_in_host.text().strip(),
+                      port=self.sp_in_port.value(), auth_enabled=self.sw_in_auth.isChecked(),
+                      username=self.ed_in_user.text(), password=self.ed_in_pass.text(),
+                      tls_cert=self.ed_cert.text().strip(), tls_key=self.ed_key.text().strip(),
+                      ss_method=self.ss_methods[self.cb_in_ss.currentIndex()], ss_password=self.ed_in_ss_pw.text().strip(),
+                      hy2_password=self.ed_in_hy.text())
+            if ib["type"] not in ("socks5", "http", "https"):
+                ib["auth_enabled"] = False
+            for key, (follow, _w) in self.ov.items():
+                n["overrides"][key] = None if follow.isChecked() else self._get_value(key)
+            idx = self.cb_target.currentIndex()
+            n["target"] = self.targets[idx] if 0 <= idx < len(self.targets) else None
+            return graph_mod.validate_inbound_node(n) | {"target": n["target"]}
+        ot = self.out_types[self.cb_out.currentIndex()]
+        n["outbound"].update(type=ot, host=self.ed_out_host.text().strip(),
+                             port=self.sp_out_port.value(), username=self.ed_out_user.text(),
+                             password="" if ot == "socks4" else self.ed_out_pass.text(),
+                             tls_verify=self.sw_out_verify.isChecked(), sni=self.ed_out_sni.text().strip(),
+                             pin_sha256=self.ed_out_pin.text().strip(),
+                             ss_method=self.ss_methods[self.cb_out_ss.currentIndex()],
+                             ss_password=self.ed_out_ss_pw.text().strip(), hy2_password=self.ed_out_hy.text(),
+                             bind=self.ed_out_bind.text().strip() if ot == "direct" else "")
+        return graph_mod.validate_outbound_node(n)
+
+    def _as_proxy(self, n):
+        """Runtime proxy for the edited block, compiled against the current graph (outbound: a stand-in inbound)."""
+        from .. import graph as graph_mod
+        if self.kind == "inbound":
+            g = copy.deepcopy(self.ctl.graph)
+            g["inbounds"] = [n if x["id"] == n["id"] else x for x in g["inbounds"]]
+            compiled = graph_mod.compile(g)
+            return next(x for x in compiled if x["id"] == n["id"]), [x for x in compiled if x["id"] != n["id"]]
+        p = config.validate_proxy({"id": "__edit__", "name": n["name"], "outbound": n["outbound"]})
+        return p, []
+
+    def _errors(self, n, for_check=False):
+        if self.kind == "outbound":
+            errs = [] if n["name"] else [_t("Enter a name")]
+            return errs + config.outbound_errors(n["outbound"])
+        p, others = self._as_proxy(n)
+        errs = config.check_proxy(p, others)
+        if not for_check:       # an unconnected inbound can be saved, it just cannot start
+            errs = [e for e in errs if not p["unlinked"] or e != config_unlinked_error()]
+        return errs
 
     def save(self):
-        p = self.collect()
-        others = [x for x in self.ctl.proxies if x["id"] != p["id"]]
-        errs = config.check_proxy(p, others)
+        n = self.collect()
+        errs = self._errors(n)
         if errs:
             info(self.window(), "error", _t("Please check"), "\n".join(errs[:4]), 6000)
             return
-        ib = p["inbound"]
-        if not is_loopback_host(ib["host"]) and ib["type"] in ("socks5", "http", "https") and not ib["auth_enabled"]:
-            info(self.window(), "warning", _t("Exposed without authentication"),
-                 _t("Anyone on the same network can use this proxy. Turning on user authentication is recommended."), 6000)
-        self.ctl.save_proxy(p, self.is_new)
+        if self.kind == "inbound":
+            ib = n["inbound"]
+            if not is_loopback_host(ib["host"]) and ib["type"] in ("socks5", "http", "https") and not ib["auth_enabled"]:
+                info(self.window(), "warning", _t("Exposed without authentication"),
+                     _t("Anyone on the same network can use this proxy. Turning on user authentication is recommended."), 6000)
+        self.ctl.save_node(self.kind, n)
         self.closed.emit()
 
     def cancel(self):
         self.closed.emit()
 
 
+def config_unlinked_error():
+    return _t("Not connected to an outbound - connect it on the canvas or choose one in the editor")
+
+
+CHECK_DESC_OUT = _t("Tests the current, unsaved settings: connects to an HTTPS site through this outbound.")
 CHECK_DESC = (_t("Tests the current, unsaved settings: connects to an HTTPS site through the outbound and checks that the inbound port can be opened (including the certificate)."))
 
 

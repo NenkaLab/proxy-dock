@@ -8,8 +8,11 @@
 예를 들어 "로컬 SOCKS5 로 받아서 → 원격 Shadowsocks 서버로 암호화 터널" 같은 구성을 카드 하나로 만들 수 있습니다.
 
 <p align="center">
+  <img src="images/canvas.png" width="98%" alt="캔버스">
+</p>
+<p align="center">
   <img src="images/proxies.png" width="49%" alt="프록시 목록">
-  <img src="images/editor.png" width="49%" alt="프록시 편집">
+  <img src="images/editor.png" width="49%" alt="받는 쪽 편집">
 </p>
 
 ## 기능
@@ -20,6 +23,8 @@
 | 내보내는 쪽 | Direct · 상위 HTTP / HTTPS / SOCKS4 / SOCKS5 프록시 · Shadowsocks 터널 · Hysteria2(QUIC) 터널 |
 | UDP | 받을 때 SOCKS5 · Shadowsocks · Hysteria2, 보낼 때 Direct · Shadowsocks · Hysteria2 |
 
+- **캔버스**: 블루프린트식 편집기 - 받는 쪽 블록에서 내보내는 쪽 블록으로 선을 끌어 잇습니다. 여러 받는 쪽이 내보내는 쪽 하나를 같이 쓸 수 있고, 받는 쪽을 다른 받는 쪽에 이으면 그쪽을 거쳐 중계하며, Direct 는 보낼 IP 를 고를 수 있습니다
+- **PC 블록**: HTTP 받는 쪽을 이으면 실행 중일 때 Windows 시스템 프록시로 씁니다. 이전 설정은 저장해 두었다가 중지하거나 앱을 끄면 되돌립니다 (이전으로 되돌리기 / 끄기 버튼)
 - **Shadowsocks**: AEAD 2018(aes-128/256-gcm, chacha20-ietf-poly1305) 과 2022(SIP022, blake3) 방식, TCP+UDP, `ss://` 링크 복사
 - **Hysteria2**: 공식 구현과 양방향 호환 확인 (TCP·UDP), 인증서 지문 고정, `hysteria2://` 링크 복사
 - **설정**: 전역 기본값 + 프록시별 로컬 설정(로컬 우선) - 허용 도메인, 내부망 차단, 유휴 타임아웃, 로그
@@ -87,6 +92,7 @@ proxydock.py            진입점
 proxydock/
   common.py             공통 상수·로그·주소 처리·차단 목록
   config.py             설정 형식(v2), 검증, 전역/로컬 병합, 비밀번호 보관, 이전 버전 설정 이전
+  graph.py              블록 그래프 (받는 쪽 / 내보내는 쪽 / PC 블록) -> 실행용 프록시
   runtime.py            ProxyInstance / ProxyManager (asyncio 스레드 하나에서 여러 프록시 실행)
   relay.py              TCP/UDP 중계 코어
   inbound.py            받는 쪽 프로토콜
@@ -98,6 +104,7 @@ proxydock/
   platform_utils.py     시작 프로그램, 방화벽, 포트 확인
   i18n.py, locales/     번역 (코드의 영어 원문 -> <언어>.json)
   ui/                   PySide6 + Fluent Widgets 화면
+    canvas.py           캔버스 화면 (NodeGraphQt)
 tools/                  빌드 스크립트, PyInstaller spec, Linux 빌드용 Dockerfile
 licenses/               포함된 제3자 구성요소 라이선스
 docs/                   번역된 README, 화면 캡처
@@ -123,7 +130,7 @@ GPL v3 이므로 이 프로그램도 GPL v3 로 배포합니다. 빌드한 실�
 | aioquic, pylsqpack, darkdetect | BSD 3-Clause |
 | cryptography | Apache 2.0 / BSD 3-Clause |
 | pyOpenSSL | Apache 2.0 |
-| service-identity, attrs | MIT |
+| service-identity, attrs, NodeGraphQt, Qt.py | MIT |
 | certifi | MPL 2.0 |
 | Python 런타임 | PSF License |
 | PyInstaller 부트로더 | GPL v2+ (부트로더 예외) |

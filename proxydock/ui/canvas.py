@@ -1,0 +1,406 @@
+"""Canvas page: blueprint-style block graph (NodeGraphQt).
+
+Blocks: inbound (accepts connections on this PC), outbound (Direct / upstream proxy / tunnel) and PC (system proxy).
+Drag from an inbound's output to an outbound block, to another inbound (relay) or to the PC block.
+The canvas is a view of ctl.graph: every change goes through the controller, which saves and applies it.
+"""
+import json
+import os
+
+os.environ.setdefault("QT_PREFERRED_BINDING", "PySide6")     # NodeGraphQt uses Qt.py
+
+from NodeGraphQt import BaseNode, NodeBaseWidget, NodeGraph
+from NodeGraphQt.qgraphics.node_abstract import AbstractNodeItem
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer
+from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from qfluentwidgets import (
+    Action, CaptionLabel, DropDownPushButton, FluentIcon as FIF, PrimaryDropDownPushButton, PushButton, RoundMenu,
+    TitleLabel, isDarkTheme, qconfig,
+)
+
+from ..common import INBOUND_TYPES, host_port
+from ..i18n import _t
+from .common import STATE_TEXT, info
+from .proxies import OUTBOUND_NEW, PcBar, confirm_delete, outbound_summary
+
+PC_ID = "__pc__"
+IN_COLOR = (34, 74, 128)
+OUT_COLOR = (30, 100, 74)
+PC_COLOR = (92, 58, 132)
+PORT_COLOR = (120, 170, 235)
+NEW_INBOUND = [(t, label) for t, label in INBOUND_TYPES.items()]
+DEFAULT_PORTS = {"socks5": 1080, "socks4": 1084, "http": 8080, "https": 8443, "shadowsocks": 8388, "hysteria2": 8443}
+
+
+class InfoWidget(NodeBaseWidget):
+    """Read-only text inside a block (type, address, state)."""
+
+    def __init__(self, parent=None, lines=2):
+        super().__init__(parent, name="info", label="")
+        label = QLabel()
+        label.setTextFormat(Qt.RichText)
+        label.setWordWrap(True)
+        label.setFixedWidth(230)
+        label.setFixedHeight(lines * 17 + 6)
+        label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        label.setStyleSheet("QLabel { color: #DADADA; background: transparent; font-size: 9pt; }")
+        self.set_custom_widget(label)
+
+    def get_value(self):
+        return self.get_custom_widget().text()
+
+    def set_value(self, value):
+        self.get_custom_widget().setText(value)
+
+
+class InNode(BaseNode):
+    __identifier__ = "proxydock"
+    NODE_NAME = "Inbound"
+
+    def __init__(self):
+        super().__init__()
+        self.add_input(_t("relay in"), multi_input=True, color=PORT_COLOR)
+        self.add_output(_t("out"), multi_output=True, color=PORT_COLOR)
+        self.add_custom_widget(InfoWidget(self.view, lines=4))
+
+
+class OutNode(BaseNode):
+    __identifier__ = "proxydock"
+    NODE_NAME = "Outbound"
+
+    def __init__(self):
+        super().__init__()
+        self.add_input(_t("in"), multi_input=True, color=PORT_COLOR)
+        self.add_custom_widget(InfoWidget(self.view, lines=3))
+
+
+class PcNode(BaseNode):
+    __identifier__ = "proxydock"
+    NODE_NAME = "PC"
+
+    def __init__(self):
+        super().__init__()
+        self.add_input(_t("in"), multi_input=False, color=PORT_COLOR)
+        self.add_custom_widget(InfoWidget(self.view, lines=3))
+
+
+def _esc(text):
+    return (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _line(color, text):
+    return f'<span style="color:{color}">{_esc(text)}</span>'
+
+
+class _ViewerFilter(QObject):
+    """Right-click on the canvas: our own (Fluent) menu instead of NodeGraphQt's."""
+
+    def __init__(self, page):
+        super().__init__(page)
+        self.page = page
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.ContextMenu:
+            self.page.context_menu(event.pos(), event.globalPos())
+            return True
+        return False
+
+
+class CanvasInterface(QWidget):
+    def __init__(self, ctl, parent=None):
+        super().__init__(parent)
+        self.setObjectName("canvasInterface")
+        self.ctl = ctl
+        self.syncing = False
+        self.sig = None
+        self.fitted = False
+        self.node_of = {}           # model id -> NodeGraphQt node
+        self.mid_of = {}            # NodeGraphQt node id -> model id
+
+        self.graph = NodeGraph()
+        self.graph.register_nodes([InNode, OutNode, PcNode])
+        self.graph.set_acyclic(True)
+        self.graph.disable_context_menu(True)
+        self.graph.port_connected.connect(self._on_connected)
+        self.graph.port_disconnected.connect(self._on_disconnected)
+        self.graph.node_double_clicked.connect(self._on_double_clicked)
+        viewer = self.graph.viewer()
+        viewer.moved_nodes.connect(self._on_moved)
+        self._filter = _ViewerFilter(self)
+        viewer.installEventFilter(self._filter)
+        QShortcut(QKeySequence.Delete, viewer, activated=self.delete_selected)
+
+        title = TitleLabel(_t("Canvas"), self)
+        self.btn_in = PrimaryDropDownPushButton(FIF.ADD, _t("Add inbound"), self)
+        self.btn_in.setMenu(self._inbound_menu())
+        self.btn_out = DropDownPushButton(FIF.SEND, _t("Add outbound"), self)
+        self.btn_out.setMenu(self._outbound_menu())
+        self.btn_fit = PushButton(_t("Fit"), self, FIF.ZOOM)
+        self.btn_fit.clicked.connect(self.fit)
+        self.btn_stop = PushButton(_t("Stop all"), self, FIF.PAUSE)
+        self.btn_stop.clicked.connect(ctl.stop_all)
+        hint = CaptionLabel(_t("Drag from an inbound's output to an outbound block, to another inbound (relay) or to the PC. "
+                               "Double-click a block to edit it, right-click for more, Delete removes the selection.") + " "
+                           + _t("Alt+Shift+drag cuts links."), self)
+        hint.setWordWrap(True)
+        self.pc_bar = PcBar(ctl, self)
+
+        header = QHBoxLayout()
+        header.addWidget(title)
+        header.addStretch(1)
+        for b in (self.btn_fit, self.btn_stop, self.btn_out, self.btn_in):
+            header.addWidget(b)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(36, 20, 36, 20)
+        root.setSpacing(10)
+        root.addLayout(header)
+        root.addWidget(hint)
+        root.addWidget(self.pc_bar)
+        root.addWidget(self.graph.widget, 1)
+        self._apply_theme()
+        qconfig.themeChanged.connect(lambda *_: self._apply_theme())
+
+    # --- menus ---
+    def _inbound_menu(self, pos=None, parent=None):
+        menu = RoundMenu(_t("Add inbound"), parent or self)
+        for t, label in NEW_INBOUND:
+            act = Action(label, menu)
+            act.triggered.connect(lambda _=False, t=t: self.add_inbound(t, pos))
+            menu.addAction(act)
+        return menu
+
+    def _outbound_menu(self, pos=None, parent=None):
+        menu = RoundMenu(_t("Add outbound"), parent or self)
+        for t, label in OUTBOUND_NEW:
+            act = Action(label, menu)
+            act.triggered.connect(lambda _=False, t=t: self.ctl.new_outbound({"type": t}, pos))
+            menu.addAction(act)
+        return menu
+
+    def add_inbound(self, t, pos=None):
+        host = "0.0.0.0" if t in ("shadowsocks", "hysteria2") else "127.0.0.1"
+        self.ctl.new_inbound(INBOUND_TYPES[t], {"type": t, "host": host, "port": DEFAULT_PORTS[t]}, None, pos, edit=False)
+
+    def context_menu(self, pos, global_pos):
+        viewer = self.graph.viewer()
+        scene_pos = viewer.mapToScene(pos)
+        node = None
+        for item in viewer.items(pos):
+            while item is not None and not isinstance(item, AbstractNodeItem):
+                item = item.parentItem()
+            if item is not None:
+                node = self.graph.get_node_by_id(item.id)
+                break
+        menu = RoundMenu(parent=self)
+        p = [scene_pos.x(), scene_pos.y()]
+        if node is None:
+            menu.addMenu(self._inbound_menu(p, menu))
+            menu.addMenu(self._outbound_menu(p, menu))
+            menu.addSeparator()
+            fit = Action(FIF.ZOOM, _t("Fit"), menu)
+            fit.triggered.connect(self.fit)
+            menu.addAction(fit)
+        else:
+            mid = self.mid_of.get(node.id)
+            if mid == PC_ID:
+                for icon, text, fn in ((FIF.HISTORY, _t("Restore previous"), self.ctl.pc_restore),
+                                       (FIF.CANCEL, _t("Off (default)"), self.ctl.pc_off)):
+                    a = Action(icon, text, menu)
+                    a.triggered.connect(fn)
+                    menu.addAction(a)
+            else:
+                proxy = self.ctl.proxy_by_id(mid)
+                edit = Action(FIF.EDIT, _t("Edit"), menu)
+                edit.triggered.connect(lambda: self.ctl.edit_node(mid))
+                menu.addAction(edit)
+                if proxy is not None:
+                    running = self.ctl.manager.state(mid)[0] in ("running", "starting")
+                    run = Action(FIF.PAUSE if running else FIF.PLAY, _t("Stop") if running else _t("Run"), menu)
+                    run.triggered.connect(lambda: self.ctl.toggle_proxy(mid, not running))
+                    copy_link = Action(FIF.COPY, _t("Copy address/link for clients"), menu)
+                    copy_link.triggered.connect(lambda: self.ctl.window.proxies_page.copy_url(mid))
+                    pc = Action(FIF.GLOBE, _t("Use as the PC proxy"), menu)
+                    pc.triggered.connect(lambda: self.ctl.set_pc(mid))
+                    menu.addActions([run, copy_link, pc])
+                    if proxy.get("target"):
+                        cut = Action(FIF.REMOVE, _t("Disconnect"), menu)
+                        cut.triggered.connect(lambda: self.ctl.set_target(mid, None))
+                        menu.addAction(cut)
+                dup = Action(FIF.COPY, _t("Duplicate"), menu)
+                dup.triggered.connect(lambda: self.ctl.duplicate_node(mid))
+                delete = Action(FIF.DELETE, _t("Delete"), menu)
+                delete.triggered.connect(lambda: confirm_delete(self.ctl, [mid], self.window()))
+                menu.addSeparator()
+                menu.addActions([dup, delete])
+        menu.exec(global_pos)
+
+    def delete_selected(self):
+        ids = [self.mid_of.get(n.id) for n in self.graph.selected_nodes()]
+        ids = [i for i in ids if i and i != PC_ID]
+        if ids:
+            confirm_delete(self.ctl, ids, self.window())
+
+    def fit(self):
+        if self.graph.all_nodes():
+            self._fit_all()
+
+    def _fit_all(self):
+        self.graph.select_all()
+        self.graph.fit_to_selection()
+        self.graph.clear_selection()
+
+    def _apply_theme(self):
+        dark = isDarkTheme()
+        if dark:
+            self.graph.set_background_color(32, 32, 32)
+            self.graph.set_grid_color(48, 48, 48)
+        else:
+            self.graph.set_background_color(236, 238, 241)
+            self.graph.set_grid_color(214, 217, 222)
+        border = "rgba(255,255,255,0.10)" if dark else "rgba(0,0,0,0.12)"
+        self.graph.viewer().setStyleSheet(f"QGraphicsView {{ border: 1px solid {border}; border-radius: 8px; }}")
+
+    # --- model -> view ---
+    def _signature(self, graph):
+        return json.dumps([[n["id"], n["name"], n["target"]] for n in graph["inbounds"]] +
+                          [[n["id"], n["name"]] for n in graph["outbounds"]] + [graph["pc"]["inbound"]])
+
+    def refresh(self, graph, proxies, statuses, pc_status):
+        sig = self._signature(graph)
+        if sig != self.sig:
+            self.sig = sig
+            self._rebuild(graph)
+        self.update_states(proxies, statuses, pc_status)
+        self.pc_bar.set_status(pc_status)
+
+    def _rebuild(self, graph):
+        g = self.graph
+        self.syncing = True
+        try:
+            g.clear_session()
+            self.node_of, self.mid_of = {}, {}
+
+            def make(kind, mid, name, pos, color):
+                node = g.create_node(f"proxydock.{kind}", name=name, pos=list(pos), color=color,
+                                     text_color=(235, 235, 235), selected=False, push_undo=False)
+                self.node_of[mid] = node
+                self.mid_of[node.id] = mid
+                return node
+
+            for n in graph["outbounds"]:
+                make("OutNode", n["id"], n["name"], n["pos"], OUT_COLOR)
+            for n in graph["inbounds"]:
+                make("InNode", n["id"], n["name"], n["pos"], IN_COLOR)
+            make("PcNode", PC_ID, _t("PC (system proxy)"), graph["pc"]["pos"], PC_COLOR)
+            for n in graph["inbounds"]:
+                src = self.node_of[n["id"]]
+                dst = self.node_of.get(n["target"]) if n["target"] else None
+                if dst is not None:
+                    src.output(0).connect_to(dst.input(0), push_undo=False)
+            if graph["pc"]["inbound"] in self.node_of:
+                self.node_of[graph["pc"]["inbound"]].output(0).connect_to(self.node_of[PC_ID].input(0), push_undo=False)
+            g.clear_undo_stack()
+        finally:
+            self.syncing = False
+        if not self.fitted and self.isVisible():
+            self.fitted = True
+            self._fit_all()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self.fitted and self.node_of:
+            self.fitted = True
+            self._fit_all()
+
+    def update_states(self, proxies, statuses, pc_status):
+        from .. import graph as graph_mod
+        cg = self.ctl.graph
+        for p in proxies:
+            node = self.node_of.get(p["id"])
+            if node is None:
+                continue
+            ib = p["inbound"]
+            state, msg = statuses.get(p["id"], ("stopped", ""))
+            lines = [_line("#DADADA", f"{INBOUND_TYPES[ib['type']]} · {host_port(ib['host'], ib['port'])}")]
+            if p["unlinked"]:
+                lines.append(_line("#E8B339", "⚠ " + _t("not connected")))
+            color = {"running": "#6CCB5F", "starting": "#E8B339", "error": "#FF8A80"}.get(state, "#9A9A9A")
+            text = STATE_TEXT.get(state, state) + (f" - {msg}" if msg else "")
+            lines.append(_line(color, ("● " if state == "running" else "○ ") + (text[:60] + "…" if len(text) > 60 else text)))
+            if p["autostart"]:
+                lines.append(_line("#9A9A9A", _t("Start with the app")))
+            node.get_widget("info").set_value("<br>".join(lines))
+        for n in cg["outbounds"]:
+            node = self.node_of.get(n["id"])
+            if node is None:
+                continue
+            users = graph_mod.users(cg, n["id"])
+            lines = [_line("#DADADA", outbound_summary(n["outbound"])),
+                     _line("#9A9A9A", _t("used by: {names}").format(names=", ".join(u["name"] for u in users))
+                           if users else _t("not used"))]
+            node.get_widget("info").set_value("<br>".join(lines))
+        pc = self.node_of.get(PC_ID)
+        if pc is not None:
+            state, text = pc_status
+            color = {"applied": "#6CCB5F", "waiting": "#E8B339", "error": "#FF8A80"}.get(state, "#9A9A9A")
+            pc.get_widget("info").set_value(_line(color, text))
+        self.pc_bar.set_status(pc_status)
+
+    # --- view -> model ---
+    def _on_connected(self, in_port, out_port):
+        if self.syncing:
+            return
+        src = self.mid_of.get(out_port.node().id)
+        dst = self.mid_of.get(in_port.node().id)
+        if not src or not dst:
+            return
+        if dst == PC_ID:
+            QTimer.singleShot(0, lambda: self.ctl.set_pc(src))
+            return
+        # one traffic target per inbound: the new link replaces the old one (the PC link stays)
+        self.syncing = True
+        try:
+            for other in list(out_port.connected_ports()):
+                if other is not in_port and self.mid_of.get(other.node().id) != PC_ID:
+                    out_port.disconnect_from(other, push_undo=False)
+        finally:
+            self.syncing = False
+        # apply after NodeGraphQt has finished handling the drag (the update may redraw the whole canvas)
+        QTimer.singleShot(0, lambda: self._apply_target(src, dst))
+
+    def _apply_target(self, src, dst):
+        if not self.ctl.set_target(src, dst):
+            self.sig = None         # rejected (loop): redraw from the model
+            self.ctl.refresh_lists()
+
+    def _on_disconnected(self, in_port, out_port):
+        if self.syncing:
+            return
+        src = self.mid_of.get(out_port.node().id)
+        dst = self.mid_of.get(in_port.node().id)
+        if not src or not dst:
+            return
+        QTimer.singleShot(0, lambda: self._apply_disconnect(src, dst))
+
+    def _apply_disconnect(self, src, dst):
+        from .. import graph as graph_mod
+        if dst == PC_ID:
+            if self.ctl.graph["pc"]["inbound"] == src:
+                self.ctl.set_pc(None)
+            return
+        _, n = graph_mod.find(self.ctl.graph, src)
+        if n is not None and n["target"] == dst:
+            self.ctl.set_target(src, None)
+
+    def _on_double_clicked(self, node):
+        mid = self.mid_of.get(node.id)
+        if mid and mid != PC_ID:
+            QTimer.singleShot(0, lambda: self.ctl.edit_node(mid))
+
+    def _on_moved(self, *_):
+        positions = {}
+        for nid, node in self.node_of.items():
+            x, y = node.pos()
+            positions[nid] = [round(x, 1), round(y, 1)]
+        self.ctl.move_nodes(positions)

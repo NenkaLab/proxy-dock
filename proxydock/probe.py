@@ -47,16 +47,8 @@ REP_NAMES = {1: _t("Proxy error"), 2: _t("Blocked (allow list / private network)
 
 def bridge_for(proxy):
     """Settings of the temporary SOCKS5 bridge proxy that leads to the proxy under test."""
-    ib = proxy["inbound"]
-    host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(ib["host"], ib["host"])
-    t = ib["type"]
-    ob = {"type": t, "host": host, "port": ib["port"], "tls_verify": False}
-    if t in ("socks5", "http", "https") and ib["auth_enabled"]:
-        ob.update(username=ib["username"], password=ib["password"])
-    if t == "shadowsocks":
-        ob.update(ss_method=ib["ss_method"], ss_password=ib["ss_password"])
-    if t == "hysteria2":
-        ob.update(hy2_password=ib["hy2_password"])
+    from .graph import chain_outbound
+    ob = chain_outbound(proxy["inbound"])
     p = config.new_proxy(_t("Connection test"), {"type": "socks5", "host": "127.0.0.1", "port": 1}, ob)
     p["id"] = BRIDGE_ID
     p["inbound"]["port"] = 0            # use a free port (set to 0 after validation)

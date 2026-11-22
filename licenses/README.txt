@@ -27,6 +27,10 @@ The full license texts are in the files in this folder.
   -> LGPL-3.0.txt
 - PySideSix-Frameless-Window : LGPL v3
   -> LGPL-3.0.txt
+- NodeGraphQt (canvas) : MIT
+  -> NodeGraphQt-MIT.txt
+- Qt.py : MIT
+  -> Qt.py-MIT.txt
 - aioquic (QUIC / HTTP/3, Hysteria2) : BSD 3-Clause
   -> aioquic-BSD-3-Clause.txt
 - pylsqpack (includes ls-qpack) : BSD 3-Clause

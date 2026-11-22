@@ -9,3 +9,5 @@ pyOpenSSL==26.4.0
 service-identity==26.1.0
 certifi==2026.11.20
 attrs==26.1.0
+NodeGraphQt==0.6.44
+Qt.py==2.0.7

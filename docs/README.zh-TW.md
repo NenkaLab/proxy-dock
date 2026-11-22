@@ -8,8 +8,11 @@
 例如「以本機 SOCKS5 接收 → 透過加密通道送到遠端 Shadowsocks 伺服器」只需要一張卡片。
 
 <p align="center">
+  <img src="images/canvas.png" width="98%" alt="畫布">
+</p>
+<p align="center">
   <img src="images/proxies.png" width="49%" alt="代理清單">
-  <img src="images/editor.png" width="49%" alt="編輯代理">
+  <img src="images/editor.png" width="49%" alt="編輯接收端">
 </p>
 
 ## 功能
@@ -20,6 +23,8 @@
 | 傳出端 | Direct · 上游 HTTP / HTTPS / SOCKS4 / SOCKS5 代理 · Shadowsocks 通道 · Hysteria2 (QUIC) 通道 |
 | UDP | 接收 SOCKS5 · Shadowsocks · Hysteria2，傳出 Direct · Shadowsocks · Hysteria2 |
 
+- **畫布**：藍圖式編輯器 - 從接收端區塊拖線到傳出端區塊；多個接收端可共用一個傳出端，把接收端連到另一個接收端會經由它中繼，Direct 可以指定來源 IP
+- **PC 區塊**：連接一個 HTTP 接收端，在其執行期間用作 Windows 系統代理；先前的設定會被保存，停止或結束應用程式時還原 (還原先前設定 / 關閉 按鈕)
 - **Shadowsocks**：AEAD 2018 (aes-128/256-gcm、chacha20-ietf-poly1305) 與 2022 (SIP022、blake3)，TCP+UDP，複製 `ss://` 連結
 - **Hysteria2**：已確認與官方實作雙向相容 (TCP、UDP)，憑證指紋固定，複製 `hysteria2://` 連結
 - **設定**：全域預設值 + 每個代理的本機設定 (本機優先) - 允許的網域、封鎖內部網路、閒置逾時、記錄
@@ -87,6 +92,7 @@ proxydock.py            進入點
 proxydock/
   common.py             共用常數、記錄、位址處理、封鎖清單
   config.py             設定格式 (v2)、驗證、全域/本機合併、密碼儲存、舊版移轉
+  graph.py              區塊圖 (接收端 / 傳出端 / PC 區塊) -> 執行用代理
   runtime.py            ProxyInstance / ProxyManager (在一個 asyncio 執行緒中執行多個代理)
   relay.py              TCP/UDP 中繼核心
   inbound.py            接收端通訊協定
@@ -98,6 +104,7 @@ proxydock/
   platform_utils.py     開機啟動、防火牆、連接埠檢查
   i18n.py, locales/     翻譯 (程式碼中的英文原文 -> <語言>.json)
   ui/                   PySide6 + Fluent Widgets 介面
+    canvas.py           畫布頁面 (NodeGraphQt)
 tools/                  建置指令碼、PyInstaller spec、Linux 建置用 Dockerfile
 licenses/               隨附的第三方元件授權
 docs/                   翻譯的 README、螢幕截圖
@@ -123,7 +130,7 @@ GPL v3，因此本程式也以 GPL v3 發佈；散布建置好的執行檔時同
 | aioquic, pylsqpack, darkdetect | BSD 3-Clause |
 | cryptography | Apache 2.0 / BSD 3-Clause |
 | pyOpenSSL | Apache 2.0 |
-| service-identity, attrs | MIT |
+| service-identity, attrs, NodeGraphQt, Qt.py | MIT |
 | certifi | MPL 2.0 |
 | Python 執行環境 | PSF License |
 | PyInstaller 開機載入程式 | GPL v2+ (開機載入程式例外) |

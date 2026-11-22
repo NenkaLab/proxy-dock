@@ -9,8 +9,11 @@ Each proxy combines an **inbound** (how it accepts connections on a port of this
 Shadowsocks server" is a single card.
 
 <p align="center">
+  <img src="docs/images/canvas.png" width="98%" alt="Canvas">
+</p>
+<p align="center">
   <img src="docs/images/proxies.png" width="49%" alt="Proxy list">
-  <img src="docs/images/editor.png" width="49%" alt="Proxy editor">
+  <img src="docs/images/editor.png" width="49%" alt="Inbound editor">
 </p>
 
 ## Features
@@ -21,6 +24,8 @@ Shadowsocks server" is a single card.
 | Outbound | Direct · upstream HTTP / HTTPS / SOCKS4 / SOCKS5 proxy · Shadowsocks tunnel · Hysteria2 (QUIC) tunnel |
 | UDP | inbound SOCKS5 · Shadowsocks · Hysteria2, outbound Direct · Shadowsocks · Hysteria2 |
 
+- **Canvas**: blueprint-style editor - drag lines from inbound blocks to outbound blocks; several inbounds can share one outbound, an inbound linked into another inbound relays through it, and Direct can leave from a chosen source IP
+- **PC block**: link an HTTP inbound to use it as the Windows system proxy while it runs; the previous settings are saved and put back when it stops or the app quits (Restore previous / Off buttons)
 - **Shadowsocks**: AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) and 2022 (SIP022, blake3), TCP+UDP, copy `ss://` links
 - **Hysteria2**: interoperates both ways with the official implementation (TCP and UDP), certificate pinning, copy `hysteria2://` links
 - **Settings**: global defaults + per-proxy local settings (local wins) - allowed domains, private network blocking, idle timeout, logging
@@ -89,6 +94,7 @@ proxydock.py            entry point
 proxydock/
   common.py             shared constants, logging, address handling, bans
   config.py             settings format (v2), validation, global/local merge, password storage, migration
+  graph.py              block graph (inbound / outbound / PC blocks) -> runtime proxies
   runtime.py            ProxyInstance / ProxyManager (many proxies on one asyncio thread)
   relay.py              TCP/UDP relay core
   inbound.py            inbound protocols
@@ -100,6 +106,7 @@ proxydock/
   platform_utils.py     start at login, firewall, port check
   i18n.py, locales/     translations (English source strings -> <language>.json)
   ui/                   PySide6 + Fluent Widgets UI
+    canvas.py           canvas page (NodeGraphQt)
 tools/                  build scripts, PyInstaller spec, Linux build Dockerfile
 licenses/               licenses of the bundled third-party components
 docs/                   translated READMEs, screenshots
@@ -126,7 +133,7 @@ Licenses of the bundled fonts and libraries are in [`licenses/`](licenses/).
 | aioquic, pylsqpack, darkdetect | BSD 3-Clause |
 | cryptography | Apache 2.0 / BSD 3-Clause |
 | pyOpenSSL | Apache 2.0 |
-| service-identity, attrs | MIT |
+| service-identity, attrs, NodeGraphQt, Qt.py | MIT |
 | certifi | MPL 2.0 |
 | Python runtime | PSF License |
 | PyInstaller bootloader | GPL v2+ (bootloader exception) |

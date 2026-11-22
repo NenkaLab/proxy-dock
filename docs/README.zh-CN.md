@@ -8,8 +8,11 @@
 例如"用本地 SOCKS5 接收 → 通过加密隧道发往远程 Shadowsocks 服务器"只需一张卡片。
 
 <p align="center">
+  <img src="images/canvas.png" width="98%" alt="画布">
+</p>
+<p align="center">
   <img src="images/proxies.png" width="49%" alt="代理列表">
-  <img src="images/editor.png" width="49%" alt="编辑代理">
+  <img src="images/editor.png" width="49%" alt="编辑入站">
 </p>
 
 ## 功能
@@ -20,6 +23,8 @@
 | 出站 | Direct · 上游 HTTP / HTTPS / SOCKS4 / SOCKS5 代理 · Shadowsocks 隧道 · Hysteria2 (QUIC) 隧道 |
 | UDP | 入站 SOCKS5 · Shadowsocks · Hysteria2，出站 Direct · Shadowsocks · Hysteria2 |
 
+- **画布**：蓝图式编辑器 - 从入站块拖线到出站块；多个入站可共用一个出站，把入站连到另一个入站会经由它中继，Direct 可以指定源 IP
+- **PC 块**：连接一个 HTTP 入站，在其运行期间用作 Windows 系统代理；之前的设置会被保存，停止或退出应用时恢复 (恢复之前的设置 / 关闭 按钮)
 - **Shadowsocks**：AEAD 2018 (aes-128/256-gcm、chacha20-ietf-poly1305) 和 2022 (SIP022、blake3)，TCP+UDP，复制 `ss://` 链接
 - **Hysteria2**：已确认与官方实现双向互通 (TCP、UDP)，证书指纹固定，复制 `hysteria2://` 链接
 - **设置**：全局默认值 + 每个代理的本地设置 (本地优先) - 允许的域名、阻止内网、空闲超时、日志
@@ -87,6 +92,7 @@ proxydock.py            入口
 proxydock/
   common.py             公共常量、日志、地址处理、封禁列表
   config.py             设置格式 (v2)、校验、全局/本地合并、密码保存、旧版本迁移
+  graph.py              块图 (入站 / 出站 / PC 块) -> 运行时代理
   runtime.py            ProxyInstance / ProxyManager (在一个 asyncio 线程中运行多个代理)
   relay.py              TCP/UDP 中继核心
   inbound.py            入站协议
@@ -98,6 +104,7 @@ proxydock/
   platform_utils.py     开机启动、防火墙、端口检查
   i18n.py, locales/     翻译 (代码中的英文原文 -> <语言>.json)
   ui/                   PySide6 + Fluent Widgets 界面
+    canvas.py           画布页面 (NodeGraphQt)
 tools/                  构建脚本、PyInstaller spec、Linux 构建用 Dockerfile
 licenses/               附带的第三方组件许可证
 docs/                   翻译的 README、截图
@@ -123,7 +130,7 @@ GPL v3，因此本程序也以 GPL v3 发布；分发构建好的可执行文件
 | aioquic, pylsqpack, darkdetect | BSD 3-Clause |
 | cryptography | Apache 2.0 / BSD 3-Clause |
 | pyOpenSSL | Apache 2.0 |
-| service-identity, attrs | MIT |
+| service-identity, attrs, NodeGraphQt, Qt.py | MIT |
 | certifi | MPL 2.0 |
 | Python 运行时 | PSF License |
 | PyInstaller 引导程序 | GPL v2+ (引导程序例外) |

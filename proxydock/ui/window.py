@@ -21,11 +21,13 @@ from qfluentwidgets import (
 )
 
 from .. import common, config
+from .. import graph as graph_mod
 from ..common import (
     APP_ID, APP_NAME, IS_WIN, LOG_ERROR, LOG_INFO, LOG_SETTING, LOG_WARN, Stats, fmt_rate, format_line, log,
 )
 from ..platform_utils import (
-    firewall_apply, firewall_rule_exists, is_startup_hidden, is_startup_registered, migrate_autostart,
+    firewall_apply, firewall_rule_exists, get_system_proxy, is_startup_hidden, is_startup_registered,
+    migrate_autostart, proxy_values_for, set_system_proxy, system_proxy_server, system_proxy_supported,
     update_startup_registry,
 )
 from ..runtime import ProxyManager
@@ -34,6 +36,7 @@ from .conntest import ConnTestInterface
 from .help import HelpInterface
 from .license import LicenseInterface
 from .logs import LogInterface
+from .canvas import CanvasInterface
 from .proxies import EditorInterface, ProxiesInterface
 from .settings import SettingsInterface
 from .stats import StatsInterface
@@ -59,6 +62,7 @@ class MainWindow(FluentWindow):
         self.move(screen.center().x() - self.width() // 2, screen.center().y() - self.height() // 2)
 
         g = ctl.glob
+        self.canvas_page = CanvasInterface(ctl, self)
         self.proxies_page = ProxiesInterface(ctl, self)
         self.editor = EditorInterface(ctl, self)
         self.log_page = LogInterface(g, self)
@@ -67,6 +71,7 @@ class MainWindow(FluentWindow):
         self.help_page = HelpInterface(ctl, self)
         self.license_page = LicenseInterface(g, self)
         self.settings_page = SettingsInterface(ctl, self)
+        self.addSubInterface(self.canvas_page, FIF.IOT, _t("Canvas"))
         self.addSubInterface(self.proxies_page, FIF.TILES, _t("Proxy"))
         self.addSubInterface(self.log_page, FIF.COMMAND_PROMPT, _t("Logs"))
         self.addSubInterface(self.stats_page, FIF.MARKET, _t("Statistics"))
@@ -75,7 +80,8 @@ class MainWindow(FluentWindow):
         self.addSubInterface(self.license_page, FIF.CERTIFICATE, _t("Licenses"), NavigationItemPosition.BOTTOM)
         self.addSubInterface(self.settings_page, FIF.SETTING, _t("Settings"), NavigationItemPosition.BOTTOM)
         self.stackedWidget.addWidget(self.editor)       # editor page that is not in the navigation menu
-        self.editor.closed.connect(lambda: self.switchTo(self.proxies_page))
+        self.editor.closed.connect(lambda: self.switchTo(self.editor_return or self.canvas_page))
+        self.editor_return = None
         self.navigationInterface.setExpandWidth(180)
         self._install_fade()
         self.restore_state()
@@ -208,10 +214,11 @@ class _Bridge(QObject):
 
 
 class Controller:
-    def __init__(self, server, show_start_notice, glob, proxies):
+    def __init__(self, server, show_start_notice, glob, graph):
         self.server = server
         self.glob = glob
-        self.proxies = proxies
+        self.graph = graph
+        self.proxies = graph_mod.compile(graph)
         self.sig = _Bridge()
         self.sig.status.connect(self._on_status)
         self.sig.notify.connect(self.on_notify)
@@ -275,14 +282,23 @@ class Controller:
         else:
             log(LOG_WARN, _t("The system tray is not available, so closing the window quits the program"))
             QTimer.singleShot(0, self.window.show_window)
+        if self.graph["pc"]["applied"]:      # left applied by a crash: put the PC back first
+            try:
+                self._pc_restore_backup()
+            except OSError:
+                pass
         auto = [p for p in self.proxies if p["autostart"]]
         for p in auto:
+            errs = config.check_proxy(p, [x for x in self.proxies if x["id"] != p["id"]])
+            if errs:
+                log(LOG_WARN, _t("[{name}] failed to start: {msg}").format(name=p["name"], msg=errs[0]))
+                continue
             self.manager.start(p, self.glob)
         if show_start_notice:
             QTimer.singleShot(800, lambda: self.tray.showMessage(
                 APP_NAME, _t("Running · {len} autostart proxies").format(len=len(auto)), QSystemTrayIcon.Information, 3000))
 
-    # --- proxy list ---
+    # --- proxies (inbound blocks compiled from the graph) ---
     def proxy_by_id(self, pid):
         return next((p for p in self.proxies if p["id"] == pid), None)
 
@@ -294,18 +310,44 @@ class Controller:
 
     def refresh_lists(self):
         w = self.window
-        w.proxies_page.refresh(self.proxies, self.statuses())
+        st = self.statuses()
+        w.proxies_page.refresh(self.graph, self.proxies, st)
+        w.canvas_page.refresh(self.graph, self.proxies, st, self.pc_status())
         w.log_page.set_proxies(self.proxies)
         w.stats_page.set_proxies(self.proxies)
         w.test_page.set_proxies(self.proxies, self.running_ids())
         self._rebuild_tray_proxies()
 
     def _persist(self):
-        if not config.save(self.glob, self.proxies):
+        if not config.save(self.glob, self.graph):
             info(self.window, "error", _t("Save failed"), _t("Could not save the settings file. Check the log."))
 
+    def _recompile(self, refresh=True):
+        """Graph changed: rebuild the runtime proxies, apply to running ones, save."""
+        old = {p["id"]: p for p in self.proxies}
+        self.proxies = graph_mod.compile(self.graph)
+        new_ids = set()
+        for p in self.proxies:
+            new_ids.add(p["id"])
+            if self.manager.state(p["id"])[0] not in ("running", "starting"):
+                continue
+            before = old.get(p["id"])
+            if before is not None and all(before[k] == p[k] for k in ("name", "inbound", "outbound", "overrides")):
+                continue
+            if p["unlinked"]:
+                self.manager.stop(p["id"])
+            else:
+                self.manager.apply(p, self.glob)
+        for pid in old:
+            if pid not in new_ids:
+                self.manager.stop(pid)
+        self._persist()
+        self._sync_pc()
+        if refresh:
+            self.refresh_lists()
+
     def _unique_name(self, base):
-        names = {p["name"] for p in self.proxies}
+        names = {n["name"] for n in self.graph["inbounds"] + self.graph["outbounds"]}
         if base not in names:
             return base
         i = 2
@@ -314,56 +356,117 @@ class Controller:
         return f"{base} {i}"
 
     def _free_port(self, start):
-        used = {p["inbound"]["port"] for p in self.proxies}
+        used = {n["inbound"]["port"] for n in self.graph["inbounds"]}
         port = start
         while port in used:
             port += 1
         return port
 
-    def new_proxy(self, name, inbound, outbound):
+    def new_inbound(self, name, inbound, outbound=None, pos=None, edit=True):
+        """Add an inbound block. outbound: None/direct -> the shared Direct block, otherwise a new outbound block."""
         ib = dict(inbound)
         ib["port"] = self._free_port(ib.get("port", 1080))
-        p = config.new_proxy(self._unique_name(name), ib, outbound)
-        self.window.editor.load(p, is_new=True)
-        self.window.switchTo(self.window.editor)
+        pos = pos or graph_mod.next_free_pos(self.graph, "inbounds")
+        if not outbound or outbound.get("type", "direct") == "direct":
+            target = graph_mod.shared_direct(self.graph)
+            fresh = None
+        else:
+            target = fresh = graph_mod.add_outbound(self.graph, outbound, None, [pos[0] + 460, pos[1]])
+            fresh["name"] = self._unique_name(fresh["name"])
+        n = graph_mod.add_inbound(self.graph, self._unique_name(name), ib, pos, target["id"])
+        log(LOG_SETTING, _t("Created proxy '{name}'").format(name=n['name']))
+        self._recompile()
+        if edit:
+            self.edit_node(fresh["id"] if fresh else n["id"])
+        return n
+
+    def new_outbound(self, outbound, pos=None, edit=True):
+        pos = pos or graph_mod.next_free_pos(self.graph, "outbounds")
+        n = graph_mod.add_outbound(self.graph, outbound, None, pos)
+        n["name"] = self._unique_name(n["name"])
+        log(LOG_SETTING, _t("Created block '{name}'").format(name=n['name']))
+        self._recompile()
+        if edit and n["outbound"]["type"] != "direct":
+            self.edit_node(n["id"])
+        return n
+
+    def new_proxy(self, name, inbound, outbound):
+        """List page templates: inbound + outbound (shared Direct or a new outbound block)."""
+        self.new_inbound(name, inbound, outbound)
+
+    def edit_node(self, nid):
+        kind, n = graph_mod.find(self.graph, nid)
+        if n is None:
+            return
+        w = self.window
+        cur = w.stackedWidget.currentWidget()
+        if cur is not w.editor:
+            w.editor_return = cur if cur in (w.canvas_page, w.proxies_page) else w.canvas_page
+        w.editor.load_node(kind, n)
+        w.switchTo(w.editor)
 
     def edit_proxy(self, pid):
-        p = self.proxy_by_id(pid)
-        if p is not None:
-            self.window.editor.load(p, is_new=False)
-            self.window.switchTo(self.window.editor)
+        self.edit_node(pid)
 
-    def save_proxy(self, p, is_new):
-        if is_new:
-            self.proxies.append(p)
-            log(LOG_SETTING, _t("Created proxy '{name}'").format(name=p['name']))
-        else:
-            self.proxies = [p if x["id"] == p["id"] else x for x in self.proxies]
-            log(LOG_SETTING, _t("Saved proxy '{name}'").format(name=p['name']))
-            self.manager.apply(p, self.glob)
+    def save_node(self, kind, node):
+        key = kind + "s"
+        self.graph[key] = [node if x["id"] == node["id"] else x for x in self.graph[key]]
+        log(LOG_SETTING, _t("Saved proxy '{name}'").format(name=node['name']))
+        self._recompile()
+
+    def set_target(self, iid, tid):
+        kind, n = graph_mod.find(self.graph, iid)
+        if kind != "inbound" or n["target"] == tid:
+            return True
+        old = n["target"]
+        n["target"] = tid
+        p = next(x for x in graph_mod.compile(self.graph) if x["id"] == iid)
+        cycle = config.find_cycle(p, graph_mod.compile(self.graph))
+        if cycle:
+            n["target"] = old
+            info(self.window, "error", _t("Cannot connect"),
+                 _t("The proxy chain loops: ") + " → ".join(cycle), 5000)
+            self.refresh_lists()
+            return False
+        self._recompile()
+        return True
+
+    def move_nodes(self, positions):
+        for kind in ("inbounds", "outbounds"):
+            for n in self.graph[kind]:
+                if n["id"] in positions:
+                    n["pos"] = positions[n["id"]]
+        if "__pc__" in positions:
+            self.graph["pc"]["pos"] = positions["__pc__"]
         self._persist()
-        self.refresh_lists()
 
-    def duplicate_proxy(self, pid):
-        src = self.proxy_by_id(pid)
+    def duplicate_node(self, nid):
+        kind, src = graph_mod.find(self.graph, nid)
         if src is None:
             return
-        p = copy.deepcopy(src)
-        p["inbound"]["port"] = self._free_port(p["inbound"]["port"] + 1)
-        p = config.new_proxy(self._unique_name(src["name"] + _t(" copy")), p["inbound"], p["outbound"])
-        p["overrides"] = copy.deepcopy(src["overrides"])
-        self.window.editor.load(p, is_new=True)
-        self.window.switchTo(self.window.editor)
+        n = copy.deepcopy(src)
+        n["id"] = graph_mod.new_id()
+        n["name"] = self._unique_name(src["name"] + _t(" copy"))
+        n["pos"] = [src["pos"][0] + 40, src["pos"][1] + 40]
+        if kind == "inbound":
+            n["inbound"]["port"] = self._free_port(src["inbound"]["port"] + 1)
+            n["autostart"] = False
+        self.graph[kind + "s"].append(n)
+        self._recompile()
+
+    def duplicate_proxy(self, pid):
+        self.duplicate_node(pid)
+
+    def delete_node(self, nid):
+        kind, n = graph_mod.find(self.graph, nid)
+        if n is None:
+            return
+        graph_mod.remove(self.graph, nid)
+        log(LOG_SETTING, _t("Deleted proxy '{name}'").format(name=n['name']))
+        self._recompile()
 
     def delete_proxy(self, pid):
-        p = self.proxy_by_id(pid)
-        if p is None:
-            return
-        self.manager.stop(pid)
-        self.proxies = [x for x in self.proxies if x["id"] != pid]
-        self._persist()
-        log(LOG_SETTING, _t("Deleted proxy '{name}'").format(name=p['name']))
-        self.refresh_lists()
+        self.delete_node(pid)
 
     def toggle_proxy(self, pid, on):
         p = self.proxy_by_id(pid)
@@ -373,7 +476,7 @@ class Controller:
             errs = config.check_proxy(p, [x for x in self.proxies if x["id"] != pid])
             if errs:
                 info(self.window, "error", _t("Cannot start '{name}'").format(name=p['name']), "\n".join(errs[:3]), 5000)
-                self.window.proxies_page.set_status(pid, self.manager.state(pid), p)
+                self.refresh_lists()
                 return
             self.manager.start(p, self.glob)
         else:
@@ -388,11 +491,100 @@ class Controller:
         if pid.startswith("__"):
             return      # temporary proxy used by the connection test
         p = self.proxy_by_id(pid)
+        st = self.statuses()
         self.window.proxies_page.set_status(pid, (state, msg), p)
+        self._sync_pc()
+        self.window.canvas_page.update_states(self.proxies, st, self.pc_status())
         self.window.test_page.set_proxies(self.proxies, self.running_ids())
         self._rebuild_tray_proxies()
         if state == "error" and p is not None:
             self.on_notify(_t("'{name}' failed to start: {msg}").format(name=p['name'], msg=msg))
+
+    # --- PC block: system proxy while the connected inbound runs ---
+    def set_pc(self, iid):
+        if self.graph["pc"]["inbound"] == iid:
+            return
+        self.graph["pc"]["inbound"] = iid
+        p = self.proxy_by_id(iid) if iid else None
+        if p is not None:
+            _, err = system_proxy_server(p["inbound"])
+            if err:
+                info(self.window, "warning", _t("PC (system proxy)"), err, 6000)
+        self._persist()
+        self._sync_pc()
+        self.refresh_lists()
+
+    def pc_status(self):
+        """(state, text): state = off | waiting | applied | error | unsupported."""
+        pc = self.graph["pc"]
+        p = self.proxy_by_id(pc["inbound"]) if pc["inbound"] else None
+        if not system_proxy_supported():
+            return "unsupported", _t("Windows only for now")
+        if p is None:
+            return "off", _t("Not connected - the PC uses its own settings")
+        _, err = system_proxy_server(p["inbound"])
+        if err:
+            return "error", err
+        if pc["applied"]:
+            return "applied", _t("In use: {name} ({server})").format(name=p["name"], server=pc["server"])
+        return "waiting", _t("Applied while '{name}' is running").format(name=p["name"])
+
+    def _sync_pc(self):
+        pc = self.graph["pc"]
+        if not system_proxy_supported():
+            return
+        p = self.proxy_by_id(pc["inbound"]) if pc["inbound"] else None
+        server = None
+        if p is not None and self.manager.state(p["id"])[0] == "running":
+            server, _ = system_proxy_server(p["inbound"])
+        try:
+            if server:
+                if not pc["applied"]:
+                    pc["backup"] = get_system_proxy()
+                if not pc["applied"] or pc["server"] != server:
+                    set_system_proxy(proxy_values_for(server, pc["backup"]))
+                    pc["applied"], pc["server"] = True, server
+                    self._persist()
+                    log(LOG_SETTING, _t("System proxy set to {server}").format(server=server))
+            elif pc["applied"]:
+                self._pc_restore_backup()
+                log(LOG_SETTING, _t("System proxy restored to the previous settings"))
+        except OSError as e:
+            log(LOG_ERROR, _t("Could not change the system proxy: {e}").format(e=e))
+
+    def _pc_restore_backup(self):
+        pc = self.graph["pc"]
+        if pc["backup"] is not None:
+            set_system_proxy(pc["backup"])
+        pc["applied"], pc["server"] = False, ""
+        self._persist()
+
+    def pc_restore(self):
+        """'Restore previous': disconnect the PC block and put back the settings from before ProxyDock changed them."""
+        pc = self.graph["pc"]
+        pc["inbound"] = None
+        try:
+            if pc["backup"] is not None:
+                set_system_proxy(pc["backup"])
+                log(LOG_SETTING, _t("System proxy restored to the previous settings"))
+        except OSError as e:
+            log(LOG_ERROR, _t("Could not change the system proxy: {e}").format(e=e))
+        pc["applied"], pc["server"], pc["backup"] = False, "", None
+        self._persist()
+        self.refresh_lists()
+
+    def pc_off(self):
+        """'Off (default)': disconnect the PC block and turn the system proxy off."""
+        pc = self.graph["pc"]
+        pc["inbound"] = None
+        try:
+            set_system_proxy({"ProxyEnable": 0})
+            log(LOG_SETTING, _t("System proxy turned off"))
+        except OSError as e:
+            log(LOG_ERROR, _t("Could not change the system proxy: {e}").format(e=e))
+        pc["applied"], pc["server"], pc["backup"] = False, "", None
+        self._persist()
+        self.refresh_lists()
 
     # --- global settings ---
     def apply_global(self, g):
@@ -601,6 +793,11 @@ class Controller:
     def exit(self):
         if self.window.isVisible():
             self.window.save_state()
+        if self.graph["pc"]["applied"]:
+            try:
+                self._pc_restore_backup()
+            except OSError:
+                pass
         self.manager.stop_all(2)
         self.drain_logs()
         self.tray.hide()
@@ -642,7 +839,7 @@ def main():
     parser.add_argument("--restart", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
-    glob, proxies = config.load()
+    glob, graph = config.load()
     migrate_autostart()
 
     if IS_WIN:
@@ -672,7 +869,7 @@ def main():
     single = become_primary(wait=args.restart)
     if single is None:
         sys.exit(0)
-    log(LOG_INFO, _t("{APP_NAME} started - {len} proxies").format(APP_NAME=APP_NAME, len=len(proxies)))
-    controller = Controller(single, show_start_notice=not args.hidden, glob=glob, proxies=proxies)
+    log(LOG_INFO, _t("{APP_NAME} started - {len} proxies").format(APP_NAME=APP_NAME, len=len(graph["inbounds"])))
+    controller = Controller(single, show_start_notice=not args.hidden, glob=glob, graph=graph)
     _ = controller
     sys.exit(app.exec())

@@ -15,6 +15,8 @@ LICENSES = [
     ("JetBrains Mono · OFL 1.1", "JetBrainsMono-OFL-1.1.txt"),
     ("PySide6-Fluent-Widgets · GPL v3", "PySide6-Fluent-Widgets-GPL-3.0.txt"),
     ("Qt 6 · PySide6 · Frameless Window · LGPL v3", "LGPL-3.0.txt"),
+    ("NodeGraphQt · MIT", "NodeGraphQt-MIT.txt"),
+    ("Qt.py · MIT", "Qt.py-MIT.txt"),
     ("aioquic · BSD 3-Clause", "aioquic-BSD-3-Clause.txt"),
     ("pylsqpack · BSD 3-Clause", "pylsqpack-BSD-3-Clause.txt"),
     (_t("cryptography · Apache 2.0 / BSD (includes OpenSSL)"), "cryptography-Apache-2.0-BSD.txt"),

@@ -18,6 +18,8 @@ import os
 import shutil
 import uuid
 
+from . import graph as _graph
+
 from .common import (
     APP_ID, INBOUND_TYPES, IS_MAC, IS_WIN, LOG_INFO, LOG_WARN, OLD_APP_ID, OUTBOUND_TYPES, log,
 )
@@ -88,6 +90,7 @@ OUTBOUND_DEFAULTS = {
     "ss_method": "2022-blake3-aes-256-gcm",
     "ss_password": "",
     "hy2_password": "",
+    "bind": "",                 # Direct only: source address to connect from ("" = automatic)
 }
 SECRET_FIELDS = ("password", "ss_password", "hy2_password")
 
@@ -269,6 +272,8 @@ def check_proxy(p, proxies):
     ib, ob = p["inbound"], p["outbound"]
     if not p["name"].strip():
         errs.append(_t("Enter a name"))
+    if p.get("unlinked"):
+        errs.append(_t("Not connected to an outbound - connect it on the canvas or choose one in the editor"))
     if not _valid_listen_host(ib["host"]):
         errs.append(_t("The inbound address must be an IP (e.g. 127.0.0.1, 0.0.0.0, ::)"))
     if not 1 <= ib["port"] <= 65535:
@@ -290,20 +295,7 @@ def check_proxy(p, proxies):
     for f in ("tls_cert", "tls_key"):
         if ib["type"] in ("https", "hysteria2") and ib[f] and not os.path.isfile(ib[f]):
             errs.append(_t("File not found: {ib}").format(ib=ib[f]))
-    if ob["type"] != "direct":
-        if not ob["host"].strip() or not 1 <= ob["port"] <= 65535:
-            errs.append(_t("Enter the outbound server address and port"))
-        if ob["type"] == "shadowsocks":
-            try:
-                ss_make_key(ob["ss_method"], ob["ss_password"])
-                if not ob["ss_password"]:
-                    raise ValueError(_t("Enter the Shadowsocks password"))
-            except ValueError as e:
-                errs.append(_t("Outbound: {e}").format(e=e))
-        if ob["type"] == "hysteria2" and not ob["hy2_password"]:
-            errs.append(_t("Enter the outbound Hysteria2 password"))
-        if ob["type"] == "socks4" and ob["password"]:
-            errs.append(_t("SOCKS4 does not support passwords (user ID only)"))
+    errs += outbound_errors(ob)
     mine = _transports(ib["type"])
     for other in proxies:
         if other["id"] == p["id"]:
@@ -317,6 +309,30 @@ def check_proxy(p, proxies):
     cycle = find_cycle(p, proxies)
     if cycle:
         errs.append(_t("The proxy chain loops: ") + " → ".join(cycle) + _t(" (check the outbound address/port)"))
+    return errs
+
+
+def outbound_errors(ob):
+    """Problems in an outbound's settings (empty list = OK)."""
+    from .ss import ss_make_key
+    errs = []
+    if ob["type"] == "direct":
+        if ob.get("bind") and not _valid_listen_host(ob["bind"]):
+            errs.append(_t("The source address must be an IP of this PC"))
+    else:
+        if not ob["host"].strip() or not 1 <= ob["port"] <= 65535:
+            errs.append(_t("Enter the outbound server address and port"))
+        if ob["type"] == "shadowsocks":
+            try:
+                ss_make_key(ob["ss_method"], ob["ss_password"])
+                if not ob["ss_password"]:
+                    raise ValueError(_t("Enter the Shadowsocks password"))
+            except ValueError as e:
+                errs.append(_t("Outbound: {e}").format(e=e))
+        if ob["type"] == "hysteria2" and not ob["hy2_password"]:
+            errs.append(_t("Enter the outbound Hysteria2 password"))
+        if ob["type"] == "socks4" and ob["password"]:
+            errs.append(_t("SOCKS4 does not support passwords (user ID only)"))
     return errs
 
 
@@ -387,8 +403,9 @@ def load():
         if migrated is not None:
             return migrated
         glob = validate_global({})
-        save(glob, [])
-        return glob, []
+        graph = _graph.empty()
+        save(glob, graph)
+        return glob, graph
     except (OSError, ValueError) as e:
         # keep the broken file next to it so a later save does not overwrite it
         backup = CONFIG_PATH + ".broken"
@@ -397,27 +414,47 @@ def load():
             log(LOG_WARN, _t("Could not read the settings file, starting with defaults ({e}). The original was kept as {backup}").format(e=e, backup=backup))
         except OSError:
             log(LOG_WARN, _t("Could not read the settings file, starting with defaults: {e}").format(e=e))
-        return validate_global({}), []
+        return validate_global({}), _graph.empty()
     raw = raw if isinstance(raw, dict) else {}
     glob = validate_global(raw.get("global"))
-    proxies, legacy = [], False
-    for item in raw.get("proxies") or []:
-        if not isinstance(item, dict):
-            continue
-        item = dict(item)
-        item["inbound"], l1 = _unseal(item.get("inbound"), _t("inbound"))
-        item["outbound"], l2 = _unseal(item.get("outbound"), _t("outbound"))
-        legacy = legacy or l1 or l2
-        proxies.append(validate_proxy(item))
+    legacy = False
+    if raw.get("version", 2) >= 3:
+        g = raw.get("graph") if isinstance(raw.get("graph"), dict) else {}
+        for key, field in (("inbounds", "inbound"), ("outbounds", "outbound")):
+            items = []
+            for item in g.get(key) or []:
+                if isinstance(item, dict):
+                    item = dict(item)
+                    item[field], lg = _unseal(item.get(field), _t("inbound") if field == "inbound" else _t("outbound"))
+                    legacy = legacy or lg
+                    items.append(item)
+            g = dict(g, **{key: items})
+        graph = _graph.validate(g)
+    else:       # settings v2: one inbound + outbound per proxy
+        proxies = []
+        for item in raw.get("proxies") or []:
+            if not isinstance(item, dict):
+                continue
+            item = dict(item)
+            item["inbound"], _ = _unseal(item.get("inbound"), _t("inbound"))
+            item["outbound"], _ = _unseal(item.get("outbound"), _t("outbound"))
+            proxies.append(validate_proxy(item))
+        graph = _graph.from_proxies(proxies)
+        legacy = True
+        try:        # keep the v2 file so an older ProxyDock can still be used
+            shutil.copy2(CONFIG_PATH, CONFIG_PATH.replace(".json", ".v2.json"))
+        except OSError:
+            pass
     if legacy:
-        save(glob, proxies)
-    return glob, proxies
+        save(glob, graph)
+    return glob, graph
 
 
-def save(glob, proxies):
+def save(glob, graph):
     try:
-        data = {"version": 2, "global": glob,
-                "proxies": [dict(p, inbound=_seal(p["inbound"]), outbound=_seal(p["outbound"])) for p in proxies]}
+        g = dict(graph, inbounds=[dict(n, inbound=_seal(n["inbound"])) for n in graph["inbounds"]],
+                 outbounds=[dict(n, outbound=_seal(n["outbound"])) for n in graph["outbounds"]])
+        data = {"version": 3, "global": glob, "graph": g}
     except OSError as e:
         log(LOG_WARN, _t("Could not encrypt passwords, settings not saved: {e}").format(e=e))
         return False
@@ -465,6 +502,7 @@ def migrate_from_old():
         src = os.path.join(old_dir, name)
         if os.path.exists(src) and not os.path.exists(os.path.join(APP_DIR, name)):
             shutil.copy2(src, os.path.join(APP_DIR, name))
-    save(glob, proxies)
+    graph = _graph.from_proxies(proxies)
+    save(glob, graph)
     log(LOG_INFO, _t("Imported settings from the previous version ({old_dir}) - {len} proxies").format(old_dir=old_dir, len=len(proxies)))
-    return glob, proxies
+    return glob, graph

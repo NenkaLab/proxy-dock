@@ -9,8 +9,11 @@ Cada proxy combina una **entrada** (cómo acepta conexiones en un puerto de este
 es una sola tarjeta.
 
 <p align="center">
+  <img src="images/canvas.png" width="98%" alt="Lienzo">
+</p>
+<p align="center">
   <img src="images/proxies.png" width="49%" alt="Lista de proxies">
-  <img src="images/editor.png" width="49%" alt="Editor de proxy">
+  <img src="images/editor.png" width="49%" alt="Editor de entrada">
 </p>
 
 ## Funciones
@@ -21,6 +24,8 @@ es una sola tarjeta.
 | Salida | Direct · proxy superior HTTP / HTTPS / SOCKS4 / SOCKS5 · túnel Shadowsocks · túnel Hysteria2 (QUIC) |
 | UDP | entrada SOCKS5 · Shadowsocks · Hysteria2, salida Direct · Shadowsocks · Hysteria2 |
 
+- **Lienzo**: editor estilo blueprint - arrastra líneas de los bloques de entrada a los de salida; varias entradas pueden compartir una salida, una entrada conectada a otra entrada pasa por ella, y Direct puede salir desde una IP de origen elegida
+- **Bloque PC**: conecta una entrada HTTP para usarla como proxy del sistema de Windows mientras se ejecuta; la configuración anterior se guarda y se restaura al detenerla o cerrar la aplicación (botones Restaurar anterior / Desactivado)
 - **Shadowsocks**: AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) y 2022 (SIP022, blake3), TCP+UDP, copia de enlaces `ss://`
 - **Hysteria2**: compatible en ambos sentidos con la implementación oficial (TCP y UDP), fijación del certificado, copia de enlaces `hysteria2://`
 - **Configuración**: valores globales predeterminados + configuración local por proxy (la local manda) - dominios permitidos, bloqueo de red privada, tiempo de inactividad, registro
@@ -90,6 +95,7 @@ proxydock.py            punto de entrada
 proxydock/
   common.py             constantes comunes, registro, manejo de direcciones, bloqueos
   config.py             formato de configuración (v2), validación, fusión global/local, almacenamiento de contraseñas, migración
+  graph.py              grafo de bloques (entrada / salida / PC) -> proxies de ejecución
   runtime.py            ProxyInstance / ProxyManager (varios proxies en un solo hilo asyncio)
   relay.py              núcleo del relé TCP/UDP
   inbound.py            protocolos de entrada
@@ -101,6 +107,7 @@ proxydock/
   platform_utils.py     inicio al iniciar sesión, firewall, comprobación de puertos
   i18n.py, locales/     traducciones (textos fuente en inglés -> <idioma>.json)
   ui/                   interfaz con PySide6 + Fluent Widgets
+    canvas.py           página del lienzo (NodeGraphQt)
 tools/                  scripts de compilación, spec de PyInstaller, Dockerfile de compilación para Linux
 licenses/               licencias de los componentes de terceros incluidos
 docs/                   README traducidos, capturas de pantalla
@@ -127,7 +134,7 @@ Las licencias de las fuentes y bibliotecas incluidas están en la carpeta [`lice
 | aioquic, pylsqpack, darkdetect | BSD 3-Clause |
 | cryptography | Apache 2.0 / BSD 3-Clause |
 | pyOpenSSL | Apache 2.0 |
-| service-identity, attrs | MIT |
+| service-identity, attrs, NodeGraphQt, Qt.py | MIT |
 | certifi | MPL 2.0 |
 | Entorno de ejecución de Python | PSF License |
 | Cargador de arranque de PyInstaller | GPL v2+ (excepción del cargador de arranque) |

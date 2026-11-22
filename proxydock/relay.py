@@ -212,7 +212,13 @@ def _close_if_connected(task):
         task.result()[0].close()
 
 
-async def _race_connect(inst, addrs, delay=0.25):
+def _bind_addr(inst):
+    """Direct outbound source address ("" = automatic)."""
+    ob = getattr(inst, "outbound", None) or {}
+    return ob.get("bind", "") if ob.get("type") == "direct" else ""
+
+
+async def _race_connect(inst, addrs, delay=0.25, local=None):
     """RFC 8305-style happy eyeballs: start the next address every delay seconds, use whichever connects first."""
     loop = asyncio.get_running_loop()
     pending = set()
@@ -232,7 +238,7 @@ async def _race_connect(inst, addrs, delay=0.25):
 
     try:
         for sa in addrs:
-            pending.add(loop.create_task(loop.create_connection(lambda: Pipe(inst), sa[0], sa[1])))
+            pending.add(loop.create_task(loop.create_connection(lambda: Pipe(inst), sa[0], sa[1], local_addr=local)))
             done, pending = await asyncio.wait(pending, timeout=delay, return_when=asyncio.FIRST_COMPLETED)
             winner = pick(done)
             if winner is not None:
@@ -254,10 +260,14 @@ async def open_direct(inst, host, port, block_private=None):
     loop = asyncio.get_running_loop()
     if block_private is None:
         block_private = inst.cfg["block_private"]
+    bind = _bind_addr(inst)
+    fam = (socket.AF_INET6 if ":" in bind else socket.AF_INET) if bind else 0
+    local = (bind, 0) if bind else None
     if not block_private:
-        _, pipe = await loop.create_connection(lambda: Pipe(inst), host, port, happy_eyeballs_delay=0.25)
+        _, pipe = await loop.create_connection(lambda: Pipe(inst), host, port, happy_eyeballs_delay=0.25,
+                                               family=fam, local_addr=local)
         return pipe
-    infos = await loop.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    infos = await loop.getaddrinfo(host, port, type=socket.SOCK_STREAM, family=fam)
     v4, v6, seen = [], [], set()
     first_fam = None
     for fam, _, _, _, sa in infos:
@@ -272,7 +282,7 @@ async def open_direct(inst, host, port, block_private=None):
         raise OSError(f"no address for {host}")
     a, b = (v6, v4) if first_fam == socket.AF_INET6 else (v4, v6)
     order = [x for pair in zip(a, b) for x in pair] + a[len(b):] + b[len(a):]
-    return await _race_connect(inst, order)
+    return await _race_connect(inst, order, local=local)
 
 
 def enable_keepalive(transport):
@@ -430,7 +440,9 @@ class DirectEgress:
 
     async def start(self):
         loop = asyncio.get_running_loop()
-        for fam, bind_ip in ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::")):
+        bind = _bind_addr(self.inst)
+        pairs = [(socket.AF_INET6 if ":" in bind else socket.AF_INET, bind)] if bind else             [(socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::")]
+        for fam, bind_ip in pairs:
             try:
                 rsock = make_udp_socket(fam, bind_ip)
             except OSError:

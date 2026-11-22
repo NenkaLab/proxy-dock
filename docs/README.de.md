@@ -9,8 +9,11 @@ Jeder Proxy kombiniert einen **Eingang** (wie er Verbindungen an einem Port dies
 Shadowsocks-Server" eine einzige Karte.
 
 <p align="center">
+  <img src="images/canvas.png" width="98%" alt="Fläche">
+</p>
+<p align="center">
   <img src="images/proxies.png" width="49%" alt="Proxy-Liste">
-  <img src="images/editor.png" width="49%" alt="Proxy-Editor">
+  <img src="images/editor.png" width="49%" alt="Eingang bearbeiten">
 </p>
 
 ## Funktionen
@@ -21,6 +24,8 @@ Shadowsocks-Server" eine einzige Karte.
 | Ausgang | Direct · Upstream-HTTP / HTTPS / SOCKS4 / SOCKS5-Proxy · Shadowsocks-Tunnel · Hysteria2-Tunnel (QUIC) |
 | UDP | Eingang SOCKS5 · Shadowsocks · Hysteria2, Ausgang Direct · Shadowsocks · Hysteria2 |
 
+- **Fläche**: Editor im Blueprint-Stil - Linien von Eingangsblöcken zu Ausgangsblöcken ziehen; mehrere Eingänge können einen Ausgang teilen, ein mit einem anderen Eingang verbundener Eingang leitet über diesen weiter, und Direct kann eine gewählte Quell-IP nutzen
+- **PC-Block**: einen HTTP-Eingang verbinden, um ihn als Windows-Systemproxy zu nutzen, solange er läuft; die vorherigen Einstellungen werden gesichert und beim Stoppen oder Beenden wiederhergestellt (Knöpfe Vorherige wiederherstellen / Aus)
 - **Shadowsocks**: AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) und 2022 (SIP022, blake3), TCP+UDP, `ss://`-Links kopieren
 - **Hysteria2**: in beide Richtungen mit der offiziellen Implementierung kompatibel (TCP und UDP), Zertifikats-Pinning, `hysteria2://`-Links kopieren
 - **Einstellungen**: globale Standardwerte + lokale Einstellungen pro Proxy (lokal hat Vorrang) - zugelassene Domains, Blockieren privater Netze, Leerlauf-Timeout, Protokoll
@@ -90,6 +95,7 @@ proxydock.py            Einstiegspunkt
 proxydock/
   common.py             gemeinsame Konstanten, Protokoll, Adressbehandlung, Sperren
   config.py             Einstellungsformat (v2), Prüfung, Zusammenführung global/lokal, Passwortspeicher, Migration
+  graph.py              Blockgraph (Eingangs- / Ausgangs- / PC-Blöcke) -> Laufzeit-Proxys
   runtime.py            ProxyInstance / ProxyManager (viele Proxys in einem asyncio-Thread)
   relay.py              TCP/UDP-Relay-Kern
   inbound.py            Eingangsprotokolle
@@ -101,6 +107,7 @@ proxydock/
   platform_utils.py     Start bei Anmeldung, Firewall, Portprüfung
   i18n.py, locales/     Übersetzungen (englische Ausgangstexte -> <Sprache>.json)
   ui/                   Oberfläche mit PySide6 + Fluent Widgets
+    canvas.py           Seite Fläche (NodeGraphQt)
 tools/                  Build-Skripte, PyInstaller-Spec, Dockerfile für den Linux-Build
 licenses/               Lizenzen der enthaltenen Drittkomponenten
 docs/                   übersetzte READMEs, Screenshots
@@ -127,7 +134,7 @@ Die Lizenzen der enthaltenen Schriften und Bibliotheken liegen im Ordner [`licen
 | aioquic, pylsqpack, darkdetect | BSD 3-Clause |
 | cryptography | Apache 2.0 / BSD 3-Clause |
 | pyOpenSSL | Apache 2.0 |
-| service-identity, attrs | MIT |
+| service-identity, attrs, NodeGraphQt, Qt.py | MIT |
 | certifi | MPL 2.0 |
 | Python-Laufzeit | PSF License |
 | PyInstaller-Bootloader | GPL v2+ (Bootloader-Ausnahme) |

@@ -232,3 +232,73 @@ def open_path(path):
         os.makedirs(path, exist_ok=True)
     if not QDesktopServices.openUrl(QUrl.fromLocalFile(path)):
         raise OSError(_t("Cannot open: {path}").format(path=path))
+
+
+# --- system proxy (the "PC" block): Windows WinINet settings, used by browsers and most apps ---
+
+INET_KEY = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+INET_VALUES = ("ProxyEnable", "ProxyServer", "ProxyOverride", "AutoConfigURL")
+PC_INBOUND_TYPES = ("http", "socks4")       # what WinINet can talk to (its "socks=" is SOCKS4)
+
+
+def system_proxy_supported():
+    return IS_WIN
+
+
+def system_proxy_server(inbound):
+    """(ProxyServer value, error) for using this inbound as the system proxy."""
+    if inbound["type"] not in PC_INBOUND_TYPES:
+        return None, _t("Windows can only use an HTTP (or SOCKS4) inbound as the system proxy - add an HTTP inbound for the PC")
+    host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(inbound["host"], inbound["host"])
+    hp = f"[{host}]:{inbound['port']}" if ":" in host else f"{host}:{inbound['port']}"
+    return (hp if inbound["type"] == "http" else f"socks={hp}"), None
+
+
+def get_system_proxy():
+    """Current WinINet proxy values (missing value = None)."""
+    out = {name: None for name in INET_VALUES}
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, INET_KEY, 0, winreg.KEY_READ) as key:
+        for name in INET_VALUES:
+            try:
+                out[name] = winreg.QueryValueEx(key, name)[0]
+            except FileNotFoundError:
+                pass
+    return out
+
+
+def set_system_proxy(values):
+    """Write WinINet proxy values (None = delete the value) and tell running apps about it."""
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, INET_KEY, 0, winreg.KEY_SET_VALUE) as key:
+        for name in INET_VALUES:
+            if name not in values:
+                continue
+            v = values[name]
+            if v is None:
+                try:
+                    winreg.DeleteValue(key, name)
+                except FileNotFoundError:
+                    pass
+            elif name == "ProxyEnable":
+                winreg.SetValueEx(key, name, 0, winreg.REG_DWORD, int(v))
+            else:
+                winreg.SetValueEx(key, name, 0, winreg.REG_SZ, str(v))
+    _notify_inet_change()
+
+
+def _notify_inet_change():
+    try:
+        inet = ctypes.windll.wininet
+        inet.InternetSetOptionW(None, 39, None, 0)      # INTERNET_OPTION_SETTINGS_CHANGED
+        inet.InternetSetOptionW(None, 37, None, 0)      # INTERNET_OPTION_REFRESH
+    except (AttributeError, OSError):
+        pass
+
+
+def proxy_values_for(server, backup):
+    """Values to apply: our server, bypass local addresses (keeping the user's own exceptions), no PAC script."""
+    bypass = ["localhost", "127.*", "<local>"]
+    old = (backup or {}).get("ProxyOverride") or ""
+    for item in old.split(";"):
+        if item.strip() and item.strip() not in bypass:
+            bypass.insert(len(bypass) - 1, item.strip())
+    return {"ProxyEnable": 1, "ProxyServer": server, "ProxyOverride": ";".join(bypass), "AutoConfigURL": None}
