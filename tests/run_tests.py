@@ -342,6 +342,19 @@ def test_ui():
     check("ui: background subscription update", '"Three"' in gm.find(ctl.graph, sb["id"])[1]["outbound"]["sub_servers"])
     ctl.delete_node(sb["id"])
     web.shutdown()
+    tport, _, _ = tls_test_server()
+    hb = ctl.new_outbound({"type": "https", "host": "127.0.0.1", "port": tport}, edit=False)
+    ctl.edit_node(hb["id"])
+    wait(300)
+    w.editor._detect_sni()
+    for _ in range(50):
+        wait(100)
+        if w.editor.btn_detect.isEnabled() and w.editor.ed_out_sni.text():
+            break
+    check("ui: 'Detect from server' fills the SNI", w.editor.ed_out_sni.text() == "localhost", w.editor.ed_out_sni.text())
+    w.editor.cancel()
+    wait(300)
+    ctl.delete_node(hb["id"])
     vb = ctl.new_outbound({"type": "vless"}, edit=False)
     ctl.edit_node(vb["id"])
     wait(300)
@@ -1119,11 +1132,72 @@ def test_subscription_e2e():
     origin.shutdown()
 
 
+def tls_test_server():
+    """A TLS server on 127.0.0.1 with a certificate for 'localhost' (returns port, cert, key)."""
+    import ssl
+    from proxydock.tls import ensure_self_signed
+    cert, key = ensure_self_signed(TMP, "detect-test")
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(cert, key)
+    ls = socket.socket()
+    ls.bind(("127.0.0.1", 0))
+    ls.listen()
+
+    def run():
+        while True:
+            try:
+                c, _ = ls.accept()
+            except OSError:
+                return
+            try:
+                with ctx.wrap_socket(c, server_side=True) as sc:
+                    sc.recv(10)
+            except Exception:
+                pass
+    threading.Thread(target=run, daemon=True).start()
+    return ls.getsockname()[1], cert, key
+
+
+def test_detect_sni():
+    """'Detect from server': the certificate's name for the SNI, over TLS/TCP and QUIC."""
+    import hashlib
+    import ssl
+    import subprocess
+    from proxydock import certinfo
+    from proxydock.singbox import find_binary
+    port, cert, key = tls_test_server()
+    r = certinfo.detect(dict(config.OUTBOUND_DEFAULTS, type="trojan", host="127.0.0.1", port=port))
+    der = ssl.PEM_cert_to_DER_cert(open(cert, encoding="ascii").read())
+    check("detect: TLS server name and fingerprint", r["sni"] == "localhost" and r["sha256"] == hashlib.sha256(der).hexdigest(), r)
+    try:
+        certinfo.detect(dict(config.OUTBOUND_DEFAULTS, type="https", host="127.0.0.1", port=free_port()))
+        check("detect: closed port reported", False)
+    except ValueError:
+        check("detect: closed port reported", True)
+    if find_binary():
+        u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        u.bind(("127.0.0.1", 0))
+        qport = u.getsockname()[1]
+        u.close()
+        conf = {"log": {"level": "warn"}, "inbounds": [{"type": "hysteria2", "listen": "127.0.0.1", "listen_port": qport,
+                "users": [{"password": "x"}], "tls": {"enabled": True, "certificate_path": cert, "key_path": key}}],
+                "outbounds": [{"type": "direct"}]}
+        path = os.path.join(TMP, "detect-hy2.json")
+        json.dump(conf, open(path, "w"))
+        pr = subprocess.Popen([find_binary(), "run", "-c", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(1.5)
+        try:
+            q = certinfo.detect(dict(config.OUTBOUND_DEFAULTS, type="hysteria2", host="127.0.0.1", port=qport))
+            check("detect: QUIC (Hysteria2) server name", q["sni"] == "localhost", q)
+        finally:
+            pr.terminate()
+
+
 def main():
     t0 = time.time()
     tests = [test_translations, test_graph, test_engine, test_singbox_compile, test_router_graph, test_router_singbox, test_interface,
              test_wireguard, test_tun, test_run_as_admin, test_protocols,
-             test_subscription]
+             test_subscription, test_detect_sni]
     from proxydock.singbox import find_binary
     if find_binary():
         tests += [lambda: test_engine("sing-box"), test_singbox_guard, test_router_e2e, test_interface_e2e, test_wireguard_e2e, test_helper,

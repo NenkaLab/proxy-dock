@@ -485,6 +485,7 @@ class EditorInterface(ScrollArea):
     closed = Signal()
     check_done = Signal(object, object)     # (outbound result, inbound result)
     sub_done = Signal(object, str)          # (subscription fields or None, note / error)
+    detect_done = Signal(object, str)       # (certificate info or None, error)
 
     def __init__(self, ctl, parent=None):
         super().__init__(parent)
@@ -706,7 +707,12 @@ class EditorInterface(ScrollArea):
         self.ed_out_sni = LineEdit(v)
         self.ed_out_sni.setPlaceholderText(_t("Empty = server address"))
         self.ed_out_sni.setFixedWidth(220)
-        self.r_out_sni = s_out.add(Row(_t("SNI (server name)"), "", v).right(self.ed_out_sni))
+        self.btn_detect = PushButton(_t("Detect from server"), v, FIF.SEARCH)
+        self.btn_detect.setToolTip(_t("Read the server's certificate and use its name"))
+        self.btn_detect.clicked.connect(self._detect_sni)
+        self.detect_done.connect(self._on_detect_done)
+        self.r_out_sni = s_out.add(Row(_t("SNI (server name)"), _t("Servers that check the name (e.g. the official Hysteria2 server) refuse a wrong one. Connecting by IP? Click 'Detect from server'."), v)
+                                   .right(self.ed_out_sni, self.btn_detect))
         self.ed_out_pin = LineEdit(v)
         self.ed_out_pin.setPlaceholderText(_t("SHA-256 (optional)"))
         self.ed_out_pin.setFixedWidth(300)
@@ -924,6 +930,40 @@ class EditorInterface(ScrollArea):
         self.sp_sub_hours.setValue(ob["sub_interval"])
         self._sub = {"sub_servers": ob["sub_servers"], "sub_updated": ob["sub_updated"]}
         self._fill_sub_servers(ob["sub_selected"])
+
+    def _detect_sni(self):
+        n = self.collect()
+        ob = n["outbound"]
+        if not ob["host"] or not ob["port"]:
+            info(self.window(), "error", _t("Detect from server"), _t("Enter the server address and port first"), 4000)
+            return
+        self.btn_detect.setEnabled(False)
+        self.btn_detect.setText(_t("Connecting…"))
+
+        def work():
+            from ..certinfo import detect
+            try:
+                self.detect_done.emit(detect(ob), "")
+            except ValueError as e:
+                self.detect_done.emit(None, str(e))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_detect_done(self, res, err):
+        self.btn_detect.setEnabled(True)
+        self.btn_detect.setText(_t("Detect from server"))
+        if res is None:
+            info(self.window(), "error", _t("Detect from server"), err, 6000)
+            return
+        fp = ":".join(res["sha256"][i:i + 2] for i in range(0, 16, 2)).upper() + "…"
+        if res["sni"]:
+            self.ed_out_sni.setText(res["sni"])
+            info(self.window(), "success", _t("SNI set to {name}").format(name=res["sni"]),
+                 _t("Names in the certificate: {names}").format(names=", ".join(res["names"])) + "\n"
+                 + _t("Fingerprint (SHA-256): {fp}").format(fp=fp), 7000)
+        else:
+            info(self.window(), "warning", _t("No usable name in the certificate"),
+                 (_t("Names in the certificate: {names}").format(names=", ".join(res["names"])) if res["names"]
+                  else _t("The certificate has no DNS name")) + "\n" + _t("Fingerprint (SHA-256): {fp}").format(fp=fp), 7000)
 
     def _fill_sub_servers(self, selected=""):
         from ..subscription import servers_of

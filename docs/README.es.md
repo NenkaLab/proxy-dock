@@ -112,8 +112,7 @@ La compilación para macOS aún no se ha probado en un Mac real.
   conexiones de más a posteriori; el tiempo de inactividad solo se aplica al UDP; no hay «detalles del cierre».
 - Motor Python: Hysteria2 no puede pasar *por* otras salidas, el UDP no se retransmite por salidas encadenadas y Hysteria2
   (aioquic) llega a unos 100 Mbps. Ningún motor admite los ajustes de ancho de banda de Hysteria2 (Brutal), Salamander ni el salto de puertos.
-- El servidor oficial de Hysteria2 rechaza las conexiones cuyo SNI no coincide con su certificado: escribe el dominio del
-  certificado del servidor en el campo SNI de la salida.
+- El servidor oficial de Hysteria2 (y otros que comprueban el nombre) rechaza un SNI que no coincide con su certificado. Si la salida usa una IP, pulsa **Detectar desde el servidor** junto al campo SNI para leer el nombre del certificado.
 - La entrada HTTP atiende una sola solicitud normal (no CONNECT) por conexión.
 - SOCKS4 no tiene autenticación por contraseña, así que úsalo solo en este PC.
 
