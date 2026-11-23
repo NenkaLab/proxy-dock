@@ -852,10 +852,17 @@ class CanvasInterface(QWidget):
         self.btn_router = AddButton(FIF.SHARE, _t("Add router"), self)
         self.btn_router.setMenu(self._router_menu())
         self._build_toolbar()
-        for keys, fn in ((QKeySequence.Undo, ctl.undo), (QKeySequence.Redo, ctl.redo),
+        # Ctrl+Y and Ctrl+Shift+Z redo on every OS (the platform's Redo is one of them: Cmd+Shift+Z on macOS).
+        # A key bound twice would be ambiguous and do nothing, so each key is bound once.
+        seen = set()
+        for keys, fn in ((QKeySequence.Undo, ctl.undo), (QKeySequence.Redo, ctl.redo), (QKeySequence("Ctrl+Y"), ctl.redo),
                          (QKeySequence("Ctrl+Shift+Z"), ctl.redo), (QKeySequence("F2"), self.rename_selected),
                          (QKeySequence("Ctrl+D"), self.duplicate_selected)):
-            QShortcut(QKeySequence(keys), self, activated=lambda fn=fn, k=keys: self._undo_key(fn, k),
+            seq = QKeySequence(keys)
+            if seq.toString() in seen:
+                continue
+            seen.add(seq.toString())
+            QShortcut(seq, self, activated=lambda fn=fn, k=seq: self._undo_key(fn, k),
                       context=Qt.WidgetWithChildrenShortcut)
         hint = CaptionLabel(_t("Drag from an output to an input to link blocks. Double-click a block to edit it."), self)
         hint.setWordWrap(True)

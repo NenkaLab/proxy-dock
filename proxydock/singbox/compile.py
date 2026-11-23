@@ -425,14 +425,31 @@ def route(proxy, cfg, bans_path, rulesets=None, route_tags=None, exclude_paths=N
     return r, reasons
 
 
+def route_exit_tags(proxy):
+    """{router target block id: its outbound tag prefix} (one chain per target block, shared by its rules)."""
+    tags = {}
+    for r in proxy.get("routes") or []:
+        if r["outbound"]["type"] != "block" and r["block"] not in tags:
+            tags[r["block"]] = f"r{len(tags)}_"
+    return tags
+
+
+def exit_of_tag(proxy, tag):
+    """Outbound block id a connection leaving through outbound tag (sing-box 'chains'[0]) belongs to, or None."""
+    for block, prefix in route_exit_tags(proxy).items():
+        if tag.startswith(prefix):
+            return block
+    return proxy.get("exit") if tag.startswith("out") else None
+
+
 def build(proxy, cfg, *, bans_path, api_port, api_secret, cert=None, rulesets=None, exclude_paths=None):
     """Full sing-box config. cfg = config.resolve(proxy, glob). Returns (config dict, route rule reasons)."""
     obs = outbounds(proxy["outbound"]) or [{"type": "direct", "tag": "out0"}]   # (Block default: never used)
-    route_tags = {}
-    for r in proxy.get("routes") or []:     # one outbound chain per target block, shared by its rules
-        if r["outbound"]["type"] != "block" and r["block"] not in route_tags:
-            route_tags[r["block"]] = prefix = f"r{len(route_tags)}_"
-            obs += outbounds(r["outbound"], prefix)
+    route_tags = route_exit_tags(proxy)     # one outbound chain per target block, shared by its rules
+    for r in proxy.get("routes") or []:
+        if r["outbound"]["type"] != "block" and route_tags.get(r["block"]) and \
+                not any(o["tag"].startswith(route_tags[r["block"]]) for o in obs):
+            obs += outbounds(r["outbound"], route_tags[r["block"]])
     tun = proxy["inbound"]["type"] == "tun"
     if tun:
         obs.append({"type": "direct", "tag": TUN_DIRECT})

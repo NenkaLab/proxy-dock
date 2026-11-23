@@ -1,5 +1,6 @@
 """Statistics page: proxy selector (total / per proxy) + tiles + throughput graph. The graph shows download and
-upload of the selection (Combined) or one line per running proxy card (Per proxy: download + upload together)."""
+upload of the selection (Combined), one line per running proxy card (Per proxy) or one line per outbound block
+the traffic leaves through (Per exit); the last two show download + upload together."""
 from ..i18n import _t
 from collections import deque
 
@@ -49,9 +50,10 @@ class ThroughputChart(QWidget):
         if self.isVisible():
             self.update()
 
-    def set_lines(self, lines):
-        """One line per card: [(name, colour, values)]."""
+    def set_lines(self, lines, empty=None):
+        """One line each: [(name, colour, values)]; empty = the text shown when there is no line."""
         self.lines = [(n, c, list(v)) for n, c, v in lines]
+        self.empty_text = empty
         if self.isVisible():
             self.update()
 
@@ -109,7 +111,7 @@ class ThroughputChart(QWidget):
         p.setPen(muted)
         p.drawText(4, 16, _t("max {fmt_rate}").format(fmt_rate=fmt_rate(top)))
         if self.lines is not None and not self.lines:
-            p.drawText(r, Qt.AlignCenter, _t("No proxy is running"))
+            p.drawText(r, Qt.AlignCenter, getattr(self, "empty_text", None) or _t("No proxy is running"))
         metrics = p.fontMetrics()                   # legend from the right edge
         x = self.width() - 4
         for label, c in reversed(legend):
@@ -130,6 +132,8 @@ class StatsInterface(QWidget):
         self.history = {}       # id ("" = total) -> (up deque, down deque)
         self.latest = {}        # id -> (Stats, up_rate, down_rate)
         self.proxies, self.colors = [], {}
+        self.exits = []         # [(outbound block id, name, colour)]
+        self.exit_history = {}  # outbound block id -> deque of down + up per second
 
         title = TitleLabel(_t("Statistics"), self)
         self.proxy = ProxyCombo(self, _t("Total"), 240)
@@ -137,6 +141,7 @@ class StatsInterface(QWidget):
         self.mode = SegmentedWidget(self)               # graph: the selection, or a line per card
         self.mode.addItem("combined", _t("Combined"), lambda: self._show())
         self.mode.addItem("per_proxy", _t("Per proxy"), lambda: self._show())
+        self.mode.addItem("per_exit", _t("Per exit"), lambda: self._show())
         self.mode.setCurrentItem("combined")
         self.t_tcp = StatTile(_t("Active TCP connections"), self)
         self.t_udp = StatTile(_t("Active UDP sessions"), self)
@@ -180,6 +185,39 @@ class StatsInterface(QWidget):
     def per_proxy(self):
         return self.mode.currentRouteKey() == "per_proxy"
 
+    def per_exit(self):
+        return self.mode.currentRouteKey() == "per_exit"
+
+    def set_exits(self, exits):
+        """exits: [(outbound block id, name, '#rrggbb' or '')] that can carry traffic."""
+        self.exits = list(exits)
+
+    def push_exits(self, rates):
+        """rates: {outbound block id: (up/s, down/s)}, once a second."""
+        for oid, (up, down) in rates.items():
+            h = self.exit_history.get(oid)
+            if h is None:
+                h = self.exit_history[oid] = deque([0.0] * POINTS, maxlen=POINTS)
+            h.append(up + down)
+        for oid, h in self.exit_history.items():        # (no traffic this second)
+            if oid not in rates:
+                h.append(0.0)
+        if self.isVisible() and self.per_exit():
+            self._show()
+
+    def exit_lines(self):
+        """[(name, colour, down + up per second)] of the outbound blocks that carried traffic in the last minute."""
+        out, k = [], 0
+        for oid, name, color in self.exits:
+            h = self.exit_history.get(oid)
+            if h is None or not any(h):
+                continue
+            if not color:
+                color = LINE_COLORS[k % len(LINE_COLORS)]
+                k += 1
+            out.append((name, color, list(h)))
+        return out
+
     def card_lines(self):
         """[(name, colour, down + up per second)] of the cards with traffic history that are still there."""
         out, k = [], 0
@@ -222,6 +260,9 @@ class StatsInterface(QWidget):
         self.t_err.set(f"{s.blocked:,} / {s.failed:,}")
         if self.per_proxy():
             self.chart.set_lines(self.card_lines())
+            return
+        if self.per_exit():
+            self.chart.set_lines(self.exit_lines(), _t("No traffic in the last minute"))
             return
         h = self.history.get(pid)
         if h:

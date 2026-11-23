@@ -109,8 +109,14 @@ class MainWindow(FluentWindow):
         QShortcut(QKeySequence(QKeySequence.Back), self, activated=self.go_back)
         QShortcut(QKeySequence(QKeySequence.Forward), self, activated=self.go_forward)
         # undo / redo on the list page too (the canvas has its own, which leaves typing in a title alone)
-        for keys, name in ((QKeySequence.Undo, "undo"), (QKeySequence.Redo, "redo"), (QKeySequence("Ctrl+Shift+Z"), "redo")):
-            QShortcut(QKeySequence(keys), self.proxies_page, activated=lambda n=name: getattr(self.ctl, n)(),
+        seen = set()                    # (each key once: a key bound twice is ambiguous and does nothing)
+        for keys, name in ((QKeySequence.Undo, "undo"), (QKeySequence.Redo, "redo"), (QKeySequence("Ctrl+Y"), "redo"),
+                           (QKeySequence("Ctrl+Shift+Z"), "redo")):
+            seq = QKeySequence(keys)
+            if seq.toString() in seen:
+                continue
+            seen.add(seq.toString())
+            QShortcut(seq, self.proxies_page, activated=lambda n=name: getattr(self.ctl, n)(),
                       context=Qt.WidgetWithChildrenShortcut)
         self._mouse_nav = _MouseNavFilter(self)
         QApplication.instance().installEventFilter(self._mouse_nav)
@@ -464,6 +470,8 @@ class Controller:
         w.canvas_page.refresh(self.graph, self.proxies, st, self.pc_status())
         w.log_page.set_proxies(self.proxies)
         w.stats_page.set_proxies(self.proxies, {n["id"]: n.get("color", "") for n in self.graph["inbounds"]})
+        w.stats_page.set_exits([(n["id"], n["name"], n.get("color", "")) for n in self.graph["outbounds"]
+                                if n["outbound"]["type"] != "block"])
         w.test_page.set_proxies(self.proxies, self.running_ids())
         self._rebuild_tray_proxies()
 
@@ -1379,6 +1387,7 @@ class Controller:
         w.restoreGeometry(geometry)
         w.log_page.add_entries(entries)
         w.stats_page.history = history
+        w.stats_page.exit_history = old.stats_page.exit_history
         target = next((p for p in (w.canvas_page, w.proxies_page, w.log_page, w.stats_page, w.test_page,
                                    w.help_page, w.license_page, w.about_page, w.settings_page) if p.objectName() == page), w.canvas_page)
         w.stackedWidget.setCurrentWidget(target, popOut=False)
@@ -1448,8 +1457,37 @@ class Controller:
         down = sum(v[2] for v in snaps.values())
         snaps[""] = (total, up, down)
         self.window.stats_page.push(snaps)
+        self.window.stats_page.push_exits(self._exit_rates(dt))
         running = len(self.running_ids())
         self.tray.setToolTip(_t("{APP_NAME}\n{running} proxies running\n↓ {fmt_rate}  ↑ {fmt_rate2}  · connections {value}").format(APP_NAME=APP_NAME, running=running, fmt_rate=fmt_rate(down), fmt_rate2=fmt_rate(up), value=total.tcp_active + total.udp_active))
+
+    def exit_totals(self):
+        """{outbound block id: (up, down) bytes} of every card. sing-box knows the exit of each connection;
+        a card without that (Python engine) counts all its traffic for its one exit."""
+        out = {}
+        for p in self.proxies:
+            inst = self.manager.instances.get(p["id"])
+            totals = getattr(inst, "exit_totals", None) or getattr(getattr(inst, "inner", None), "exit_totals", None)
+            if totals is not None:
+                got = totals()
+            else:
+                s = self.manager.stats.get(p["id"])
+                got = {p["exit"]: (s.up, s.down)} if s is not None and p.get("exit") else {}
+            for oid, (u, d) in got.items():
+                ou, od = out.get(oid, (0, 0))
+                out[oid] = (ou + u, od + d)
+        return out
+
+    def _exit_rates(self, dt):
+        """{outbound block id: (up/s, down/s)} since the last tick (a card that restarted starts from zero again)."""
+        now = self.exit_totals()
+        last = getattr(self, "_exit_last", {})
+        rates = {}
+        for oid, (u, d) in now.items():
+            lu, ld = last.get(oid, (u, d))
+            rates[oid] = (max(u - lu, 0) / dt, max(d - ld, 0) / dt)
+        self._exit_last = now
+        return rates
 
     # --- tray ---
     def _rebuild_tray_proxies(self):

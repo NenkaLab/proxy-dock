@@ -138,6 +138,8 @@ class SingBoxInstance:
         self._targets = {}          # sing-box connection id -> destination "host:port"
         self._last_totals = (0, 0)
         self._live = {}             # Clash API connection id -> what we know (close details, idle timeout)
+        self.tag_bytes = {}         # outbound tag a connection left through ('chains'[0]) -> [up, down] so far
+        self._tick_tags = {}        # the same, for the connections seen in this poll only
         self.update(proxy, glob)
 
     # --- settings ---
@@ -391,6 +393,10 @@ class SingBoxInstance:
             seen.add(cid)
             up, down = c.get("upload", 0), c.get("download", 0)
             e = self._live.get(cid)
+            tag = (c.get("chains") or [""])[0]              # (bytes since the last poll, per exit)
+            got = self._tick_tags.setdefault(tag, [0, 0])
+            got[0] += max(up - (e["up"] if e else 0), 0)
+            got[1] += max(down - (e["down"] if e else 0), 0)
             if e is None:
                 md = c.get("metadata") or {}
                 try:
@@ -410,6 +416,43 @@ class SingBoxInstance:
         for cid in [k for k in self._live if k not in seen]:
             self._closed(self._live.pop(cid))
         return idle
+
+    def _attribute(self, du, dd):
+        """Add this poll's bytes (du / dd: the card's exact totals) to tag_bytes. The Clash API lists only open
+        connections, so one that opens and closes between two polls is never seen: a card without router rules has
+        one exit and gets the whole amount; with rules, the unseen rest is split like the seen bytes of this poll
+        (or goes to the default exit when none was seen)."""
+        from .compile import route_exit_tags
+        tick, self._tick_tags = self._tick_tags, {}
+        if not route_exit_tags(self.proxy):
+            tick = {"out0": [du, dd]}
+        else:
+            su, sd = sum(v[0] for v in tick.values()), sum(v[1] for v in tick.values())
+            ru, rd = max(du - su, 0), max(dd - sd, 0)
+            if ru or rd:
+                weights = {t: v[0] + v[1] for t, v in tick.items() if v[0] + v[1] > 0}
+                total = sum(weights.values())
+                if not total:
+                    weights, total = {"out0": 1}, 1
+                for t, w in weights.items():
+                    got = tick.setdefault(t, [0, 0])
+                    got[0] += ru * w / total
+                    got[1] += rd * w / total
+        for t, (u, d) in tick.items():
+            got = self.tag_bytes.setdefault(t, [0, 0])
+            got[0] += u
+            got[1] += d
+
+    def exit_totals(self):
+        """{outbound block id: (up, down) bytes so far} from the connections of this card."""
+        from .compile import exit_of_tag
+        out = {}
+        for tag, (up, down) in list(self.tag_bytes.items()):
+            block = exit_of_tag(self.proxy, tag)
+            if block:
+                u, d = out.get(block, (0, 0))
+                out[block] = (u + up, d + down)
+        return out
 
     def _closed(self, e):
         secs = max(time.time() - e["start"], 0.0)
@@ -447,8 +490,9 @@ class SingBoxInstance:
             st.udp_active = len(conns) - st.tcp_active
             up, down = d.get("uploadTotal", 0), d.get("downloadTotal", 0)
             lu, ld = self._last_totals
-            st.up += max(up - lu, 0)
-            st.down += max(down - ld, 0)
+            du, dd = max(up - lu, 0), max(down - ld, 0)
+            st.up += du
+            st.down += dd
             self._last_totals = (up, down)
             over = guard.report_connections(self, conns)
             if over:
@@ -456,6 +500,7 @@ class SingBoxInstance:
                 self.log(LOG_BLOCKED, _t("Closed {count} connections over the per-IP limit ({limit})").format(
                     count=len(over), limit=guard.MAX_CONN_PER_IP))
             idle = self._track(conns)
+            self._attribute(du, dd)
             for cid in list(over) + idle:
                 try:
                     await self._api("DELETE", f"/connections/{cid}")

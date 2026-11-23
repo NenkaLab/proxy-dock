@@ -1272,6 +1272,18 @@ def test_ui():
     sp._show()
     check("ui: statistics per proxy draws a line per card", sp.per_proxy() and sp.chart.lines
           and sp.chart.lines[0][0] == ctl.proxies[0]["name"] and sp.chart.lines[0][2][-1] == 2100.0, sp.chart.lines)
+    oid = ctl.graph["outbounds"][0]["id"]
+    sp.push_exits({oid: (10.0, 90.0)})
+    sp.mode.setCurrentItem("per_exit")
+    sp._show()
+    check("ui: statistics per exit draws a line per outbound block", sp.per_exit() and sp.chart.lines
+          and sp.chart.lines[0][0] == ctl.graph["outbounds"][0]["name"] and sp.chart.lines[0][2][-1] == 100.0,
+          sp.chart.lines)
+    real_inst = dict(ctl.manager.instances)
+    rates = ctl._exit_rates(1.0)
+    check("ui: the controller adds up traffic per exit", isinstance(rates, dict)
+          and all(isinstance(v, tuple) and len(v) == 2 for v in rates.values()), rates)
+    _ = real_inst
     sp.mode.setCurrentItem("combined")
     sp._show()
     check("ui: combined shows download and upload again", sp.chart.lines is None)
@@ -1965,6 +1977,47 @@ def test_router_singbox():
     mgr.stop_all()
 
 
+def test_exit_stats():
+    """Traffic per exit block from the Clash API connections (fed by hand; no sing-box needed)."""
+    from proxydock.common import Stats
+    from proxydock.singbox import compile as sbc
+    from proxydock.singbox.process import SingBoxInstance
+    g = gm.empty()
+    d = gm.add_outbound(g, {"type": "direct"}, "Direct")
+    up = gm.add_outbound(g, {"type": "socks5", "host": "127.0.0.1", "port": 1}, "Up")
+    r = gm.add_router(g, "R")
+    r["rules"][0].update(match={"domain": ["x.test"]}, target=up["id"])
+    r["default"] = d["id"]
+    gm.add_inbound(g, "C", {"type": "socks5", "port": free_port()}, target=r["id"])
+    p = gm.compile(g)[0]
+    check("exit: compile names the default exit", p["exit"] == d["id"])
+    check("exit: outbound tags map to blocks", sbc.exit_of_tag(p, "out0") == d["id"]
+          and sbc.exit_of_tag(p, "r0_0") == up["id"] and sbc.exit_of_tag(p, "tun-direct") is None)
+    inst = SingBoxInstance(p, config.validate_global({}), Stats())
+
+    def conn(cid, tag, upb, down):
+        return {"id": cid, "upload": upb, "download": down, "chains": [tag], "metadata": {"network": "tcp"}}
+    inst._track([conn("a", "out0", 100, 1000), conn("b", "r0_0", 50, 500)])
+    inst._attribute(150, 1500)                      # all of it seen
+    ex = inst.exit_totals()
+    check("exit: seen connections count for their exit", ex[d["id"]] == (100, 1000) and ex[up["id"]] == (50, 500), ex)
+    inst._track([conn("a", "out0", 200, 2000), conn("b", "r0_0", 50, 500)])
+    inst._attribute(100 + 300, 1000 + 3000)         # +300/+3000 from a connection too short to be seen
+    ex = inst.exit_totals()
+    check("exit: only new bytes are added, the unseen rest follows the seen ones",
+          ex[d["id"]] == (200 + 300, 2000 + 3000) and ex[up["id"]] == (50, 500), ex)
+    inst._track([])
+    inst._attribute(10, 20)                         # nothing seen at all: the default exit
+    check("exit: unseen traffic with nothing seen goes to the default exit", inst.exit_totals()[d["id"]] == (510, 5020))
+    g2 = gm.empty()
+    d2 = gm.add_outbound(g2, {"type": "direct"}, "D2")
+    gm.add_inbound(g2, "C2", {"type": "socks5", "port": free_port()}, target=d2["id"])
+    single = SingBoxInstance(gm.compile(g2)[0], config.validate_global({}), Stats())
+    single._track([])
+    single._attribute(7, 70)
+    check("exit: a card without rules gives all its traffic to its exit", single.exit_totals() == {d2["id"]: (7, 70)})
+
+
 def test_router_e2e():
     """SOCKS5 -> router: blocked port, domain via an upstream proxy card, default Direct."""
     from proxydock import common
@@ -2002,6 +2055,12 @@ def test_router_e2e():
     time.sleep(0.5)
     check("[sing-box] router: block logged with the rule name",
           any("no-origin2" in e[2] and e[3] == p["id"] for e in common.pending_logs))
+    time.sleep(1.5)                                 # (a poll after the requests)
+    ex = mgr.instances[p["id"]].exit_totals()
+    st = mgr.stats_for(p["id"])
+    got = sum(u + v for u, v in ex.values())
+    check("[sing-box] per exit: the card's traffic is all given to its exits", set(ex) <= {d["id"], up["id"]}
+          and abs(got - (st.up + st.down)) <= 2 and got > 0, (ex, st.up, st.down))
     mgr.stop_all()
     origin.shutdown()
     origin2.shutdown()
@@ -3222,7 +3281,7 @@ def test_engine_died_e2e():
 
 def main():
     t0 = time.time()
-    tests = [test_translations, test_update, test_graph, test_engine, test_singbox_compile, test_router_graph, test_relay_graph, test_wireless_graph, test_block_colors, test_router_singbox, test_interface,
+    tests = [test_translations, test_update, test_graph, test_engine, test_singbox_compile, test_router_graph, test_relay_graph, test_wireless_graph, test_exit_stats, test_block_colors, test_router_singbox, test_interface,
              test_wireguard, test_tun, test_run_as_admin, test_protocols,
              test_subscription, test_detect_sni, test_hy2_advanced, test_group, test_dns, test_review_fixes, test_clash, test_wg_server, test_if_forward_select]
     from proxydock.singbox import find_binary

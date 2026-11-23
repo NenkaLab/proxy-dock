@@ -780,8 +780,10 @@ def compile(graph):
     for n in graph["inbounds"]:
         kind, t = find(graph, n["target"]) if n["target"] else (None, None)
         routes = []
+        exit_id = None              # outbound block the traffic leaves through when no router rule matches
         if kind == "router":
             flat, default = flatten_router(graph, t["id"])
+            exit_id = default
             routes = [{"match": conds, "outbound": resolve_outbound(graph, oid), "name": name, "block": oid}
                       for conds, oid, name in flat]
             ob = resolve_outbound(graph, default) if default else {"type": "direct"}
@@ -789,6 +791,7 @@ def compile(graph):
                 t = None            # no default exit: cannot start
         elif kind == "outbound":
             ob = resolve_outbound(graph, t["id"])
+            exit_id = t["id"]
         elif kind == "inbound" and t["inbound"]["type"] not in ("tun", "wireguard"):
             ob = chain_outbound(t["inbound"])
         else:
@@ -803,6 +806,7 @@ def compile(graph):
             p["outbound"]["members"] = ob["members"]
         p["routes"] = routes
         p["target"] = n["target"]
+        p["exit"] = exit_id
         p["target_name"] = target_label(graph, n)
         p["unlinked"] = t is None
         out.append(p)
