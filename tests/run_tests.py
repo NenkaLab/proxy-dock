@@ -369,6 +369,24 @@ def test_ui():
     wait(300)
     check("ui: Direct editor shows the network interface choice", w.editor.r_out_iface.isVisible()
           and w.editor.cb_out_iface.count() >= 1)
+    import proxydock.ui.proxies as uip
+    shown, real_info = [], uip.info
+    uip.info = lambda *a, **k: shown.append(a)
+    try:
+        ed = w.editor
+        ed.ifaces, ed.ifaces_unrouted = ["", "Routed", "VM switch"], {"VM switch"}
+        ed._filling_ifaces = True
+        ed.cb_out_iface.clear()
+        ed.cb_out_iface.addItems(["Automatic", "Routed", "VM switch"])
+        ed._filling_ifaces = False
+        ed.cb_out_iface.setCurrentIndex(1)
+        check("ui: a routed interface gives no warning", not shown, shown)
+        ed.cb_out_iface.setCurrentIndex(2)
+        check("ui: an interface without a gateway warns when picked", len(shown) == 1 and shown[0][1] == "warning", shown)
+        ed._fill_ifaces("VM switch")
+        check("ui: refilling the list does not warn again", len(shown) == 1, shown)
+    finally:
+        uip.info = real_info
     w.editor.cancel()
     wait(300)
     t = ctl.new_inbound("TUN", {"type": "tun"}, None, None, edit=False)
@@ -879,6 +897,12 @@ def test_interface():
           engine_for(p, config.validate_global({"engine": "python"}))[0] == "none")
     d = gm.add_outbound(g, {"type": "direct", "interface": "Wi-Fi"})
     check("interface: block name shows it", d["name"] == "Direct (Wi-Fi)", d["name"])
+    from proxydock.platform_utils import _is_default_route, default_route_ifaces
+    check("interface: default route rule", _is_default_route(0, 0) and _is_default_route(0, 0x80)
+          and _is_default_route(0x80, 0x80) and not _is_default_route(0x1CE0A8C0, 0x00FFFFFF)
+          and not _is_default_route(0x40, 0x80))
+    routes = default_route_ifaces()
+    check("interface: routing table readable", routes is None or isinstance(routes, set), routes)
 
 
 def test_interface_e2e():

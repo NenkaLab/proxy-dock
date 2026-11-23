@@ -25,6 +25,59 @@ def local_lan_ip():
         s.close()
 
 
+def _is_default_route(dest, mask):
+    """IPv4 dest/mask as the raw network-order DWORD both Windows and /proc/net/route use:
+    0.0.0.0/0, or one half of the 0.0.0.0/1 + 128.0.0.0/1 pair VPN apps install instead."""
+    return mask == 0 or (mask == 0x80 and dest in (0, 0x80))
+
+
+def default_route_ifaces():
+    """Interfaces with an IPv4 route to the internet (a default route), as a set of interface indexes
+    (Windows) or names (macOS/Linux) matching QNetworkInterface.index()/name(). None = could not tell."""
+    try:
+        if IS_WIN:
+            from ctypes import wintypes
+
+            class Row(ctypes.Structure):        # MIB_IPFORWARDROW
+                _fields_ = [(n, wintypes.DWORD) for n in (
+                    "dest", "mask", "policy", "next_hop", "if_index", "type", "proto", "age",
+                    "next_hop_as", "m1", "m2", "m3", "m4", "m5")]
+            fn = ctypes.windll.iphlpapi.GetIpForwardTable
+            size = wintypes.ULONG(0)
+            fn(None, ctypes.byref(size), False)
+            for _ in range(3):                  # the table can grow between the two calls
+                buf = ctypes.create_string_buffer(size.value)
+                rc = fn(buf, ctypes.byref(size), False)
+                if rc == 0:
+                    break
+                if rc != 122:                   # ERROR_INSUFFICIENT_BUFFER
+                    return None
+            else:
+                return None
+            n = wintypes.DWORD.from_buffer(buf).value
+            rows = (Row * n).from_buffer(buf, ctypes.sizeof(wintypes.DWORD))
+            return {r.if_index for r in rows if _is_default_route(r.dest, r.mask)}
+        if IS_MAC:
+            out = subprocess.run(["netstat", "-rn", "-f", "inet"], capture_output=True, text=True, timeout=5).stdout
+            found, col = set(), None
+            for line in out.splitlines():
+                f = line.split()
+                if f and f[0] == "Destination" and "Netif" in f:    # the column moved between macOS versions
+                    col = f.index("Netif")
+                elif col is not None and len(f) > col and f[0] in ("default", "0/1", "128.0/1"):
+                    found.add(f[col])
+            return found if col is not None else None
+        found = set()
+        with open("/proc/net/route") as fh:
+            for line in fh.readlines()[1:]:
+                f = line.split()
+                if len(f) >= 8 and _is_default_route(int(f[1], 16), int(f[7], 16)):
+                    found.add(f[0])
+        return found
+    except (OSError, ValueError, AttributeError, subprocess.SubprocessError):
+        return None
+
+
 def running_programs():
     """Sorted names of the programs running now (e.g. chrome.exe), for router program rules."""
     names = set()
