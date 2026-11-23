@@ -29,9 +29,10 @@ p. ej. un servidor Shadowsocks), y cada tarjeta se enciende o se apaga.
 - **Salida**: Direct, proxy HTTP / HTTPS / SOCKS, Shadowsocks, Hysteria2, WireGuard, VLESS (REALITY), VMess,
   Trojan, TUIC, suscripciones (enlaces compartidos o YAML de Clash)
 - **Bloques**: cadenas (una salida a través de otra), routers (reglas por dominio, IP, puerto, programa - elegible entre los que están en ejecución -, GeoIP/Geosite; vistas sencilla y avanzada),
-  IF (una condición: entonces / si no), grupos (el más rápido, conmutación por error o manual), Bloquear
+  IF (una condición, o un interruptor manual como un kill switch), grupos (el más rápido, conmutación por error o manual), Bloquear
 - **Interfaz de red**: enviar una salida por Tailscale, una aplicación VPN o Wi-Fi sin cambiar las rutas del PC
 - **DNS**: el DNS del PC, DoH / DoT / DoQ, por tarjeta, opcionalmente por el túnel; Fake-IP para TUN
+- **Tarjetas**: ejecutar, iniciar con la aplicación y reiniciar automáticamente (si se detiene o no arranca) desde el propio bloque
 - **Bloque PC**: usar una entrada HTTP como proxy del sistema de Windows mientras funciona
 - Enlaces compartidos (`ss://`, `vless://`, `vmess://`, `trojan://`, `tuic://`, `hysteria2://`), comprobación y prueba de conexión,
   registros y estadísticas en vivo, 8 idiomas, bandeja, inicio al iniciar sesión

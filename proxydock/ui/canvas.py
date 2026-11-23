@@ -37,6 +37,12 @@ ELSE_COLOR = (230, 120, 120)
 GROUP_COLOR = (24, 96, 112)
 MEMBER_COLOR = (110, 210, 200)
 RULE_COLOR = (240, 170, 90)
+CHECK_STYLE = ("QCheckBox {{ color: {fg}; background: transparent; font-size: 9pt; {extra} }}"
+               "QCheckBox::indicator {{ width: 11px; height: 11px; border: 1px solid #B8B8B8; border-radius: 3px;"
+               " background: rgba(0,0,0,0.25); }}"
+               "QCheckBox::indicator:checked {{ background: #6CCB5F; border-color: #6CCB5F; }}")
+
+
 NEW_INBOUND = []
 
 
@@ -71,6 +77,64 @@ class InfoWidget(NodeBaseWidget):
         self.get_custom_widget().setText(value)
 
 
+class SwitchesWidget(NodeBaseWidget):
+    """Checkboxes inside an inbound block: run, start with the app, restart automatically."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent, name="switches", label="")
+        from PySide6.QtWidgets import QCheckBox
+        box = QWidget()
+        box.setAttribute(Qt.WA_TranslucentBackground)
+        lay = QHBoxLayout(box)
+        lay.setContentsMargins(0, 2, 0, 0)
+        lay.setSpacing(10)
+        self.run = QCheckBox(_t("Run"))
+        self.auto = QCheckBox(_t("At start"))
+        self.restart = QCheckBox(_t("Auto-restart"))
+        self.auto.setToolTip(_t("Start with the app"))
+        self.restart.setToolTip(_t("Restart automatically"))
+        for cb in (self.run, self.auto, self.restart):
+            cb.setStyleSheet(CHECK_STYLE.format(fg="#DADADA", extra=""))
+            lay.addWidget(cb)
+        lay.addStretch(1)
+        box.setFixedWidth(230)
+        self.set_custom_widget(box)
+
+    def get_value(self):
+        return ""
+
+    def set_value(self, value):
+        pass
+
+    def show(self, running, autostart, auto_restart):
+        for cb, v in ((self.run, running), (self.auto, autostart), (self.restart, auto_restart)):
+            cb.blockSignals(True)
+            cb.setChecked(bool(v))
+            cb.blockSignals(False)
+
+
+class ToggleWidget(NodeBaseWidget):
+    """One checkbox inside an IF block in switch mode."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent, name="toggle", label="")
+        from PySide6.QtWidgets import QCheckBox
+        self.cb = QCheckBox(_t("Switch on (send to 'then')"))
+        self.cb.setStyleSheet(CHECK_STYLE.format(fg="#F0F0F0", extra="font-weight: bold;"))
+        self.set_custom_widget(self.cb)
+
+    def get_value(self):
+        return ""
+
+    def set_value(self, value):
+        pass
+
+    def show(self, on):
+        self.cb.blockSignals(True)
+        self.cb.setChecked(bool(on))
+        self.cb.blockSignals(False)
+
+
 class InNode(BaseNode):
     __identifier__ = "proxydock"
     NODE_NAME = "Inbound"
@@ -79,7 +143,8 @@ class InNode(BaseNode):
         super().__init__()
         self.add_input(_t("relay in"), multi_input=True, color=PORT_COLOR)
         self.add_output(_t("out"), multi_output=True, color=PORT_COLOR)
-        self.add_custom_widget(InfoWidget(self.view, lines=4))
+        self.add_custom_widget(InfoWidget(self.view, lines=3))
+        self.add_custom_widget(SwitchesWidget(self.view))
 
 
 class OutNode(BaseNode):
@@ -364,7 +429,7 @@ class CanvasInterface(QWidget):
     def _signature(self, graph):
         return json.dumps([[n["id"], n["name"], n["target"]] for n in graph["inbounds"]] +
                           [[n["id"], n["name"], n["via"], n["outbound"]["type"], n.get("members", [])] for n in graph["outbounds"]] +
-                          [[n["id"], n["name"], n["default"], [[x["id"], x["name"], x["target"]] for x in n["rules"]]]
+                          [[n["id"], n["name"], n["default"], n.get("switch"), [[x["id"], x["name"], x["target"]] for x in n["rules"]]]
                            for n in graph.get("routers", [])] +
                           [graph["pc"]["inbound"]])
 
@@ -398,7 +463,11 @@ class CanvasInterface(QWidget):
                 make("EndNode" if n["outbound"]["type"] in graph_mod.NO_VIA else "OutNode",
                      n["id"], n["name"], n["pos"], OUT_COLOR)
             for n in graph["inbounds"]:
-                make("InNode", n["id"], n["name"], n["pos"], IN_COLOR)
+                node = make("InNode", n["id"], n["name"], n["pos"], IN_COLOR)
+                sw = node.get_widget("switches")
+                sw.run.toggled.connect(lambda on, mid=n["id"]: self.ctl.toggle_proxy(mid, on))
+                sw.auto.toggled.connect(lambda on, mid=n["id"]: self.ctl.set_flag(mid, "autostart", on))
+                sw.restart.toggled.connect(lambda on, mid=n["id"]: self.ctl.set_flag(mid, "auto_restart", on))
             for r in graph.get("routers", []):
                 is_if = r.get("style") == "if"
                 node = make("RouterNode", r["id"], r["name"], r["pos"], IF_COLOR if is_if else ROUTER_COLOR)
@@ -409,6 +478,10 @@ class CanvasInterface(QWidget):
                 default = _t("else") if is_if else _t("default")
                 node.add_output(default, multi_output=False, color=ELSE_COLOR if is_if else PORT_COLOR)
                 self.rule_of[(node.id, default)] = "default"
+                if r.get("switch"):
+                    tw = ToggleWidget(node.view)
+                    node.add_custom_widget(tw)
+                    tw.cb.toggled.connect(lambda on, rid=r["id"]: self.ctl.set_switch(rid, on))
             make("PcNode", PC_ID, _t("PC (system proxy)"), graph["pc"]["pos"], PC_COLOR)
             for n in graph["inbounds"]:
                 src = self.node_of[n["id"]]
@@ -457,9 +530,8 @@ class CanvasInterface(QWidget):
             color = {"running": "#6CCB5F", "starting": "#E8B339", "error": "#FF8A80"}.get(state, "#9A9A9A")
             text = STATE_TEXT.get(state, state) + (f" - {msg}" if msg else "")
             lines.append(_line(color, ("● " if state == "running" else "○ ") + (text[:60] + "…" if len(text) > 60 else text)))
-            if p["autostart"]:
-                lines.append(_line("#9A9A9A", _t("Start with the app")))
             node.get_widget("info").set_value("<br>".join(lines))
+            node.get_widget("switches").show(state in ("running", "starting"), p["autostart"], p.get("auto_restart"))
         for n in cg["outbounds"]:
             node = self.node_of.get(n["id"])
             if node is None:
@@ -487,7 +559,13 @@ class CanvasInterface(QWidget):
                 continue
             users = graph_mod.users(cg, r["id"])
             _, d = graph_mod.find(cg, r["default"]) if r["default"] else (None, None)
-            if r.get("style") == "if":
+            if r.get("switch"):
+                lines = [_line("#6CCB5F" if r.get("switch_on") else "#9A9A9A",
+                               _t("Switch: on → then") if r.get("switch_on") else _t("Switch: off → else"))]
+                tw = node.get_widget("toggle")
+                if tw is not None:
+                    tw.show(r.get("switch_on"))
+            elif r.get("style") == "if":
                 from .router import match_summary
                 lines = [_line("#DADADA", "IF " + (match_summary(r["rules"][0]["match"]) or _t("(no condition)")))]
             else:

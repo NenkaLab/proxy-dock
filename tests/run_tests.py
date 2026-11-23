@@ -389,8 +389,21 @@ def test_ui():
     check("ui: IF editor shows one condition, no 'Add rule'", sr.is_if and len(sr.cards) == 1 and not sr.b_add.isVisible()
           and w.editor.title.text() == "Edit IF")
     check("ui: IF needs a condition and a 'then' target", any("IF" in e for e in w.editor._errors(w.editor.collect())))
+    sr.cb_if_mode.setCurrentIndex(1)
+    check("ui: IF switch mode hides the conditions", not sr.cards[0].simple.isVisible() and sr.sw_if.isVisible())
     w.editor.cancel()
     wait(200)
+    blk2 = ctl.new_outbound({"type": "block"}, edit=False)
+    n_if = gm.find(ctl.graph, ifb["id"])[1]
+    n_if.update(switch=True, default=d["id"])
+    n_if["rules"][0]["target"] = blk2["id"]
+    ctl._recompile()
+    wait(300)
+    tw = w.canvas_page.node_of[ifb["id"]].get_widget("toggle")
+    check("ui: switch IF shows a checkbox on the block", tw is not None)
+    tw.cb.setChecked(True)
+    check("ui: clicking the block's switch turns it on", gm.find(ctl.graph, ifb["id"])[1]["switch_on"] is True)
+    ctl.delete_node(blk2["id"])
     ctl.delete_node(ifb["id"])
     rt = ctl.new_router(edit=False)
     wait(300)
@@ -447,6 +460,35 @@ def test_ui():
     ed.cancel()
     wait(300)
     ctl.delete_node(wgs["id"])
+    ar = ctl.new_inbound("auto restart ui", {"type": "socks5", "port": free_port()}, None, None, edit=False)
+    wait(300)
+    sw = w.canvas_page.node_of[ar["id"]].get_widget("switches")
+    sw.restart.setChecked(True)
+    sw.auto.setChecked(True)
+    n_ar = gm.find(ctl.graph, ar["id"])[1]
+    check("ui: block checkboxes set auto-restart and autostart", n_ar["auto_restart"] and n_ar["autostart"])
+    sw = w.canvas_page.node_of[ar["id"]].get_widget("switches")
+    sw.run.setChecked(True)
+    for _ in range(60):
+        wait(100)
+        if ctl.manager.state(ar["id"])[0] == "running":
+            break
+    check("ui: 'Run' checkbox on the block starts the card", ctl.manager.state(ar["id"])[0] == "running", ctl.manager.state(ar["id"]))
+    if getattr(ctl.manager.instances.get(ar["id"]), "proc", None) is not None:
+        ctl.manager.instances[ar["id"]].proc.kill()
+        seen_error = False
+        for _ in range(120):
+            wait(100)
+            st = ctl.manager.state(ar["id"])[0]
+            seen_error = seen_error or st == "error"
+            if seen_error and st == "running":
+                break
+        check("ui: auto-restart brings a dead card back", seen_error and ctl.manager.state(ar["id"])[0] == "running",
+              ctl.manager.state(ar["id"]))
+    w.canvas_page.node_of[ar["id"]].get_widget("switches").run.setChecked(False)
+    wait(500)
+    check("ui: 'Run' unchecked stops it (no restart)", ctl.manager.state(ar["id"])[0] == "stopped" and ar["id"] not in ctl._restart_timers)
+    ctl.delete_node(ar["id"])
     tn = ctl.new_inbound("tun ui", {"type": "tun", "port": 30301}, None, None, edit=False)
     ctl.edit_node(tn["id"])
     wait(300)
@@ -1886,6 +1928,17 @@ def test_if_forward_select():
     p = gm.compile(g)[0]
     check("if: then -> rule, else -> default", p["routes"][0]["match"] == [{"process_name": ["game.exe"]}]
           and p["outbound"]["type"] == "direct" and p["target_name"] == "IF Games?", (p["routes"], p["target_name"]))
+    blk = gm.add_outbound(g, {"type": "block"}, "Blk")
+    ks = gm.add_router(g, "Kill switch", style="if")
+    ks.update(switch=True, switch_on=False, default=vpn["id"])
+    ks["rules"][0]["target"] = blk["id"]
+    g["inbounds"][0]["target"] = ks["id"]
+    g = gm.validate(json.loads(json.dumps(g)))
+    p = gm.compile(g)[0]
+    check("if switch: off -> everything to 'else'", p["routes"] == [] and p["outbound"]["host"] == "vpn.example", p["outbound"])
+    gm.find(g, ks["id"])[1]["switch_on"] = True
+    p = gm.compile(g)[0]
+    check("if switch: on -> everything to 'then' (Block)", p["routes"] == [] and p["outbound"]["type"] == "block")
     fw = config.new_proxy("fw", {"type": "forward", "port": 2222, "fwd_host": "10.0.0.5", "fwd_port": 22, "fwd_network": "tcp"})
     c = sbc.build(fw, config.resolve(fw, config.validate_global({})), bans_path="b.json", api_port=1, api_secret="s")[0]
     ib = c["inbounds"][0]
@@ -1932,6 +1985,25 @@ def test_forward_e2e():
         origin.shutdown()
 
 
+def test_engine_died_e2e():
+    """A card whose sing-box process exits on its own goes to the error state (it used to stay 'running')."""
+    from proxydock.runtime import ProxyManager
+    glob = config.validate_global({"engine": "sing-box"})
+    mgr = ProxyManager()
+    try:
+        c = config.new_proxy("dies", {"type": "socks5", "port": free_port()})
+        mgr.start(c, glob).result(20)
+        mgr.instances[c["id"]].proc.kill()
+        for _ in range(50):
+            if mgr.state(c["id"])[0] == "error":
+                break
+            time.sleep(0.1)
+        st = mgr.state(c["id"])
+        check("[sing-box] engine exit -> card in error", st[0] == "error" and "exited" in st[1] and c["id"] not in mgr.instances, st)
+    finally:
+        mgr.stop_all()
+
+
 def main():
     t0 = time.time()
     tests = [test_translations, test_graph, test_engine, test_singbox_compile, test_router_graph, test_router_singbox, test_interface,
@@ -1940,7 +2012,7 @@ def main():
     from proxydock.singbox import find_binary
     if find_binary():
         tests += [lambda: test_engine("sing-box"), test_singbox_guard, test_router_e2e, test_interface_e2e, test_wireguard_e2e, test_helper,
-                  test_protocols_e2e, test_subscription_e2e, test_hy2_advanced_e2e, test_group_e2e, test_dns_e2e, test_close_log_e2e, test_wg_server_e2e, test_forward_e2e]
+                  test_protocols_e2e, test_subscription_e2e, test_hy2_advanced_e2e, test_group_e2e, test_dns_e2e, test_close_log_e2e, test_wg_server_e2e, test_forward_e2e, test_engine_died_e2e]
         from proxydock.singbox import find_hysteria
         if find_hysteria():
             tests.append(test_hysteria)

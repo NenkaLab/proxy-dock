@@ -383,6 +383,23 @@ class RouterSection(QWidget):
         self.list = QVBoxLayout()
         self.list.setSpacing(8)
         lay.addLayout(self.list)
+        # IF only: condition or manual switch
+        self.if_row = SimpleCardWidget(self)
+        il = QHBoxLayout(self.if_row)
+        il.setContentsMargins(16, 10, 16, 10)
+        icol = QVBoxLayout()
+        icol.addWidget(BodyLabel(_t("Decide by"), self.if_row))
+        icol.addWidget(CaptionLabel(_t("A manual switch has no condition: you turn it on or off (on the block, in the list or here), e.g. as a kill switch with 'then' on Block"), self.if_row))
+        il.addLayout(icol, 1)
+        self.cb_if_mode = ComboBox(self.if_row)
+        self.cb_if_mode.addItems([_t("Condition"), _t("Manual switch")])
+        self.cb_if_mode.setFixedWidth(180)
+        self.cb_if_mode.currentIndexChanged.connect(lambda *_: self._sync_if())
+        from .proxies import _switch
+        self.sw_if = _switch(self.if_row)
+        il.addWidget(self.cb_if_mode)
+        il.addWidget(self.sw_if)
+        lay.insertWidget(1, self.if_row)
         btns = QHBoxLayout()
         self.b_add = DropDownPushButton(FIF.ADD, _t("Add rule"), self)
         menu = RoundMenu(parent=self.b_add)
@@ -424,6 +441,11 @@ class RouterSection(QWidget):
         self.default_title.setText(_t("else") if self.is_if else _t("Default"))
         self.default_desc.setText(_t("Where traffic goes when the condition does not match. Required.") if self.is_if
                                   else _t("Where traffic goes when no rule matches. Required."))
+        self.if_row.setVisible(self.is_if)
+        self.cb_if_mode.blockSignals(True)
+        self.cb_if_mode.setCurrentIndex(1 if router.get("switch") else 0)
+        self.cb_if_mode.blockSignals(False)
+        self.sw_if.setChecked(bool(router.get("switch_on")))
         self.mode.setCurrentItem("advanced" if MODE["advanced"] else "simple")
         self.note.setVisible(MODE["advanced"])
         for c in self.cards:
@@ -439,6 +461,19 @@ class RouterSection(QWidget):
         d = self.router["default"]
         self.cb_default.setCurrentIndex(ids.index(d) if d in ids else 0)
         self._renumber()
+        self._sync_if()
+
+    def switch_mode(self):
+        return self.is_if and self.cb_if_mode.currentIndex() == 1
+
+    def _sync_if(self):
+        sw = self.switch_mode()
+        self.sw_if.setVisible(sw)
+        self.mode.setVisible(not sw)
+        self.note.setVisible(not sw and MODE["advanced"])
+        for c in self.cards:
+            c.simple.setVisible(not sw and not c.advanced)
+            c.adv.setVisible(not sw and c.advanced)
 
     def set_mode(self, advanced):
         MODE["advanced"] = advanced
@@ -494,6 +529,9 @@ class RouterSection(QWidget):
     def collect(self, node):
         n = copy.deepcopy(node)
         n["rules"] = [c.collect() for c in self.cards]
+        if self.is_if:
+            n["switch"] = self.switch_mode()
+            n["switch_on"] = self.sw_if.isChecked()
         i = self.cb_default.currentIndex()
         n["default"] = self.default_ids[i] if 0 <= i < len(self.default_ids) else None
         return n
@@ -506,6 +544,10 @@ class RouterSection(QWidget):
             name = r["name"] or str(i + 1)
             if not r["name"] and not self.is_if:
                 errs.append(_t("Rule {n}: enter a name").format(n=i + 1))
+            if self.is_if and n.get("switch"):
+                if not r["target"]:
+                    errs.append(_t("IF: choose where 'then' goes"))
+                continue
             if self.is_if and not r["match"]:
                 errs.append(_t("IF: add at least one condition"))
             elif self.is_if and not r["target"]:

@@ -1,7 +1,7 @@
 """Block graph: inbound blocks, outbound blocks and the PC (system proxy) block.
 
 graph = {
-  "inbounds":  [{"id", "name", "autostart", "inbound": {...}, "overrides": {...}, "target": id|None, "pos": [x, y]}],
+  "inbounds":  [{"id", "name", "autostart", "auto_restart", "inbound": {...}, "overrides": {...}, "target": id|None, "pos": [x, y]}],
   "outbounds": [{"id", "name", "outbound": {...}, "via": id|None, "members": [id, ...], "pos": [x, y]}],
   "routers":   [{"id", "name", "style": "router"|"if", "rules": [{"id", "name", "match": {...}, "target": id|None}],
                  "default": id|None, "pos": [x, y]}],
@@ -17,7 +17,8 @@ first one that works (failover). Members are outbound blocks other than groups a
 An inbound can also target a router block: its rules (checked top to bottom) send matching traffic to an outbound
 block, the Block outbound or another router; everything else goes to the router's default. Routers need the
 sing-box engine (they become sing-box route rules). An IF block is a router with exactly one rule: its "then"
-output is the rule's target, its "else" output the default.
+output is the rule's target, its "else" output the default. An IF in switch mode ("switch": True) has no condition:
+"switch_on" sends everything to "then", off to "else" (a manual switch / kill switch).
 The runtime still works with one "proxy" per inbound (inbound + resolved outbound + overrides, plus "routes" for a
 router: [{"match": [match, ...], "outbound": resolved chain, "name": rule name}]); compile() builds them.
 """
@@ -85,7 +86,8 @@ def validate_inbound_node(raw):
     raw = raw if isinstance(raw, dict) else {}
     p = config.validate_proxy(raw)
     target = raw.get("target")
-    return {"id": p["id"], "name": p["name"], "autostart": p["autostart"], "inbound": p["inbound"],
+    return {"id": p["id"], "name": p["name"], "autostart": p["autostart"], "auto_restart": p["auto_restart"],
+            "inbound": p["inbound"],
             "overrides": p["overrides"], "target": target if isinstance(target, str) and target else None,
             "pos": _pos(raw.get("pos"))}
 
@@ -125,6 +127,7 @@ def validate_router_node(raw):
         rules = rules[:1] or [{"id": new_id(), "name": "IF", "match": {}, "target": None}]
     return {"id": raw.get("id") if isinstance(raw.get("id"), str) and raw.get("id") else new_id(),
             "name": _name(raw.get("name"), "IF" if style == "if" else "Router"), "style": style, "rules": rules,
+            "switch": style == "if" and raw.get("switch") is True, "switch_on": raw.get("switch_on") is True,
             "default": d if isinstance(d, str) and d else None, "pos": _pos(raw.get("pos"))}
 
 
@@ -332,6 +335,8 @@ def flatten_router(graph, rid, prefix=(), seen=()):
     _, r = find(graph, rid)
     seen = set(seen) | {rid}
     routes = []
+    if r.get("switch"):         # manual switch: no condition, everything takes one side
+        r = dict(r, rules=[], default=r["rules"][0]["target"] if r.get("switch_on") else r["default"])
     for rule in r["rules"]:
         if not rule["target"] or not rule["match"]:
             continue
@@ -375,6 +380,7 @@ def compile(graph):
             ob = {"type": "direct"}
             t = None                # nothing to send to (a TUN card cannot be relayed into)
         p = config.validate_proxy({"id": n["id"], "name": n["name"], "autostart": n["autostart"],
+                                   "auto_restart": n.get("auto_restart", False),
                                    "inbound": copy.deepcopy(n["inbound"]), "outbound": ob,
                                    "overrides": copy.deepcopy(n["overrides"])})
         p["outbound"]["via"] = ob.get("via")

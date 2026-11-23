@@ -29,9 +29,10 @@ turn each card on or off.
 - **Outbound**: Direct, HTTP / HTTPS / SOCKS proxy, Shadowsocks, Hysteria2, WireGuard, VLESS (REALITY), VMess,
   Trojan, TUIC, subscriptions (share links or Clash YAML)
 - **Blocks**: chains (one outbound through another), routers (rules by domain, IP, port, program - pick from running programs -, GeoIP/Geosite; simple and advanced views),
-  IF (one condition: then / else), groups (fastest, failover or manual), Block
+  IF (one condition, or a manual on/off switch such as a kill switch), groups (fastest, failover or manual), Block
 - **Network interface**: send an outbound through Tailscale, a VPN app or Wi-Fi without changing the PC's routes
 - **DNS**: the PC's DNS, DoH / DoT / DoQ, per card, optionally through the tunnel; Fake-IP for TUN
+- **Cards**: Run, start with the app and restart automatically (if it stops or fails to start) right on each block
 - **PC block**: use an HTTP inbound as the Windows system proxy while it runs
 - Share links (`ss://`, `vless://`, `vmess://`, `trojan://`, `tuic://`, `hysteria2://`), connection check and test,
   logs and live statistics, 8 languages, tray, start at login

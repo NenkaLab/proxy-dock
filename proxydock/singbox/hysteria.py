@@ -46,6 +46,7 @@ class HysteriaInstance:
         self.last_reason = ""
         self.servers = []
         self.proc = None
+        self.on_died = None
         self.inner = None
         self.auth_server = None
         self.tasks = set()
@@ -174,6 +175,7 @@ class HysteriaInstance:
         self.inner_port = _free_port()
         self.inner_user, self.inner_pass = secrets.token_hex(8), secrets.token_hex(16)
         self.inner = SingBoxInstance(self._inner_proxy(), self.glob, self.stats)
+        self.inner.on_died = lambda text: self.on_died and self.on_died(text)
         await self.inner.start()
         self.auth_server = await asyncio.start_server(self._auth_client, "127.0.0.1", 0)
         self._write_config(self.auth_server.sockets[0].getsockname()[1])
@@ -259,7 +261,10 @@ class HysteriaInstance:
             text = errors[-1] if errors else _t("The Hysteria2 core exited (code {code})").format(code=code)
             started.set_exception(_start_error(text, self.proxy))
         elif self.proc is not None:
-            self.log(LOG_ERROR, _t("The Hysteria2 core exited (code {code})").format(code=self.proc.returncode))
+            text = _t("The Hysteria2 core exited (code {code})").format(code=self.proc.returncode)
+            self.log(LOG_ERROR, text)
+            if self.on_died:
+                self.on_died(text)
 
     def _handle(self, e):
         msg, addr = e.get("msg", ""), e.get("addr", "")

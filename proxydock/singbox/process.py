@@ -127,6 +127,7 @@ class SingBoxInstance:
         self.last_reason = ""
         self.servers = []           # (no Python sockets; kept for ProxyInstance compatibility)
         self.proc = None
+        self.on_died = None         # set by the manager: called with a message when sing-box exits on its own
         self.tasks = set()
         self.reasons = []
         self.rulesets = {}
@@ -293,7 +294,10 @@ class SingBoxInstance:
             text = re.sub(r"^start service: ", "", text)
             started.set_exception(_start_error(text, self.proxy))
         elif self.proc is not None:     # exited while running (not via stop())
-            self.log(LOG_ERROR, _t("sing-box exited (code {code})").format(code=self.proc.returncode))
+            text = _t("sing-box exited (code {code})").format(code=self.proc.returncode)
+            self.log(LOG_ERROR, text)
+            if self.on_died:
+                self.on_died(text)
 
     def _handle(self, level, cid, msg):
         if cid is None and msg.startswith("endpoint/") and (_FROM.match(msg) or _TO.match(msg)):

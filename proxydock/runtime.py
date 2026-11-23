@@ -259,6 +259,8 @@ class ProxyManager:
                     pass
             return False
         self.instances[pid] = inst
+        inst.on_died = lambda text, inst=inst: self.loop.call_soon_threadsafe(
+            lambda: self.loop.create_task(self._died(pid, inst, text)))
         self._set(pid, "running")
         inst.log(LOG_INFO, _t("Started: {summary}").format(summary=inst.summary))
         ib = inst.inbound
@@ -277,6 +279,17 @@ class ProxyManager:
                 inst.log(LOG_INFO, _t("Stopped"))
         if not quiet:
             self._set(pid, "stopped")
+
+    async def _died(self, pid, inst, text):
+        """The engine process of a running card exited on its own: the card is in error (it may be restarted)."""
+        if self.instances.get(pid) is not inst:
+            return
+        self.instances.pop(pid, None)
+        try:
+            await inst.stop()
+        except Exception:
+            pass
+        self._set(pid, "error", text)
 
     async def _stop_all(self):
         for pid in list(self.instances):

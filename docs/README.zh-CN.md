@@ -27,9 +27,10 @@
 - **入站**: SOCKS5、SOCKS4、HTTP、HTTPS、Shadowsocks 服务器、Hysteria2 服务器、WireGuard 服务器 (手机和电脑用 WireGuard 应用连接)、端口转发、TUN (本机所有应用)
 - **出站**: Direct、HTTP / HTTPS / SOCKS 代理、Shadowsocks、Hysteria2、WireGuard、VLESS (REALITY)、VMess、
   Trojan、TUIC、订阅 (分享链接或 Clash YAML)
-- **块**: 链式 (出站经由另一个出站)、路由器 (按域名、IP、端口、程序 (可从运行中的程序选择)、GeoIP/Geosite 分流，简单和高级视图)、IF (一个条件: 满足 / 否则)、分组 (最快、故障转移或手动)、阻止
+- **块**: 链式 (出站经由另一个出站)、路由器 (按域名、IP、端口、程序 (可从运行中的程序选择)、GeoIP/Geosite 分流，简单和高级视图)、IF (一个条件，或手动开关，例如断网开关)、分组 (最快、故障转移或手动)、阻止
 - **网络接口**: 不改动本机路由，让出站经 Tailscale、VPN 应用或 Wi-Fi 出去
 - **DNS**: 本机 DNS、DoH / DoT / DoQ，可按卡片设置，可经由隧道发送; TUN 可用 Fake-IP
+- **卡片**: 在块上直接运行、随应用启动、自动重启 (停止或启动失败时)
 - **PC 块**: HTTP 入站运行期间用作 Windows 系统代理
 - 分享链接 (`ss://`、`vless://`、`vmess://`、`trojan://`、`tuic://`、`hysteria2://`)、连接检查与测试、日志和实时统计、
   8 种语言、托盘、登录时启动

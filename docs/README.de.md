@@ -29,9 +29,10 @@ z. B. ein Shadowsocks-Server) verbunden; jede Karte lässt sich ein- und ausscha
 - **Ausgang**: Direct, HTTP- / HTTPS- / SOCKS-Proxy, Shadowsocks, Hysteria2, WireGuard, VLESS (REALITY), VMess,
   Trojan, TUIC, Abonnements (Freigabelinks oder Clash-YAML)
 - **Blöcke**: Ketten (ein Ausgang über einen anderen), Router (Regeln nach Domain, IP, Port, Programm - aus laufenden Programmen wählbar -, GeoIP/Geosite; einfache und erweiterte Ansicht),
-  IF (eine Bedingung: dann / sonst), Gruppen (schnellster, Failover oder manuell), Block
+  IF (eine Bedingung oder ein manueller Ein/Aus-Schalter, z. B. ein Kill-Switch), Gruppen (schnellster, Failover oder manuell), Block
 - **Netzwerkschnittstelle**: einen Ausgang über Tailscale, eine VPN-App oder WLAN senden, ohne die Routen des PCs zu ändern
 - **DNS**: DNS des PCs, DoH / DoT / DoQ, pro Karte, auf Wunsch durch den Tunnel; Fake-IP für TUN
+- **Karten**: Starten, Start mit der App und automatischer Neustart (wenn sie stoppt oder nicht startet) direkt am Block
 - **PC-Block**: einen HTTP-Eingang, solange er läuft, als Windows-Systemproxy nutzen
 - Freigabelinks (`ss://`, `vless://`, `vmess://`, `trojan://`, `tuic://`, `hysteria2://`), Verbindungsprüfung und -test,
   Protokolle und Live-Statistik, 8 Sprachen, Infobereich, Start bei der Anmeldung

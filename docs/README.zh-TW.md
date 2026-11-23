@@ -27,9 +27,10 @@
 - **傳入端**: SOCKS5、SOCKS4、HTTP、HTTPS、Shadowsocks 伺服器、Hysteria2 伺服器、WireGuard 伺服器 (手機和電腦用 WireGuard 程式連線)、連接埠轉送、TUN (本機所有程式)
 - **傳出端**: Direct、HTTP / HTTPS / SOCKS 代理、Shadowsocks、Hysteria2、WireGuard、VLESS (REALITY)、VMess、
   Trojan、TUIC、訂閱 (分享連結或 Clash YAML)
-- **區塊**: 串接 (傳出端經由另一個傳出端)、路由器 (依網域、IP、連接埠、程式 (可從執行中的程式選擇)、GeoIP/Geosite 分流，簡易與進階檢視)、IF (一個條件: 符合 / 否則)、群組 (最快、容錯移轉或手動)、封鎖
+- **區塊**: 串接 (傳出端經由另一個傳出端)、路由器 (依網域、IP、連接埠、程式 (可從執行中的程式選擇)、GeoIP/Geosite 分流，簡易與進階檢視)、IF (一個條件，或手動開關，例如斷網開關)、群組 (最快、容錯移轉或手動)、封鎖
 - **網路介面**: 不改動本機路由，讓傳出端經 Tailscale、VPN 程式或 Wi-Fi 出去
 - **DNS**: 本機 DNS、DoH / DoT / DoQ，可依卡片設定，可經由通道送出; TUN 可用 Fake-IP
+- **卡片**: 在區塊上直接執行、隨程式啟動、自動重新啟動 (停止或啟動失敗時)
 - **PC 區塊**: HTTP 傳入端執行期間當作 Windows 系統代理
 - 分享連結 (`ss://`、`vless://`、`vmess://`、`trojan://`、`tuic://`、`hysteria2://`)、連線檢查與測試、記錄與即時統計、
   8 種語言、系統匣、登入時啟動

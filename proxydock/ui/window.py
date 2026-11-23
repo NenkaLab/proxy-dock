@@ -365,6 +365,7 @@ class Controller:
         self.sub_timer.start(15 * 60 * 1000)
         QTimer.singleShot(20 * 1000, self.update_due_subscriptions)
         self.manager = ProxyManager(status_hook=lambda pid, st, msg: self.sig.status.emit(pid, st, msg))
+        self._restart_timers, self._restart_count, self._running_since = {}, {}, {}
         server.newConnection.connect(self._on_second_instance)
 
         self.file_logger = logging.getLogger("proxydock")
@@ -770,10 +771,64 @@ class Controller:
     def delete_proxy(self, pid):
         self.delete_node(pid)
 
+    RESTART_DELAYS = (3, 6, 12, 30, 60)    # seconds before restart attempt 1, 2, 3, ... (then every 60 s)
+
+    def _cancel_restart(self, pid):
+        t = self._restart_timers.pop(pid, None)
+        if t is not None:
+            t.stop()
+
+    def _schedule_restart(self, p):
+        pid = p["id"]
+        if pid in self._restart_timers:
+            return
+        now = time.monotonic()
+        if now - self._running_since.get(pid, 0) > 120:      # it ran a while: start counting again
+            self._restart_count[pid] = 0
+        n = self._restart_count.get(pid, 0)
+        delay = self.RESTART_DELAYS[min(n, len(self.RESTART_DELAYS) - 1)]
+        self._restart_count[pid] = n + 1
+        log(LOG_WARN, _t("'{name}' stopped; restarting in {sec} s (attempt {n})").format(name=p["name"], sec=delay, n=n + 1))
+        t = QTimer()            # (kept in _restart_timers; the controller is not a QObject)
+        t.setSingleShot(True)
+        t.timeout.connect(lambda: self._do_restart(pid))
+        self._restart_timers[pid] = t
+        t.start(delay * 1000)
+
+    def _do_restart(self, pid):
+        self._restart_timers.pop(pid, None)
+        p = self.proxy_by_id(pid)
+        if p is None or not p.get("auto_restart") or self.manager.state(pid)[0] in ("running", "starting"):
+            return
+        if config.check_proxy(p, [x for x in self.proxies if x["id"] != pid]):
+            return
+        self.manager.start(p, self.glob)
+
+    def set_switch(self, rid, on):
+        """IF block in switch mode: on = everything to 'then', off = to 'else' (cards using it restart)."""
+        kind, r = graph_mod.find(self.graph, rid)
+        if kind != "router" or not r.get("switch") or r.get("switch_on") == on:
+            return
+        r["switch_on"] = on
+        log(LOG_SETTING, _t("Switch '{name}' turned {state}").format(name=r["name"], state=_t("on") if on else _t("off")))
+        self._recompile()
+
+    def set_flag(self, nid, key, value):
+        """Inbound card options that need no restart: autostart, auto_restart."""
+        kind, n = graph_mod.find(self.graph, nid)
+        if kind != "inbound" or key not in ("autostart", "auto_restart") or n.get(key) == value:
+            return
+        n[key] = value
+        if key == "auto_restart" and not value:
+            self._cancel_restart(nid)
+        self._recompile()
+
     def toggle_proxy(self, pid, on):
         p = self.proxy_by_id(pid)
         if p is None:
             return
+        self._cancel_restart(pid)
+        self._restart_count[pid] = 0
         if on:
             errs = config.check_proxy(p, [x for x in self.proxies if x["id"] != pid])
             if errs:
@@ -785,6 +840,8 @@ class Controller:
             self.manager.stop(pid)
 
     def stop_all(self):
+        for pid in list(self._restart_timers):
+            self._cancel_restart(pid)
         for p in self.proxies:
             if self.manager.state(p["id"])[0] in ("running", "starting"):
                 self.manager.stop(p["id"])
@@ -799,8 +856,13 @@ class Controller:
         self.window.canvas_page.update_states(self.proxies, st, self.pc_status())
         self.window.test_page.set_proxies(self.proxies, self.running_ids())
         self._rebuild_tray_proxies()
+        if state == "running":
+            self._running_since[pid] = time.monotonic()
         if state == "error" and p is not None:
-            self.on_notify(_t("'{name}' failed to start: {msg}").format(name=p['name'], msg=msg))
+            if p.get("auto_restart"):
+                self._schedule_restart(p)
+            else:
+                self.on_notify(_t("'{name}' failed to start: {msg}").format(name=p['name'], msg=msg))
 
     # --- PC block: system proxy while the connected inbound runs ---
     def set_pc(self, iid):

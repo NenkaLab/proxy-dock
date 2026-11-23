@@ -273,7 +273,8 @@ class ProxyCard(CardWidget):
 
     def update_from(self, proxy, status):
         state, msg = status
-        self.name.setText(proxy["name"] + (_t("   · autostart") if proxy["autostart"] else ""))
+        self.name.setText(proxy["name"] + (_t("   · autostart") if proxy["autostart"] else "")
+                          + (_t("   · auto-restart") if proxy.get("auto_restart") else ""))
         self.desc.setText(summary(proxy))
         full = STATE_TEXT.get(state, state) + (f" - {msg}" if msg else "")
         fm = self.state.fontMetrics()
@@ -357,13 +358,22 @@ class RouterCard(OutboundCard):
     def __init__(self, page, node, parent=None):
         super().__init__(page, node, parent)
         self.icon.setIcon(FIF.SHARE)
+        self.sw = _switch(self)
+        self.sw.checkedChanged.connect(lambda on: page.ctl.set_switch(self.nid, on))
+        self.layout().insertWidget(self.layout().count() - 2, self.sw, 0, Qt.AlignVCenter)
 
     def update_from(self, node, user_names):
         from .. import graph as graph_mod
         self.name.setText(node["name"])
         g = self.page.ctl.graph
         _, d = graph_mod.find(g, node["default"]) if node["default"] else (None, None)
-        if node.get("style") == "if":
+        if node.get("switch"):
+            rule = node["rules"][0]
+            _, t = graph_mod.find(g, rule["target"]) if rule["target"] else (None, None)
+            on = node.get("switch_on")
+            text = (_t("Switch: on → then") if on else _t("Switch: off → else")) + "  ·  " + _t("then") + " → " \
+                + (t["name"] if t else "-") + "  ·  " + _t("else") + " → " + (d["name"] if d else "-")
+        elif node.get("style") == "if":
             from .router import match_summary
             rule = node["rules"][0]
             _, t = graph_mod.find(g, rule["target"]) if rule["target"] else (None, None)
@@ -372,6 +382,10 @@ class RouterCard(OutboundCard):
         else:
             text = _t("{count} rules").format(count=len(node["rules"])) + " · " + _t("default: {name}").format(name=d["name"] if d else "-")
         self.desc.setText(text if d else text + "  ⚠ " + _t("no default target"))
+        self.sw.setVisible(bool(node.get("switch")))
+        self.sw.blockSignals(True)
+        self.sw.setChecked(bool(node.get("switch_on")))
+        self.sw.blockSignals(False)
         self.used.setText(_t("used by: {names}").format(names=", ".join(user_names)) if user_names else _t("not used"))
 
 
@@ -620,6 +634,9 @@ class EditorInterface(ScrollArea):
         s_basic.add(Row(_t("Name"), parent=v).right(self.ed_name))
         self.sw_auto = _switch(v)
         self.r_auto = s_basic.add(Row(_t("Start with the app"), _t("Starts this proxy when ProxyDock starts"), v).right(self.sw_auto))
+        self.sw_restart = _switch(v)
+        self.r_restart = s_basic.add(Row(_t("Restart automatically"), _t("If it stops on its own or fails to start (engine exit, port busy), try again after 3 s, then less often up to every minute"), v)
+                                     .right(self.sw_restart))
 
         # inbound
         s_in = Section(_t("Inbound (how this PC accepts connections)"), v)
@@ -1107,6 +1124,7 @@ class EditorInterface(ScrollArea):
             for key, sec in self.sections.items():
                 sec.setVisible(key in ("basic", "router"))
             self.r_auto.setVisible(False)
+            self.r_restart.setVisible(False)
             self.title.setText(_t("Edit IF") if n.get("style") == "if" else _t("Edit router"))
             self.ed_name.setText(n["name"])
             self.s_router.load(n)
@@ -1116,12 +1134,14 @@ class EditorInterface(ScrollArea):
         for key, sec in self.sections.items():
             sec.setVisible(key in (("basic", "in", "link", "check", "local") if inbound else ("basic", "out", "check")))
         self.r_auto.setVisible(inbound)
+        self.r_restart.setVisible(inbound)
         self.title.setText(_t("Edit inbound") if inbound else _t("Edit outbound"))
         self.ed_name.setText(n["name"])
         ib = n["inbound"] if inbound else dict(cfg.INBOUND_DEFAULTS)
         ob = n["outbound"] if not inbound else dict(cfg.OUTBOUND_DEFAULTS)
         ov = n.get("overrides") or {k: None for k in cfg.OVERRIDABLE}
         self.sw_auto.setChecked(n.get("autostart", False))
+        self.sw_restart.setChecked(n.get("auto_restart", False))
         self.cb_in.setCurrentIndex(self.in_types.index(ib["type"]))
         self.ed_in_host.setText(ib["host"])
         self.sp_in_port.setValue(ib["port"])
@@ -1725,6 +1745,7 @@ class EditorInterface(ScrollArea):
             return out
         if self.kind == "inbound":
             n["autostart"] = self.sw_auto.isChecked()
+            n["auto_restart"] = self.sw_restart.isChecked()
             ib = n["inbound"]
             ib.update(type=self.in_types[self.cb_in.currentIndex()], host=self.ed_in_host.text().strip(),
                       port=self.sp_in_port.value(), auth_enabled=self.sw_in_auth.isChecked(),

@@ -257,6 +257,7 @@ def validate_proxy(raw):
         "id": raw.get("id") if isinstance(raw.get("id"), str) and raw.get("id") else uuid.uuid4().hex[:8],
         "name": (raw.get("name") or _t("Proxy")).strip()[:60] if isinstance(raw.get("name"), str) else _t("Proxy"),
         "autostart": raw.get("autostart") if isinstance(raw.get("autostart"), bool) else False,
+        "auto_restart": raw.get("auto_restart") if isinstance(raw.get("auto_restart"), bool) else False,
         "inbound": _typed(INBOUND_DEFAULTS, raw.get("inbound")),
         "outbound": _typed(OUTBOUND_DEFAULTS, raw.get("outbound")),
         "overrides": {},

@@ -27,9 +27,10 @@
 - **받는 쪽**: SOCKS5, SOCKS4, HTTP, HTTPS, Shadowsocks 서버, Hysteria2 서버, WireGuard 서버(휴대폰·PC가 WireGuard 앱으로 접속), 포트 포워딩, TUN(이 PC의 모든 앱)
 - **내보내는 쪽**: Direct, HTTP / HTTPS / SOCKS 프록시, Shadowsocks, Hysteria2, WireGuard, VLESS(REALITY), VMess,
   Trojan, TUIC, 구독(공유 링크 또는 Clash YAML)
-- **블록**: 체인(출구를 다른 출구로 거치기), Router(도메인·IP·포트·프로그램(실행 중인 목록에서 선택)·GeoIP/Geosite 규칙, 간편·고급 화면), IF(조건 하나: 맞으면 / 아니면), 그룹(가장 빠른 것, 자동 전환, 직접 선택), 차단
+- **블록**: 체인(출구를 다른 출구로 거치기), Router(도메인·IP·포트·프로그램(실행 중인 목록에서 선택)·GeoIP/Geosite 규칙, 간편·고급 화면), IF(조건 하나, 또는 킬 스위치 같은 수동 켜기/끄기 스위치), 그룹(가장 빠른 것, 자동 전환, 직접 선택), 차단
 - **네트워크 인터페이스**: PC의 라우팅을 바꾸지 않고 출구를 Tailscale, VPN 앱, Wi-Fi로 내보냄
 - **DNS**: PC의 DNS, DoH / DoT / DoQ, 카드별 설정, 터널을 거쳐 보내기, TUN용 Fake-IP
+- **카드**: 블록에서 바로 실행, 앱 시작 시 실행, 자동 재시작(멈추거나 시작에 실패하면)
 - **PC 블록**: HTTP 받는 쪽을 켜져 있는 동안 Windows 시스템 프록시로 사용
 - 공유 링크(`ss://`, `vless://`, `vmess://`, `trojan://`, `tuic://`, `hysteria2://`), 연결 확인·테스트, 로그와 실시간 통계,
   8개 언어, 트레이, 로그인 시 시작
