@@ -6,6 +6,8 @@ Une application de bureau qui fait tourner plusieurs proxys et tunnels côte à 
 **entrants** (comment le trafic arrive, p. ex. un port SOCKS5 local) à des blocs **sortants** (comment il sort,
 p. ex. un serveur Shadowsocks), et chaque carte s'allume ou s'éteint.
 
+<sub>Conçu pour mon propre usage et partagé tel quel.</sub>
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="images/canvas-dark.png">

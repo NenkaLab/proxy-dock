@@ -6,6 +6,8 @@ Eine Desktop-App, die mehrere Proxys und Tunnel nebeneinander betreibt. Auf eine
 **Eingangs**blöcke (wie Verkehr hereinkommt, z. B. ein lokaler SOCKS5-Port) mit **Ausgangs**blöcken (wie er hinausgeht,
 z. B. ein Shadowsocks-Server) verbunden; jede Karte lässt sich ein- und ausschalten.
 
+<sub>Für den eigenen Gebrauch gebaut und so geteilt, wie es ist.</sub>
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="images/canvas-dark.png">

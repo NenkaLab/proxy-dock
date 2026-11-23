@@ -6,6 +6,8 @@ A desktop app that runs several proxies and tunnels side by side. Link **inbound
 e.g. a local SOCKS5 port) to **outbound** blocks (how it leaves, e.g. a Shadowsocks server) on a canvas, and
 turn each card on or off.
 
+<sub>Made for my own use and shared as is.</sub>
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/canvas-dark.png">

@@ -6,6 +6,8 @@ Una aplicación de escritorio que ejecuta varios proxies y túneles a la vez. En
 **entrada** (cómo entra el tráfico, p. ej. un puerto SOCKS5 local) con bloques de **salida** (cómo sale,
 p. ej. un servidor Shadowsocks), y cada tarjeta se enciende o se apaga.
 
+<sub>Hecho para uso personal y compartido tal cual.</sub>
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="images/canvas-dark.png">

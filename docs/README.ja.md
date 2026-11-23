@@ -5,6 +5,8 @@
 複数のプロキシやトンネルを並べて動かすデスクトップアプリです。キャンバスで**受信側**ブロック (通信の入口、例: ローカル SOCKS5 ポート) を
 **送信側**ブロック (出口、例: Shadowsocks サーバー) につなぎ、カードごとにオン・オフします。
 
+<sub>個人的に使うために作ったものを、そのまま公開しています。</sub>
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="images/canvas-dark.png">

@@ -5,6 +5,8 @@
 同时运行多个代理和隧道的桌面应用。在画布上把**入站**块 (流量进入的方式，例如本地 SOCKS5 端口) 连到
 **出站**块 (流量离开的方式，例如 Shadowsocks 服务器)，每张卡片可单独开关。
 
+<sub>这是为个人使用而做的工具，按原样分享。</sub>
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="images/canvas-dark.png">

@@ -5,6 +5,8 @@
 여러 프록시와 터널을 나란히 돌리는 데스크톱 앱입니다. 캔버스에서 **받는 쪽** 블록(트래픽이 들어오는 곳, 예: 로컬 SOCKS5 포트)을
 **내보내는 쪽** 블록(나가는 방법, 예: Shadowsocks 서버)에 잇고, 카드마다 켜고 끕니다.
 
+<sub>개인적으로 쓰려고 만든 것을 그대로 공유합니다.</sub>
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="images/canvas-dark.png">

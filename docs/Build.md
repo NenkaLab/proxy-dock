@@ -20,6 +20,14 @@ python proxydock.py
 python tests/run_tests.py
 ```
 
+## README images
+
+```bash
+python tools/readme_shots.py          # docs/images/{canvas,proxies,router}-{light,dark}.png
+```
+
+Draws a sample setup offscreen at 2x (nothing on this PC is changed).
+
 ## Build the app
 
 | Target  | Command                   | Output                              | Builds on                          |
