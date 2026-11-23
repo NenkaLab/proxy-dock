@@ -292,6 +292,7 @@ def test_ui():
     from PySide6.QtWidgets import QApplication
     from proxydock.ui import common as uic
     from proxydock.ui import window as winmod
+    from proxydock.ui.canvas import ToggleWidget
     winmod.system_proxy_supported = lambda: True
     winmod.get_system_proxy = lambda: {"ProxyEnable": 0}
     winmod.set_system_proxy = lambda v: None
@@ -550,6 +551,106 @@ def test_ui():
     pipes = [p for port in cv.node_of[ui_in["id"]].output_ports() for p in port.view.connected_pipes]
     check("ui: default colour again", cv.node_of[ui_in["id"]].view.swatch == ""
           and all(tuple(p.color)[:3] == (175, 95, 30) for p in pipes))
+    rn = gm.find(ctl.graph, relay["id"])[1]
+    ctl.set_output_color(relay["id"], rn["outputs"][0]["id"], "#57ab5a")
+    wait(200)
+    pipes = list(cv.node_of[relay["id"]].output_ports()[0].view.connected_pipes)
+    check("ui: a pass-through lane's own colour", pipes and all(tuple(p.color)[:3] == (87, 171, 90) for p in pipes),
+          [tuple(p.color) for p in pipes])
+    check("ui: pass-through menu offers output colours", [k for k, _ in cv.outputs_of(relay["id"])] == [x["id"] for x in rn["outputs"]])
+    iff = ctl.new_router([900, 900], edit=False, style="if")
+    ctl.set_rule_target(iff["id"], "default", d["id"])
+    ctl.set_output_color(iff["id"], "default", "#e5534b")
+    wait(200)
+    iv = cv.node_of[iff["id"]].view
+    pipes = list(cv.node_of[iff["id"]].output_ports()[1].view.connected_pipes)
+    check("ui: an IF has a then and an else swatch", iv.on_swatch is None and [s["own"] for s in iv.out_swatches] == ["", "#e5534b"]
+          and len(iv.swatches()) == 2, iv.out_swatches)
+    check("ui: the else link takes its colour", pipes and all(tuple(p.color)[:3] == (229, 83, 75) for p in pipes))
+    ctl.delete_node(iff["id"])
+    # wireless pair: two blocks, select to fade the rest and draw the arc, delete a half to break it
+    from proxydock.ui.canvas import FADED
+    wl = ctl.new_wireless([1200, 900])
+    wl_in = ctl.new_inbound("WL", {"type": "http", "port": free_port()}, None, [900, 900], edit=False)
+    ctl.set_target(wl_in["id"], wl["inputs"][0]["id"])
+    ctl.set_lane_target(wl["id"], wl["outputs"][0]["id"], d["id"])
+    wait(200)
+    a_node, b_node = cv.node_of.get(wl["id"] + "~in"), cv.node_of.get(wl["id"] + "~out")
+    check("ui: a wireless pair is two blocks", a_node is not None and b_node is not None and wl["id"] not in cv.node_of)
+    p = next(x for x in ctl.proxies if x["id"] == wl_in["id"])
+    check("ui: traffic goes through the pair", not p["unlinked"] and p["outbound"]["type"] == "direct")
+    check("ui: wireless halves show where it goes", b_node.view.info_text.startswith("←") and "WL" in b_node.view.info_text
+          and a_node.view.info_text == "→ " + gm.find(ctl.graph, d["id"])[1]["name"], (a_node.view.info_text, b_node.view.info_text))
+    check("ui: nothing drawn between the halves at rest", cv._arc is None)
+    cv.graph.clear_selection()
+    a_node.set_selected(True)
+    cv._on_selection()
+    wait(100)
+    other = cv.node_of[wl_in["id"]].view
+    check("ui: selecting a half fades the rest and draws the arc", cv._arc is not None and cv._focus == wl["id"]
+          and other.opacity() == FADED and b_node.view.opacity() == 1.0 and not cv._arc.path().isEmpty())
+    cv.go_to_partner(wl["id"], "in")
+    wait(100)
+    check("ui: go to the partner selects the other half", b_node.selected() and not a_node.selected() and cv._focus == wl["id"])
+    before = cv._arc.path().boundingRect()
+    b_node.view.setPos(b_node.view.pos() + QPointF(0, 200))
+    check("ui: the arc follows a moved half", cv._arc.path().boundingRect() != before)
+    cv.graph.clear_selection()
+    cv._on_selection()
+    check("ui: deselecting restores the canvas", cv._arc is None and other.opacity() == 1.0)
+    ctl.move_nodes({wl["id"] + "~out": [1500.0, 1000.0]})
+    check("ui: the output half has its own position", gm.find(ctl.graph, wl["id"])[1]["pos_out"] == [1500.0, 1000.0])
+    # arrow keys walk the links: card -> wireless in -> wireless out -> Direct, and back
+    from PySide6.QtTest import QTest
+    wl_x = ctl.new_inbound("WL2", {"type": "http", "port": free_port()}, None, [900, 1300], edit=False)
+    ctl.set_target(wl_x["id"], d["id"])
+    wait(200)
+    a_node, b_node, d_node = cv.node_of[wl["id"] + "~in"], cv.node_of[wl["id"] + "~out"], cv.node_of[d["id"]]
+    sel = lambda: [cv.mid_of.get(n.id) for n in cv.graph.selected_nodes()]
+    cv.graph.clear_selection()
+    cv.node_of[wl_in["id"]].set_selected(True)
+    steps = []
+    for _ in range(3):
+        QTest.keyClick(viewer, Qt.Key_Right)
+        steps.append(sel())
+    check("ui: → follows the links (through a wireless pair)", steps == [[wl["id"] + "~in"], [wl["id"] + "~out"], [d["id"]]], steps)
+    QTest.keyClick(viewer, Qt.Key_Left)
+    check("ui: ← goes back where it came from", sel() == [wl["id"] + "~out"], sel())
+    QTest.keyClick(viewer, Qt.Key_Right)
+    QTest.keyClick(viewer, Qt.Key_Left)
+    QTest.keyClick(viewer, Qt.Key_Down)
+    others = [cv.mid_of[n.id] for n in cv.neighbours(d_node, False)]
+    check("ui: ↓ picks another block of the same step", len(others) > 1 and sel() != [wl["id"] + "~out"]
+          and sel()[0] in others, (sel(), others))
+    QTest.keyClick(viewer, Qt.Key_Up)
+    check("ui: ↑ comes back to the first choice", sel() == [wl["id"] + "~out"], sel())
+    cv.graph.clear_selection()
+    QTest.keyClick(viewer, Qt.Key_Right)
+    check("ui: arrows do nothing without a selection", sel() == [])
+    ctl.delete_node(wl_x["id"])
+    wait(200)
+    toasts = []
+    import proxydock.ui.window as win_mod
+    real_info = win_mod.info
+    win_mod.info = lambda *a, **k: toasts.append(a[2])
+    try:
+        ctl.delete_wireless_half(wl["id"], "out")
+    finally:
+        win_mod.info = real_info
+    wait(200)
+    wn = gm.find(ctl.graph, wl["id"])[1]
+    a_node = cv.node_of.get(wl["id"] + "~in")
+    check("ui: deleting a half disables the other and tells why", wn["broken"] == "out" and toasts
+          and wl["id"] + "~out" not in cv.node_of and a_node is not None and a_node.view.broken, toasts)
+    p = next(x for x in ctl.proxies if x["id"] == wl_in["id"])
+    check("ui: the card into a broken pair is not connected", p["unlinked"] and wn["inputs"][0]["id"] != p["target"])
+    check("ui: a broken half takes no new links", ctl.set_lane_target(wl["id"], wn["outputs"][0]["id"], d["id"]) is False)
+    ctl.repair_wireless(wl["id"])
+    wait(200)
+    check("ui: the partner can be recreated", gm.find(ctl.graph, wl["id"])[1]["broken"] is None
+          and wl["id"] + "~out" in cv.node_of and not cv.node_of[wl["id"] + "~in"].view.broken)
+    ctl.delete_node(wl_in["id"])
+    ctl.delete_node(wl["id"])
     ctl.delete_node(relay["id"])
     wait(200)
     check("ui: deleting the pass-through hands its links on", ui_in["target"] is None and relay["id"] not in cv.node_of)
@@ -626,9 +727,32 @@ def test_ui():
     ctl._recompile()
     wait(300)
     tw = w.canvas_page.node_of[ifb["id"]].get_widget("toggle")
-    check("ui: switch IF shows a checkbox on the block", tw is not None)
-    tw.cb.setChecked(True)
-    check("ui: clicking the block's switch turns it on", gm.find(ctl.graph, ifb["id"])[1]["switch_on"] is True)
+    check("ui: switch IF shows On / Off buttons on the block", tw is not None and tw.btn_off.styleSheet() != tw.btn_on.styleSheet()
+          and ToggleWidget.OFF_FILL in tw.btn_off.styleSheet() and ToggleWidget.ON_FILL not in tw.btn_on.styleSheet())
+    tw.btn_on.click()
+    wait(100)
+    check("ui: clicking 'On' on the block turns it on", gm.find(ctl.graph, ifb["id"])[1]["switch_on"] is True
+          and ToggleWidget.ON_FILL in tw.btn_on.styleSheet() and ToggleWidget.OFF_FILL not in tw.btn_off.styleSheet())
+    tw.btn_off.click()
+    wait(100)
+    check("ui: clicking 'Off' turns it off", gm.find(ctl.graph, ifb["id"])[1]["switch_on"] is False)
+    cv_ = w.canvas_page
+    cv_.node_of[blk2["id"]].set_name("Ads blocker")
+    wait(200)
+    check("ui: renaming a block's title on the canvas saves it", gm.find(ctl.graph, blk2["id"])[1]["name"] == "Ads blocker"
+          and cv_.node_of[blk2["id"]].name() == "Ads blocker")
+    cv_.node_of[blk2["id"]].set_name("   ")
+    wait(200)
+    check("ui: an empty title is not saved", gm.find(ctl.graph, blk2["id"])[1]["name"] == "Ads blocker"
+          and cv_.node_of[blk2["id"]].name() == "Ads blocker", cv_.node_of[blk2["id"]].name())
+    wl2 = ctl.new_wireless([1400, 1400])
+    wait(200)
+    from proxydock.i18n import _t as tr
+    cv_.node_of[wl2["id"] + "~out"].set_name(tr("Wireless out · {name}").format(name="VPN"))
+    wait(200)
+    check("ui: renaming a wireless half renames the pair", gm.find(ctl.graph, wl2["id"])[1]["name"] == "VPN"
+          and cv_.node_of[wl2["id"] + "~in"].view.pair_name == "VPN", gm.find(ctl.graph, wl2["id"])[1]["name"])
+    ctl.delete_node(wl2["id"])
     ctl.delete_node(blk2["id"])
     ctl.delete_node(ifb["id"])
     rt = ctl.new_router(edit=False)
@@ -687,6 +811,13 @@ def test_ui():
     wait(300)
     ctl.delete_node(wgs["id"])
     ar = ctl.new_inbound("auto restart ui", {"type": "socks5", "port": free_port()}, None, None, edit=False)
+    check("ui: a new inbound block starts unconnected", gm.find(ctl.graph, ar["id"])[1]["target"] is None)
+    ctl.set_target(ar["id"], gm.shared_direct(ctl.graph)["id"])
+    dup_before = {n["id"] for n in ctl.graph["inbounds"]}
+    ctl.duplicate_node(ar["id"])
+    dup = next(n for n in ctl.graph["inbounds"] if n["id"] not in dup_before)
+    check("ui: a duplicated block starts unconnected", dup["target"] is None)
+    ctl.delete_node(dup["id"])
     wait(300)
     sw = w.canvas_page.node_of[ar["id"]].get_widget("switches")
     sw.restart.setChecked(True)
@@ -1158,8 +1289,8 @@ def test_router_graph():
     blk = gm.add_outbound(g, {"type": "block"})
     r1, r2 = gm.add_router(g, "R1"), gm.add_router(g, "R2")
     r1["rules"][0].update(match={"domain_suffix": ["ads.example"]}, target=blk["id"])
-    r1["rules"].append({"id": "n", "name": "kr", "match": {"geoip": ["kr"]}, "target": r2["id"]})
-    r1["rules"].append({"id": "e", "name": "empty", "match": {}, "target": up["id"]})     # no condition: skipped
+    r1["rules"].append({"id": "n", "name": "kr", "match": {"geoip": ["kr"]}, "target": r2["id"], "color": ""})
+    r1["rules"].append({"id": "e", "name": "empty", "match": {}, "target": up["id"], "color": ""})     # no condition: skipped
     r1["default"] = up["id"]
     r2["rules"][0].update(match={"port": ["443"]}, target=d["id"])
     r2["default"] = blk["id"]
@@ -1268,6 +1399,49 @@ def test_relay_graph():
           and {p["name"]: p for p in gm.compile(g)}["A"]["unlinked"])
 
 
+def test_wireless_graph():
+    """Wireless pairs: one lane between two half blocks; deleting a half breaks the pair."""
+    g = gm.empty()
+    d = gm.add_outbound(g, {"type": "direct"}, "Direct")
+    w = gm.add_wireless(g)
+    w2 = gm.add_wireless(g)
+    check("wireless: numbered names", (w["name"], w2["name"]) == ("#1", "#2") and gm.next_wireless_name(g) == "#3")
+    check("wireless: one straight lane, output half to the right", w["wireless"] and not w["routed"] and len(w["inputs"]) == 1
+          and len(w["outputs"]) == 1 and w["inputs"][0]["out"] == w["outputs"][0]["id"] and w["pos_out"][0] > w["pos"][0])
+    lane = w["inputs"][0]["id"]
+    a = gm.add_inbound(g, "A", {"type": "socks5", "port": 1080}, target=lane)
+    w["outputs"][0]["target"] = d["id"]
+    p = gm.compile(g)[0]
+    check("wireless: traffic goes through the pair", not p["unlinked"] and p["outbound"]["type"] == "direct")
+    check("wireless: lane label", gm.lane_label(g, lane) == "Wireless #1", gm.lane_label(g, lane))
+    raw = json.loads(json.dumps(g))
+    raw["relays"][0]["inputs"].append({"id": "x", "gap": 3, "out": None})
+    raw["relays"][0]["routed"] = True
+    v = gm.validate(raw)
+    check("wireless: validate keeps one straight lane", len(v["relays"][0]["inputs"]) == 1 and not v["relays"][0]["routed"]
+          and v["relays"][0]["inputs"][0]["gap"] == 0 and v["inbounds"][0]["target"] == lane)
+    check("wireless: validate round trip", gm.validate(json.loads(json.dumps(g)))["relays"] == g["relays"])
+    gm.set_lane_count(w, "inputs", 4)
+    check("wireless: never more than one lane", len(w["inputs"]) == 1 and len(w["outputs"]) == 1)
+    check("wireless: breaking an intact pair only", gm.break_wireless(g, w["id"], "out") and not gm.break_wireless(g, w["id"], "in"))
+    check("wireless: a broken pair cuts its links", a["target"] is None and w["outputs"][0]["target"] is None
+          and w["inputs"][0]["out"] is None and w["broken"] == "out" and gm.compile(g)[0]["unlinked"])
+    check("wireless: a broken pair takes no links", lane not in gm.lane_index(g)[0]
+          and lane not in [i for i, _ in gm.lane_choices(g)])
+    raw = json.loads(json.dumps(g))
+    raw["inbounds"][0]["target"] = lane
+    raw["relays"][0]["outputs"][0]["target"] = d["id"]
+    v = gm.validate(raw)
+    check("wireless: validate keeps a broken pair cut", v["inbounds"][0]["target"] is None
+          and v["relays"][0]["outputs"][0]["target"] is None and v["relays"][0]["broken"] == "out")
+    check("wireless: repair", gm.repair_wireless(g, w["id"]) and w["broken"] is None
+          and w["inputs"][0]["out"] == w["outputs"][0]["id"] and not gm.repair_wireless(g, w["id"]))
+    a["target"] = lane
+    w["outputs"][0]["target"] = d["id"]
+    gm.remove(g, w["id"])
+    check("wireless: deleting the whole pair splices the link", a["target"] == d["id"])
+
+
 def test_block_colors():
     """Block colours and the link colours they give (pass-throughs hand them on)."""
     check("color: valid values", gm.valid_color("#ABCDEF") == "#abcdef" and gm.valid_color("red") == ""
@@ -1288,13 +1462,33 @@ def test_block_colors():
     v = gm.validate(json.loads(json.dumps(g)))
     check("color: kept by validate on every block", v["inbounds"][0]["color"] == "#e5534b" and v["outbounds"][0]["color"] == "#57ab5a"
           and v["relays"][0]["color"] == "#9aa0a6" and v["routers"][0]["color"] == "#d9b92f")
-    lanes = gm.wire_colors(v)
     rv = v["relays"][0]
+    lanes = gm.wire_colors(v)
+    check("color: a pass-through's own colour is its lanes' colour",
+          all(lanes[x["id"]] == ("#9aa0a6", ("#9aa0a6",)) for x in rv["outputs"]), [lanes[x["id"]] for x in rv["outputs"]])
+    rv["outputs"][1]["color"] = "#b76de0"
+    v = gm.validate(json.loads(json.dumps(v)))
+    rv = v["relays"][0]
+    lanes = gm.wire_colors(v)
+    check("color: a lane's own colour is kept and wins", rv["outputs"][1]["color"] == "#b76de0"
+          and lanes[rv["outputs"][1]["id"]] == ("#b76de0", ("#b76de0",)) and lanes[rv["outputs"][0]["id"]][0] == "#9aa0a6")
+    rv["color"] = rv["outputs"][1]["color"] = ""
+    lanes = gm.wire_colors(v)
     check("color: a lane hands on what comes in", lanes[rv["outputs"][0]["id"]] == ("#e5534b", ("#e5534b",))
           and lanes[rv["inputs"][1]["id"]][0] == "#4f8ef7" and lanes[rv["inputs"][2]["id"]][0] == "#d9b92f")
     merged = lanes[rv["outputs"][2]["id"]]
     check("color: merging colours mix", merged == (gm.mix_colors(["#4f8ef7", "#d9b92f"]), ("#4f8ef7", "#d9b92f")), merged)
-    check("color: nothing coming in uses the block's own", lanes[rv["outputs"][1]["id"]] == ("#9aa0a6", ()))
+    check("color: nothing coming in and no colour: default", lanes[rv["outputs"][1]["id"]] == ("", ()))
+    rtv = v["routers"][0]
+    gm.set_output_color(v, rtv["id"], "default", "#39C5BB")
+    lanes = gm.wire_colors(v)
+    check("color: a router output's own colour wins", rtv["default_color"] == "#39c5bb"
+          and lanes[rv["inputs"][2]["id"]][0] == "#39c5bb" and lanes[gm.router_out_key(rtv["id"], "default")][0] == "#39c5bb"
+          and lanes[gm.router_out_key(rtv["id"], rtv["rules"][0]["id"])][0] == "#d9b92f")
+    old_if = gm.validate_router_node({"style": "if", "color": "#e5534b", "rules": [{"name": "IF", "color": "#4f8ef7"}]})
+    check("color: an IF's old block colour becomes then / else", old_if["color"] == ""
+          and old_if["rules"][0]["color"] == "#4f8ef7" and old_if["default_color"] == "#e5534b", old_if)
+    r["color"] = ""
     check("color: mixing keeps colours bright", gm.mix_colors(["#e5534b", "#4f8ef7"]) == "#c561c4"
           and gm.mix_colors(["#e5534b"]) == "#e5534b" and gm.mix_colors([]) == "")
     check("color: a grey hardly moves the hue", gm.mix_colors(["#9aa0a6", "#e5534b"]) == "#ca7d78")
@@ -2642,7 +2836,7 @@ def test_engine_died_e2e():
 
 def main():
     t0 = time.time()
-    tests = [test_translations, test_update, test_graph, test_engine, test_singbox_compile, test_router_graph, test_relay_graph, test_block_colors, test_router_singbox, test_interface,
+    tests = [test_translations, test_update, test_graph, test_engine, test_singbox_compile, test_router_graph, test_relay_graph, test_wireless_graph, test_block_colors, test_router_singbox, test_interface,
              test_wireguard, test_tun, test_run_as_admin, test_protocols,
              test_subscription, test_detect_sni, test_hy2_advanced, test_group, test_dns, test_review_fixes, test_clash, test_wg_server, test_if_forward_select]
     from proxydock.singbox import find_binary

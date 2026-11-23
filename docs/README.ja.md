@@ -24,52 +24,33 @@
 
 ## 機能
 
-- **受信側**: SOCKS5、SOCKS4、HTTP、HTTPS、Shadowsocks サーバー、Hysteria2 サーバー、WireGuard サーバー (スマホや PC が WireGuard アプリで接続)、ポート転送、TUN (この PC のすべてのアプリ)
-- **送信側**: Direct、HTTP / HTTPS / SOCKS プロキシ、Shadowsocks、Hysteria2、WireGuard、VLESS (REALITY)、VMess、
-  Trojan、TUIC、サブスクリプション (共有リンクまたは Clash YAML)
-- **ブロック**: チェーン (送信側を別の送信側経由に)、ルーター (ドメイン・IP・ポート・プログラム (実行中の一覧から選択)・GeoIP/Geosite のルール、かんたん・詳細表示)、
-  IF (条件 1 つ、またはキルスイッチなどの手動オン/オフ スイッチ)、グループ (最速、自動切り替え、手動)、ブロック
-- **ネットワークインターフェース**: PC のルーティングを変えずに、送信側を Tailscale、VPN アプリ、Wi-Fi から出す
-- **DNS**: PC の DNS、DoH / DoT / DoQ、カードごとの設定、トンネル経由、TUN 用の Fake-IP
-- **カード**: ブロック上で実行、起動時に実行、自動再起動 (止まったり起動に失敗したりしたとき)
-- **PC ブロック**: HTTP 受信側を動作中だけ Windows のシステムプロキシとして使う
-- 共有リンク (`ss://`、`vless://`、`vmess://`、`trojan://`、`tuic://`、`hysteria2://`)、接続確認・テスト、ログとリアルタイム統計、
-  8 言語、トレイ、ログイン時に起動
+- **キャンバスでブロックをつなぐ**: 受信側 (SOCKS5、HTTP、Shadowsocks / Hysteria2 / WireGuard サーバー、TUN など) を
+  送信側 (Direct、上位プロキシ、Shadowsocks、Hysteria2、WireGuard、VLESS、VMess、Trojan、TUIC、サブスクリプション) へ
+- **ルーティング**: ドメイン、IP、プログラム、国ごとに振り分け。IF スイッチはキルスイッチに、グループは最速サーバーや自動切り替えに
+- **チェーン**: 送信側を別の送信側、または Tailscale・VPN アプリ・Wi-Fi 経由で出す
+- **システムプロキシ**: カードを動作中だけ Windows のシステムプロキシとして使う
+- **便利な機能**: 共有リンク、接続テスト、ログとリアルタイム統計、8 言語、トレイ
 
-プロキシは [sing-box](https://github.com/SagerNet/sing-box) で動きます (カードごとに 1 プロセス、リリースに同梱)。
-他の PC に公開する Hysteria2 サーバーは公式の [Hysteria](https://github.com/apernet/hysteria) コアで動き、内蔵の Python エンジンは予備です。
+プロキシは [sing-box](https://github.com/SagerNet/sing-box) で動き、リリースに同梱されています。
 
 ## 実行
 
 Windows では `ProxyDock-<バージョン>-windows-x64-setup.exe` が現在のユーザーにインストールします (管理者権限は不要)。`.zip` は同じアプリをフォルダーにしたものです。macOS では `.dmg` を開いて ProxyDock をアプリケーションにドラッグします。Linux では `.AppImage` に実行権限を付けて実行します。
 
-[Releases](https://github.com/NenkaLab/proxy-dock/releases) からビルドを入手するか、ソースから実行します (Python 3.14):
-
-```bash
-python -m venv .venv
-.venv\Scripts\activate            # macOS / Linux: source .venv/bin/activate
-pip install -r requirements.txt
-python tools/fetch_singbox.py     # この PC 用の sing-box と Hysteria
-python proxydock.py
-```
+[Releases](https://github.com/NenkaLab/proxy-dock/releases) からビルドを入手します。
 
 設定は `%APPDATA%\ProxyDock` (macOS: `~/Library/Application Support/ProxyDock`、Linux: `~/.config/ProxyDock`) に
 保存されます。詳しくはアプリの**使い方**ページを見てください。
 
 ## ビルド
 
-`tools\build_win.bat` → `dist/win/ProxyDock/ProxyDock.exe` (Linux: `tools/build_linux.sh`、macOS: `tools/build_mac.sh`)。
-ビルド時に sing-box と Hysteria をダウンロードし (SHA-256 確認)、アプリに同梱します。
-テスト: `python tests/run_tests.py`。リリース: `tools\release.bat <バージョン>` がタグを付けて push し、GitHub Actions がビルドします。
-インストーラー: `python tools/build.py installer` (Inno Setup 6)。macOS: `python tools/build.py dmg`、Linux: `python tools/build.py appimage`。
+ソースからの実行、テスト、ビルド、インストーラー、リリース: [Build.md](Build.md) (英語)。
 
 ## 制限
 
-- ルーター、グループ、WireGuard、VLESS / VMess / Trojan / TUIC、TUN、インターフェース選択、DNS サーバー指定には sing-box エンジンが必要です。
-- 複数サーバーへの負荷分散はなく、Hysteria2 サーバーは単独ではポート範囲で待ち受けられません。
-- 証明書のピン留めは sing-box 1.15 までは Python エンジンで動きます。
-- TUN と Fake-IP はまだ実際の環境で試しておらず、macOS も実機の Mac で試していません。
-- SOCKS4 にはパスワードがないので、この PC 内だけで使ってください。
+- ルーター、グループ、WireGuard、VLESS / VMess / Trojan / TUIC、TUN には sing-box エンジン (同梱) が必要です。
+- TUN と macOS はまだ実環境で試していません。
+- SOCKS4 にはパスワードがないので、この PC の中だけで使ってください。
 
 ## ライセンス
 

@@ -539,10 +539,18 @@ class ProxiesInterface(ScrollArea):
         confirm_delete(self.ctl, [nid], self.window())
 
 
-def confirm_delete(ctl, ids, parent):
-    """Ask, then delete blocks (inbound blocks are stopped first)."""
+def confirm_delete(ctl, ids, parent, halves=()):
+    """Ask, then delete blocks (inbound blocks are stopped first). halves: [(wireless pair id, "in"/"out")] - one
+    half of a pair each (the other half is left disabled)."""
     from .. import graph as graph_mod
-    names = [n["name"] for n in (graph_mod.find(ctl.graph, i)[1] for i in ids) if n is not None]
+
+    def label(n):
+        return _t("Wireless {name}").format(name=n["name"]) if n.get("wireless") else n["name"]
+    names = [label(n) for n in (graph_mod.find(ctl.graph, i)[1] for i in ids) if n is not None]
+    for rid, half in halves:
+        _, n = graph_mod.find(ctl.graph, rid)
+        if n is not None:
+            names.append(label(n) + " · " + (_t("in") if half == "in" else _t("out")))
     if not names:
         return
     box = ConfirmBox(_t("Delete proxy"), _t("Delete '{name}'? It will be stopped if it is running.").format(name=", ".join(names)), parent)
@@ -551,6 +559,8 @@ def confirm_delete(ctl, ids, parent):
     if box.exec():
         for i in ids:
             ctl.delete_node(i)
+        for rid, half in halves:
+            ctl.delete_wireless_half(rid, half)
 
 
 # --- editor ---

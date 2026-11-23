@@ -25,53 +25,34 @@ p. ej. un servidor Shadowsocks), y cada tarjeta se enciende o se apaga.
 
 ## Funciones
 
-- **Entrada**: SOCKS5, SOCKS4, HTTP, HTTPS, servidor Shadowsocks, servidor Hysteria2, servidor WireGuard (teléfonos y PC se conectan con la aplicación WireGuard), reenvío de puertos, TUN (todas las aplicaciones del PC)
-- **Salida**: Direct, proxy HTTP / HTTPS / SOCKS, Shadowsocks, Hysteria2, WireGuard, VLESS (REALITY), VMess,
-  Trojan, TUIC, suscripciones (enlaces compartidos o YAML de Clash)
-- **Bloques**: cadenas (una salida a través de otra), routers (reglas por dominio, IP, puerto, programa - elegible entre los que están en ejecución -, GeoIP/Geosite; vistas sencilla y avanzada),
-  IF (una condición, o un interruptor manual como un kill switch), grupos (el más rápido, conmutación por error o manual), Bloquear
-- **Interfaz de red**: enviar una salida por Tailscale, una aplicación VPN o Wi-Fi sin cambiar las rutas del PC
-- **DNS**: el DNS del PC, DoH / DoT / DoQ, por tarjeta, opcionalmente por el túnel; Fake-IP para TUN
-- **Tarjetas**: ejecutar, iniciar con la aplicación y reiniciar automáticamente (si se detiene o no arranca) desde el propio bloque
-- **Bloque PC**: usar una entrada HTTP como proxy del sistema de Windows mientras funciona
-- Enlaces compartidos (`ss://`, `vless://`, `vmess://`, `trojan://`, `tuic://`, `hysteria2://`), comprobación y prueba de conexión,
-  registros y estadísticas en vivo, 8 idiomas, bandeja, inicio al iniciar sesión
+- **Unir bloques en un lienzo**: entradas (SOCKS5, HTTP, servidor Shadowsocks / Hysteria2 / WireGuard, TUN, ...)
+  con salidas (Directo, proxy superior, Shadowsocks, Hysteria2, WireGuard, VLESS, VMess, Trojan, TUIC, suscripciones)
+- **Enrutamiento**: repartir el tráfico por dominio, IP, programa o país; un interruptor IF sirve de kill switch; los
+  grupos usan el servidor más rápido o cambian si uno falla
+- **Cadenas**: enviar una salida a través de otra, o a través de Tailscale, una app de VPN o el Wi-Fi
+- **Proxy del sistema**: usar una tarjeta como proxy del sistema de Windows mientras funciona
+- **Herramientas de uso diario**: enlaces para compartir, pruebas de conexión, registros y estadísticas en vivo,
+  8 idiomas, bandeja
 
-Los proxies funcionan con [sing-box](https://github.com/SagerNet/sing-box) (un proceso por tarjeta, incluido en la versión publicada).
-Un servidor Hysteria2 abierto a otros PC usa el núcleo oficial de [Hysteria](https://github.com/apernet/hysteria);
-el motor Python integrado queda como respaldo.
+Los proxies funcionan con [sing-box](https://github.com/SagerNet/sing-box), incluido en la versión publicada.
 
 ## Ejecutar
 
 En Windows, `ProxyDock-<versión>-windows-x64-setup.exe` la instala para tu usuario (sin permisos de administrador); el `.zip` es la misma aplicación como carpeta. En macOS, abre el `.dmg` y arrastra ProxyDock a Aplicaciones. En Linux, da permiso de ejecución al `.AppImage` y ejecútalo.
 
-Descarga una versión de [Releases](https://github.com/NenkaLab/proxy-dock/releases) o ejecuta desde el código fuente
-(Python 3.14):
-
-```bash
-python -m venv .venv
-.venv\Scripts\activate            # macOS / Linux: source .venv/bin/activate
-pip install -r requirements.txt
-python tools/fetch_singbox.py     # sing-box y Hysteria para este PC
-python proxydock.py
-```
+Descarga una versión de [Releases](https://github.com/NenkaLab/proxy-dock/releases).
 
 Los ajustes se guardan en `%APPDATA%\ProxyDock` (macOS: `~/Library/Application Support/ProxyDock`,
 Linux: `~/.config/ProxyDock`). La página **Cómo usar** de la aplicación explica el resto.
 
 ## Compilar
 
-`tools\build_win.bat` → `dist/win/ProxyDock/ProxyDock.exe` (Linux: `tools/build_linux.sh`, macOS: `tools/build_mac.sh`).
-La compilación descarga sing-box y Hysteria (con SHA-256 comprobado) y los mete en la aplicación.
-Pruebas: `python tests/run_tests.py`. Versiones: `tools\release.bat <versión>` crea la etiqueta y hace push; GitHub Actions compila.
-Instalador: `python tools/build.py installer` (Inno Setup 6). macOS: `python tools/build.py dmg`, Linux: `python tools/build.py appimage`.
+Ejecutar desde el código fuente, pruebas, compilación, instaladores y versiones: [Build.md](Build.md) (en inglés).
 
 ## Limitaciones
 
-- Routers, grupos, WireGuard, VLESS / VMess / Trojan / TUIC, TUN, elección de interfaz y DNS propio requieren el motor sing-box.
-- No hay balanceo de carga entre servidores; un servidor Hysteria2 no puede escuchar por sí solo en un rango de puertos.
-- La fijación de certificados funciona con el motor Python hasta sing-box 1.15.
-- TUN y Fake-IP aún no se han probado en entornos reales, ni macOS en un Mac real.
+- Los routers, grupos, WireGuard, VLESS / VMess / Trojan / TUIC y TUN necesitan el motor sing-box (incluido).
+- TUN y macOS todavía no se han probado en equipos reales.
 - SOCKS4 no tiene contraseña: úsalo solo en este PC.
 
 ## Licencia

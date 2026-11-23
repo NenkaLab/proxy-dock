@@ -13,9 +13,12 @@ from NodeGraphQt import BaseNode, NodeBaseWidget, NodeGraph
 from NodeGraphQt.constants import PipeEnum, PortEnum
 from NodeGraphQt.qgraphics.node_abstract import AbstractNodeItem
 from NodeGraphQt.qgraphics.node_base import NodeItem
+from NodeGraphQt.qgraphics.port import PortItem
 from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, Qt, QTimer
-from PySide6.QtGui import QColor, QIcon, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QShortcut
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtGui import (
+    QColor, QFontMetrics, QIcon, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QShortcut,
+)
+from PySide6.QtWidgets import QGraphicsItem, QGraphicsPathItem, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 from qfluentwidgets import (
     Action, CaptionLabel, DropDownPushButton, FluentIcon as FIF, PrimaryDropDownPushButton, PushButton, RoundMenu,
     TitleLabel, isDarkTheme, qconfig,
@@ -41,6 +44,9 @@ MEMBER_COLOR = (110, 210, 200)
 RULE_COLOR = (240, 170, 90)
 RELAY_COLOR = (64, 68, 82)
 LANE_COLOR = (190, 196, 210)
+WIRELESS_COLOR = (44, 84, 92)
+BROKEN_COLOR = (70, 72, 78)
+FADED = 0.22                # opacity of the other blocks while a wireless pair is selected
 CHECK_STYLE = ("QCheckBox {{ color: {fg}; background: transparent; font-size: 9pt; {extra} }}"
                "QCheckBox::indicator {{ width: 11px; height: 11px; border: 1px solid #B8B8B8; border-radius: 3px;"
                " background: rgba(0,0,0,0.25); }}"
@@ -144,14 +150,33 @@ class SwitchesWidget(NodeBaseWidget):
 
 
 class ToggleWidget(NodeBaseWidget):
-    """One checkbox inside an IF block in switch mode."""
+    """[On] [Off] buttons inside an IF block in switch mode: the lit one is the side traffic takes
+    (on -> 'then', off -> 'else'). Clicking calls on_set(on)."""
+    ON_FILL, OFF_FILL = "#3FA34D", "#C9463F"
 
     def __init__(self, parent=None):
         super().__init__(parent, name="toggle", label="")
-        from PySide6.QtWidgets import QCheckBox
-        self.cb = QCheckBox(_t("Switch on (send to 'then')"))
-        self.cb.setStyleSheet(CHECK_STYLE.format(fg="#F0F0F0", extra="font-weight: bold;"))
-        self.set_custom_widget(self.cb)
+        from PySide6.QtWidgets import QPushButton
+        box = QWidget()
+        box.setAttribute(Qt.WA_TranslucentBackground)
+        lay = QHBoxLayout(box)
+        lay.setContentsMargins(0, 3, 0, 3)
+        lay.setSpacing(6)
+        self.btn_on = QPushButton(_t("Switched on"))
+        self.btn_off = QPushButton(_t("Switched off"))
+        self.btn_on.setToolTip(_t("Send everything to 'then'"))
+        self.btn_off.setToolTip(_t("Send everything to 'else'"))
+        for b in (self.btn_on, self.btn_off):
+            b.setCursor(Qt.PointingHandCursor)
+            b.setFixedHeight(26)
+            lay.addWidget(b, 1)
+        box.setFixedWidth(230)
+        self.set_custom_widget(box)
+        self.on = False
+        self.on_set = None
+        self.btn_on.clicked.connect(lambda: self._pick(True))
+        self.btn_off.clicked.connect(lambda: self._pick(False))
+        self.show(False)
 
     def get_value(self):
         return ""
@@ -159,14 +184,32 @@ class ToggleWidget(NodeBaseWidget):
     def set_value(self, value):
         pass
 
+    @staticmethod
+    def _style(fill):
+        if fill:            # the side in use: filled
+            return (f"QPushButton {{ background: {fill}; color: white; border: 1px solid {fill}; border-radius: 5px;"
+                    " font-size: 9pt; font-weight: bold; }")
+        return ("QPushButton { background: rgba(0,0,0,0.22); color: #A8A8A8; border: 1px solid rgba(255,255,255,0.22);"
+                " border-radius: 5px; font-size: 9pt; }"
+                "QPushButton:hover { color: #F0F0F0; border-color: rgba(255,255,255,0.55); }")
+
+    def _pick(self, on):
+        if on == self.on:
+            return
+        self.show(on)
+        cb = self.on_set
+        if cb:
+            QTimer.singleShot(0, lambda: cb(on))      # (the canvas may be redrawn: leave the click first)
+
     def show(self, on):
-        self.cb.blockSignals(True)
-        self.cb.setChecked(bool(on))
-        self.cb.blockSignals(False)
+        self.on = bool(on)
+        self.btn_on.setStyleSheet(self._style(self.ON_FILL if self.on else None))
+        self.btn_off.setStyleSheet(self._style(None if self.on else self.OFF_FILL))
 
 
 class BlockItem(NodeItem):
-    """Node item with a small colour swatch at the right of the title bar; clicking it calls on_swatch(screen pos)."""
+    """Node item with a small colour swatch at the right of the title bar; clicking it calls on_swatch(screen pos).
+    out_swatches puts one swatch per output there instead (an IF: then / else), left to right."""
     SWATCH = 12.0
 
     def __init__(self, name="node", parent=None):
@@ -175,34 +218,57 @@ class BlockItem(NodeItem):
         self.swatch_fill = ""       # the colour it really uses (own, or followed from incoming links)
         self.swatch_mixed = False   # swatch_fill is a mix of incoming colours
         self.on_swatch = None
+        self.out_swatches = []      # [{"key", "own", "fill", "mixed", "on_click", "tip"}] (instead of the block swatch)
 
-    def swatch_rect(self):
-        return QRectF(self._width - self.SWATCH - 7, 5, self.SWATCH, self.SWATCH)
+    def swatch_rect(self, k=0):
+        """The k-th swatch from the right."""
+        return QRectF(self._width - (self.SWATCH + 5) * (k + 1) - 2, 5, self.SWATCH, self.SWATCH)
+
+    def swatches(self):
+        """[(rect, own, fill, mixed, callback, tooltip)] of every swatch on the title bar."""
+        if self.out_swatches:
+            n = len(self.out_swatches)
+            return [(self.swatch_rect(n - 1 - i), x["own"], x["fill"], x["mixed"], x["on_click"], x.get("tip", ""))
+                    for i, x in enumerate(self.out_swatches)]
+        if self.on_swatch is None:
+            return []
+        return [(self.swatch_rect(), self.swatch, self.swatch_fill, self.swatch_mixed, self.on_swatch, "")]
 
     def paint(self, painter, option, widget):
         super().paint(painter, option, widget)
-        if self.on_swatch is None:
+        sw = self.swatches()
+        if not sw:
             return
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing, True)
-        r = self.swatch_rect()
-        painter.setBrush(QColor(*_rgba(self.swatch or self.swatch_fill)))
-        # own colour: solid border; automatic (followed): dotted border
-        painter.setPen(QPen(QColor(255, 255, 255, 200 if self.swatch else 130), 1.0,
-                            Qt.SolidLine if self.swatch else Qt.DotLine))
-        painter.drawRoundedRect(r, 2.5, 2.5)
-        if self.swatch_mixed and not self.swatch:       # a mix: a small diagonal mark
-            painter.setPen(QPen(QColor(255, 255, 255, 170), 1.0))
-            painter.drawLine(r.bottomLeft() + QPointF(2.5, -2.5), r.topRight() + QPointF(-2.5, 2.5))
+        for r, own, fill, mixed, _, _ in sw:
+            painter.setBrush(QColor(*_rgba(own or fill)))
+            # own colour: solid border; automatic (followed): dotted border
+            painter.setPen(QPen(QColor(255, 255, 255, 200 if own else 130), 1.0, Qt.SolidLine if own else Qt.DotLine))
+            painter.drawRoundedRect(r, 2.5, 2.5)
+            if mixed and not own:                       # a mix: a small diagonal mark
+                painter.setPen(QPen(QColor(255, 255, 255, 170), 1.0))
+                painter.drawLine(r.bottomLeft() + QPointF(2.5, -2.5), r.topRight() + QPointF(-2.5, 2.5))
         painter.restore()
 
+    def swatch_at(self, pos):
+        return next((x for x in self.swatches() if x[0].contains(pos)), None)
+
     def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton and self.on_swatch and self.swatch_rect().contains(event.pos()):
+        hit = self.swatch_at(event.pos()) if event.button() == Qt.LeftButton else None
+        if hit is not None:
             event.accept()
-            cb, at = self.on_swatch, event.screenPos()
+            cb, at = hit[4], event.screenPos()
             QTimer.singleShot(0, lambda: cb(at))
             return
         super().mousePressEvent(event)
+
+    def hoverMoveEvent(self, event):
+        hit = self.swatch_at(event.pos())
+        if hit is not None and hit[5]:
+            from PySide6.QtWidgets import QToolTip
+            QToolTip.showText(event.screenPos(), hit[5])
+        super().hoverMoveEvent(event)
 
 
 class InNode(BaseNode):
@@ -452,6 +518,81 @@ class RelayNode(BaseNode):
         super().__init__(RelayItem)
 
 
+class WirelessItem(BlockItem):
+    """One half of a wireless pair: the pair's name in large type and, under it, where the traffic comes from or
+    goes. A half whose partner was deleted is drawn greyed out with a dashed amber border."""
+    MIN_W, MIN_H = 170.0, 76.0
+
+    def __init__(self, name="node", parent=None):
+        super().__init__(name, parent)
+        self.pair_name = ""
+        self.info_text = ""
+        self.broken = False
+        self.on_moved = None        # callback while the block is dragged (the pair's arc follows)
+        self.setFlag(QGraphicsItem.ItemSendsGeometryChanges, True)
+
+    def _calc_size_horizontal(self):
+        w, h = super()._calc_size_horizontal()
+        return max(w, self.MIN_W), max(h, self.MIN_H)
+
+    def paint(self, painter, option, widget):
+        super().paint(painter, option, widget)
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        r = self.boundingRect()
+        body = QRectF(r.left() + 14, r.top() + 22, r.width() - 28, r.height() - 26)
+        font = painter.font()
+        font.setPointSizeF(15)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.setPen(QColor(150, 150, 150) if self.broken else QColor(240, 240, 240))
+        painter.drawText(QRectF(body.left(), body.top(), body.width(), 28), Qt.AlignCenter, self.pair_name)
+        font.setPointSizeF(8)
+        font.setBold(False)
+        painter.setFont(font)
+        painter.setPen(QColor(232, 179, 57) if self.broken else QColor(205, 205, 205))
+        text = QFontMetrics(font).elidedText(self.info_text, Qt.ElideRight, int(body.width()))
+        painter.drawText(QRectF(body.left(), body.top() + 28, body.width(), 18), Qt.AlignCenter, text)
+        if self.broken:
+            painter.setPen(QPen(QColor(232, 179, 57), 1.4, Qt.DashLine))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(r.adjusted(1, 1, -1, -1), 4, 4)
+        painter.restore()
+
+    def itemChange(self, change, value):
+        out = super().itemChange(change, value)
+        if change == QGraphicsItem.ItemPositionHasChanged and self.on_moved:
+            self.on_moved()
+        return out
+
+
+class WirelessInNode(BaseNode):
+    """Input half of a wireless pair (its port is added when the canvas is built)."""
+    __identifier__ = "proxydock"
+    NODE_NAME = "Wireless in"
+
+    def __init__(self):
+        super().__init__(WirelessItem)
+
+
+class WirelessOutNode(BaseNode):
+    """Output half of a wireless pair."""
+    __identifier__ = "proxydock"
+    NODE_NAME = "Wireless out"
+
+    def __init__(self):
+        super().__init__(WirelessItem)
+
+
+def split_mid(mid):
+    """(model id, half): a wireless pair's two blocks are '<relay id>~in' / '<relay id>~out' on the canvas
+    (half "in"/"out"); every other block is its model id (half None)."""
+    if isinstance(mid, str) and mid.endswith(("~in", "~out")):
+        rid, half = mid.rsplit("~", 1)
+        return rid, half
+    return mid, None
+
+
 class PcNode(BaseNode):
     __identifier__ = "proxydock"
     NODE_NAME = "PC"
@@ -470,8 +611,11 @@ def _line(color, text):
     return f'<span style="color:{color}">{_esc(text)}</span>'
 
 
+NAV_KEYS = (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down)
+
+
 class _ViewerFilter(QObject):
-    """Right-click on the canvas: our own (Fluent) menu instead of NodeGraphQt's."""
+    """Right-click on the canvas: our own (Fluent) menu instead of NodeGraphQt's. Arrow keys walk the links."""
 
     def __init__(self, page):
         super().__init__(page)
@@ -481,6 +625,13 @@ class _ViewerFilter(QObject):
         if event.type() == QEvent.ContextMenu:
             self.page.context_menu(event.pos(), event.globalPos())
             return True
+        if event.type() == QEvent.KeyPress and event.key() in NAV_KEYS and event.modifiers() in (
+                Qt.NoModifier, Qt.KeypadModifier):
+            from PySide6.QtWidgets import QGraphicsProxyWidget, QGraphicsTextItem
+            focus = obj.scene().focusItem() if obj.scene() else None
+            if isinstance(focus, (QGraphicsTextItem, QGraphicsProxyWidget)):
+                return False        # typing in a title or a widget inside a block: its own keys
+            return self.page.nav_key(event.key())
         return False
 
 
@@ -496,7 +647,8 @@ class CanvasInterface(QWidget):
         self.mid_of = {}            # NodeGraphQt node id -> model id
 
         self.graph = NodeGraph()
-        self.graph.register_nodes([InNode, OutNode, EndNode, GroupNode, RouterNode, RelayNode, PcNode])
+        self.graph.register_nodes([InNode, OutNode, EndNode, GroupNode, RouterNode, RelayNode, WirelessInNode,
+                                   WirelessOutNode, PcNode])
         self.rule_of = {}           # (NodeGraphQt node id, output port name) -> rule id or "default"
         self.in_lane_of = {}        # (NodeGraphQt node id, input port name) -> pass-through input lane id
         self.out_lane_of = {}       # (NodeGraphQt node id, output port name) -> pass-through output lane id
@@ -508,6 +660,12 @@ class CanvasInterface(QWidget):
         self.graph.port_connected.connect(self._on_connected)
         self.graph.port_disconnected.connect(self._on_disconnected)
         self.graph.node_double_clicked.connect(self._on_double_clicked)
+        self.graph.node_selection_changed.connect(lambda *_: self._on_selection())
+        self.graph.property_changed.connect(self._on_property_changed)
+        self._focus = None          # wireless pair shown (the rest faded, an arc between its halves)
+        self._arc = None
+        self._nav = None            # ([NodeGraphQt node id, ...], index): the choices of the last arrow step
+        self._came_from = {}        # NodeGraphQt node id -> the node an arrow step came from (going back returns there)
         viewer = self.graph.viewer()
         viewer.moved_nodes.connect(self._on_moved)
         self._filter = _ViewerFilter(self)
@@ -530,7 +688,8 @@ class CanvasInterface(QWidget):
                            + _t("An outbound's 'via' output chains it through another outbound.") + " "
                            + _t("A router sends each rule's traffic out of its own output.") + " "
                            + _t("A group's 'members' output uses several outbounds as one (fastest or failover).") + " "
-                           + _t("Alt+Shift+drag cuts links."), self)
+                           + _t("Alt+Shift+drag cuts links.") + " "
+                           + _t("With a block selected, ←/→ jump along its links and ↑/↓ pick another of several."), self)
         hint.setWordWrap(True)
         self.pc_bar = PcBar(ctl, self)
 
@@ -569,7 +728,9 @@ class CanvasInterface(QWidget):
         b.triggered.connect(lambda: self.ctl.new_router(pos, style="if"))
         c = Action(FIF.ALIGNMENT, _t("Pass-through (tidy up the wiring)"), menu)
         c.triggered.connect(lambda: self.ctl.new_relay(pos))
-        menu.addActions([a, b, c])
+        w = Action(FIF.WIFI, _t("Wireless pair (linked without a wire)"), menu)
+        w.triggered.connect(lambda: self.ctl.new_wireless(pos))
+        menu.addActions([a, b, c, w])
         return menu
 
     def _outbound_menu(self, pos=None, parent=None):
@@ -604,13 +765,17 @@ class CanvasInterface(QWidget):
     def context_menu(self, pos, global_pos):
         viewer = self.graph.viewer()
         scene_pos = viewer.mapToScene(pos)
-        node = None
+        node, port_item = None, None
         for item in viewer.items(pos):
+            if port_item is None and isinstance(item, PortItem):
+                port_item = item
             while item is not None and not isinstance(item, AbstractNodeItem):
                 item = item.parentItem()
             if item is not None:
                 node = self.graph.get_node_by_id(item.id)
                 break
+        if node is not None and port_item is not None and self._port_color_menu(node, port_item, global_pos):
+            return
         menu = RoundMenu(parent=self)
         p = [scene_pos.x(), scene_pos.y()]
         if node is None:
@@ -621,6 +786,8 @@ class CanvasInterface(QWidget):
             fit = Action(FIF.ZOOM, _t("Fit"), menu)
             fit.triggered.connect(self.fit)
             menu.addAction(fit)
+        elif split_mid(self.mid_of.get(node.id))[1]:
+            self._wireless_menu(menu, *split_mid(self.mid_of.get(node.id)))
         else:
             mid = self.mid_of.get(node.id)
             if mid == PC_ID:
@@ -657,6 +824,8 @@ class CanvasInterface(QWidget):
                         add_out = Action(FIF.ADD, _t("Add an output lane"), menu)
                         add_out.triggered.connect(lambda: self.ctl.add_lane(mid, "outputs"))
                         menu.addAction(add_out)
+                if self.outputs_of(mid):
+                    menu.addMenu(self._output_colors_menu(mid, menu))
                 if kind == "outbound" and gn["via"]:
                     cut = Action(FIF.REMOVE, _t("Disconnect"), menu)
                     cut.triggered.connect(lambda: self.ctl.set_via(mid, None))
@@ -673,11 +842,198 @@ class CanvasInterface(QWidget):
                 menu.addActions([dup, delete])
         menu.exec(global_pos)
 
+    def _wireless_menu(self, menu, rid, half):
+        """Right-click on a half of a wireless pair."""
+        from .. import graph as graph_mod
+        _, r = graph_mod.find(self.ctl.graph, rid)
+        if r is None:
+            return
+        edit = Action(FIF.EDIT, _t("Edit"), menu)
+        edit.triggered.connect(lambda: self.ctl.edit_node(rid))
+        menu.addAction(edit)
+        if r.get("broken"):
+            fix = Action(FIF.SYNC, _t("Recreate the partner"), menu)
+            fix.triggered.connect(lambda: self.ctl.repair_wireless(rid))
+            menu.addAction(fix)
+        else:
+            go = Action(FIF.WIFI, _t("Go to the partner"), menu)
+            go.triggered.connect(lambda: self.go_to_partner(rid, half))
+            menu.addAction(go)
+        dup = Action(FIF.COPY, _t("Duplicate"), menu)
+        dup.triggered.connect(lambda: self.ctl.duplicate_node(rid))
+        delete = Action(FIF.DELETE, _t("Delete"), menu)
+        delete.triggered.connect(lambda: confirm_delete(self.ctl, [], self.window(), [(rid, half)]))
+        menu.addSeparator()
+        menu.addActions([dup, delete])
+
+    # --- keyboard: arrows follow the links ---
+    def neighbours(self, node, forward):
+        """Blocks linked out of node (forward) or into it, in port order (top to bottom within a port).
+        The other half of a wireless pair counts as linked."""
+        out, seen = [], {node.id}
+        rid, half = split_mid(self.mid_of.get(node.id))
+        if half == ("in" if forward else "out"):
+            partner = self.node_of.get(f"{rid}~{'out' if forward else 'in'}")
+            if partner is not None:
+                out.append(partner)
+                seen.add(partner.id)
+        for port in (node.output_ports() if forward else node.input_ports()):
+            for other in sorted(port.connected_ports(), key=lambda p: p.node().view.scenePos().y()):
+                n = other.node()
+                if n.id not in seen:
+                    seen.add(n.id)
+                    out.append(n)
+        return out
+
+    def nav_key(self, key):
+        """With one block selected: → selects the block it links to, ← the one linking into it (back where the
+        last step came from, if that is one of them); ↑/↓ switch to the other choices of that step.
+        Returns True if the key was used."""
+        sel = self.graph.selected_nodes()
+        if len(sel) != 1:
+            return False
+        cur = sel[0]
+        if key in (Qt.Key_Left, Qt.Key_Right):
+            options = self.neighbours(cur, key == Qt.Key_Right)
+            back = self._came_from.get(cur.id)
+            options.sort(key=lambda n: n.id != back)        # (stable: the rest keep their order)
+            if options:
+                self._nav = ([n.id for n in options], 0)
+                self._came_from[options[0].id] = cur.id
+                self._select(options[0])
+            return True
+        if self._nav and cur.id in self._nav[0] and len(self._nav[0]) > 1:
+            ids = self._nav[0]
+            i = (ids.index(cur.id) + (1 if key == Qt.Key_Down else -1)) % len(ids)
+            node = self.graph.get_node_by_id(ids[i])
+            if node is not None:
+                prev = self._came_from.get(cur.id)
+                if prev:
+                    self._came_from[node.id] = prev
+                self._nav = (ids, i)
+                self._select(node)
+                return True
+        return False
+
+    def _select(self, node):
+        """Select node only and bring it into view if it is off screen."""
+        self.graph.clear_selection()
+        node.set_selected(True)
+        viewer = self.graph.viewer()
+        seen = viewer.mapToScene(viewer.viewport().rect()).boundingRect()
+        if not seen.contains(node.view.sceneBoundingRect()):
+            self.graph.center_on([node])
+        self._on_selection()
+
+    def go_to_partner(self, rid, half):
+        """Select the other half of wireless pair rid and centre the view on it."""
+        other = self.node_of.get(f"{rid}~{'out' if half == 'in' else 'in'}")
+        if other is None:
+            return
+        self.graph.clear_selection()
+        other.set_selected(True)
+        self.graph.center_on([other])
+        self._on_selection()
+
+    # --- wireless pair focus: the other blocks fade and an arc joins the two halves ---
+    def _on_selection(self):
+        from .. import graph as graph_mod
+        pair = None
+        for n in self.graph.selected_nodes():
+            rid, half = split_mid(self.mid_of.get(n.id))
+            if half:
+                _, r = graph_mod.find(self.ctl.graph, rid)
+                if r is not None and not r.get("broken"):
+                    pair = rid
+                break
+        if pair != self._focus:
+            self._set_focus(pair)
+
+    def _set_focus(self, rid):
+        self._clear_focus()
+        a, b = (self.node_of.get(f"{rid}~in"), self.node_of.get(f"{rid}~out")) if rid else (None, None)
+        if a is None or b is None:
+            return
+        self._focus = rid
+        keep = {a.view, b.view}
+        for node in self.graph.all_nodes():
+            if node.view not in keep:
+                node.view.setOpacity(FADED)
+        for pipe in self.graph.viewer().all_pipes():
+            ends = {p.node for p in (pipe.input_port, pipe.output_port) if p is not None}
+            if not ends & keep:
+                pipe.setOpacity(FADED)
+        from .. import graph as graph_mod
+        color = graph_mod.wire_colors(self.ctl.graph).get(graph_mod.find(self.ctl.graph, rid)[1]["outputs"][0]["id"], ("",))[0]
+        self._arc = QGraphicsPathItem()
+        self._arc.setPen(QPen(QColor(*_rgba(color)), 2.2, Qt.DashLine, Qt.RoundCap))
+        self._arc.setZValue(10000)
+        self._arc.setAcceptedMouseButtons(Qt.NoButton)
+        self.graph.viewer().scene().addItem(self._arc)
+        self._update_arc()
+
+    def _update_arc(self):
+        """Parabola from the right side of the input half to the left side of the output half."""
+        if self._arc is None or self._focus is None:
+            return
+        a, b = self.node_of.get(f"{self._focus}~in"), self.node_of.get(f"{self._focus}~out")
+        if a is None or b is None:
+            return
+        ra, rb = a.view.sceneBoundingRect(), b.view.sceneBoundingRect()
+        p1, p2 = QPointF(ra.right(), ra.center().y()), QPointF(rb.left(), rb.center().y())
+        dist = ((p2.x() - p1.x()) ** 2 + (p2.y() - p1.y()) ** 2) ** 0.5
+        top = min(p1.y(), p2.y()) - max(60.0, dist * 0.35)
+        path = QPainterPath(p1)
+        path.quadTo(QPointF((p1.x() + p2.x()) / 2, top), p2)
+        path.addEllipse(p1, 4, 4)
+        path.addEllipse(p2, 4, 4)
+        self._arc.setPath(path)
+
+    def _clear_focus(self):
+        if self._arc is not None:
+            if self._arc.scene() is not None:
+                self._arc.scene().removeItem(self._arc)
+            self._arc = None
+        if self._focus is not None:
+            for node in self.graph.all_nodes():
+                node.view.setOpacity(1.0)
+            for pipe in self.graph.viewer().all_pipes():
+                pipe.setOpacity(1.0)
+        self._focus = None
+
+    def _port_color_menu(self, node, port_item, global_pos):
+        """Right-click on an output of a router / IF / pass-through: that output's colour. True if shown."""
+        mid = split_mid(self.mid_of.get(node.id))[0]
+        port = next((p for p in node.output_ports() if p.view is port_item), None)
+        if port is None or not mid:
+            return False
+        key = self.rule_of.get((node.id, port.name())) or self.out_lane_of.get((node.id, port.name()))
+        label = dict(self.outputs_of(mid)).get(key)
+        if label is None:
+            return False
+        self.output_color_menu(mid, key, global_pos, _t("Link colour") + " · " + label)
+        return True
+
     def delete_selected(self):
-        ids = [self.mid_of.get(n.id) for n in self.graph.selected_nodes()]
-        ids = [i for i in ids if i and i != PC_ID]
-        if ids:
-            confirm_delete(self.ctl, ids, self.window())
+        from .. import graph as graph_mod
+        ids, halves = [], {}
+        for n in self.graph.selected_nodes():
+            rid, half = split_mid(self.mid_of.get(n.id))
+            if not rid or rid == PC_ID:
+                continue
+            if half:
+                halves.setdefault(rid, []).append(half)
+            elif rid not in ids:
+                ids.append(rid)
+        lone = []
+        for rid, hs in halves.items():      # both halves (or the half left over): the whole pair goes
+            _, r = graph_mod.find(self.ctl.graph, rid)
+            if r is not None and (len(hs) == 2 or r.get("broken")):
+                ids.append(rid)
+            elif r is not None:
+                lone.append((rid, hs[0]))
+        if ids or lone:
+            confirm_delete(self.ctl, ids, self.window(), lone)
 
     def fit(self):
         if self.graph.all_nodes():
@@ -704,10 +1060,13 @@ class CanvasInterface(QWidget):
         return json.dumps([[n["id"], n["name"], n["target"], n.get("color")] for n in graph["inbounds"]] +
                           [[n["id"], n["name"], n["via"], n["outbound"]["type"], n.get("members", []), n.get("color")]
                            for n in graph["outbounds"]] +
-                          [[n["id"], n["name"], n["default"], n.get("switch"), [[x["id"], x["name"], x["target"]] for x in n["rules"]],
-                            n.get("color")] for n in graph.get("routers", [])] +
+                          [[n["id"], n["name"], n["default"], n.get("switch"),
+                            [[x["id"], x["name"], x["target"], x.get("color")] for x in n["rules"]],
+                            n.get("color"), n.get("default_color")] for n in graph.get("routers", [])] +
                           [[n["id"], n["name"], n["routed"], [[x["id"], x["gap"], x["out"]] for x in n["inputs"]],
-                            [[x["id"], x["gap"], x["target"]] for x in n["outputs"]], n.get("color")] for n in graph.get("relays", [])] +
+                            [[x["id"], x["gap"], x["target"], x.get("color")] for x in n["outputs"]], n.get("color"),
+                            n.get("wireless"), n.get("broken")]
+                           for n in graph.get("relays", [])] +
                           [graph["pc"]["inbound"]])
 
     def refresh(self, graph, proxies, statuses, pc_status):
@@ -722,6 +1081,8 @@ class CanvasInterface(QWidget):
         g = self.graph
         self.syncing = True
         try:
+            self._clear_focus()
+            self._nav, self._came_from = None, {}
             g.clear_session()
             self.node_of, self.mid_of, self.rule_of = {}, {}, {}
             self.in_lane_of, self.out_lane_of, self.lane_port = {}, {}, {}
@@ -732,9 +1093,10 @@ class CanvasInterface(QWidget):
                 self.node_of[mid] = node
                 self.mid_of[node.id] = mid
                 if mid != PC_ID:
-                    _, gn = graph_mod.find(graph, mid)
+                    model = split_mid(mid)[0]
+                    _, gn = graph_mod.find(graph, model)
                     node.view.swatch = gn.get("color", "") if gn else ""
-                    node.view.on_swatch = lambda at, mid=mid: self.color_menu(mid, at)
+                    node.view.on_swatch = lambda at, mid=model: self.color_menu(mid, at)
                 return node
 
             from .. import graph as graph_mod
@@ -760,11 +1122,39 @@ class CanvasInterface(QWidget):
                 default = _t("else") if is_if else _t("default")
                 node.add_output(default, multi_output=False, color=ELSE_COLOR if is_if else PORT_COLOR)
                 self.rule_of[(node.id, default)] = "default"
+                if is_if:               # an IF colours then and else on their own: two swatches
+                    node.view.on_swatch = None
+                    node.view.out_swatches = [
+                        {"key": k, "own": "", "fill": "", "mixed": False, "tip": tip,
+                         "on_click": lambda at, rid=r["id"], k=k, tip=tip: self.output_color_menu(rid, k, at, tip)}
+                        for k, tip in ((r["rules"][0]["id"], _t("Link colour") + " · " + _t("then")),
+                                       ("default", _t("Link colour") + " · " + _t("else")))]
                 if r.get("switch"):
                     tw = ToggleWidget(node.view)
                     node.add_custom_widget(tw)
-                    tw.cb.toggled.connect(lambda on, rid=r["id"]: self.ctl.set_switch(rid, on))
+                    tw.on_set = lambda on, rid=r["id"]: self.ctl.set_switch(rid, on)
             for r in graph.get("relays", []):
+                if r.get("wireless"):
+                    broken = r.get("broken")
+                    for half, kind, title, pos in (
+                            ("in", "WirelessInNode", _t("Wireless in · {name}"), r["pos"]),
+                            ("out", "WirelessOutNode", _t("Wireless out · {name}"), r.get("pos_out", r["pos"]))):
+                        if broken == half:
+                            continue
+                        node = make(kind, f"{r['id']}~{half}", title.format(name=r["name"]), pos,
+                                    BROKEN_COLOR if broken else WIRELESS_COLOR)
+                        item = node.view
+                        item.pair_name, item.broken, item.on_moved = r["name"], bool(broken), self._update_arc
+                        if half == "in":
+                            port = node.add_input("in", multi_input=True, display_name=False, color=LANE_COLOR)
+                            self.in_lane_of[(node.id, "in")] = r["inputs"][0]["id"]
+                            if not broken:
+                                self.lane_port[r["inputs"][0]["id"]] = port
+                        else:
+                            node.add_output("out", multi_output=False, display_name=False, color=LANE_COLOR)
+                            self.out_lane_of[(node.id, "out")] = r["outputs"][0]["id"]
+                        item.draw_node()
+                    continue
                 node = make("RelayNode", r["id"], r["name"], r["pos"], RELAY_COLOR)
                 self._setup_relay(node, r)
             make("PcNode", PC_ID, _t("PC (system proxy)"), graph["pc"]["pos"], PC_COLOR)
@@ -791,7 +1181,9 @@ class CanvasInterface(QWidget):
                     if dst is not None and i < len(node.outputs()):
                         node.output(i).connect_to(dst, push_undo=False)
             for r in graph.get("relays", []):
-                node = self.node_of[r["id"]]
+                node = self.node_of.get(r["id"]) or self.node_of.get(r["id"] + "~out")
+                if node is None:
+                    continue
                 for i, x in enumerate(r["outputs"]):
                     dst = port_in(x["target"])
                     if dst is not None:
@@ -813,15 +1205,20 @@ class CanvasInterface(QWidget):
         for mid, node in self.node_of.items():
             if mid == PC_ID:
                 continue
+            mid = split_mid(mid)[0]
             kind, n = graph_mod.find(graph, mid)
             if n is None:
                 continue
-            if kind == "relay":
+            if kind == "relay" and not n.get("wireless"):
                 node.view.link_colors = [lanes[x["id"]][0] for x in n["inputs"]]
                 node.view.link_mixed = [len(lanes[x["id"]][1]) > 1 for x in n["inputs"]]
             own_color, own_parts = lanes.get(mid, (n.get("color", ""), ()))
             node.view.swatch_fill = own_color
             node.view.swatch_mixed = len(own_parts) > 1
+            for sw in node.view.out_swatches:
+                sw["own"] = graph_mod.output_color(graph, mid, sw["key"])
+                sw["fill"], parts = lanes.get(graph_mod.router_out_key(mid, sw["key"]), ("", ()))
+                sw["mixed"] = len(parts) > 1
             if kind != "relay":             # (a pass-through's tooltip lists its lanes, set in update_states)
                 node.view.setToolTip(
                     _t("Link colour: mix of {colors}").format(colors=" + ".join(color_name(c) for c in own_parts))
@@ -829,11 +1226,32 @@ class CanvasInterface(QWidget):
             node.view.update()
             for port in node.output_ports():
                 lane = self.out_lane_of.get((node.id, port.name()))
+                rule = self.rule_of.get((node.id, port.name()))
+                if rule is not None:
+                    lane = graph_mod.router_out_key(mid, rule)
                 color, parts = lanes[lane] if lane in lanes else (own_color, own_parts)
                 for pipe in port.view.connected_pipes:
                     pipe.color = _rgba(color)
                     pipe.style = PipeEnum.DRAW_TYPE_DASHED.value if len(parts) > 1 else PipeEnum.DRAW_TYPE_DEFAULT.value
                     pipe.reset()
+
+    def _fill_color_menu(self, menu, cur, apply, auto_label):
+        """Palette, the automatic choice (auto_label) and a custom colour; apply(colour) sets it ('' = automatic)."""
+        def icon(color):
+            pm = QPixmap(16, 16)
+            pm.fill(QColor(*_rgba(color)))
+            return QIcon(pm)
+        for hexc, label in PALETTE:
+            a = Action(icon(hexc), ("✓ " if hexc == cur else "") + label, menu)
+            a.triggered.connect(lambda _=False, c=hexc: apply(c))
+            menu.addAction(a)
+        menu.addSeparator()
+        d = Action(icon(""), ("✓ " if not cur else "") + auto_label, menu)
+        d.triggered.connect(lambda: apply(""))
+        custom = Action(FIF.PALETTE, _t("Custom colour…"), menu)
+        custom.triggered.connect(lambda: self._pick_color(cur, apply))
+        menu.addActions([d, custom])
+        return menu
 
     def color_menu(self, mid, at):
         """Swatch clicked: palette, default, or any colour."""
@@ -841,29 +1259,60 @@ class CanvasInterface(QWidget):
         _, n = graph_mod.find(self.ctl.graph, mid)
         if n is None:
             return
-        cur = n.get("color", "")
-        menu = RoundMenu(parent=self)
-
-        def icon(color):
-            pm = QPixmap(16, 16)
-            pm.fill(QColor(*_rgba(color)))
-            return QIcon(pm)
-        for hexc, label in PALETTE:
-            a = Action(icon(hexc), ("✓ " if hexc == cur else "") + label, menu)
-            a.triggered.connect(lambda _=False, c=hexc: self.ctl.set_color(mid, c))
-            menu.addAction(a)
-        menu.addSeparator()
-        d = Action(icon(""), ("✓ " if not cur else "") + _t("Automatic (follow the incoming links)"), menu)
-        d.triggered.connect(lambda: self.ctl.set_color(mid, ""))
-        custom = Action(FIF.PALETTE, _t("Custom colour…"), menu)
-        custom.triggered.connect(lambda: self._pick_color(mid, cur))
-        menu.addActions([d, custom])
+        menu = self._fill_color_menu(RoundMenu(parent=self), n.get("color", ""),
+                                     lambda c: self.ctl.set_color(mid, c), _t("Automatic (follow the incoming links)"))
         menu.exec(at.toPoint() if hasattr(at, "toPoint") else at)
 
-    def _pick_color(self, mid, cur):
+    def _output_auto_label(self, mid):
+        """What an output without its own colour uses: the block's colour (an IF has none: the incoming links)."""
+        from .. import graph as graph_mod
+        kind, n = graph_mod.find(self.ctl.graph, mid)
+        if kind == "router" and n.get("style") == "if":
+            return _t("Automatic (follow the incoming links)")
+        return _t("Same as the block")
+
+    def output_color_menu(self, mid, key, at, title=""):
+        """Colour of one output of a router / IF (rule id or "default") or pass-through (output lane id)."""
+        from .. import graph as graph_mod
+        menu = RoundMenu(parent=self)
+        if title:
+            head = Action(title, menu)
+            head.setEnabled(False)
+            menu.addAction(head)
+            menu.addSeparator()
+        self._fill_color_menu(menu, graph_mod.output_color(self.ctl.graph, mid, key),
+                              lambda c: self.ctl.set_output_color(mid, key, c), self._output_auto_label(mid))
+        menu.exec(at.toPoint() if hasattr(at, "toPoint") else at)
+
+    def outputs_of(self, mid):
+        """[(output key, label)] of a router / IF / pass-through block, in port order ([] for other blocks)."""
+        from .. import graph as graph_mod
+        kind, n = graph_mod.find(self.ctl.graph, mid)
+        if kind == "router":
+            if n.get("style") == "if":
+                return [(n["rules"][0]["id"], _t("then")), ("default", _t("else"))]
+            return [(x["id"], f"{i + 1}. {x['name']}") for i, x in enumerate(n["rules"])] + [("default", _t("default"))]
+        if kind == "relay" and not n.get("wireless"):
+            return [(x["id"], _t("Output {n}").format(n=i + 1)) for i, x in enumerate(n["outputs"])]
+        return []
+
+    def _output_colors_menu(self, mid, parent):
+        """Submenu with a colour menu per output."""
+        from .. import graph as graph_mod
+        menu = RoundMenu(_t("Output link colours"), parent)
+        menu.setIcon(FIF.PALETTE.icon())
+        auto = self._output_auto_label(mid)
+        for key, label in self.outputs_of(mid):
+            sub = RoundMenu(label, menu)
+            self._fill_color_menu(sub, graph_mod.output_color(self.ctl.graph, mid, key),
+                                  lambda c, key=key: self.ctl.set_output_color(mid, key, c), auto)
+            menu.addMenu(sub)
+        return menu
+
+    def _pick_color(self, cur, apply):
         from .common import ColorPicker
         dlg = ColorPicker(QColor(cur) if cur else QColor(*_rgba("")[:3]), _t("Link colour"), self.window())
-        dlg.colorChanged.connect(lambda c: self.ctl.set_color(mid, c.name()))
+        dlg.colorChanged.connect(lambda c: apply(c.name()))
         dlg.exec()
 
     def _setup_relay(self, node, r):
@@ -975,6 +1424,27 @@ class CanvasInterface(QWidget):
                 for i, parts in mixes:
                     tips.append(_t("Output {n}: mix of {colors}").format(n=i + 1, colors=" + ".join(color_name(c) for c in parts)))
             node.view.setToolTip("\n".join(tips))
+        for r in cg.get("relays", []):
+            if not r.get("wireless"):
+                continue
+            lane = r["inputs"][0]["id"]
+            if r.get("broken"):
+                info_in = info_out = "⚠ " + _t("partner deleted")
+                tip = _t("The other half of this wireless pair was deleted, so nothing goes through it. "
+                         "Right-click to recreate the partner or delete it.")
+            else:
+                src = graph_mod.lane_sources(cg, lane)
+                _, t = graph_mod.find(cg, graph_mod.follow(cg, lane))
+                dest = t["name"] if t else _t("not connected")
+                info_in, info_out = "→ " + dest, "← " + (", ".join(src) or "-")
+                tip = (_t("from: {names}").format(names=", ".join(src) or "-") + "\n→ " + dest + "\n\n"
+                       + _t("Click to show its partner; right-click → Go to the partner."))
+            for half, text in (("in", info_in), ("out", info_out)):
+                node = self.node_of.get(f"{r['id']}~{half}")
+                if node is not None:
+                    node.view.info_text = text
+                    node.view.setToolTip(tip)
+                    node.view.update()
         pc = self.node_of.get(PC_ID)
         if pc is not None:
             state, text = pc_status
@@ -986,11 +1456,16 @@ class CanvasInterface(QWidget):
     def _on_connected(self, in_port, out_port):
         if self.syncing:
             return
-        src = self.mid_of.get(out_port.node().id)
-        dst = self.mid_of.get(in_port.node().id)
+        src = split_mid(self.mid_of.get(out_port.node().id))[0]
+        dst, dst_half = split_mid(self.mid_of.get(in_port.node().id))
         if not src or not dst:
             return
         from .. import graph as graph_mod
+        for mid in (src, dst):
+            k, r = graph_mod.find(self.ctl.graph, mid)
+            if k == "relay" and r.get("broken"):
+                self._reject(in_port, out_port, _t("This wireless block has no partner. Recreate the partner first."))
+                return
         src_kind, src_node = graph_mod.find(self.ctl.graph, src)
         dst_kind, _ = graph_mod.find(self.ctl.graph, dst)
         lane = self.in_lane_of.get((in_port.node().id, in_port.name()))
@@ -1080,8 +1555,8 @@ class CanvasInterface(QWidget):
     def _on_disconnected(self, in_port, out_port):
         if self.syncing:
             return
-        src = self.mid_of.get(out_port.node().id)
-        dst = self.mid_of.get(in_port.node().id)
+        src = split_mid(self.mid_of.get(out_port.node().id))[0]
+        dst = split_mid(self.mid_of.get(in_port.node().id))[0]
         if not src or not dst:
             return
         dst = self.in_lane_of.get((in_port.node().id, in_port.name()), dst)
@@ -1116,8 +1591,31 @@ class CanvasInterface(QWidget):
         if n is not None and n["target"] == dst:
             self.ctl.set_target(src, None)
 
+    def _on_property_changed(self, node, prop, value):
+        """A block's title was edited on the canvas (double-click the title): rename the block."""
+        if self.syncing or prop != "name":
+            return
+        mid, half = split_mid(self.mid_of.get(node.id))
+        if not mid:
+            return
+        name = str(value).strip()
+        if half:        # a wireless half shows "Wireless in · #1": keep only what stands for the pair's name
+            pre, _, post = (_t("Wireless in · {name}") if half == "in" else _t("Wireless out · {name}")).partition("{name}")
+            if name.startswith(pre.strip()) and name.endswith(post) and len(name) >= len(pre.strip()) + len(post):
+                name = name[len(pre.strip()):len(name) - len(post)].strip()
+        QTimer.singleShot(0, self, lambda: self._apply_rename(mid, name))
+
+    def _apply_rename(self, mid, name):
+        from .. import graph as graph_mod
+        _, n = graph_mod.find(self.ctl.graph, mid)
+        if n is not None and name and name[:60] != n["name"]:
+            self.ctl.rename_node(mid, name)
+            return
+        self.sig = None             # nothing to change (PC block, empty or same name): show the model's title again
+        self.ctl.refresh_lists()
+
     def _on_double_clicked(self, node):
-        mid = self.mid_of.get(node.id)
+        mid = split_mid(self.mid_of.get(node.id))[0]
         if mid and mid != PC_ID:
             QTimer.singleShot(0, self, lambda: self.ctl.edit_node(mid))
 
@@ -1125,5 +1623,6 @@ class CanvasInterface(QWidget):
         positions = {}
         for nid, node in self.node_of.items():
             x, y = node.pos()
-            positions[nid] = [round(x, 1), round(y, 1)]
+            rid, half = split_mid(nid)
+            positions[rid + "~out" if half == "out" else rid] = [round(x, 1), round(y, 1)]
         self.ctl.move_nodes(positions)

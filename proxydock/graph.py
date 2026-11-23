@@ -3,10 +3,11 @@
 graph = {
   "inbounds":  [{"id", "name", "autostart", "auto_restart", "inbound": {...}, "overrides": {...}, "target": id|None, "pos": [x, y]}],
   "outbounds": [{"id", "name", "outbound": {...}, "via": id|None, "members": [id, ...], "pos": [x, y]}],
-  "routers":   [{"id", "name", "style": "router"|"if", "rules": [{"id", "name", "match": {...}, "target": id|None}],
-                 "default": id|None, "pos": [x, y]}],
+  "routers":   [{"id", "name", "style": "router"|"if", "rules": [{"id", "name", "match": {...}, "target": id|None, "color"}],
+                 "default": id|None, "default_color", "pos": [x, y]}],
   "relays":    [{"id", "name", "routed": bool, "inputs": [{"id", "gap", "out": output lane id|None}],
-                 "outputs": [{"id", "gap", "target": id|None}], "pos": [x, y]}],
+                 "outputs": [{"id", "gap", "target": id|None, "color"}], "pos": [x, y],
+                 "wireless": bool, "pos_out": [x, y], "broken": None|"in"|"out"  (the last two: wireless only)}],
   "pc":        {"inbound": id|None, "pos": [x, y], "backup": {...}|None, "applied": bool, "server": str},
 }
 
@@ -26,9 +27,16 @@ lane is wired inside the block to an output lane, whose link goes on to an outbo
 pass-through lane. Straight blocks wire lane i to lane i; routed ones ("routed": True) can cross, merge and have
 different input and output counts. "gap" = empty rows above a lane on the canvas. compile() follows the lanes
 (without_relays) so the runtime never sees them.
+A wireless pair is a one-lane straight pass-through ("wireless": True) drawn as two separate blocks: the input half
+at "pos", the output half at "pos_out", linked without a visible wire. Deleting one half breaks the pair
+("broken": "in"|"out" = the half that is gone): every link of the pair is cut and the half left over is disabled
+until its partner is recreated.
 Every block can have a "color" ("#rrggbb", "" = automatic): the canvas draws the links leaving it in that colour.
 A block without one follows the links coming into it (their mix where different colours meet, drawn dashed), and
 a pass-through does the same lane by lane - see wire_colors().
+Blocks with several outputs can also colour each output: a router rule's "color", a router's "default_color" (an
+IF's then / else are these two; an IF has no block colour of its own) and a pass-through output lane's "color".
+An output without its own colour uses the block's colour, or follows what comes in when that is automatic too.
 The runtime still works with one "proxy" per inbound (inbound + resolved outbound + overrides, plus "routes" for a
 router: [{"match": [match, ...], "outbound": resolved chain, "name": rule name}]); compile() builds them.
 """
@@ -141,16 +149,22 @@ def validate_router_node(raw):
         seen.add(rid)
         t = r.get("target")
         rules.append({"id": rid, "name": _name(r.get("name"), _t("Rule {n}").format(n=i + 1)),
-                      "match": validate_match(r.get("match")), "target": t if isinstance(t, str) and t else None})
+                      "match": validate_match(r.get("match")), "target": t if isinstance(t, str) and t else None,
+                      "color": valid_color(r.get("color"))})
     d = raw.get("default")
     style = "if" if raw.get("style") == "if" else "router"
+    color, default_color = valid_color(raw.get("color")), valid_color(raw.get("default_color"))
     if style == "if":           # exactly one condition set
-        rules = rules[:1] or [{"id": new_id(), "name": "IF", "match": {}, "target": None}]
+        rules = rules[:1] or [{"id": new_id(), "name": "IF", "match": {}, "target": None, "color": ""}]
+        if color:               # an IF colours then / else on their own: an old block colour becomes both
+            rules[0]["color"] = rules[0]["color"] or color
+            default_color = default_color or color
+            color = ""
     return {"id": raw.get("id") if isinstance(raw.get("id"), str) and raw.get("id") else new_id(),
             "name": _name(raw.get("name"), "IF" if style == "if" else "Router"), "style": style, "rules": rules,
             "switch": style == "if" and raw.get("switch") is True, "switch_on": raw.get("switch_on") is True,
             "default": d if isinstance(d, str) and d else None, "pos": _pos(raw.get("pos")),
-            "color": valid_color(raw.get("color"))}
+            "color": color, "default_color": default_color}
 
 
 MAX_LANES = 24
@@ -168,20 +182,27 @@ def _lanes(items, key):
         seen.add(lid)
         gap = x.get("gap")
         v = x.get(key)
-        out.append({"id": lid, "gap": gap if type(gap) is int and 0 <= gap <= MAX_GAP else 0,
-                    key: v if isinstance(v, str) and v else None})
+        lane = {"id": lid, "gap": gap if type(gap) is int and 0 <= gap <= MAX_GAP else 0,
+                key: v if isinstance(v, str) and v else None}
+        if key == "target":     # output lanes can have their own link colour
+            lane["color"] = valid_color(x.get("color"))
+        out.append(lane)
     return out
 
 
 def new_lane(key):
-    return {"id": new_id(), "gap": 0, key: None}
+    return {"id": new_id(), "gap": 0, key: None, **({"color": ""} if key == "target" else {})}
 
 
 def validate_relay_node(raw):
     raw = raw if isinstance(raw, dict) else {}
-    routed = raw.get("routed") is True
+    wireless = raw.get("wireless") is True
+    routed = raw.get("routed") is True and not wireless
     ins = _lanes(raw.get("inputs"), "out") or [new_lane("out")]
     outs = _lanes(raw.get("outputs"), "target") or [new_lane("target")]
+    if wireless:                # one lane, no gaps
+        ins, outs = ins[:1], outs[:1]
+        ins[0]["gap"] = outs[0]["gap"] = 0
     if routed:
         out_ids = {o["id"] for o in outs}
         for i in ins:
@@ -194,16 +215,26 @@ def validate_relay_node(raw):
         for i, o in zip(ins, outs):
             o["gap"] = i["gap"]
             i["out"] = o["id"]
-    return {"id": raw.get("id") if isinstance(raw.get("id"), str) and raw.get("id") else new_id(),
-            "name": _name(raw.get("name"), _t("Pass-through")), "routed": routed,
-            "inputs": ins, "outputs": outs, "pos": _pos(raw.get("pos")), "color": valid_color(raw.get("color"))}
+    n = {"id": raw.get("id") if isinstance(raw.get("id"), str) and raw.get("id") else new_id(),
+         "name": _name(raw.get("name"), "#1" if wireless else _t("Pass-through")), "routed": routed,
+         "inputs": ins, "outputs": outs, "pos": _pos(raw.get("pos")), "color": valid_color(raw.get("color")),
+         "wireless": wireless}
+    if wireless:
+        n["pos_out"] = _pos(raw.get("pos_out"), (n["pos"][0] + 300, n["pos"][1] + 120))
+        n["broken"] = raw.get("broken") if raw.get("broken") in ("in", "out") else None
+        if n["broken"]:         # a lone half: nothing goes through it
+            ins[0]["out"] = None
+            outs[0]["target"] = None
+    return n
 
 
 def lane_index(graph):
-    """({input lane id: (relay, lane)}, {output lane id: (relay, lane)})."""
+    """({input lane id: (relay, lane)}, {output lane id: (relay, lane)}). A broken wireless pair takes no links."""
     ins, outs = {}, {}
     for r in graph.get("relays", ()):
         for x in r["inputs"]:
+            if r.get("broken"):
+                continue
             ins[x["id"]] = (r, x)
         for x in r["outputs"]:
             outs[x["id"]] = (r, x)
@@ -243,12 +274,14 @@ def lane_label(graph, tid):
     if hit is None:
         return None
     r, lane = hit
+    if r.get("wireless"):
+        return _t("Wireless {name}").format(name=r["name"])
     return _t("{name} · lane {n}").format(name=r["name"], n=r["inputs"].index(lane) + 1)
 
 
 def lane_choices(graph):
     """[(input lane id, label)] of every pass-through lane, for target pickers."""
-    return [(x["id"], lane_label(graph, x["id"])) for r in graph.get("relays", ()) for x in r["inputs"]]
+    return [(lid, lane_label(graph, lid)) for lid in lane_index(graph)[0]]
 
 
 DEFAULT_LINK = "#af5f1e"         # the canvas's default link colour (NodeGraphQt's pipe colour)
@@ -317,8 +350,8 @@ def wire_colors(graph):
     for n in graph["inbounds"]:
         feed(n["target"], ("b", n["id"]))
     for r in graph.get("routers", []):
-        for _, t in router_targets(r):
-            feed(t, ("b", r["id"]))
+        for key, t in router_targets(r):
+            feed(t, ("r", router_out_key(r["id"], key)))
     for n in graph["outbounds"]:
         feed(n.get("via"), ("b", n["id"]))
         for m in n.get("members", ()):
@@ -337,6 +370,8 @@ def wire_colors(graph):
             return block_parts(v, busy)
         if kind == "o":
             return out_parts(v, busy)
+        if kind == "r":
+            return rout_parts(v, busy)
         return in_parts(v, busy)
 
     def incoming(target, busy):
@@ -363,13 +398,27 @@ def wire_colors(graph):
             return ()
         return tuple(sorted(incoming(lid, busy | {lid})))
 
+    rule_color = {}             # router output key -> (its own colour, router id)
+    for r in graph.get("routers", []):
+        for x in r["rules"]:
+            rule_color[router_out_key(r["id"], x["id"])] = (x.get("color", ""), r["id"])
+        rule_color[router_out_key(r["id"], "default")] = (r.get("default_color", ""), r["id"])
+
+    def rout_parts(key, busy):
+        own, rid = rule_color[key]
+        return (own,) if own else block_parts(rid, busy)
+
     def out_parts(oid, busy):
         if oid in memo:
             return memo[oid]
         if oid in busy:
             return ()
         busy = busy | {oid}
-        r, _ = outs[oid]
+        r, lane = outs[oid]
+        own = lane.get("color") or r.get("color")
+        if own:                             # the lane's own colour, else the pass-through's
+            memo[oid] = (own,)
+            return memo[oid]
         got = set()
         for x in r["inputs"]:
             if x["out"] == oid:
@@ -391,7 +440,46 @@ def wire_colors(graph):
     for lid, (r, _) in ins.items():
         parts = in_parts(lid, frozenset())
         out[lid] = (colour(parts, r.get("color", "")), parts)
+    for key in rule_color:
+        parts = rout_parts(key, frozenset())
+        out[key] = (colour(parts), parts)
     return out
+
+
+def router_out_key(rid, key):
+    """wire_colors() key of router rid's output key (rule id or "default")."""
+    return f"{rid}/{key}"
+
+
+def output_color(graph, bid, key):
+    """Own colour of output key of block bid (router: rule id or "default"; pass-through: output lane id)."""
+    kind, n = find(graph, bid)
+    if kind == "router":
+        if key == "default":
+            return n.get("default_color", "")
+        return next((x.get("color", "") for x in n["rules"] if x["id"] == key), "")
+    if kind == "relay":
+        return next((x.get("color", "") for x in n["outputs"] if x["id"] == key), "")
+    return ""
+
+
+def set_output_color(graph, bid, key, color):
+    """Give output key of block bid its own colour ('' = none). False if there is no such output."""
+    kind, n = find(graph, bid)
+    color = valid_color(color)
+    if kind == "router":
+        if key == "default":
+            n["default_color"] = color
+            return True
+        x = next((x for x in n["rules"] if x["id"] == key), None)
+    elif kind == "relay":
+        x = next((x for x in n["outputs"] if x["id"] == key), None)
+    else:
+        x = None
+    if x is None:
+        return False
+    x["color"] = color
+    return True
 
 
 def without_relays(graph):
@@ -728,6 +816,64 @@ def add_relay(graph, name=None, pos=None, lanes=3):
     return n
 
 
+def next_wireless_name(graph):
+    """'#n' with the smallest n no wireless pair uses yet."""
+    used = {r["name"] for r in graph.get("relays", ()) if r.get("wireless")}
+    i = 1
+    while f"#{i}" in used:
+        i += 1
+    return f"#{i}"
+
+
+def add_wireless(graph, name=None, pos=None):
+    """New wireless pair: the input half at pos, the output half to the right of it."""
+    pos = pos or [230, 0]
+    n = validate_relay_node({"id": new_id(), "name": name or next_wireless_name(graph), "pos": pos, "wireless": True,
+                             "pos_out": [pos[0] + 300, pos[1]], "inputs": [new_lane("out")]})
+    graph.setdefault("relays", []).append(n)
+    return n
+
+
+def break_wireless(graph, rid, half):
+    """Half ("in"/"out") of wireless pair rid is deleted: every link of the pair is cut, the other half stays
+    disabled. Returns False if rid is no intact wireless pair."""
+    kind, r = find(graph, rid)
+    if kind != "relay" or not r.get("wireless") or r.get("broken") or half not in ("in", "out"):
+        return False
+    lane_in = r["inputs"][0]["id"]
+    for n in graph["inbounds"]:
+        if n["target"] == lane_in:
+            n["target"] = None
+    for x in graph.get("routers", []):
+        if x["default"] == lane_in:
+            x["default"] = None
+        for rule in x["rules"]:
+            if rule["target"] == lane_in:
+                rule["target"] = None
+    for x in graph.get("relays", []):
+        for o in x["outputs"]:
+            if o["target"] == lane_in:
+                o["target"] = None
+    r["inputs"][0]["out"] = None
+    r["outputs"][0]["target"] = None
+    r["broken"] = half
+    return True
+
+
+def repair_wireless(graph, rid):
+    """Recreate the missing half of a broken wireless pair next to the one left (no links yet)."""
+    kind, r = find(graph, rid)
+    if kind != "relay" or not r.get("broken"):
+        return False
+    if r["broken"] == "in":
+        r["pos"] = [r["pos_out"][0] - 300, r["pos_out"][1]]
+    else:
+        r["pos_out"] = [r["pos"][0] + 300, r["pos"][1]]
+    r["broken"] = None
+    r["inputs"][0]["out"] = r["outputs"][0]["id"]
+    return True
+
+
 def copy_relay(n):
     """Deep copy of relay node n with fresh block and lane ids (the inside wiring kept)."""
     c = copy.deepcopy(n)
@@ -743,7 +889,7 @@ def copy_relay(n):
 
 def set_lane_count(n, side, count):
     """Grow or shrink relay n's 'inputs' or 'outputs' to count lanes (1..MAX_LANES); straight blocks keep both sides equal."""
-    count = max(1, min(MAX_LANES, count))
+    count = 1 if n.get("wireless") else max(1, min(MAX_LANES, count))
     sides = ("inputs", "outputs") if not n["routed"] else (side,)
     for s in sides:
         key = "out" if s == "inputs" else "target"

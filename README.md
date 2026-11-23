@@ -25,54 +25,34 @@ turn each card on or off.
 
 ## Features
 
-- **Inbound**: SOCKS5, SOCKS4, HTTP, HTTPS, Shadowsocks server, Hysteria2 server, WireGuard server (phones and PCs connect with the WireGuard app), port forward, TUN (all apps on this PC)
-- **Outbound**: Direct, HTTP / HTTPS / SOCKS proxy, Shadowsocks, Hysteria2, WireGuard, VLESS (REALITY), VMess,
-  Trojan, TUIC, subscriptions (share links or Clash YAML)
-- **Blocks**: chains (one outbound through another), routers (rules by domain, IP, port, program - pick from running programs -, GeoIP/Geosite; simple and advanced views),
-  IF (one condition, or a manual on/off switch such as a kill switch), groups (fastest, failover or manual), Block
-- **Network interface**: send an outbound through Tailscale, a VPN app or Wi-Fi without changing the PC's routes
-- **DNS**: the PC's DNS, DoH / DoT / DoQ, per card, optionally through the tunnel; Fake-IP for TUN
-- **Cards**: Run, start with the app and restart automatically (if it stops or fails to start) right on each block
-- **PC block**: use an HTTP inbound as the Windows system proxy while it runs
-- Share links (`ss://`, `vless://`, `vmess://`, `trojan://`, `tuic://`, `hysteria2://`), connection check and test,
-  logs and live statistics, 8 languages, tray, start at login
+- **Link blocks on a canvas**: inbounds (SOCKS5, HTTP, Shadowsocks / Hysteria2 / WireGuard server, TUN, ...) to
+  outbounds (Direct, upstream proxy, Shadowsocks, Hysteria2, WireGuard, VLESS, VMess, Trojan, TUIC, subscriptions)
+- **Routing**: send traffic by domain, IP, program or country; an IF switch works as a kill switch; groups use the
+  fastest server or fail over
+- **Chains**: send one outbound through another, or through Tailscale, a VPN app or Wi-Fi
+- **System proxy**: use a card as the Windows system proxy while it runs
+- **Everyday tools**: share links, connection tests, logs and live statistics, 8 languages, tray
 
-Proxies run on [sing-box](https://github.com/SagerNet/sing-box) (one process per card, bundled in the release).
-A Hysteria2 server open to other PCs runs on the official [Hysteria](https://github.com/apernet/hysteria) core.
-A built-in Python engine is the fallback.
+Proxies run on [sing-box](https://github.com/SagerNet/sing-box), bundled in the release.
 
 ## Running
 
 On Windows, `ProxyDock-<version>-windows-x64-setup.exe` installs it for your user (no administrator needed); the `.zip` is the same app as a folder. On macOS, open the `.dmg` and drag ProxyDock to Applications. On Linux, make the `.AppImage` executable and run it.
 
-Download a build from [Releases](https://github.com/NenkaLab/proxy-dock/releases), or run from source
-(Python 3.14):
-
-```bash
-python -m venv .venv
-.venv\Scripts\activate            # macOS / Linux: source .venv/bin/activate
-pip install -r requirements.txt
-python tools/fetch_singbox.py     # sing-box and Hysteria for this PC
-python proxydock.py
-```
+Download a build from [Releases](https://github.com/NenkaLab/proxy-dock/releases).
 
 Settings are saved in `%APPDATA%\ProxyDock` (macOS: `~/Library/Application Support/ProxyDock`,
 Linux: `~/.config/ProxyDock`). The **How to use** page in the app explains the rest.
 
 ## Building
 
-`tools\build_win.bat` → `dist/win/ProxyDock/ProxyDock.exe` (Linux: `tools/build_linux.sh`, macOS: `tools/build_mac.sh`).
-The build downloads sing-box and Hysteria (SHA-256 checked) and puts them inside the app.
-Tests: `python tests/run_tests.py`. Releases: `tools\release.bat <version>` tags and pushes; GitHub Actions builds them.
-Installer: `python tools/build.py installer` (Inno Setup 6). macOS: `python tools/build.py dmg`, Linux: `python tools/build.py appimage`.
+Running from source, tests, builds, installers and releases: [docs/Build.md](docs/Build.md).
 
 ## Limitations
 
-- Routers, groups, WireGuard (both sides), VLESS / VMess / Trojan / TUIC, TUN, interfaces and custom DNS need the sing-box engine.
-- No load balancing across servers; Hysteria2 servers cannot listen on a port range by themselves.
-- Certificate pinning runs on the Python engine until sing-box 1.15.
-- TUN and Fake-IP have not been tried on real setups yet. macOS has not been tried on a real Mac.
-- SOCKS4 has no password, so only use it on this PC.
+- Routers, groups, WireGuard, VLESS / VMess / Trojan / TUIC and TUN need the sing-box engine (bundled).
+- TUN and macOS have not been tried on real setups yet.
+- SOCKS4 has no password: use it only on this PC.
 
 ## License
 

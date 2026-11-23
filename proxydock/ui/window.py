@@ -512,17 +512,16 @@ class Controller:
         return port
 
     def new_inbound(self, name, inbound, outbound=None, pos=None, edit=True):
-        """Add an inbound block. outbound: None/direct -> the shared Direct block, otherwise a new outbound block."""
+        """Add an inbound block, not connected to anything. outbound (not direct): a template that comes with its own
+        new outbound block - the two are created linked."""
         ib = dict(inbound)
         ib["port"] = self._free_port(ib.get("port", 1080))
         pos = pos or graph_mod.next_free_pos(self.graph, "inbounds")
-        if not outbound or outbound.get("type", "direct") == "direct":
-            target = graph_mod.shared_direct(self.graph)
-            fresh = None
-        else:
-            target = fresh = graph_mod.add_outbound(self.graph, outbound, None, [pos[0] + 460, pos[1]])
+        fresh = None
+        if outbound and outbound.get("type", "direct") != "direct":
+            fresh = graph_mod.add_outbound(self.graph, outbound, None, [pos[0] + 460, pos[1]])
             fresh["name"] = self._unique_name(fresh["name"])
-        n = graph_mod.add_inbound(self.graph, self._unique_name(name), ib, pos, target["id"])
+        n = graph_mod.add_inbound(self.graph, self._unique_name(name), ib, pos, fresh["id"] if fresh else None)
         log(LOG_SETTING, _t("Created proxy '{name}'").format(name=n['name']))
         self._recompile()
         if edit:
@@ -557,6 +556,38 @@ class Controller:
             self.edit_node(n["id"])
         return n
 
+    def new_wireless(self, pos=None):
+        """New wireless pair (input half at pos, output half to its right)."""
+        pos = pos or [230, (max([r["pos"][1] for r in self.graph.get("relays", [])], default=-170) + 170)]
+        n = graph_mod.add_wireless(self.graph, graph_mod.next_wireless_name(self.graph), pos)
+        log(LOG_SETTING, _t("Created block '{name}'").format(name=_t("Wireless {name}").format(name=n["name"])))
+        self._recompile()
+        return n
+
+    def delete_wireless_half(self, rid, half):
+        """Delete one half ("in"/"out") of wireless pair rid: the pair's links are cut and the other half is disabled.
+        A half without a partner is deleted with the whole pair."""
+        kind, r = graph_mod.find(self.graph, rid)
+        if kind != "relay" or not r.get("wireless"):
+            return
+        if r.get("broken"):
+            self.delete_node(rid)
+            return
+        graph_mod.break_wireless(self.graph, rid, half)
+        name = _t("Wireless {name}").format(name=r["name"])
+        log(LOG_SETTING, _t("Deleted proxy '{name}'").format(name=name + " · " + (_t("in") if half == "in" else _t("out"))))
+        self._recompile()
+        info(self.window, "warning", _t("Wireless pair broken"),
+             _t("'{name}' lost its partner and is disabled. Right-click it to recreate the partner, or delete it.")
+             .format(name=name), 7000)
+
+    def repair_wireless(self, rid):
+        """Recreate the missing half of a broken wireless pair."""
+        if graph_mod.repair_wireless(self.graph, rid):
+            log(LOG_SETTING, _t("Saved proxy '{name}'").format(
+                name=_t("Wireless {name}").format(name=graph_mod.find(self.graph, rid)[1]["name"])))
+            self._recompile()
+
     def set_color(self, nid, color):
         """Block colour ('#rrggbb', '' = default): the canvas draws the links leaving the block in it."""
         kind, n = graph_mod.find(self.graph, nid)
@@ -566,6 +597,15 @@ class Controller:
         n["color"] = color
         self._persist()
         self.refresh_lists()
+
+    def set_output_color(self, nid, key, color):
+        """Own colour of one output of a router (rule id / "default") or pass-through (output lane id); '' = none."""
+        color = graph_mod.valid_color(color)
+        if graph_mod.output_color(self.graph, nid, key) == color:
+            return
+        if graph_mod.set_output_color(self.graph, nid, key, color):
+            self._persist()
+            self.refresh_lists()
 
     def _relay(self, rid):
         kind, r = graph_mod.find(self.graph, rid)
@@ -577,6 +617,11 @@ class Controller:
         lane = next((x for x in r["outputs"] if x["id"] == lane_id), None) if r else None
         if lane is None or lane["target"] == tid:
             return True
+        if r.get("broken"):
+            info(self.window, "warning", _t("Cannot connect"),
+                 _t("This wireless block has no partner. Recreate the partner first."), 5000)
+            self.refresh_lists()
+            return False
         tkind, _ = graph_mod.find(self.graph, tid) if tid else (None, None)
         if tid and tkind not in ("outbound", "router") and not graph_mod.is_lane(self.graph, tid):
             info(self.window, "error", _t("Cannot connect"),
@@ -618,7 +663,7 @@ class Controller:
     def add_lane(self, rid, side="inputs"):
         """One more lane on pass-through rid (straight: on both sides)."""
         r = self._relay(rid)
-        if r is None:
+        if r is None or r.get("wireless"):
             return
         if len(r[side]) >= graph_mod.MAX_LANES:
             info(self.window, "warning", _t("Cannot add"), _t("A pass-through has at most {n} lanes").format(n=graph_mod.MAX_LANES), 4000)
@@ -698,8 +743,10 @@ class Controller:
 
     def rename_node(self, nid, name):
         kind, n = graph_mod.find(self.graph, nid)
-        if n is not None and name.strip():
+        if n is not None and name.strip() and name.strip()[:60] != n["name"]:
+            n["name"] = ""              # (its own old name does not count as taken)
             n["name"] = self._unique_name(name.strip()[:60])
+            log(LOG_SETTING, _t("Saved proxy '{name}'").format(name=n["name"]))
             self._recompile()
 
     def new_proxy(self, name, inbound, outbound):
@@ -829,6 +876,8 @@ class Controller:
             for n in self.graph.get(kind, []):
                 if n["id"] in positions:
                     n["pos"] = positions[n["id"]]
+                if n["id"] + "~out" in positions and "pos_out" in n:      # a wireless pair's output half
+                    n["pos_out"] = positions[n["id"] + "~out"]
         if "__pc__" in positions:
             self.graph["pc"]["pos"] = positions["__pc__"]
         self._persist()
@@ -844,6 +893,23 @@ class Controller:
         if kind == "inbound":
             n["inbound"]["port"] = self._free_port(src["inbound"]["port"] + 1)
             n["autostart"] = False
+        # a copy starts unconnected (a pass-through keeps its inside wiring)
+        if kind == "inbound":
+            n["target"] = None
+        elif kind == "outbound":
+            n["via"], n["members"] = None, []
+        elif kind == "router":
+            n["default"] = None
+            for x in n["rules"]:
+                x["id"], x["target"] = graph_mod.new_id(), None
+        elif kind == "relay":
+            for x in n["outputs"]:
+                x["target"] = None
+            if n.get("wireless"):          # a new pair of its own, both halves
+                n["name"] = graph_mod.next_wireless_name(self.graph)
+                n["pos_out"] = [src["pos_out"][0] + 40, src["pos_out"][1] + 40]
+                n["broken"] = None
+                n["inputs"][0]["out"] = n["outputs"][0]["id"]
         self.graph[kind + "s"].append(n)
         self._recompile()
 

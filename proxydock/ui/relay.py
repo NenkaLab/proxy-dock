@@ -33,7 +33,8 @@ class LaneRow(SimpleCardWidget):
         self.gap.setRange(0, graph_mod.MAX_GAP)
         self.gap.setFixedWidth(120)
         self.gap.setToolTip(_t("Empty rows above this lane on the canvas"))
-        self.hl.addWidget(CaptionLabel(_t("Gap"), self), 0, Qt.AlignVCenter)
+        self.gap_label = CaptionLabel(_t("Gap"), self)
+        self.hl.addWidget(self.gap_label, 0, Qt.AlignVCenter)
         self.hl.addWidget(self.gap, 0, Qt.AlignVCenter)
         self.combo = ComboBox(self)
         self.combo.setFixedWidth(260)
@@ -70,7 +71,14 @@ class RelaySection(QWidget):
                                "Routed: wire each input to any output (several inputs may share one output)."), self)
         note.setWordWrap(True)
         lay.addWidget(note)
+        self.wl_note = CaptionLabel(_t("A wireless pair links its two blocks without a wire: what goes into the input "
+                                       "half comes out of the output half. Select either half on the canvas to see its "
+                                       "partner. Deleting one half disables the other until the partner is recreated."), self)
+        self.wl_note.setWordWrap(True)
+        lay.addWidget(self.wl_note)
+        self.note = note
         head = SimpleCardWidget(self)
+        self.head = head
         hl = QHBoxLayout(head)
         hl.setContentsMargins(16, 10, 16, 10)
         hl.setSpacing(10)
@@ -117,6 +125,10 @@ class RelaySection(QWidget):
 
     def load(self, relay):
         self.relay = copy.deepcopy(relay)
+        wireless = bool(relay.get("wireless"))
+        self.head.setVisible(not wireless)
+        self.note.setVisible(not wireless)
+        self.wl_note.setVisible(wireless)
         for w in (self.cb_mode, self.sp_in, self.sp_out):
             w.blockSignals(True)
         self.cb_mode.setCurrentIndex(1 if relay["routed"] else 0)
@@ -171,6 +183,8 @@ class RelaySection(QWidget):
             row = LaneRow(_t("Input {n}").format(n=i + 1),
                           _t("from: {names}").format(names=", ".join(src)) if src else _t("nothing linked yet"), self)
             row.gap.setValue(x["gap"])
+            row.gap.setVisible(not r.get("wireless"))
+            row.gap_label.setVisible(not r.get("wireless"))
             row.set_choices(out_ids, out_labels, x["out"])
             row.combo.setVisible(routed)
             self.in_box.addWidget(row)
@@ -180,6 +194,7 @@ class RelaySection(QWidget):
             row = LaneRow(_t("Output {n}").format(n=i + 1), "", self)
             row.gap.setValue(x["gap"])
             row.gap.setVisible(routed)          # straight: the output side follows the input gaps
+            row.gap_label.setVisible(routed)
             row.set_choices(t_ids, t_labels, x["target"])
             self.out_box.addWidget(row)
             self.out_rows.append(row)
