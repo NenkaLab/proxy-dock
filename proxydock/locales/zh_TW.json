@@ -210,6 +210,7 @@
  "Could not start the administrator helper (error {code})": "無法啟動系統管理員協助程式 (錯誤 {code})",
  "Could not start the test: {err}": "無法開始測試: {err}",
  "Could not update {kind} '{name}', using the saved copy: {e}": "無法更新 {kind} '{name}'，改用已儲存的副本: {e}",
+ "Could not write {path}": "無法寫入 {path}",
  "Country": "國家",
  "Created block '{name}'": "已建立區塊 '{name}'",
  "Created proxy '{name}'": "已建立代理 '{name}'",

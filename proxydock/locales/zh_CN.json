@@ -210,6 +210,7 @@
  "Could not start the administrator helper (error {code})": "无法启动管理员助手 (错误 {code})",
  "Could not start the test: {err}": "无法开始测试: {err}",
  "Could not update {kind} '{name}', using the saved copy: {e}": "无法更新 {kind} '{name}'，改用已保存的副本: {e}",
+ "Could not write {path}": "无法写入 {path}",
  "Country": "国家",
  "Created block '{name}'": "已创建块 '{name}'",
  "Created proxy '{name}'": "已创建代理 '{name}'",

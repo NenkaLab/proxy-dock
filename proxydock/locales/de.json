@@ -210,6 +210,7 @@
  "Could not start the administrator helper (error {code})": "Der Administrator-Helfer konnte nicht gestartet werden (Fehler {code})",
  "Could not start the test: {err}": "Test konnte nicht gestartet werden: {err}",
  "Could not update {kind} '{name}', using the saved copy: {e}": "{kind} '{name}' konnte nicht aktualisiert werden, die gespeicherte Kopie wird verwendet: {e}",
+ "Could not write {path}": "{path} konnte nicht geschrieben werden",
  "Country": "Land",
  "Created block '{name}'": "Block '{name}' erstellt",
  "Created proxy '{name}'": "Proxy '{name}' erstellt",

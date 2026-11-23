@@ -210,6 +210,7 @@
  "Could not start the administrator helper (error {code})": "관리자 도우미를 시작하지 못했습니다 (오류 {code})",
  "Could not start the test: {err}": "테스트를 시작하지 못했습니다: {err}",
  "Could not update {kind} '{name}', using the saved copy: {e}": "{kind} '{name}'을(를) 갱신하지 못해 저장된 사본을 씁니다: {e}",
+ "Could not write {path}": "{path}에 쓸 수 없습니다",
  "Country": "국가",
  "Created block '{name}'": "블록 '{name}' 을(를) 만들었습니다",
  "Created proxy '{name}'": "프록시 '{name}' 을(를) 만들었습니다",

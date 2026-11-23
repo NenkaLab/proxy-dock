@@ -626,6 +626,30 @@ def test_singbox_compile():
     check("sing-box: python engine setting", python_reason(p2, config.validate_global({"engine": "python"})) != "")
 
 
+def test_bans_file_locked():
+    """bans.json is shared by every sing-box card. On Windows a file another process has open cannot be replaced:
+    starting a card used to rewrite it unconditionally and failed with WinError 5 while other cards ran."""
+    from proxydock import common
+    from proxydock.singbox import guard
+    common._banned.clear()
+    guard._written = None
+    check("bans: first write", guard.write_bans(force=True) and os.path.exists(guard.BANS_PATH))
+    before = os.path.getmtime(guard.BANS_PATH)
+    held = open(guard.BANS_PATH, encoding="utf-8")      # like a running sing-box reading it
+    try:
+        check("bans: unchanged set is not rewritten (card start while the file is open)",
+              guard.write_bans(force=True) and os.path.getmtime(guard.BANS_PATH) == before)
+        if sys.platform == "win32":
+            common._banned["203.0.113.9"] = time.monotonic() + 60
+            check("bans: a locked file is reported, not raised", guard.write_bans() is False)
+    finally:
+        held.close()
+    check("bans: the next try writes it", guard.write_bans() and "203.0.113.9" in open(guard.BANS_PATH, encoding="utf-8").read()
+          if sys.platform == "win32" else True)
+    common._banned.clear()
+    guard.write_bans()
+
+
 def test_singbox_guard():
     """Auth failures from sing-box logs feed the shared ban list; sing-box rejects banned client IPs."""
     import time as _time
@@ -2052,7 +2076,7 @@ def main():
              test_subscription, test_detect_sni, test_hy2_advanced, test_group, test_dns, test_review_fixes, test_clash, test_wg_server, test_if_forward_select]
     from proxydock.singbox import find_binary
     if find_binary():
-        tests += [lambda: test_engine("sing-box"), test_singbox_guard, test_router_e2e, test_interface_e2e, test_wireguard_e2e, test_helper,
+        tests += [lambda: test_engine("sing-box"), test_bans_file_locked, test_singbox_guard, test_router_e2e, test_interface_e2e, test_wireguard_e2e, test_helper,
                   test_protocols_e2e, test_subscription_e2e, test_hy2_advanced_e2e, test_group_e2e, test_dns_e2e, test_close_log_e2e, test_wg_server_e2e, test_forward_e2e, test_engine_died_e2e]
         from proxydock.singbox import find_hysteria
         if find_hysteria():

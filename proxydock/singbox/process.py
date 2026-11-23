@@ -203,7 +203,8 @@ class SingBoxInstance:
         exe = find_binary(self.glob)
         if exe is None:
             raise RuntimeError(_t("sing-box was not found"))
-        guard.write_bans(force=True)
+        if not guard.write_bans(force=True) and not os.path.exists(guard.BANS_PATH):
+            raise RuntimeError(_t("Could not write {path}").format(path=guard.BANS_PATH))
         from . import rulesets
         need = rulesets.needed(self.proxy)
         self.rulesets = {}
