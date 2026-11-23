@@ -36,6 +36,7 @@ Shadowsocks server" is a single card.
 - **VLESS / Trojan / TUIC**: VLESS with TLS or REALITY (Vision flow), Trojan, TUIC v5, over TCP, WebSocket or gRPC. Copy a provider's `vless://`, `trojan://`, `tuic://`, `ss://` or `hysteria2://` link and use **Add outbound → From a share link** (or **Paste share link** in the editor). Cloudflare WARP: import a WARP WireGuard profile (e.g. made with wgcf) into a WireGuard block (sing-box engine)
 - **Subscriptions**: a provider's subscription URL becomes one block holding all its servers - pick one, or let it use the fastest (it measures every few minutes and moves away from dead servers). Updates on a schedule; the list is saved (encrypted) so it also starts offline (sing-box engine)
 - **Groups**: a group block uses several outbound blocks as one - the fastest, or the first that works in the order you set (failover). Link the members from its 'members' output; dead servers are skipped automatically (sing-box engine)
+- **DNS**: choose the DNS server ProxyDock uses where it looks names up itself (Direct, IP rules, TUN) - the PC's DNS, or UDP/TCP, DoT (tls://), DoH (https://), DoQ (quic://), HTTP/3 (h3://). Globally or per card; optionally sent through the card's own tunnel. TUN cards can use Fake-IP so names are looked up at the exit, not on the local network (sing-box engine)
 - **Engine**: sing-box (default) runs each proxy in its own process - multi-core, UDP through chains, Hysteria2 through other outbounds. The built-in Python engine is the fallback (Settings → Proxy engine)
 - **Shadowsocks**: AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) and 2022 (SIP022, blake3), TCP+UDP, copy `ss://` links
 - **Hysteria2**: interoperates both ways with the official implementation (TCP and UDP), certificate pinning, copy `hysteria2://` links
@@ -103,6 +104,7 @@ The macOS build has not been tried on a real Mac yet.
 
 - Subscriptions read share-link lists (plain or base64), not Clash YAML. 'Fastest automatically' checks the servers by fetching a small test page (gstatic.com generate_204) every few minutes.
 - Groups do not spread traffic over several servers (load balancing; sing-box 1.14 has no such outbound). After a failover the group stays on the new member until that one fails too.
+- Tunnels and upstream proxies still resolve domains on their server, as before; the DNS setting covers lookups made on this PC. Fake-IP has not been tried on real setups yet (with TUN). DNS rules per domain (a different server for some names) are not available.
 - TUN has not been tried on real setups yet. One TUN card at a time; DNS of the captured apps is answered by ProxyDock
   on this PC; strict route can break IPv6 on Windows (off by default). On macOS/Linux ProxyDock itself must run as root.
 - Router and Block blocks need the sing-box engine. IP and GeoIP rules resolve the domain on this PC first, so a tunnel

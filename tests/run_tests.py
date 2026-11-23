@@ -375,6 +375,15 @@ def test_ui():
     ctl.delete_node(gd["id"])
     check("ui: deleting a member updates the group", gm.find(ctl.graph, gp["id"])[1]["members"] == [])
     ctl.delete_node(gp["id"])
+    tn = ctl.new_inbound("tun ui", {"type": "tun", "port": 30301}, None, None, edit=False)
+    ctl.edit_node(tn["id"])
+    wait(300)
+    check("ui: TUN editor shows Fake-IP", w.editor.r_tun_fakeip.isVisible())
+    w.editor.sw_tun_fakeip.setChecked(True)
+    check("ui: Fake-IP collected", w.editor.collect()["inbound"]["tun_fakeip"] is True)
+    w.editor.cancel()
+    wait(300)
+    ctl.delete_node(tn["id"])
     tport, _, _ = tls_test_server()
     hb = ctl.new_outbound({"type": "https", "host": "127.0.0.1", "port": tport}, edit=False)
     ctl.edit_node(hb["id"])
@@ -402,6 +411,7 @@ def test_ui():
     ctl.delete_node(vb["id"])
     w.switchTo(w.settings_page)
     wait(200)
+    w.settings_page.cb_dns.setText("tls://dns.google")
     w.settings_page.sw_admin.setChecked(True)
     w.settings_page.apply()
     check("ui: settings keep 'Run as administrator'", ctl.glob["run_as_admin"] is True)
@@ -1403,15 +1413,152 @@ def test_group_e2e():
         origin.shutdown()
 
 
+def test_dns():
+    from proxydock.singbox import compile as sbc, engine_for
+    spec = config.dns_server_spec
+    check("dns: server formats", spec("") == {} and spec("1.1.1.1") == {"type": "udp", "server": "1.1.1.1"}
+          and spec("tls://dns.google") == {"type": "tls", "server": "dns.google"}
+          and spec("https://cloudflare-dns.com/dns-query") == {"type": "https", "server": "cloudflare-dns.com", "path": "/dns-query"}
+          and spec("tcp://[2606:4700::1111]:5353") == {"type": "tcp", "server": "2606:4700::1111", "server_port": 5353}
+          and spec("h3://dns.google") == {"type": "h3", "server": "dns.google", "path": "/dns-query"})
+    check("dns: bad server refused", spec("ftp://x") is None and spec("tls://dns.google/x") is None and spec("1.1.1.1:99999") is None)
+    glob = config.validate_global({"dns_server": "https://dns.google/dns-query", "dns_via_outbound": True})
+    check("dns: bad global value falls back", config.validate_global({"dns_server": "nope://"})["dns_server"] == "")
+
+    def build(p, g=glob):
+        return sbc.build(p, config.resolve(p, g), bans_path="b.json", api_port=1, api_secret="s")[0]
+
+    p = config.new_proxy("d", {"type": "socks5", "port": 1080})
+    p["outbound"] = dict(config.OUTBOUND_DEFAULTS, type="socks5", host="up.example", port=1080, via=None)
+    c = build(p)
+    srv = next(x for x in c["dns"]["servers"] if x["tag"] == "dns")
+    check("dns: DoH server through the outbound", srv["type"] == "https" and srv["domain_resolver"] == "local"
+          and srv.get("detour") == "out0" and c["route"]["default_domain_resolver"] == "dns", c["dns"])
+    p2 = config.new_proxy("d2", {"type": "socks5", "port": 1081})
+    c2 = build(p2)
+    check("dns: Direct does not detour", "detour" not in next(x for x in c2["dns"]["servers"] if x["tag"] == "dns"))
+    check("dns: no section without a server", "dns" not in build(p2, config.validate_global({})))
+    t = config.new_proxy("t", {"type": "tun", "port": 30300, "tun_fakeip": True})
+    t["overrides"]["block_private"] = True
+    t["routes"] = [{"match": [{"ip_cidr": ["10.0.0.0/8"]}], "outbound": {"type": "block"}, "name": "lan", "block": "b"}]
+    ct = build(t, config.validate_global({}))
+    resolves = [r for r in ct["route"]["rules"] if r.get("action") == "resolve"]
+    check("dns: TUN Fake-IP", any(x["type"] == "fakeip" for x in ct["dns"]["servers"])
+          and ct["dns"]["rules"][0]["server"] == "fakeip" and ct["dns"]["final"] == "local"
+          and resolves and all(r.get("server") == "local" for r in resolves)
+          and not any("198.18.0.0/15" in r.get("ip_cidr", []) for r in ct["route"]["rules"]), ct["dns"])
+    py = config.validate_global({"engine": "python", "dns_server": "1.1.1.1"})
+    check("dns: own DNS server needs sing-box", engine_for(p2, py)[0] == "none")
+    bad = config.new_proxy("bad", {"type": "socks5", "port": 1082})
+    bad["overrides"]["dns_server"] = "x://"
+    check("dns: bad local server reported", any("DNS server" in e for e in config.check_proxy(bad, [])))
+
+
+class _DnsServer:
+    """UDP + TCP DNS on 127.0.0.1 answering proxydock.test -> 127.0.0.1 (everything else: no answer)."""
+
+    def __init__(self):
+        self.queries = []
+        self.u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.u.bind(("127.0.0.1", 0))
+        self.port = self.u.getsockname()[1]
+        self.t = socket.socket()
+        self.t.bind(("127.0.0.1", self.port))
+        self.t.listen()
+        threading.Thread(target=self._udp, daemon=True).start()
+        threading.Thread(target=self._tcp, daemon=True).start()
+
+    def answer(self, q):
+        tid = struct.unpack(">H", q[:2])[0]
+        i, labels = 12, []
+        while q[i]:
+            labels.append(q[i + 1:i + 1 + q[i]].decode())
+            i += q[i] + 1
+        qtype = struct.unpack(">H", q[i + 1:i + 3])[0]
+        name = ".".join(labels)
+        self.queries.append(name)
+        ans = b""
+        if name == "proxydock.test" and qtype == 1:
+            ans = b"\xc0\x0c" + struct.pack(">HHIH", 1, 1, 60, 4) + socket.inet_aton("127.0.0.1")
+        return struct.pack(">HHHHHH", tid, 0x8180, 1, 1 if ans else 0, 0, 0) + q[12:i + 5] + ans
+
+    def _udp(self):
+        while True:
+            try:
+                q, a = self.u.recvfrom(2048)
+                self.u.sendto(self.answer(q), a)
+            except OSError:
+                return
+
+    def _tcp(self):
+        while True:
+            try:
+                c, _ = self.t.accept()
+            except OSError:
+                return
+            try:
+                n = struct.unpack(">H", c.recv(2))[0]
+                r = self.answer(c.recv(n))
+                c.sendall(struct.pack(">H", len(r)) + r)
+            except (OSError, struct.error):
+                pass
+            finally:
+                c.close()
+
+    def close(self):
+        self.u.close()
+        self.t.close()
+
+
+def test_dns_e2e():
+    """A card's own DNS server (a local test server knowing proxydock.test) and DNS through the card's outbound."""
+    from proxydock.runtime import ProxyManager
+    origin = ThreadingHTTPServer(("127.0.0.1", 0), Origin)
+    threading.Thread(target=origin.serve_forever, daemon=True).start()
+    oport = origin.server_address[1]
+    dns = _DnsServer()
+    glob = config.validate_global({"engine": "sing-box"})
+    mgr = ProxyManager()
+    try:
+        c = config.new_proxy("dns direct", {"type": "socks5", "port": free_port()})
+        c["overrides"]["dns_server"] = f"127.0.0.1:{dns.port}"
+        mgr.start(c, glob).result(20)
+        check("[sing-box] dns: Direct uses the card's DNS server", socks5_get(c["inbound"]["port"], "proxydock.test", oport) == "200"
+              and "proxydock.test" in dns.queries, dns.queries)
+        up = config.new_proxy("dns upstream", {"type": "socks5", "port": free_port()})
+        mgr.start(up, glob).result(20)
+        g = gm.empty()
+        d = gm.add_outbound(g, {"type": "direct"}, "D")
+        u = gm.add_outbound(g, {"type": "socks5", "host": "127.0.0.1", "port": up["inbound"]["port"]}, "U")
+        r = gm.add_router(g, "R")
+        r["rules"][0].update(match={"ip_cidr": ["127.0.0.0/8"]}, target=d["id"])
+        r["default"] = u["id"]
+        gm.add_inbound(g, "dns via", {"type": "socks5", "port": free_port()}, target=r["id"])
+        p = gm.compile(g)[0]
+        p["overrides"].update(dns_server=f"tcp://127.0.0.1:{dns.port}", dns_via_outbound=True)
+        mgr.start(p, glob).result(20)
+        dns.queries.clear()
+        before = mgr.stats_for(up["id"]).total
+        ok = socks5_get(p["inbound"]["port"], "proxydock.test", oport) == "200"
+        time.sleep(1.5)
+        check("[sing-box] dns: lookup went through the outbound, traffic by the IP rule",
+              ok and "proxydock.test" in dns.queries and mgr.stats_for(up["id"]).total > before,
+              (ok, dns.queries, before, mgr.stats_for(up["id"]).total))
+    finally:
+        mgr.stop_all()
+        dns.close()
+        origin.shutdown()
+
+
 def main():
     t0 = time.time()
     tests = [test_translations, test_graph, test_engine, test_singbox_compile, test_router_graph, test_router_singbox, test_interface,
              test_wireguard, test_tun, test_run_as_admin, test_protocols,
-             test_subscription, test_detect_sni, test_hy2_advanced, test_group]
+             test_subscription, test_detect_sni, test_hy2_advanced, test_group, test_dns]
     from proxydock.singbox import find_binary
     if find_binary():
         tests += [lambda: test_engine("sing-box"), test_singbox_guard, test_router_e2e, test_interface_e2e, test_wireguard_e2e, test_helper,
-                  test_protocols_e2e, test_subscription_e2e, test_hy2_advanced_e2e, test_group_e2e]
+                  test_protocols_e2e, test_subscription_e2e, test_hy2_advanced_e2e, test_group_e2e, test_dns_e2e]
         from proxydock.singbox import find_hysteria
         if find_hysteria():
             tests.append(test_hysteria)

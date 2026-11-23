@@ -14,7 +14,7 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QHBoxLayout, QLabel, QV
 from qfluentwidgets import (
     Action, BodyLabel, CaptionLabel, CardWidget, CheckBox, ComboBox, DropDownPushButton, FluentIcon as FIF, LineEdit,
     MessageBox,
-    ListWidget, PasswordLineEdit, PrimaryDropDownPushButton, PrimaryPushButton, PushButton, RoundMenu, ScrollArea,
+    EditableComboBox, ListWidget, PasswordLineEdit, PrimaryDropDownPushButton, PrimaryPushButton, PushButton, RoundMenu, ScrollArea,
     SimpleCardWidget, SpinBox, StrongBodyLabel, SubtitleLabel, SwitchButton, TitleLabel, TransparentToolButton,
     isDarkTheme,
 )
@@ -73,6 +73,16 @@ def outbound_summary(ob, members=None):
     if ob["type"] == "direct":
         return _t("Direct from this PC") + (f" · {ob['bind']}" if ob.get("bind") else "") + iface
     return f"{OUTBOUND_TYPES[ob['type']]} · {host_port(ob['host'], ob['port']) if ob['host'] else _t('server not set')}" + iface
+
+
+def dns_combo(parent):
+    """Editable DNS server field with common choices (empty = the PC's DNS)."""
+    cb = EditableComboBox(parent)
+    cb.addItems(config.DNS_PRESETS)
+    cb.setPlaceholderText(_t("The PC's DNS"))
+    cb.setFixedWidth(300)
+    cb.setText("")
+    return cb
 
 
 def network_interfaces():
@@ -550,6 +560,9 @@ class EditorInterface(ScrollArea):
         self.sw_tun_strict = _switch(v)
         self.r_tun_strict = s_in.add(Row(_t("Strict route"), _t("Also stops traffic that tries to go around the TUN. Can break IPv6 on Windows; leave off unless needed"), v)
                                      .right(self.sw_tun_strict))
+        self.sw_tun_fakeip = _switch(v)
+        self.r_tun_fakeip = s_in.add(Row(_t("Fake-IP DNS"), _t("Apps get placeholder addresses (198.18.x.x) at once and the real name is looked up where the traffic leaves (e.g. at the VPN server), so names do not leak to the local network. Needs the sing-box engine"), v)
+                                     .right(self.sw_tun_fakeip))
         self.sw_in_auth = _switch(v)
         self.r_in_auth = s_in.add(Row(_t("User authentication"), "", v).right(self.sw_in_auth))
         self.ed_in_user = LineEdit(v)
@@ -875,12 +888,16 @@ class EditorInterface(ScrollArea):
         self.sp_timeout.setFixedWidth(150)
         self.sw_logconn = _switch(v)
         self.sw_logclose = _switch(v)
+        self.cb_dns = dns_combo(v)
+        self.sw_dns_via = _switch(v)
         for key, title, desc, w in (
             ("allowed_domains", _t("Allowed domains"), _t("Comma separated · * = all · *.example.com = including subdomains"), self.ed_allow),
             ("block_private", _t("Block private network destinations"), _t("Refuse connections to loopback and private IPs"), self.sw_private),
             ("timeout", _t("Idle timeout (s)"), "", self.sp_timeout),
             ("log_connections", _t("Log connections"), "", self.sw_logconn),
             ("log_close", _t("Log connection close details"), "", self.sw_logclose),
+            ("dns_server", _t("DNS server"), _t("Empty = the PC's DNS. Otherwise 1.1.1.1 (UDP), tcp://, tls:// (DoT), https://…/dns-query (DoH), quic:// or h3://. Used where ProxyDock looks names up itself (Direct, IP rules, TUN). Needs the sing-box engine"), self.cb_dns),
+            ("dns_via_outbound", _t("DNS through the outbound"), _t("The card's own lookups go through its tunnel or upstream instead of leaving this PC directly (needs a DNS server above)"), self.sw_dns_via),
         ):
             follow = CheckBox(_t("Use global"), v)
             follow.stateChanged.connect(lambda *_, k=key: self._sync_override(k))
@@ -970,6 +987,7 @@ class EditorInterface(ScrollArea):
         self.sp_in_down.setValue(ib["hy2_down_mbps"])
         self.cb_tun_stack.setCurrentIndex(self.tun_stacks.index(ib["tun_stack"]))
         self.sw_tun_strict.setChecked(ib["tun_strict_route"])
+        self.sw_tun_fakeip.setChecked(ib["tun_fakeip"])
         self._fill_outbound(ob)
         glob = self.ctl.glob
         for key, (follow, w) in self.ov.items():
@@ -1242,6 +1260,8 @@ class EditorInterface(ScrollArea):
         w = self.ov[key][1]
         if key == "allowed_domains":
             w.setText(", ".join(val))
+        elif key == "dns_server":
+            w.setText(val)
         elif key == "timeout":
             w.setValue(val)
         else:
@@ -1251,6 +1271,8 @@ class EditorInterface(ScrollArea):
         w = self.ov[key][1]
         if key == "allowed_domains":
             return [d.strip() for d in w.text().replace(";", ",").split(",") if d.strip()] or ["*"]
+        if key == "dns_server":
+            return w.text().strip()
         if key == "timeout":
             return w.value()
         return w.isChecked()
@@ -1268,6 +1290,7 @@ class EditorInterface(ScrollArea):
         self.r_in_listen.setVisible(it != "tun")
         self.r_tun_stack.setVisible(it == "tun")
         self.r_tun_strict.setVisible(it == "tun")
+        self.r_tun_fakeip.setVisible(it == "tun")
         self.r_in_auth.setVisible(can_auth)
         self.r_in_cred.setVisible(can_auth and self.sw_in_auth.isChecked())
         self.r_cert.setVisible(it in ("https", "hysteria2"))
@@ -1455,7 +1478,7 @@ class EditorInterface(ScrollArea):
                       hy2_password=self.ed_in_hy.text(), hy2_obfs_password=self.ed_in_obfs.text(),
                       hy2_up_mbps=self.sp_in_up.value(), hy2_down_mbps=self.sp_in_down.value(),
                       tun_stack=self.tun_stacks[max(self.cb_tun_stack.currentIndex(), 0)],
-                      tun_strict_route=self.sw_tun_strict.isChecked())
+                      tun_strict_route=self.sw_tun_strict.isChecked(), tun_fakeip=self.sw_tun_fakeip.isChecked())
             if ib["type"] not in ("socks5", "http", "https"):
                 ib["auth_enabled"] = False
             for key, (follow, _w) in self.ov.items():

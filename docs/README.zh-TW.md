@@ -34,6 +34,7 @@
 - **VLESS / Trojan / TUIC**: 支援 TLS 或 REALITY (Vision flow) 的 VLESS、Trojan、TUIC v5，可走 TCP、WebSocket 或 gRPC。複製業者的 `vless://`、`trojan://`、`tuic://`、`ss://` 或 `hysteria2://` 連結，再按 **新增傳出端 → 從分享連結** (或編輯器中的 **貼上分享連結**)。Cloudflare WARP：把 WARP 的 WireGuard 設定檔 (例如用 wgcf 產生) 匯入 WireGuard 區塊 (sing-box 引擎)
 - **訂閱**: 把業者的訂閱 URL 當成包含所有伺服器的一個區塊。可手動選擇或自動使用最快的伺服器 (每隔幾分鐘測量並避開失效伺服器)。依設定間隔更新，清單加密儲存，離線也能啟動 (sing-box 引擎)
 - **群組**: 群組區塊把多個出站區塊當作一個使用: 最快的，或依你設定的順序第一個可用的 (容錯移轉)。從它的「成員」輸出連接成員; 自動跳過失效伺服器 (sing-box 引擎)
+- **DNS**: 選擇 ProxyDock 自己解析名稱時 (Direct、IP 規則、TUN) 使用的 DNS 伺服器: PC 的 DNS，或 UDP/TCP、DoT (tls://)、DoH (https://)、DoQ (quic://)、HTTP/3 (h3://)。可全域或依卡片設定，也可以經由卡片的通道送出。TUN 卡片可使用 Fake-IP，讓名稱在出口而不是本機網路解析 (sing-box 引擎)
 - **引擎**: 預設的 sing-box 為每個代理各自執行一個處理程序 - 多核心、經過鏈結的 UDP、經由其他傳出端的 Hysteria2。內建 Python 引擎作為備用 (設定 → 代理引擎)
 - **Shadowsocks**：AEAD 2018 (aes-128/256-gcm、chacha20-ietf-poly1305) 與 2022 (SIP022、blake3)，TCP+UDP，複製 `ss://` 連結
 - **Hysteria2**：已確認與官方實作雙向相容 (TCP、UDP)，憑證指紋固定，複製 `hysteria2://` 連結
@@ -100,6 +101,7 @@ macOS 建置尚未在實體 Mac 上驗證。
 
 - 訂閱只讀取分享連結清單 (純文字或 base64)，不支援 Clash YAML。「自動選擇最快」每隔幾分鐘取得一個小測試頁 (gstatic.com generate_204) 來測量伺服器。
 - 群組不會把流量分散到多個伺服器 (負載平衡; sing-box 1.14 沒有這種出站)。容錯移轉後，群組會一直使用新成員，直到它也失效。
+- 通道和上游代理仍像以前一樣在伺服器端解析網域; DNS 設定作用於在本機進行的查詢。Fake-IP 尚未在實際環境 (TUN) 中測試。沒有依網域的 DNS 規則 (部分名稱使用其他伺服器)。
 - TUN 尚未在實際環境中測試。同一時間只能有一個 TUN 卡片；被擷取程式的 DNS 由這台電腦上的 ProxyDock 回應；
   嚴格路由在 Windows 上可能破壞 IPv6 (預設關閉)。在 macOS/Linux 上需要以 root 身分執行 ProxyDock。
 - 路由和封鎖區塊需要 sing-box 引擎。IP 和 GeoIP 規則會先在這台電腦解析網域，因此其後的通道直接連到 IP，而不是在遠端解析網域。

@@ -34,6 +34,7 @@
 - **VLESS / Trojan / TUIC**: 支持 TLS 或 REALITY (Vision flow) 的 VLESS、Trojan、TUIC v5，可走 TCP、WebSocket 或 gRPC。复制服务商的 `vless://`、`trojan://`、`tuic://`、`ss://` 或 `hysteria2://` 链接，然后点 **添加出站 → 从分享链接** (或编辑器里的 **粘贴分享链接**)。Cloudflare WARP：把 WARP 的 WireGuard 配置 (例如用 wgcf 生成) 导入 WireGuard 块 (sing-box 引擎)
 - **订阅**: 把服务商的订阅 URL 作为包含所有服务器的一个块。可手动选择或自动使用最快的服务器 (每隔几分钟测量并避开失效服务器)。按设定间隔更新，列表加密保存，离线也能启动 (sing-box 引擎)
 - **分组**: 分组块把多个出站块当作一个使用: 最快的，或按你设定的顺序第一个可用的 (故障转移)。从它的“成员”输出连接成员; 自动跳过失效服务器 (sing-box 引擎)
+- **DNS**: 选择 ProxyDock 自己解析名称时 (Direct、IP 规则、TUN) 使用的 DNS 服务器: PC 的 DNS，或 UDP/TCP、DoT (tls://)、DoH (https://)、DoQ (quic://)、HTTP/3 (h3://)。可全局或按卡片设置，也可以经由卡片的隧道发送。TUN 卡片可使用 Fake-IP，让名称在出口而不是本地网络解析 (sing-box 引擎)
 - **引擎**: 默认的 sing-box 为每个代理单独运行一个进程 - 多核、经过链路的 UDP、经由其他出站的 Hysteria2。内置 Python 引擎作为备用 (设置 → 代理引擎)
 - **Shadowsocks**：AEAD 2018 (aes-128/256-gcm、chacha20-ietf-poly1305) 和 2022 (SIP022、blake3)，TCP+UDP，复制 `ss://` 链接
 - **Hysteria2**：已确认与官方实现双向互通 (TCP、UDP)，证书指纹固定，复制 `hysteria2://` 链接
@@ -100,6 +101,7 @@ macOS 构建尚未在真实的 Mac 上验证。
 
 - 订阅只读取分享链接列表 (纯文本或 base64)，不支持 Clash YAML。“自动选择最快”每隔几分钟获取一个小测试页 (gstatic.com generate_204) 来测量服务器。
 - 分组不会把流量分摊到多个服务器 (负载均衡; sing-box 1.14 没有这种出站)。故障转移后，分组会一直使用新成员，直到它也失效。
+- 隧道和上游代理仍像以前一样在服务器端解析域名; DNS 设置作用于在本机进行的解析。Fake-IP 尚未在真实环境 (TUN) 中测试。没有按域名的 DNS 规则 (部分名称使用其他服务器)。
 - TUN 尚未在真实环境中测试。同一时间只能有一个 TUN 卡片；被捕获应用的 DNS 由本机的 ProxyDock 应答；
   严格路由在 Windows 上可能破坏 IPv6 (默认关闭)。在 macOS/Linux 上需要以 root 身份运行 ProxyDock。
 - 路由和阻止块需要 sing-box 引擎。IP 和 GeoIP 规则会先在本机解析域名，因此其后的隧道直接连接 IP，而不是在远端解析域名。

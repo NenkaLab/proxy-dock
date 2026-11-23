@@ -78,11 +78,17 @@ def needs_singbox(proxy):
             or any(ob.get("interface") or ob["type"] in SINGBOX_ONLY_OUTBOUNDS for c in chains for ob in _chain(c)))
 
 
+def needs_singbox_dns(proxy, glob):
+    """A DNS server of its own (DoH, DoT, ...) and Fake-IP only exist in sing-box; the Python engine uses the PC's DNS."""
+    from ..config import resolve
+    return bool(resolve(proxy, glob).get("dns_server")) or bool(proxy["inbound"].get("tun_fakeip"))
+
+
 def engine_for(proxy, glob):
     """(engine, reason): engine is "sing-box", "hysteria", "python" or "none" (cannot run: needs sing-box);
     reason says why it is not sing-box."""
     engine, reason = _engine_for(proxy, glob)
-    if engine == "python" and needs_singbox(proxy) and reason != "internal":
+    if engine == "python" and reason != "internal" and (needs_singbox(proxy) or needs_singbox_dns(proxy, glob)):
         return "none", reason
     return engine, reason
 

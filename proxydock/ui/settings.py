@@ -46,6 +46,11 @@ class SettingsInterface(ScrollArea):
         s_def.add(Row(_t("Log connections"), _t("When off, successful connections are not logged (errors always are)"), v).right(self.sw_logconn))
         self.sw_logclose = _switch(v)
         s_def.add(Row(_t("Log connection close details"), _t("Upload/download amount, duration and reason when a connection ends"), v).right(self.sw_logclose))
+        from .proxies import dns_combo
+        self.cb_dns = dns_combo(v)
+        s_def.add(Row(_t("DNS server"), _t("Empty = the PC's DNS. Otherwise 1.1.1.1 (UDP), tcp://, tls:// (DoT), https://…/dns-query (DoH), quic:// or h3://. Used where ProxyDock looks names up itself (Direct, IP rules, TUN). Needs the sing-box engine"), v).right(self.cb_dns))
+        self.sw_dns_via = _switch(v)
+        s_def.add(Row(_t("DNS through the outbound"), _t("The card's own lookups go through its tunnel or upstream instead of leaving this PC directly (needs a DNS server above)"), v).right(self.sw_dns_via))
 
         # engine
         s_eng = Section(_t("Proxy engine"), v)
@@ -147,6 +152,8 @@ class SettingsInterface(ScrollArea):
         self.sp_timeout.setValue(g["timeout"])
         self.sw_logconn.setChecked(g["log_connections"])
         self.sw_logclose.setChecked(g["log_close"])
+        self.cb_dns.setText(g["dns_server"])
+        self.sw_dns_via.setChecked(g["dns_via_outbound"])
         self.sw_logfile.setChecked(g["log_to_file"])
         self.cb_lang.setCurrentIndex(LANGUAGE_CODES.index(g["language"]))
         self.cb_theme.setCurrentIndex([k for k, _ in config.THEMES].index(g["theme"]))
@@ -164,10 +171,15 @@ class SettingsInterface(ScrollArea):
         if not domains:
             info(self.window(), "error", _t("Allowed domains"), _t("Enter at least one (* allows all)"))
             return
+        if config.dns_server_spec(self.cb_dns.text()) is None:
+            info(self.window(), "error", _t("DNS server"),
+                 _t("DNS server: use an address like 1.1.1.1, tls://dns.google or https://cloudflare-dns.com/dns-query"))
+            return
         g = dict(self.ctl.glob)
         g.update(
             allowed_domains=domains, block_private=self.sw_private.isChecked(), timeout=self.sp_timeout.value(),
             log_connections=self.sw_logconn.isChecked(), log_close=self.sw_logclose.isChecked(),
+            dns_server=self.cb_dns.text().strip(), dns_via_outbound=self.sw_dns_via.isChecked(),
             log_to_file=self.sw_logfile.isChecked(),
             language=LANGUAGE_CODES[max(self.cb_lang.currentIndex(), 0)],
             theme=config.THEMES[max(self.cb_theme.currentIndex(), 0)][0],

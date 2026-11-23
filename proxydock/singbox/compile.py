@@ -309,11 +309,45 @@ def _allow_rule(domains):
     return rule
 
 
+DNS_TAG, LOCAL_DNS, FAKEIP_TAG = "dns", "local", "fakeip"
+FAKEIP_V4, FAKEIP_V6 = "198.18.0.0/15", "fc00::/18"
+
+
+def dns(proxy, cfg):
+    """(sing-box dns section or None, tag of the server used for real lookups).
+    The PC's DNS ("local") unless a DNS server is set; through the card's outbound if dns_via_outbound (a tunnel
+    or upstream, not Direct/Block). A TUN card with Fake-IP answers apps' A/AAAA queries with fake addresses."""
+    from ..config import dns_server_spec
+    spec = dns_server_spec(cfg.get("dns_server", "")) or {}
+    tun = proxy["inbound"]["type"] == "tun"
+    fakeip = tun and proxy["inbound"].get("tun_fakeip")
+    if not spec and not tun:
+        return None, None
+    servers = [{"type": "local", "tag": LOCAL_DNS}]
+    real = LOCAL_DNS
+    if spec:
+        d = dict(spec, tag=DNS_TAG)
+        if not is_ip_literal(d["server"]):
+            d["domain_resolver"] = LOCAL_DNS        # the DNS server's own name: looked up with the PC's DNS
+        if cfg.get("dns_via_outbound") and proxy["outbound"]["type"] not in ("direct", "block"):
+            d["detour"] = "out0"
+        servers.append(d)
+        real = DNS_TAG
+    conf = {"servers": servers, "final": real}
+    if fakeip:
+        servers.append({"type": "fakeip", "tag": FAKEIP_TAG, "inet4_range": FAKEIP_V4, "inet6_range": FAKEIP_V6})
+        conf["rules"] = [{"query_type": ["A", "AAAA"], "server": FAKEIP_TAG}]
+    return conf, real
+
+
 def route(proxy, cfg, bans_path, rulesets=None, route_tags=None, exclude_paths=None):
     """(route dict, reasons) - reasons[i] says what rule i blocks (None for rules that do not reject).
     rulesets: {tag: path} for GeoIP/Geosite; route_tags: block id -> outbound tag prefix of router targets."""
     ib, ob = proxy["inbound"], proxy["outbound"]
     rules, reasons = [], []
+    _, resolver = dns(proxy, cfg)
+    resolve = {"action": "resolve", "server": resolver} if resolver else {"action": "resolve"}
+    fakeip = ib["type"] == "tun" and ib.get("tun_fakeip")
 
     def add(rule, reason=None):
         rules.append(rule)
@@ -339,15 +373,15 @@ def route(proxy, cfg, bans_path, rulesets=None, route_tags=None, exclude_paths=N
         if ob["type"] == "direct":
             # Direct resolves here, so check the resolved address too. Through an upstream/tunnel the upstream
             # resolves domains, so (as in the Python engine) only literal IPs and localhost are checked.
-            add({"action": "resolve"})
+            add(dict(resolve))
         add({"domain_suffix": ["localhost"], "action": "reject"}, R_PRIVATE)
         add({"ip_is_private": True, "action": "reject"}, R_PRIVATE)
-        add({"ip_cidr": _EXTRA_INTERNAL, "action": "reject"}, R_PRIVATE)
+        add({"ip_cidr": [x for x in _EXTRA_INTERNAL if not (fakeip and x == FAKEIP_V4)], "action": "reject"}, R_PRIVATE)
     routes = proxy.get("routes") or []
     if any(k in m for r in routes for m in r["match"] for k in IP_KEYS):
         # IP / GeoIP conditions need the destination address. Note: after this the outbound connects to the IP,
         # so a tunnel no longer resolves the domain remotely.
-        add({"action": "resolve"})
+        add(dict(resolve))
     for r in routes:
         rule = route_rule(r["match"])
         if r["outbound"]["type"] == "block":
@@ -361,7 +395,8 @@ def route(proxy, cfg, bans_path, rulesets=None, route_tags=None, exclude_paths=N
     r = {"rule_set": sets, "rules": rules, "final": "out0"}
     if tun:
         r["auto_detect_interface"] = True       # outbounds leave through the real network card, not the TUN
-        r["default_domain_resolver"] = "local"
+    if resolver:
+        r["default_domain_resolver"] = resolver
     return r, reasons
 
 
@@ -387,8 +422,9 @@ def build(proxy, cfg, *, bans_path, api_port, api_secret, cert=None, rulesets=No
     }
     if endpoints:
         conf["endpoints"] = endpoints
-    if tun:
-        conf["dns"] = {"servers": [{"type": "local", "tag": "local"}]}
+    dns_conf, _ = dns(proxy, cfg)
+    if dns_conf:
+        conf["dns"] = dns_conf
     return conf, reasons
 
 

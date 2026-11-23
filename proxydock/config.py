@@ -74,8 +74,46 @@ GLOBAL_DEFAULTS = {
     "timeout": 120,
     "log_connections": True,
     "log_close": False,
+    "dns_server": "",           # "" = the PC's DNS; else 1.1.1.1, tcp://, tls://, https://host/path, quic://, h3:// (sing-box)
+    "dns_via_outbound": False,  # send this card's own DNS lookups through its outbound (custom server only)
 }
-OVERRIDABLE = ("allowed_domains", "block_private", "timeout", "log_connections", "log_close")
+OVERRIDABLE = ("allowed_domains", "block_private", "timeout", "log_connections", "log_close", "dns_server",
+               "dns_via_outbound")
+DNS_PRESETS = ["", "https://cloudflare-dns.com/dns-query", "https://dns.google/dns-query", "https://dns.quad9.net/dns-query",
+               "tls://1.1.1.1", "1.1.1.1"]
+DNS_DEFAULT_PORTS = {"udp": 53, "tcp": 53, "tls": 853, "https": 443, "quic": 853, "h3": 443}
+
+
+def dns_server_spec(text):
+    """'1.1.1.1', 'tls://dns.google', 'https://cloudflare-dns.com/dns-query', ... -> sing-box DNS server fields
+    ({} = the PC's DNS, None = not valid)."""
+    t = (text or "").strip()
+    if not t:
+        return {}
+    scheme, sep, rest = t.partition("://")
+    if not sep:
+        scheme, rest = "udp", t
+    scheme = scheme.lower()
+    if scheme not in DNS_DEFAULT_PORTS:
+        return None
+    hostport, slash, path = rest.partition("/")
+    try:
+        from .common import split_host_port
+        host, port = split_host_port(hostport, DNS_DEFAULT_PORTS[scheme])
+    except ValueError:
+        return None
+    host = host.strip().lower()
+    from .common import is_ip_literal, valid_domain
+    if not host or not (is_ip_literal(host) or valid_domain(host)) or any(c in host for c in "?#@"):
+        return None
+    d = {"type": scheme, "server": host}
+    if port != DNS_DEFAULT_PORTS[scheme]:
+        d["server_port"] = port
+    if scheme in ("https", "h3"):
+        d["path"] = "/" + path if slash and path else "/dns-query"
+    elif slash and path:
+        return None
+    return d
 
 INBOUND_DEFAULTS = {
     "type": "socks5",
@@ -93,7 +131,8 @@ INBOUND_DEFAULTS = {
     "hy2_up_mbps": 0,           # Hysteria2 server bandwidth limits (Brutal, 0 = no limit)
     "hy2_down_mbps": 0,
     "tun_stack": "mixed",       # TUN: sing-box network stack (mixed / system / gvisor)
-    "tun_strict_route": False,  # TUN: block traffic that would bypass the TUN (can break IPv6 on Windows)
+    "tun_strict_route": False,
+    "tun_fakeip": False,        # TUN: answer apps' DNS with fake IPs (198.18.0.0/15); the real lookup happens at the exit  # TUN: block traffic that would bypass the TUN (can break IPv6 on Windows)
 }
 OUTBOUND_DEFAULTS = {
     "type": "direct",
@@ -192,6 +231,8 @@ def validate_global(raw):
         g["allowed_domains"] = ["*"]
     if g["engine"] not in ENGINES:
         g["engine"] = "sing-box"
+    if dns_server_spec(g["dns_server"]) is None:
+        g["dns_server"] = ""
     return g
 
 
@@ -335,6 +376,8 @@ def check_proxy(p, proxies):
     ib, ob = p["inbound"], p["outbound"]
     if not p["name"].strip():
         errs.append(_t("Enter a name"))
+    if dns_server_spec((p.get("overrides") or {}).get("dns_server") or "") is None:
+        errs.append(_t("DNS server: use an address like 1.1.1.1, tls://dns.google or https://cloudflare-dns.com/dns-query"))
     if p.get("unlinked"):
         errs.append(_t("Not connected to an outbound - connect it on the canvas or choose one in the editor"))
     tun = ib["type"] == "tun"
