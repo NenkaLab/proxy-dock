@@ -2804,10 +2804,19 @@ def test_group_e2e():
             return c
 
         c1 = card("failover", [members[0], members[1]])
-        before = [mgr.stats_for(x["id"]).total for x in servers]
+
+        def totals():               # (server stats are read once a second: wait until they stop changing)
+            last = None
+            for _ in range(6):
+                now = [mgr.stats_for(x["id"]).total for x in servers]
+                if now == last:
+                    return now
+                last = now
+                time.sleep(1.2)
+            return last
+        before = totals()
         ok = socks5_get(c1["inbound"]["port"], "127.0.0.1", oport) == "200"
-        time.sleep(0.5)
-        after = [mgr.stats_for(x["id"]).total for x in servers]
+        after = totals()
         check("[sing-box] group: failover -> origin through the first member", ok and after[0] > before[0] and after[1] == before[1],
               (ok, before, after))
         c2 = card("failover", [dead, members[1]])
