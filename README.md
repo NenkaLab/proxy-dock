@@ -102,7 +102,7 @@ The macOS build has not been tried on a real Mac yet.
 
 ## Known limitations
 
-- Subscriptions read share-link lists (plain or base64), not Clash YAML. 'Fastest automatically' checks the servers by fetching a small test page (gstatic.com generate_204) every few minutes.
+- Subscriptions read share-link lists (plain or base64) and Clash / Clash.Meta YAML (only its proxies; ssr, snell and Shadowsocks plugins are skipped, its groups and rules are not used). 'Fastest automatically' checks the servers by fetching a small test page (gstatic.com generate_204) every few minutes.
 - Groups do not spread traffic over several servers (load balancing; sing-box 1.14 has no such outbound). After a failover the group stays on the new member until that one fails too.
 - Tunnels and upstream proxies still resolve domains on their server, as before; the DNS setting covers lookups made on this PC. Fake-IP has not been tried on real setups yet (with TUN). DNS rules per domain (a different server for some names) are not available.
 - TUN has not been tried on real setups yet. One TUN card at a time; DNS of the captured apps is answered by ProxyDock
@@ -168,7 +168,7 @@ Licenses of the bundled fonts and libraries are in [`licenses/`](licenses/).
 | aioquic, pylsqpack, darkdetect | BSD 3-Clause |
 | cryptography | Apache 2.0 / BSD 3-Clause |
 | pyOpenSSL | Apache 2.0 |
-| service-identity, attrs, NodeGraphQt, Qt.py | MIT |
+| service-identity, attrs, NodeGraphQt, Qt.py, PyYAML | MIT |
 | certifi | MPL 2.0 |
 | Python runtime | PSF License |
 | PyInstaller bootloader | GPL v2+ (bootloader exception) |

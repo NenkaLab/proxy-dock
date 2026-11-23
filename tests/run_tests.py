@@ -1116,9 +1116,9 @@ def test_subscription():
     for bad in (b"proxies:\n  - name: x\n", b""):
         try:
             sub.parse(bad)
-            check("subscription: Clash YAML / empty refused", False)
+            check("subscription: Clash entry without a type / empty refused", False)
         except ValueError:
-            check("subscription: Clash YAML / empty refused", True)
+            check("subscription: Clash entry without a type / empty refused", True)
     ob = dict(config.OUTBOUND_DEFAULTS, type="subscription", sub_url="https://x/sub", sub_servers=json.dumps(servers),
               sub_mode="select", sub_selected="Seoul", interface="Wi-Fi", via=None)
     obs = sbc.outbounds(ob)
@@ -1182,6 +1182,15 @@ def test_subscription_e2e():
     card2["outbound"] = dict(ob, sub_mode="auto")
     mgr.start(card2, glob).result(20)
     check("[sing-box] subscription: fastest mode -> origin", socks5_get(card2["inbound"]["port"], "127.0.0.1", oport) == "200")
+    SubServer.body = ("proxies:\n" + "".join(
+        f'  - {{name: "{x["name"]} Y", type: ss, server: 127.0.0.1, port: {x["inbound"]["port"]}, '
+        f'cipher: 2022-blake3-aes-128-gcm, password: "{x["inbound"]["ss_password"]}"}}\n' for x in servers)).encode()
+    fields, note = sub.update({"sub_url": url})
+    card3 = config.new_proxy("sub clash", {"type": "socks5", "port": free_port()})
+    card3["outbound"] = dict(ob, sub_mode="select", sub_selected="Alpha Y", **fields)
+    mgr.start(card3, glob).result(20)
+    check("[sing-box] subscription: Clash YAML -> origin", len(sub.servers_of(fields)) == 2
+          and socks5_get(card3["inbound"]["port"], "127.0.0.1", oport) == "200", note)
     mgr.stop_all()
     web.shutdown()
     origin.shutdown()
@@ -1474,11 +1483,17 @@ class _DnsServer:
 
     def __init__(self):
         self.queries = []
-        self.u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.u.bind(("127.0.0.1", 0))
-        self.port = self.u.getsockname()[1]
-        self.t = socket.socket()
-        self.t.bind(("127.0.0.1", self.port))
+        for _ in range(20):         # the same port number free for both UDP and TCP
+            self.u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.u.bind(("127.0.0.1", 0))
+            self.port = self.u.getsockname()[1]
+            self.t = socket.socket()
+            try:
+                self.t.bind(("127.0.0.1", self.port))
+                break
+            except OSError:
+                self.u.close()
+                self.t.close()
         self.t.listen()
         threading.Thread(target=self._udp, daemon=True).start()
         threading.Thread(target=self._tcp, daemon=True).start()
@@ -1658,11 +1673,80 @@ def test_close_log_e2e():
         origin.shutdown()
 
 
+CLASH_YAML = """
+port: 7890
+mode: rule
+proxies:
+  - {name: "SS Tokyo", type: ss, server: 1.2.3.4, port: 8388, cipher: aes-256-gcm, password: "pw"}
+  - name: VMess WS
+    type: vmess
+    server: vm.example
+    port: 443
+    uuid: 0b5b8d9e-1111-2222-3333-444455556666
+    alterId: 0
+    cipher: auto
+    tls: true
+    servername: vm.example
+    network: ws
+    ws-opts: {path: /ray, headers: {Host: cdn.example}}
+  - name: Reality
+    type: vless
+    server: r.example
+    port: 443
+    uuid: 0b5b8d9e-1111-2222-3333-444455556666
+    flow: xtls-rprx-vision
+    tls: true
+    servername: www.example.com
+    client-fingerprint: chrome
+    reality-opts: {public-key: "7RqHNlM-E9C5dZIq6lSVKiJxbK3n5mYXpHFuNWtLzE8", short-id: "6ba85179"}
+  - {name: Trojan gRPC, type: trojan, server: t.example, port: 443, password: pw, sni: t.example, network: grpc,
+     grpc-opts: {grpc-service-name: svc}}
+  - {name: Hy2, type: hysteria2, server: h.example, port: 443, password: pw, obfs: salamander, obfs-password: ob,
+     up: "30 Mbps", down: 200, ports: "20000-30000"}
+  - {name: TUIC, type: tuic, server: q.example, port: 443, uuid: 0b5b8d9e-1111-2222-3333-444455556666, password: pw,
+     congestion-controller: cubic, alpn: [h3]}
+  - {name: WG, type: wireguard, server: w.example, port: 51820, ip: 10.0.0.2, private-key: "yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=",
+     public-key: "xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=", mtu: 1280}
+  - {name: SSR, type: ssr, server: x.example, port: 1, cipher: none, password: x, protocol: origin, obfs: plain}
+  - {name: SS plugin, type: ss, server: 1.2.3.5, port: 8388, cipher: aes-256-gcm, password: pw, plugin: obfs}
+proxy-groups:
+  - {name: Auto, type: url-test, proxies: [SS Tokyo, Hy2]}
+rules:
+  - MATCH,Auto
+"""
+
+
+def test_clash():
+    from proxydock import clash, subscription as sub
+    check("clash: detected", clash.looks_like_clash(CLASH_YAML) and not clash.looks_like_clash("ss://x\nvless://y"))
+    servers, skipped = sub.parse(CLASH_YAML.encode())
+    by = {x["name"]: x["outbound"] for x in servers}
+    check("clash: supported proxies read, others skipped", len(servers) == 7 and skipped == 2, (list(by), skipped))
+    vm = by.get("VMess WS", {})
+    check("clash: vmess ws+tls", vm.get("type") == "vmess" and vm["security"] == "tls" and vm["transport_host"] == "cdn.example"
+          and vm["transport_path"] == "/ray" and vm["sni"] == "vm.example", vm)
+    r = by.get("Reality", {})
+    check("clash: vless reality", r.get("security") == "reality" and r["reality_short_id"] == "6ba85179"
+          and r["vless_flow"] == "xtls-rprx-vision" and r["sni"] == "www.example.com", r)
+    h = by.get("Hy2", {})
+    check("clash: hysteria2 obfs / bandwidth / ports", h.get("hy2_obfs_password") == "ob" and h["hy2_up_mbps"] == 30
+          and h["hy2_down_mbps"] == 200 and h["hy2_ports"] == "20000-30000", h)
+    check("clash: trojan grpc, tuic, wireguard", by["Trojan gRPC"]["transport_path"] == "svc"
+          and by["TUIC"]["tuic_congestion"] == "cubic" and by["WG"]["wg_address"] == "10.0.0.2/32" and by["WG"]["wg_mtu"] == 1280)
+    try:
+        sub.parse(b"proxies: [unclosed")
+        check("clash: broken YAML reported", False)
+    except ValueError as e:
+        check("clash: broken YAML reported", "YAML" in str(e), str(e))
+    srv, _ = sub.parse(b"proxies:\n  - &a {name: x, type: socks5, server: s.example, port: 1080}\n  - *a\n")
+    check("clash: YAML aliases work, duplicate names made unique", [x["name"] for x in srv] == ["x", "x (2)"], srv)
+
+
 def main():
     t0 = time.time()
     tests = [test_translations, test_graph, test_engine, test_singbox_compile, test_router_graph, test_router_singbox, test_interface,
              test_wireguard, test_tun, test_run_as_admin, test_protocols,
-             test_subscription, test_detect_sni, test_hy2_advanced, test_group, test_dns, test_review_fixes]
+             test_subscription, test_detect_sni, test_hy2_advanced, test_group, test_dns, test_review_fixes, test_clash]
     from proxydock.singbox import find_binary
     if find_binary():
         tests += [lambda: test_engine("sing-box"), test_singbox_guard, test_router_e2e, test_interface_e2e, test_wireguard_e2e, test_helper,

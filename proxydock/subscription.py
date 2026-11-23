@@ -1,5 +1,6 @@
-"""Subscriptions: a URL that returns a provider's server list (v2rayN style: share links, one per line, usually
-base64-encoded as a whole). fetch() downloads it, parse() turns it into [{"name", "outbound"}].
+"""Subscriptions: a URL that returns a provider's server list - v2rayN style (share links, one per line, usually
+base64-encoded as a whole) or a Clash / Clash.Meta YAML file (its "proxies:" list, see clash.py).
+fetch() downloads it, parse() turns it into [{"name", "outbound"}].
 
 The servers become members of one subscription block (sing-box selector = pick one, urltest = fastest
 automatically, which also fails over when a server dies).
@@ -45,22 +46,33 @@ def _text(data):
             return decoded
     except (binascii.Error, ValueError):
         pass
-    raise ValueError(_t("No server links found (only share-link lists are supported, not Clash YAML)"))
+    raise ValueError(_t("No servers found (expected share links or a Clash YAML file)"))
 
 
-def parse(data):
-    """-> (servers, skipped): servers = [{"name", "outbound"}], skipped = number of lines that were not usable."""
-    from . import config
-    servers, skipped, names = [], 0, set()
+def _entries(data):
+    """-> ([(outbound fields, name)], skipped) from a share-link list or a Clash YAML file."""
+    from . import clash
+    raw = data.decode("utf-8", errors="replace").strip().lstrip("﻿")
+    if clash.looks_like_clash(raw):
+        return clash.proxies(raw)
+    entries, skipped = [], 0
     for line in _text(data).splitlines():
         line = line.strip()
         if not line or "://" not in line:
             continue
         try:
-            fields, name = parse_link(line)
+            entries.append(parse_link(line))
         except ValueError:
             skipped += 1
-            continue
+    return entries, skipped
+
+
+def parse(data):
+    """-> (servers, skipped): servers = [{"name", "outbound"}], skipped = number of entries that were not usable."""
+    from . import config
+    servers, names = [], set()
+    entries, skipped = _entries(data)
+    for fields, name in entries:
         ob = dict(config.OUTBOUND_DEFAULTS, **fields)
         if config.outbound_errors(dict(ob, via=None)):
             skipped += 1

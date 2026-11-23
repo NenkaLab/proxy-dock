@@ -99,7 +99,7 @@ macOS 构建尚未在真实的 Mac 上验证。
 
 ## 已知限制
 
-- 订阅只读取分享链接列表 (纯文本或 base64)，不支持 Clash YAML。“自动选择最快”每隔几分钟获取一个小测试页 (gstatic.com generate_204) 来测量服务器。
+- 订阅读取分享链接列表 (纯文本或 base64) 和 Clash / Clash.Meta YAML (只读取代理; 跳过 ssr、snell 和 Shadowsocks 插件，不使用文件中的分组和规则)。“自动选择最快”每隔几分钟获取一个小测试页 (gstatic.com generate_204) 来测量服务器。
 - 分组不会把流量分摊到多个服务器 (负载均衡; sing-box 1.14 没有这种出站)。故障转移后，分组会一直使用新成员，直到它也失效。
 - 隧道和上游代理仍像以前一样在服务器端解析域名; DNS 设置作用于在本机进行的解析。Fake-IP 尚未在真实环境 (TUN) 中测试。没有按域名的 DNS 规则 (部分名称使用其他服务器)。
 - TUN 尚未在真实环境中测试。同一时间只能有一个 TUN 卡片；被捕获应用的 DNS 由本机的 ProxyDock 应答；
@@ -163,7 +163,7 @@ GPL v3，因此本程序也以 GPL v3 发布；分发构建好的可执行文件
 | aioquic, pylsqpack, darkdetect | BSD 3-Clause |
 | cryptography | Apache 2.0 / BSD 3-Clause |
 | pyOpenSSL | Apache 2.0 |
-| service-identity, attrs, NodeGraphQt, Qt.py | MIT |
+| service-identity, attrs, NodeGraphQt, Qt.py, PyYAML | MIT |
 | certifi | MPL 2.0 |
 | Python 运行时 | PSF License |
 | PyInstaller 引导程序 | GPL v2+ (引导程序例外) |

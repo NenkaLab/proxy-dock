@@ -101,7 +101,7 @@ macOS ビルドはまだ実機の Mac で確認していません。
 
 ## 既知の制限
 
-- サブスクリプションは共有リンクの一覧 (そのまま、または base64) だけを読み、Clash YAML は読みません。「最速を自動で選ぶ」は数分ごとに小さなテストページ (gstatic.com generate_204) を取得してサーバーを測ります。
+- サブスクリプションは共有リンクの一覧 (そのまま、または base64) と Clash / Clash.Meta の YAML を読みます (プロキシだけ。ssr、snell、Shadowsocks のプラグインは飛ばし、ファイルのグループやルールは使いません)。「最速を自動で選ぶ」は数分ごとに小さなテストページ (gstatic.com generate_204) を取得してサーバーを測ります。
 - グループは通信を複数のサーバーに分散しません (負荷分散。sing-box 1.14 にはその送信側がありません)。自動切り替えのあとは、そのメンバーも止まるまで新しいメンバーを使い続けます。
 - トンネルや上位プロキシはこれまでどおりサーバー側でドメインを解決します。DNS 設定はこの PC で行う名前解決に効きます。Fake-IP はまだ実際の環境で試していません (TUN と一緒に)。ドメインごとの DNS ルール (一部の名前だけ別のサーバー) はありません。
 - TUN はまだ実際の環境で試していません。TUN カードは同時に 1 つで、捕まえたアプリの DNS はこの PC で ProxyDock が
@@ -166,7 +166,7 @@ GPL v3 のため、このプログラムも GPL v3 で配布します。ビル�
 | aioquic, pylsqpack, darkdetect | BSD 3-Clause |
 | cryptography | Apache 2.0 / BSD 3-Clause |
 | pyOpenSSL | Apache 2.0 |
-| service-identity, attrs, NodeGraphQt, Qt.py | MIT |
+| service-identity, attrs, NodeGraphQt, Qt.py, PyYAML | MIT |
 | certifi | MPL 2.0 |
 | Python ランタイム | PSF License |
 | PyInstaller ブートローダー | GPL v2+ (ブートローダー例外) |

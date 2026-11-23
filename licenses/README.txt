@@ -49,6 +49,8 @@ The full license texts are in the files in this folder.
   -> service-identity-MIT.txt
 - attrs : MIT
   -> attrs-MIT.txt
+- PyYAML (Clash subscriptions) : MIT
+  -> PyYAML-MIT.txt
 - certifi : MPL 2.0
   -> certifi-MPL-2.0.txt
 - darkdetect : BSD 3-Clause

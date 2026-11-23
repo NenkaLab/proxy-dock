@@ -101,7 +101,7 @@ macOS 빌드는 아직 실제 Mac 에서 확인하지 않았습니다.
 
 ## 알려진 제한
 
-- 구독은 공유 링크 목록(일반 또는 base64)만 읽고 Clash YAML은 읽지 않습니다. '가장 빠른 서버 자동'은 몇 분마다 작은 시험 페이지(gstatic.com generate_204)를 받아 서버를 잽니다.
+- 구독은 공유 링크 목록(일반 또는 base64)과 Clash / Clash.Meta YAML을 읽습니다(프록시만. ssr, snell, Shadowsocks 플러그인은 건너뛰고, 파일의 그룹과 규칙은 쓰지 않음). '가장 빠른 서버 자동'은 몇 분마다 작은 시험 페이지(gstatic.com generate_204)를 받아 서버를 잽니다.
 - 그룹은 트래픽을 여러 서버에 나눠 보내지 않습니다(부하 분산. sing-box 1.14에 그런 출구가 없음). 자동 전환 뒤에는 새 멤버도 멈출 때까지 그 멤버를 계속 씁니다.
 - 터널과 상위 프록시는 지금처럼 서버 쪽에서 도메인을 찾습니다. DNS 설정은 이 PC에서 하는 이름 조회에 적용됩니다. Fake-IP는 아직 실제 환경(TUN)에서 시험하지 않았습니다. 도메인별 DNS 규칙(일부 이름만 다른 서버)은 없습니다.
 - TUN은 아직 실제 환경에서 시험하지 않았습니다. TUN 카드는 한 번에 하나이고, 잡힌 앱의 DNS는 이 PC에서 ProxyDock이
@@ -166,7 +166,7 @@ GPL v3 이므로 이 프로그램도 GPL v3 로 배포합니다. 빌드한 실�
 | aioquic, pylsqpack, darkdetect | BSD 3-Clause |
 | cryptography | Apache 2.0 / BSD 3-Clause |
 | pyOpenSSL | Apache 2.0 |
-| service-identity, attrs, NodeGraphQt, Qt.py | MIT |
+| service-identity, attrs, NodeGraphQt, Qt.py, PyYAML | MIT |
 | certifi | MPL 2.0 |
 | Python 런타임 | PSF License |
 | PyInstaller 부트로더 | GPL v2+ (부트로더 예외) |

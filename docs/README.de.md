@@ -103,7 +103,7 @@ Der macOS-Build wurde noch nicht auf einem echten Mac getestet.
 
 ## Bekannte Einschränkungen
 
-- Abonnements lesen Listen von Freigabelinks (unverändert oder base64), kein Clash-YAML. 'Automatisch der schnellste' misst die Server alle paar Minuten mit einer kleinen Testseite (gstatic.com generate_204).
+- Abonnements lesen Listen von Freigabelinks (unverändert oder base64) und Clash-/Clash.Meta-YAML (nur die Proxys; ssr, snell und Shadowsocks-Plugins werden übersprungen, Gruppen und Regeln der Datei nicht genutzt). 'Automatisch der schnellste' misst die Server alle paar Minuten mit einer kleinen Testseite (gstatic.com generate_204).
 - Gruppen verteilen den Verkehr nicht auf mehrere Server (Lastverteilung; sing-box 1.14 hat dafür keinen Ausgang). Nach einem Failover bleibt die Gruppe beim neuen Mitglied, bis auch dieses ausfällt.
 - Tunnel und Upstream-Proxys lösen Domains weiterhin auf ihrem Server auf; die DNS-Einstellung betrifft Abfragen auf diesem PC. Fake-IP wurde noch nicht in echten Umgebungen getestet (mit TUN). DNS-Regeln pro Domain (ein anderer Server für bestimmte Namen) gibt es nicht.
 - TUN wurde noch nicht in echten Umgebungen getestet. Nur eine TUN-Karte gleichzeitig; DNS der erfassten Apps beantwortet
@@ -169,7 +169,7 @@ Die Lizenzen der enthaltenen Schriften und Bibliotheken liegen im Ordner [`licen
 | aioquic, pylsqpack, darkdetect | BSD 3-Clause |
 | cryptography | Apache 2.0 / BSD 3-Clause |
 | pyOpenSSL | Apache 2.0 |
-| service-identity, attrs, NodeGraphQt, Qt.py | MIT |
+| service-identity, attrs, NodeGraphQt, Qt.py, PyYAML | MIT |
 | certifi | MPL 2.0 |
 | Python-Laufzeit | PSF License |
 | PyInstaller-Bootloader | GPL v2+ (Bootloader-Ausnahme) |

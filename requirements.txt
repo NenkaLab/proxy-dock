@@ -4,6 +4,7 @@ pyinstaller==6.20.0
 cryptography==50.0.2
 darkdetect==0.8.0
 aioquic==1.8.0
+PyYAML==6.0.4
 pylsqpack==1.1.1
 pyOpenSSL==26.4.0
 service-identity==26.1.0

@@ -103,7 +103,7 @@ La compilation macOS n'a pas encore été essayée sur un vrai Mac.
 
 ## Limites connues
 
-- Les abonnements lisent des listes de liens de partage (telles quelles ou en base64), pas le YAML Clash. « Le plus rapide automatiquement » mesure les serveurs toutes les quelques minutes avec une petite page de test (gstatic.com generate_204).
+- Les abonnements lisent des listes de liens de partage (telles quelles ou en base64) et le YAML Clash / Clash.Meta (seulement ses proxys ; ssr, snell et les plugins Shadowsocks sont ignorés, ses groupes et règles ne sont pas utilisés). « Le plus rapide automatiquement » mesure les serveurs toutes les quelques minutes avec une petite page de test (gstatic.com generate_204).
 - Les groupes ne répartissent pas le trafic sur plusieurs serveurs (répartition de charge ; sing-box 1.14 n'a pas cette sortie). Après un basculement, le groupe reste sur le nouveau membre jusqu'à ce que celui-ci tombe aussi.
 - Les tunnels et proxys amont résolvent toujours les domaines sur leur serveur ; le réglage DNS concerne les résolutions faites sur ce PC. Fake-IP n'a pas encore été essayé en conditions réelles (avec TUN). Pas de règles DNS par domaine (un autre serveur pour certains noms).
 - Le TUN n'a pas encore été essayé en conditions réelles. Une seule carte TUN à la fois ; le DNS des applications capturées
@@ -169,7 +169,7 @@ Les licences des polices et bibliothèques incluses se trouvent dans le dossier 
 | aioquic, pylsqpack, darkdetect | BSD 3-Clause |
 | cryptography | Apache 2.0 / BSD 3-Clause |
 | pyOpenSSL | Apache 2.0 |
-| service-identity, attrs, NodeGraphQt, Qt.py | MIT |
+| service-identity, attrs, NodeGraphQt, Qt.py, PyYAML | MIT |
 | certifi | MPL 2.0 |
 | Environnement d'exécution Python | PSF License |
 | Chargeur d'amorçage PyInstaller | GPL v2+ (exception du chargeur d'amorçage) |
