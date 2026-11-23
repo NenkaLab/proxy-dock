@@ -230,5 +230,14 @@ class ProxyCombo(ComboBox):
 
 
 def info(parent, kind, title, content, duration=2500):
-    return getattr(InfoBar, kind)(title, content, duration=duration,
-                                  position=InfoBarPosition.TOP_RIGHT, parent=parent)
+    if sys.platform != "darwin":
+        return getattr(InfoBar, kind)(title, content, duration=duration,
+                                      position=InfoBarPosition.TOP_RIGHT, parent=parent)
+    # macOS: an InfoBar paints through a QGraphicsOpacityEffect and deletes itself after fading out, which crashes
+    # in Qt's paint path there (seen in CI, like the page transitions). Drop the effect and close without the fade.
+    from PySide6.QtCore import QTimer
+    bar = getattr(InfoBar, kind)(title, content, duration=-1, position=InfoBarPosition.TOP_RIGHT, parent=parent)
+    bar.setGraphicsEffect(None)
+    if duration >= 0:
+        QTimer.singleShot(duration, bar, bar.close)
+    return bar
