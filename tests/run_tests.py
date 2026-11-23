@@ -135,8 +135,19 @@ class Origin(BaseHTTPRequestHandler):
         pass
 
 
+def connect_retry(port, timeout=15):
+    """Connect to a freshly started local listener; a refusal is retried briefly (rare race seen on CI runners)."""
+    for i in range(6):
+        try:
+            return socket.create_connection(("127.0.0.1", port), timeout=timeout)
+        except ConnectionRefusedError:
+            if i == 5:
+                raise
+            time.sleep(0.5)
+
+
 def socks5_get(port, host, dport, auth=None):
-    s = socket.create_connection(("127.0.0.1", port), timeout=15)
+    s = connect_retry(port)
     try:
         if auth:
             s.sendall(b"\x05\x01\x02")

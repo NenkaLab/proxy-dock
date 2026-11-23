@@ -29,6 +29,7 @@ jobs:
             qpa: cocoa       # frameless window needs a real Cocoa window
             experimental: true      # macOS has not been verified on a real Mac yet
     env:
+      GITHUB_TOKEN: ${{ github.token }}     # engine downloads (tools/fetch_singbox.py) use the API
       QT_QPA_PLATFORM: ${{ matrix.qpa }}
       PYTHONIOENCODING: utf-8
     steps:

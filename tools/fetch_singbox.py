@@ -26,7 +26,11 @@ HY_API = f"https://api.github.com/repos/apernet/hysteria/releases/tags/app%2Fv{H
 
 def _get(url):
     accept = "application/vnd.github+json" if url.startswith("https://api.github.com/") else "application/octet-stream"
-    req = urllib.request.Request(url, headers={"User-Agent": "proxydock-build", "Accept": accept})
+    headers = {"User-Agent": "proxydock-build", "Accept": accept}
+    token = os.environ.get("GITHUB_TOKEN")     # set in GitHub Actions: avoids the anonymous API rate limit
+    if token and url.startswith("https://api.github.com/"):
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=60) as r:
         return r.read()
 
