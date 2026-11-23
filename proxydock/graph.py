@@ -26,6 +26,9 @@ lane is wired inside the block to an output lane, whose link goes on to an outbo
 pass-through lane. Straight blocks wire lane i to lane i; routed ones ("routed": True) can cross, merge and have
 different input and output counts. "gap" = empty rows above a lane on the canvas. compile() follows the lanes
 (without_relays) so the runtime never sees them.
+Every block can have a "color" ("#rrggbb", "" = default): the canvas draws the links leaving it in that color. A
+pass-through hands on the color coming into a lane (its own color only where differently coloured links merge or
+nothing comes in) - see wire_colors().
 The runtime still works with one "proxy" per inbound (inbound + resolved outbound + overrides, plus "routes" for a
 router: [{"match": [match, ...], "outbound": resolved chain, "name": rule name}]); compile() builds them.
 """
@@ -65,6 +68,17 @@ def _name(v, default):
     return v.strip()[:60] if isinstance(v, str) and v.strip() else default
 
 
+def valid_color(v):
+    """'#rrggbb' (lower case) or '' (no colour: the default)."""
+    if isinstance(v, str) and len(v) == 7 and v[0] == "#":
+        try:
+            int(v[1:], 16)
+            return v.lower()
+        except ValueError:
+            pass
+    return ""
+
+
 def validate_outbound_node(raw):
     from . import config
     from .ss import SS_METHODS
@@ -85,7 +99,7 @@ def validate_outbound_node(raw):
     return {"id": raw.get("id") if isinstance(raw.get("id"), str) and raw.get("id") else new_id(),
             "name": _name(raw.get("name"), default_outbound_name(ob)), "outbound": ob,
             "via": via if isinstance(via, str) and via and ob["type"] not in NO_VIA else None,
-            "members": members, "pos": _pos(raw.get("pos"))}
+            "members": members, "pos": _pos(raw.get("pos")), "color": valid_color(raw.get("color"))}
 
 
 def validate_inbound_node(raw):
@@ -96,7 +110,7 @@ def validate_inbound_node(raw):
     return {"id": p["id"], "name": p["name"], "autostart": p["autostart"], "auto_restart": p["auto_restart"],
             "inbound": p["inbound"],
             "overrides": p["overrides"], "target": target if isinstance(target, str) and target else None,
-            "pos": _pos(raw.get("pos"))}
+            "pos": _pos(raw.get("pos")), "color": valid_color(raw.get("color"))}
 
 
 def validate_match(raw):
@@ -135,7 +149,8 @@ def validate_router_node(raw):
     return {"id": raw.get("id") if isinstance(raw.get("id"), str) and raw.get("id") else new_id(),
             "name": _name(raw.get("name"), "IF" if style == "if" else "Router"), "style": style, "rules": rules,
             "switch": style == "if" and raw.get("switch") is True, "switch_on": raw.get("switch_on") is True,
-            "default": d if isinstance(d, str) and d else None, "pos": _pos(raw.get("pos"))}
+            "default": d if isinstance(d, str) and d else None, "pos": _pos(raw.get("pos")),
+            "color": valid_color(raw.get("color"))}
 
 
 MAX_LANES = 24
@@ -181,7 +196,7 @@ def validate_relay_node(raw):
             i["out"] = o["id"]
     return {"id": raw.get("id") if isinstance(raw.get("id"), str) and raw.get("id") else new_id(),
             "name": _name(raw.get("name"), _t("Pass-through")), "routed": routed,
-            "inputs": ins, "outputs": outs, "pos": _pos(raw.get("pos"))}
+            "inputs": ins, "outputs": outs, "pos": _pos(raw.get("pos")), "color": valid_color(raw.get("color"))}
 
 
 def lane_index(graph):
@@ -234,6 +249,49 @@ def lane_label(graph, tid):
 def lane_choices(graph):
     """[(input lane id, label)] of every pass-through lane, for target pickers."""
     return [(x["id"], lane_label(graph, x["id"])) for r in graph.get("relays", ()) for x in r["inputs"]]
+
+
+def wire_colors(graph):
+    """Colours of the links out of pass-through lanes: ({output lane id: colour}, {input lane id: colour}).
+    A lane hands on the colour of what comes into it; where links of different colours merge, or nothing comes
+    in, the pass-through's own colour is used. '' = default colour."""
+    ins, outs = lane_index(graph)
+    feeds = {lid: [] for lid in ins}        # input lane -> [("c", colour) | ("o", output lane id)]
+    for n in graph["inbounds"]:
+        if n["target"] in feeds:
+            feeds[n["target"]].append(("c", n.get("color", "")))
+    for r in graph.get("routers", []):
+        for _, t in router_targets(r):
+            if t in feeds:
+                feeds[t].append(("c", r.get("color", "")))
+    for r in graph.get("relays", []):
+        for x in r["outputs"]:
+            if x["target"] in feeds:
+                feeds[x["target"]].append(("o", x["id"]))
+    memo = {}
+
+    def incoming(lid, busy):
+        return {c if kind == "c" else out_color(c, busy) for kind, c in feeds[lid]}
+
+    def out_color(oid, busy):
+        if oid in memo:
+            return memo[oid]
+        r, _ = outs[oid]
+        if oid in busy:                     # (a loop: cannot be used anyway)
+            return r.get("color", "")
+        busy = busy | {oid}
+        got = set()
+        for x in r["inputs"]:
+            if x["out"] == oid:
+                got |= incoming(x["id"], busy)
+        memo[oid] = next(iter(got)) if len(got) == 1 else r.get("color", "")
+        return memo[oid]
+    out_c = {oid: out_color(oid, frozenset()) for oid in outs}
+    in_c = {}
+    for lid, (r, _) in ins.items():
+        got = incoming(lid, frozenset())
+        in_c[lid] = next(iter(got)) if len(got) == 1 else r.get("color", "")
+    return out_c, in_c
 
 
 def without_relays(graph):

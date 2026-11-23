@@ -550,6 +550,16 @@ class Controller:
             self.edit_node(n["id"])
         return n
 
+    def set_color(self, nid, color):
+        """Block colour ('#rrggbb', '' = default): the canvas draws the links leaving the block in it."""
+        kind, n = graph_mod.find(self.graph, nid)
+        color = graph_mod.valid_color(color)
+        if n is None or n.get("color", "") == color:
+            return
+        n["color"] = color
+        self._persist()
+        self.refresh_lists()
+
     def _relay(self, rid):
         kind, r = graph_mod.find(self.graph, rid)
         return r if kind == "relay" else None

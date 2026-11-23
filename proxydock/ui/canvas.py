@@ -10,11 +10,11 @@ import os
 os.environ.setdefault("QT_PREFERRED_BINDING", "PySide6")     # NodeGraphQt uses Qt.py
 
 from NodeGraphQt import BaseNode, NodeBaseWidget, NodeGraph
-from NodeGraphQt.constants import PortEnum
+from NodeGraphQt.constants import PipeEnum, PortEnum
 from NodeGraphQt.qgraphics.node_abstract import AbstractNodeItem
 from NodeGraphQt.qgraphics.node_base import NodeItem
 from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, Qt, QTimer
-from PySide6.QtGui import QColor, QKeySequence, QPainter, QPainterPath, QPen, QPolygonF, QShortcut
+from PySide6.QtGui import QColor, QIcon, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QShortcut
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 from qfluentwidgets import (
     Action, CaptionLabel, DropDownPushButton, FluentIcon as FIF, PrimaryDropDownPushButton, PushButton, RoundMenu,
@@ -45,6 +45,25 @@ CHECK_STYLE = ("QCheckBox {{ color: {fg}; background: transparent; font-size: 9p
                "QCheckBox::indicator {{ width: 11px; height: 11px; border: 1px solid #B8B8B8; border-radius: 3px;"
                " background: rgba(0,0,0,0.25); }}"
                "QCheckBox::indicator:checked {{ background: #6CCB5F; border-color: #6CCB5F; }}")
+
+
+PALETTE = []         # (hex, name): block colours offered by the swatch menu
+
+
+@on_language_change
+def _tr_palette():
+    PALETTE[:] = [("#e5534b", _t("Red")), ("#e8912d", _t("Orange")), ("#d9b92f", _t("Yellow")),
+                  ("#57ab5a", _t("Green")), ("#39c5bb", _t("Teal")), ("#4f8ef7", _t("Blue")),
+                  ("#7c6cf2", _t("Indigo")), ("#b76de0", _t("Purple")), ("#e26ba5", _t("Pink")),
+                  ("#9aa0a6", _t("Gray"))]
+
+
+def _rgba(color):
+    """'#rrggbb' -> (r, g, b, 255); '' -> the default link colour."""
+    if not color:
+        return tuple(PipeEnum.COLOR.value)
+    c = QColor(color)
+    return (c.red(), c.green(), c.blue(), 255)
 
 
 NEW_INBOUND = []
@@ -139,12 +158,46 @@ class ToggleWidget(NodeBaseWidget):
         self.cb.blockSignals(False)
 
 
+class BlockItem(NodeItem):
+    """Node item with a small colour swatch at the right of the title bar; clicking it calls on_swatch(screen pos)."""
+    SWATCH = 12.0
+
+    def __init__(self, name="node", parent=None):
+        super().__init__(name, parent)
+        self.swatch = ""            # '#rrggbb' or '' (default)
+        self.on_swatch = None
+
+    def swatch_rect(self):
+        return QRectF(self._width - self.SWATCH - 7, 5, self.SWATCH, self.SWATCH)
+
+    def paint(self, painter, option, widget):
+        super().paint(painter, option, widget)
+        if self.on_swatch is None:
+            return
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        r = self.swatch_rect()
+        painter.setBrush(QColor(*_rgba(self.swatch)))
+        painter.setPen(QPen(QColor(255, 255, 255, 200 if self.swatch else 110), 1.0,
+                            Qt.SolidLine if self.swatch else Qt.DotLine))
+        painter.drawRoundedRect(r, 2.5, 2.5)
+        painter.restore()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and self.on_swatch and self.swatch_rect().contains(event.pos()):
+            event.accept()
+            cb, at = self.on_swatch, event.screenPos()
+            QTimer.singleShot(0, lambda: cb(at))
+            return
+        super().mousePressEvent(event)
+
+
 class InNode(BaseNode):
     __identifier__ = "proxydock"
     NODE_NAME = "Inbound"
 
     def __init__(self):
-        super().__init__()
+        super().__init__(BlockItem)
         self.add_input(_t("relay in"), multi_input=True, color=PORT_COLOR)
         self.add_output(_t("out"), multi_output=True, color=PORT_COLOR)
         self.add_custom_widget(InfoWidget(self.view, lines=3))
@@ -157,7 +210,7 @@ class OutNode(BaseNode):
     NODE_NAME = "Outbound"
 
     def __init__(self):
-        super().__init__()
+        super().__init__(BlockItem)
         self.add_input(_t("in"), multi_input=True, color=PORT_COLOR)
         self.add_output(_t("via"), multi_output=False, color=VIA_COLOR)
         self.add_custom_widget(InfoWidget(self.view, lines=3))
@@ -169,7 +222,7 @@ class EndNode(BaseNode):
     NODE_NAME = "Outbound "
 
     def __init__(self):
-        super().__init__()
+        super().__init__(BlockItem)
         self.add_input(_t("in"), multi_input=True, color=PORT_COLOR)
         self.add_custom_widget(InfoWidget(self.view, lines=3))
 
@@ -180,7 +233,7 @@ class GroupNode(BaseNode):
     NODE_NAME = "Group"
 
     def __init__(self):
-        super().__init__()
+        super().__init__(BlockItem)
         self.add_input(_t("in"), multi_input=True, color=PORT_COLOR)
         self.add_output(_t("members"), multi_output=True, color=MEMBER_COLOR)
         self.add_custom_widget(InfoWidget(self.view, lines=3))
@@ -192,12 +245,12 @@ class RouterNode(BaseNode):
     NODE_NAME = "Router"
 
     def __init__(self):
-        super().__init__()
+        super().__init__(BlockItem)
         self.add_input(_t("in"), multi_input=True, color=PORT_COLOR)
         self.add_custom_widget(InfoWidget(self.view, lines=3))
 
 
-class RelayItem(NodeItem):
+class RelayItem(BlockItem):
     """Pass-through block: lanes on both sides (with optional empty rows above a lane), the inside wiring drawn
     between them, and a footer to click for one more lane."""
     FOOT = 22.0
@@ -210,6 +263,7 @@ class RelayItem(NodeItem):
         super().__init__(name, parent)
         self.in_gaps, self.out_gaps = [], []
         self.links = []         # [(input index, output index)] wired inside
+        self.link_colors = []   # colour per input lane ('' = default) for the inside wiring
         self.routed = False
         self.on_add = None      # callback: footer clicked
         self.on_wire = None     # callback(input index, output index or None): wired inside by dragging (routed)
@@ -257,16 +311,18 @@ class RelayItem(NodeItem):
         painter.setRenderHint(QPainter.Antialiasing, True)
         ins, outs = self.lane_points()
         lane = QColor(*LANE_COLOR)
-        painter.setPen(QPen(lane, 1.6))
         for i, o in self.links:
             if i < len(ins) and o < len(outs):
+                c = self.link_colors[i] if i < len(self.link_colors) else ""
+                color = QColor(c) if c else lane
+                painter.setPen(QPen(color, 1.6))
                 a, b = ins[i], outs[o]
                 path = QPainterPath(a)
                 path.lineTo(b if self.routed else b - QPointF(5, 0))
                 painter.setBrush(Qt.NoBrush)
                 painter.drawPath(path)
                 if not self.routed:         # arrow head
-                    painter.setBrush(lane)
+                    painter.setBrush(color)
                     painter.drawPolygon(QPolygonF([b, b + QPointF(-7, -4), b + QPointF(-7, 4)]))
         if self.routed:                     # inner dots (the ends of the inside wiring); unwired inputs in amber
             wired = {i for i, _ in self.links}
@@ -630,12 +686,13 @@ class CanvasInterface(QWidget):
 
     # --- model -> view ---
     def _signature(self, graph):
-        return json.dumps([[n["id"], n["name"], n["target"]] for n in graph["inbounds"]] +
-                          [[n["id"], n["name"], n["via"], n["outbound"]["type"], n.get("members", [])] for n in graph["outbounds"]] +
-                          [[n["id"], n["name"], n["default"], n.get("switch"), [[x["id"], x["name"], x["target"]] for x in n["rules"]]]
-                           for n in graph.get("routers", [])] +
+        return json.dumps([[n["id"], n["name"], n["target"], n.get("color")] for n in graph["inbounds"]] +
+                          [[n["id"], n["name"], n["via"], n["outbound"]["type"], n.get("members", []), n.get("color")]
+                           for n in graph["outbounds"]] +
+                          [[n["id"], n["name"], n["default"], n.get("switch"), [[x["id"], x["name"], x["target"]] for x in n["rules"]],
+                            n.get("color")] for n in graph.get("routers", [])] +
                           [[n["id"], n["name"], n["routed"], [[x["id"], x["gap"], x["out"]] for x in n["inputs"]],
-                            [[x["id"], x["gap"], x["target"]] for x in n["outputs"]]] for n in graph.get("relays", [])] +
+                            [[x["id"], x["gap"], x["target"]] for x in n["outputs"]], n.get("color")] for n in graph.get("relays", [])] +
                           [graph["pc"]["inbound"]])
 
     def refresh(self, graph, proxies, statuses, pc_status):
@@ -659,6 +716,10 @@ class CanvasInterface(QWidget):
                                      text_color=(235, 235, 235), selected=False, push_undo=False)
                 self.node_of[mid] = node
                 self.mid_of[node.id] = mid
+                if mid != PC_ID:
+                    _, gn = graph_mod.find(graph, mid)
+                    node.view.swatch = gn.get("color", "") if gn else ""
+                    node.view.on_swatch = lambda at, mid=mid: self.color_menu(mid, at)
                 return node
 
             from .. import graph as graph_mod
@@ -722,12 +783,63 @@ class CanvasInterface(QWidget):
                         node.output(i).connect_to(dst, push_undo=False)
             if graph["pc"]["inbound"] in self.node_of:
                 self.node_of[graph["pc"]["inbound"]].output(0).connect_to(self.node_of[PC_ID].input(0), push_undo=False)
+            self._paint_wires(graph)
             g.clear_undo_stack()
         finally:
             self.syncing = False
         if not self.fitted and self.isVisible():
             self.fitted = True
             self._fit_all()
+
+    def _paint_wires(self, graph):
+        """Links take the colour of the block they leave; pass-through lanes hand on what comes in."""
+        from .. import graph as graph_mod
+        out_c, in_c = graph_mod.wire_colors(graph)
+        for mid, node in self.node_of.items():
+            if mid == PC_ID:
+                continue
+            kind, n = graph_mod.find(graph, mid)
+            if n is None:
+                continue
+            if kind == "relay":
+                node.view.link_colors = [in_c.get(x["id"], "") for x in n["inputs"]]
+            for port in node.output_ports():
+                lane = self.out_lane_of.get((node.id, port.name()))
+                rgba = _rgba(out_c.get(lane, "") if lane else n.get("color", ""))
+                for pipe in port.view.connected_pipes:
+                    pipe.color = rgba
+                    pipe.reset()
+
+    def color_menu(self, mid, at):
+        """Swatch clicked: palette, default, or any colour."""
+        from .. import graph as graph_mod
+        _, n = graph_mod.find(self.ctl.graph, mid)
+        if n is None:
+            return
+        cur = n.get("color", "")
+        menu = RoundMenu(parent=self)
+
+        def icon(color):
+            pm = QPixmap(16, 16)
+            pm.fill(QColor(*_rgba(color)))
+            return QIcon(pm)
+        for hexc, label in PALETTE:
+            a = Action(icon(hexc), ("✓ " if hexc == cur else "") + label, menu)
+            a.triggered.connect(lambda _=False, c=hexc: self.ctl.set_color(mid, c))
+            menu.addAction(a)
+        menu.addSeparator()
+        d = Action(icon(""), ("✓ " if not cur else "") + _t("Default"), menu)
+        d.triggered.connect(lambda: self.ctl.set_color(mid, ""))
+        custom = Action(FIF.PALETTE, _t("Custom colour…"), menu)
+        custom.triggered.connect(lambda: self._pick_color(mid, cur))
+        menu.addActions([d, custom])
+        menu.exec(at.toPoint() if hasattr(at, "toPoint") else at)
+
+    def _pick_color(self, mid, cur):
+        from qfluentwidgets import ColorDialog
+        dlg = ColorDialog(QColor(cur) if cur else QColor(*_rgba("")[:3]), _t("Link colour"), self.window())
+        dlg.colorChanged.connect(lambda c: self.ctl.set_color(mid, c.name()))
+        dlg.exec()
 
     def _setup_relay(self, node, r):
         """Lanes (ports), gaps and inside wiring of pass-through node from relay r."""
