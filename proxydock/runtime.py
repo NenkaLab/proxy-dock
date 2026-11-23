@@ -62,6 +62,9 @@ class ProxyInstance:
     def outbound_label(self):
         parts, ob = [], self.outbound
         while ob:
+            if ob["type"] == "group":
+                parts.append(f"{OUTBOUND_TYPES['group']} ({', '.join(m['name'] for m in ob.get('members') or [])})")
+                break
             parts.append("Direct" if ob["type"] == "direct" else OUTBOUND_TYPES["block"] if ob["type"] == "block"
                          else f"{OUTBOUND_TYPES[ob['type']]} {host_port(ob['host'], ob['port'])}")
             ob = ob.get("via")

@@ -143,6 +143,11 @@ OUTBOUND_DEFAULTS = {
     "sub_interval": 24,         # hours between automatic updates, 0 = only "Update now"
     "sub_updated": 0,           # time of the last update (epoch seconds)
     "sub_test_url": "https://www.gstatic.com/generate_204",     # what "auto" measures
+    # group (several outbound blocks used as one; the members are graph links, node["members"])
+    "group_mode": "auto",       # "auto" = the fastest member, "failover" = the first member that works (in order)
+    "group_test_url": "https://www.gstatic.com/generate_204",
+    "group_interval": 180,      # seconds between measurements
+    "group_tolerance": 50,      # auto: switch only when another member is this many ms faster
 }
 SECRET_FIELDS = ("password", "ss_password", "hy2_password", "hy2_obfs_password", "wg_private_key", "wg_preshared_key",
                  "sub_url", "sub_servers")      # (subscription URLs carry tokens, the server list has passwords)
@@ -404,6 +409,18 @@ def outbound_errors(ob):
         errs += outbound_errors(via)
     if ob["type"] == "block":
         pass
+    elif ob["type"] == "group":
+        members = ob.get("members") or []
+        if not members:
+            errs.append(_t("Connect at least one outbound block to the group's 'members' output"))
+        if not ob["group_test_url"].strip().lower().startswith(("https://", "http://")):
+            errs.append(_t("Group: the test address must start with http:// or https://"))
+        if not 10 <= ob["group_interval"] <= 3600:
+            errs.append(_t("Group: the interval must be 10 to 3600 seconds"))
+        if not 0 <= ob["group_tolerance"] <= 5000:
+            errs.append(_t("Group: the tolerance must be 0 to 5000 ms"))
+        for m in members:
+            errs += [f"{m['name']}: {e}" for e in outbound_errors(m["outbound"])]
     elif ob["type"] == "subscription":
         from .subscription import servers_of
         if not ob["sub_url"].strip().lower().startswith(("https://", "http://")):

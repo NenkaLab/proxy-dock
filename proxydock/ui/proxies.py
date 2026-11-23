@@ -14,7 +14,7 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QHBoxLayout, QLabel, QV
 from qfluentwidgets import (
     Action, BodyLabel, CaptionLabel, CardWidget, CheckBox, ComboBox, DropDownPushButton, FluentIcon as FIF, LineEdit,
     MessageBox,
-    PasswordLineEdit, PrimaryDropDownPushButton, PrimaryPushButton, PushButton, RoundMenu, ScrollArea,
+    ListWidget, PasswordLineEdit, PrimaryDropDownPushButton, PrimaryPushButton, PushButton, RoundMenu, ScrollArea,
     SimpleCardWidget, SpinBox, StrongBodyLabel, SubtitleLabel, SwitchButton, TitleLabel, TransparentToolButton,
     isDarkTheme,
 )
@@ -62,9 +62,13 @@ def summary(p):
     return f"{left}  →  {right}"
 
 
-def outbound_summary(ob):
+def outbound_summary(ob, members=None):
+    """members: names of a group's members (in order)."""
     if ob["type"] == "block":
         return _t("Refuses every connection (use it as a router target)")
+    if ob["type"] == "group":
+        mode = _t("Fastest") if ob.get("group_mode") != "failover" else _t("Failover in order")
+        return f"{OUTBOUND_TYPES['group']} · {mode} · " + (" / ".join(members) if members else _t("no members"))
     iface = f" · ⇢ {ob['interface']}" if ob.get("interface") else ""
     if ob["type"] == "direct":
         return _t("Direct from this PC") + (f" · {ob['bind']}" if ob.get("bind") else "") + iface
@@ -104,6 +108,7 @@ def _tr_outbound_new():
         ("trojan", _t("Trojan tunnel")),
         ("tuic", _t("TUIC tunnel (QUIC)")),
         ("subscription", _t("Subscription (a provider's server list from a URL)")),
+        ("group", _t("Group (fastest server or failover between several outbounds)")),
         ("block", _t("Block (refuse connections, for router rules)")),
     ]
 
@@ -291,7 +296,9 @@ class OutboundCard(CardWidget):
         self.name.setText(node["name"])
         from .. import graph as graph_mod
         chain = graph_mod.chain_names(self.page.ctl.graph, node["via"]) if node.get("via") else []
-        self.desc.setText(outbound_summary(node["outbound"]) + ("  ⇢ " + " ⇢ ".join(chain) if chain else ""))
+        g = self.page.ctl.graph
+        members = [graph_mod.find(g, m)[1]["name"] for m in node.get("members", []) if graph_mod.find(g, m)[1]]
+        self.desc.setText(outbound_summary(node["outbound"], members) + ("  ⇢ " + " ⇢ ".join(chain) if chain else ""))
         self.used.setText(_t("used by: {names}").format(names=", ".join(user_names)) if user_names else _t("not used"))
 
     def _menu(self):
@@ -662,6 +669,47 @@ class EditorInterface(ScrollArea):
         self.sp_sub_hours.setFixedWidth(150)
         self.r_sub_hours = s_out.add(Row(_t("Update every (hours)"), _t("0 = only when you click 'Update now'"), v).right(self.sp_sub_hours))
         self.sub_done.connect(self._on_sub_done)
+        # group
+        self.grp_modes = ["auto", "failover"]
+        self.cb_grp_mode = ComboBox(v)
+        self.cb_grp_mode.addItems([_t("Fastest automatically"), _t("Failover in order")])
+        self.cb_grp_mode.setFixedWidth(220)
+        self.r_grp_mode = s_out.add(Row(_t("Choose"), "", v).right(self.cb_grp_mode))
+        self.lst_grp = ListWidget(v)
+        self.lst_grp.setFixedSize(330, 150)
+        b_up = TransparentToolButton(FIF.UP, v)
+        b_up.setToolTip(_t("Move up"))
+        b_up.clicked.connect(lambda: self._grp_move(-1))
+        b_down = TransparentToolButton(FIF.DOWN, v)
+        b_down.setToolTip(_t("Move down"))
+        b_down.clicked.connect(lambda: self._grp_move(1))
+        b_rm = TransparentToolButton(FIF.DELETE, v)
+        b_rm.setToolTip(_t("Remove from the group"))
+        b_rm.clicked.connect(self._grp_remove)
+        col = QWidget(v)
+        cl = QVBoxLayout(col)
+        cl.setContentsMargins(0, 0, 0, 0)
+        for b in (b_up, b_down, b_rm):
+            cl.addWidget(b)
+        self.cb_grp_add = ComboBox(v)
+        self.cb_grp_add.setFixedWidth(330)
+        self.cb_grp_add.currentIndexChanged.connect(self._grp_add)
+        self.r_grp_members = s_out.add(Row(_t("Members"), _t("Outbound blocks this group uses, first one on top. You can also connect them on the canvas from the group's 'members' output."), v)
+                                       .right(self.lst_grp, col))
+        self.r_grp_add = s_out.add(Row(_t("Add a member"), "", v).right(self.cb_grp_add))
+        self.grp_members, self.grp_choices = [], []
+        self.ed_grp_url = LineEdit(v)
+        self.ed_grp_url.setFixedWidth(330)
+        self.sp_grp_interval = SpinBox(v)
+        self.sp_grp_interval.setRange(10, 3600)
+        self.sp_grp_interval.setFixedWidth(150)
+        self.r_grp_test = s_out.add(Row(_t("Test address · interval (s)"), _t("Each member is measured by loading this address through it"), v)
+                                    .right(self.ed_grp_url, self.sp_grp_interval))
+        self.sp_grp_tol = SpinBox(v)
+        self.sp_grp_tol.setRange(0, 5000)
+        self.sp_grp_tol.setFixedWidth(150)
+        self.r_grp_tol = s_out.add(Row(_t("Tolerance (ms)"), _t("Switch only when another member is at least this much faster (avoids switching back and forth)"), v)
+                                   .right(self.sp_grp_tol))
         self._sub = {"sub_servers": "", "sub_updated": 0}
         # VLESS / Trojan / TUIC
         self.ed_out_uuid = LineEdit(v)
@@ -864,6 +912,7 @@ class EditorInterface(ScrollArea):
         self.cb_out_sec.currentIndexChanged.connect(lambda *_: self._sync())
         self.cb_out_tr.currentIndexChanged.connect(lambda *_: self._sync())
         self.cb_sub_mode.currentIndexChanged.connect(lambda *_: self._sync())
+        self.cb_grp_mode.currentIndexChanged.connect(lambda *_: self._sync())
         self.sw_in_auth.checkedChanged.connect(lambda *_: self._sync())
 
     def _ss_labels(self):
@@ -975,6 +1024,10 @@ class EditorInterface(ScrollArea):
         self.sp_sub_hours.setValue(ob["sub_interval"])
         self._sub = {"sub_servers": ob["sub_servers"], "sub_updated": ob["sub_updated"]}
         self._fill_sub_servers(ob["sub_selected"])
+        self.cb_grp_mode.setCurrentIndex(self.grp_modes.index(ob["group_mode"]) if ob["group_mode"] in self.grp_modes else 0)
+        self.ed_grp_url.setText(ob["group_test_url"])
+        self.sp_grp_interval.setValue(ob["group_interval"])
+        self.sp_grp_tol.setValue(ob["group_tolerance"])
 
     def _detect_sni(self):
         n = self.collect()
@@ -1069,11 +1122,13 @@ class EditorInterface(ScrollArea):
     def _after_fill(self, n, inbound, ib):
         if not inbound:
             g = self.ctl.graph
-            others = [x for x in g["outbounds"] if x["id"] != n["id"] and x["outbound"]["type"] != "direct"]
+            others = [x for x in g["outbounds"] if x["id"] != n["id"] and x["outbound"]["type"] not in ("direct", "group")]
             self.vias = [None] + [x["id"] for x in others]
             self.cb_via.clear()
             self.cb_via.addItems([_t("(directly)")] + [x["name"] for x in others])
             self.cb_via.setCurrentIndex(self.vias.index(n.get("via")) if n.get("via") in self.vias else 0)
+            self.grp_members = list(n.get("members") or [])
+            self._grp_fill()
         if inbound:
             g = self.ctl.graph
             routers = g.get("routers", [])
@@ -1093,6 +1148,42 @@ class EditorInterface(ScrollArea):
         self._set_probe_text(CHECK_DESC if inbound else CHECK_DESC_OUT, None)
         self._sync()
         self.verticalScrollBar().setValue(0)
+
+    # --- group members ---
+    def _grp_fill(self):
+        from .. import graph as graph_mod
+        g = self.ctl.graph
+        own = self.node["id"] if self.node else None
+        self.grp_members = [m for m in self.grp_members if graph_mod.find(g, m)[0] == "outbound"]
+        self.lst_grp.clear()
+        for i, m in enumerate(self.grp_members):
+            self.lst_grp.addItem(f"{i + 1}. {graph_mod.find(g, m)[1]['name']}")
+        self.grp_choices = [None] + [x["id"] for x in g["outbounds"] if x["id"] != own and x["id"] not in self.grp_members
+                                     and x["outbound"]["type"] not in graph_mod.NO_MEMBER]
+        self.cb_grp_add.blockSignals(True)
+        self.cb_grp_add.clear()
+        self.cb_grp_add.addItems([_t("(choose an outbound block)")] + [graph_mod.find(g, x)[1]["name"] for x in self.grp_choices[1:]])
+        self.cb_grp_add.setCurrentIndex(0)
+        self.cb_grp_add.blockSignals(False)
+
+    def _grp_add(self, idx):
+        if 0 < idx < len(self.grp_choices):
+            self.grp_members.append(self.grp_choices[idx])
+            self._grp_fill()
+
+    def _grp_move(self, step):
+        i = self.lst_grp.currentRow()
+        j = i + step
+        if 0 <= i < len(self.grp_members) and 0 <= j < len(self.grp_members):
+            self.grp_members[i], self.grp_members[j] = self.grp_members[j], self.grp_members[i]
+            self._grp_fill()
+            self.lst_grp.setCurrentRow(j)
+
+    def _grp_remove(self):
+        i = self.lst_grp.currentRow()
+        if 0 <= i < len(self.grp_members):
+            del self.grp_members[i]
+            self._grp_fill()
 
     def _wg_generate(self):
         from ..wgconf import keypair
@@ -1196,16 +1287,22 @@ class EditorInterface(ScrollArea):
             "tun": _t("A virtual network card that captures the traffic of every app on this PC, including apps without proxy settings, so router rules on programs work for all of them. Starting it asks for administrator permission (UAC) unless ProxyDock runs as administrator. One TUN card at a time. Needs the sing-box engine."),
         }
         self.in_note.setText(notes[it])
-        remote = ot not in ("direct", "block", "subscription")
+        remote = ot not in ("direct", "block", "subscription", "group")
+        for r in (self.r_grp_mode, self.r_grp_members, self.r_grp_add, self.r_grp_test):
+            r.setVisible(ot == "group")
+        self.r_grp_tol.setVisible(ot == "group" and self.grp_modes[max(self.cb_grp_mode.currentIndex(), 0)] == "auto")
+        self.r_grp_mode.desc.setText(_t("Uses the member that answers fastest, and moves away from members that stop working")
+                                     if self.grp_modes[max(self.cb_grp_mode.currentIndex(), 0)] == "auto" else
+                                     _t("Uses the first member that works; when it stops working, the next one. It stays there until that one fails too"))
         for r in (self.r_sub_url, self.r_sub_mode, self.r_sub_hours):
             r.setVisible(ot == "subscription")
         self.cb_sub_server.setVisible(self.sub_modes[max(self.cb_sub_mode.currentIndex(), 0)] == "select")
         self.r_out_server.setVisible(remote)
         self.r_out_bind.setVisible(ot == "direct")
-        self.r_out_via.setVisible(ot not in ("direct", "hysteria2", "block", "subscription"))
+        self.r_out_via.setVisible(ot not in ("direct", "hysteria2", "block", "subscription", "group"))
         vi = self.cb_via.currentIndex()
         has_via = ot not in ("direct", "hysteria2", "block") and 0 < vi < len(self.vias)
-        self.r_out_iface.setVisible(ot != "block" and not has_via)    # only the hop that dials out itself
+        self.r_out_iface.setVisible(ot not in ("block", "group") and not has_via)    # only the hop that dials out itself
         self.r_out_cred.setVisible(ot in ("http", "https", "socks4", "socks5", "trojan", "tuic"))
         self.ed_out_user.setVisible(ot not in ("trojan", "tuic"))
         self.ed_out_pass.setVisible(ot != "socks4")
@@ -1243,6 +1340,7 @@ class EditorInterface(ScrollArea):
             "vless": _t("VLESS tunnel (TCP+UDP) with TLS or REALITY, optionally over WebSocket/gRPC. Paste a vless:// link to fill everything in. Needs the sing-box engine."),
             "trojan": _t("Trojan tunnel over TLS (TCP+UDP), optionally over WebSocket/gRPC. Paste a trojan:// link to fill everything in. Needs the sing-box engine."),
             "subscription": _t("All servers of a provider's subscription link as one block. Pick a server or let it use the fastest one (it also moves away from servers that stop working). The server list is saved, so it works offline too. Needs the sing-box engine."),
+            "group": _t("Uses several outbound blocks as one: the fastest, or the first that works (failover). Servers that stop working are skipped automatically. Needs the sing-box engine."),
             "tuic": _t("TUIC v5 tunnel over QUIC (TCP+UDP). Paste a tuic:// link to fill everything in. Needs the sing-box engine."),
             "wireguard": _t("WireGuard tunnel run inside ProxyDock (TCP+UDP): no VPN app and no change to the PC's network, so several can run at once. 'Through' another WireGuard block makes a double VPN. Needs the sing-box engine."),
         }
@@ -1377,7 +1475,10 @@ class EditorInterface(ScrollArea):
                              hy2_down_mbps=self.sp_out_down.value(), hy2_ports=self.ed_out_hop.text().strip(),
                              hy2_hop_interval=self.sp_out_hop.value(),
                              bind=self.ed_out_bind.text().strip() if ot == "direct" else "",
-                             interface=self._iface_value() if ot != "block" else "",
+                             interface=self._iface_value() if ot not in ("block", "group") else "",
+                             group_mode=self.grp_modes[max(self.cb_grp_mode.currentIndex(), 0)],
+                             group_test_url=self.ed_grp_url.text().strip(), group_interval=self.sp_grp_interval.value(),
+                             group_tolerance=self.sp_grp_tol.value(),
                              wg_private_key=self.ed_wg_key.text().strip(), wg_address=self.ed_wg_addr.text().strip(),
                              wg_peer_public_key=self.ed_wg_peer.text().strip(), wg_preshared_key=self.ed_wg_psk.text().strip(),
                              wg_allowed_ips=self.ed_wg_allowed.text().strip(), wg_mtu=self.sp_wg_mtu.value(),
@@ -1399,6 +1500,7 @@ class EditorInterface(ScrollArea):
                              sub_interval=self.sp_sub_hours.value(), **self._sub)
         idx = self.cb_via.currentIndex()
         n["via"] = self.vias[idx] if 0 <= idx < len(self.vias) and ot not in graph_mod.NO_VIA else None
+        n["members"] = list(self.grp_members) if ot == "group" else []
         if n["via"]:
             n["outbound"]["interface"] = ""     # a hop that goes through another block does not dial out itself
         return graph_mod.validate_outbound_node(n)
@@ -1414,7 +1516,10 @@ class EditorInterface(ScrollArea):
         g = copy.deepcopy(self.ctl.graph)
         g["outbounds"] = [n if x["id"] == n["id"] else x for x in g["outbounds"]]
         p = config.validate_proxy({"id": "__edit__", "name": n["name"], "outbound": n["outbound"]})
-        p["outbound"]["via"] = (graph_mod.resolve_outbound(g, n["id"]) or {}).get("via")
+        resolved = graph_mod.resolve_outbound(g, n["id"]) or {}
+        p["outbound"]["via"] = resolved.get("via")
+        if "members" in resolved:
+            p["outbound"]["members"] = resolved["members"]
         return p, []
 
     def _errors(self, n, for_check=False):

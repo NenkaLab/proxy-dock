@@ -21,7 +21,7 @@ Shadowsocks distant » tient sur une seule carte.
 | | Pris en charge |
 |---|---|
 | Entrée | SOCKS5 · SOCKS4/4a · HTTP · HTTPS (TLS) · serveur Shadowsocks · serveur Hysteria2 · TUN (toutes les applications) |
-| Sortie | Direct · proxy amont HTTP / HTTPS / SOCKS4 / SOCKS5 · tunnel Shadowsocks · tunnel Hysteria2 (QUIC) · WireGuard · VLESS (TLS / REALITY) · Trojan · TUIC · abonnement |
+| Sortie | Direct · proxy amont HTTP / HTTPS / SOCKS4 / SOCKS5 · tunnel Shadowsocks · tunnel Hysteria2 (QUIC) · WireGuard · VLESS (TLS / REALITY) · Trojan · TUIC · abonnement · groupe |
 | UDP | entrée SOCKS5 · Shadowsocks · Hysteria2, sortie Direct · Shadowsocks · Hysteria2 · WireGuard · VLESS · Trojan · TUIC |
 
 - **Canevas** : éditeur façon blueprint - tirez des liens des blocs d'entrée vers les blocs de sortie ; plusieurs entrées peuvent partager une sortie, une entrée reliée à une autre entrée passe par celle-ci, et Direct peut partir d'une IP source choisie
@@ -35,6 +35,7 @@ Shadowsocks distant » tient sur une seule carte.
 - **TUN** : une carte réseau virtuelle qui capture toutes les applications de ce PC, même sans réglage de proxy - reliée à un routeur, les règles de programme (game.exe, chrome.exe) s'appliquent à toutes. Demande les droits administrateur (UAC) au démarrage, sauf si ProxyDock tourne déjà en administrateur (moteur sing-box)
 - **VLESS / Trojan / TUIC** : VLESS avec TLS ou REALITY (flow Vision), Trojan, TUIC v5, sur TCP, WebSocket ou gRPC. Copiez le lien `vless://`, `trojan://`, `tuic://`, `ss://` ou `hysteria2://` d'un fournisseur puis **Ajouter une sortie → Depuis un lien de partage** (ou **Coller un lien de partage** dans l'éditeur). Cloudflare WARP : importez un profil WireGuard WARP (fait par ex. avec wgcf) dans un bloc WireGuard (moteur sing-box)
 - **Abonnements** : l'URL d'abonnement d'un fournisseur devient un bloc contenant tous ses serveurs - choisissez-en un ou laissez prendre le plus rapide (mesure toutes les quelques minutes et évite les serveurs en panne). Mise à jour planifiée ; la liste est enregistrée chiffrée et démarre aussi hors ligne (moteur sing-box)
+- **Groupes** : un bloc groupe utilise plusieurs blocs sortants comme un seul - le plus rapide, ou le premier qui fonctionne dans l'ordre choisi (basculement). Reliez les membres depuis sa sortie « membres » ; les serveurs en panne sont ignorés automatiquement (moteur sing-box)
 - **Moteur** : sing-box (par défaut) exécute chaque proxy dans son propre processus - multicœur, UDP à travers les chaînes, Hysteria2 via d'autres sorties. Le moteur Python intégré sert de secours (Paramètres → Moteur de proxy)
 - **Shadowsocks** : AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) et 2022 (SIP022, blake3), TCP+UDP, copie des liens `ss://`
 - **Hysteria2** : interopérable dans les deux sens avec l'implémentation officielle (TCP et UDP), épinglage du certificat, copie des liens `hysteria2://`
@@ -102,6 +103,7 @@ La compilation macOS n'a pas encore été essayée sur un vrai Mac.
 ## Limites connues
 
 - Les abonnements lisent des listes de liens de partage (telles quelles ou en base64), pas le YAML Clash. « Le plus rapide automatiquement » mesure les serveurs toutes les quelques minutes avec une petite page de test (gstatic.com generate_204).
+- Les groupes ne répartissent pas le trafic sur plusieurs serveurs (répartition de charge ; sing-box 1.14 n'a pas cette sortie). Après un basculement, le groupe reste sur le nouveau membre jusqu'à ce que celui-ci tombe aussi.
 - Le TUN n'a pas encore été essayé en conditions réelles. Une seule carte TUN à la fois ; le DNS des applications capturées
   est résolu par ProxyDock sur ce PC ; la route stricte peut casser l'IPv6 sous Windows (désactivée par défaut). Sous macOS/Linux, ProxyDock doit tourner en root.
 - Les blocs Routeur et Blocage nécessitent le moteur sing-box. Les règles IP et GeoIP résolvent d'abord le domaine sur ce PC :

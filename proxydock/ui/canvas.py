@@ -31,6 +31,8 @@ PC_COLOR = (92, 58, 132)
 PORT_COLOR = (120, 170, 235)
 VIA_COLOR = (235, 190, 110)
 ROUTER_COLOR = (128, 86, 30)
+GROUP_COLOR = (24, 96, 112)
+MEMBER_COLOR = (110, 210, 200)
 RULE_COLOR = (240, 170, 90)
 NEW_INBOUND = []
 
@@ -99,6 +101,18 @@ class EndNode(BaseNode):
         self.add_custom_widget(InfoWidget(self.view, lines=3))
 
 
+class GroupNode(BaseNode):
+    """Group outbound: the 'members' output links to the outbound blocks it uses."""
+    __identifier__ = "proxydock"
+    NODE_NAME = "Group"
+
+    def __init__(self):
+        super().__init__()
+        self.add_input(_t("in"), multi_input=True, color=PORT_COLOR)
+        self.add_output(_t("members"), multi_output=True, color=MEMBER_COLOR)
+        self.add_custom_widget(InfoWidget(self.view, lines=3))
+
+
 class RouterNode(BaseNode):
     """Router: one output per rule plus 'default' (added when the canvas is built)."""
     __identifier__ = "proxydock"
@@ -154,7 +168,7 @@ class CanvasInterface(QWidget):
         self.mid_of = {}            # NodeGraphQt node id -> model id
 
         self.graph = NodeGraph()
-        self.graph.register_nodes([InNode, OutNode, EndNode, RouterNode, PcNode])
+        self.graph.register_nodes([InNode, OutNode, EndNode, GroupNode, RouterNode, PcNode])
         self.rule_of = {}           # (NodeGraphQt node id, output port name) -> rule id or "default"
         self.graph.set_acyclic(True)
         self.graph.disable_context_menu(True)
@@ -182,6 +196,7 @@ class CanvasInterface(QWidget):
                                "Double-click a block to edit it, right-click for more, Delete removes the selection.") + " "
                            + _t("An outbound's 'via' output chains it through another outbound.") + " "
                            + _t("A router sends each rule's traffic out of its own output.") + " "
+                           + _t("A group's 'members' output uses several outbounds as one (fastest or failover).") + " "
                            + _t("Alt+Shift+drag cuts links."), self)
         hint.setWordWrap(True)
         self.pc_bar = PcBar(ctl, self)
@@ -333,7 +348,7 @@ class CanvasInterface(QWidget):
     # --- model -> view ---
     def _signature(self, graph):
         return json.dumps([[n["id"], n["name"], n["target"]] for n in graph["inbounds"]] +
-                          [[n["id"], n["name"], n["via"], n["outbound"]["type"]] for n in graph["outbounds"]] +
+                          [[n["id"], n["name"], n["via"], n["outbound"]["type"], n.get("members", [])] for n in graph["outbounds"]] +
                           [[n["id"], n["name"], n["default"], [[x["id"], x["name"], x["target"]] for x in n["rules"]]]
                            for n in graph.get("routers", [])] +
                           [graph["pc"]["inbound"]])
@@ -362,6 +377,9 @@ class CanvasInterface(QWidget):
 
             from .. import graph as graph_mod
             for n in graph["outbounds"]:
+                if n["outbound"]["type"] == "group":
+                    make("GroupNode", n["id"], n["name"], n["pos"], GROUP_COLOR)
+                    continue
                 make("EndNode" if n["outbound"]["type"] in graph_mod.NO_VIA else "OutNode",
                      n["id"], n["name"], n["pos"], OUT_COLOR)
             for n in graph["inbounds"]:
@@ -384,6 +402,9 @@ class CanvasInterface(QWidget):
             for n in graph["outbounds"]:
                 if n["via"] and n["via"] in self.node_of and self.node_of[n["id"]].outputs():
                     self.node_of[n["id"]].output(0).connect_to(self.node_of[n["via"]].input(0), push_undo=False)
+                for m in n.get("members", []):
+                    if m in self.node_of:
+                        self.node_of[n["id"]].output(0).connect_to(self.node_of[m].input(0), push_undo=False)
             for r in graph.get("routers", []):
                 node = self.node_of[r["id"]]
                 for i, (key, tid) in enumerate([(x["id"], x["target"]) for x in r["rules"]] + [("default", r["default"])]):
@@ -428,7 +449,17 @@ class CanvasInterface(QWidget):
             if node is None:
                 continue
             users = graph_mod.users(cg, n["id"])
-            lines = [_line("#DADADA", outbound_summary(n["outbound"]))]
+            members = [graph_mod.find(cg, m)[1]["name"] for m in n.get("members", []) if graph_mod.find(cg, m)[1]]
+            if n["outbound"]["type"] == "group":
+                mode = _t("Fastest") if n["outbound"]["group_mode"] != "failover" else _t("Failover in order")
+                lines = [_line("#DADADA", f"{mode} · " + _t("{count} members").format(count=len(members)))]
+                if not members:
+                    lines.append(_line("#E8B339", "⚠ " + _t("no members")))
+            else:
+                lines = [_line("#DADADA", outbound_summary(n["outbound"]))]
+            groups = graph_mod.groups_of(cg, n["id"])
+            if groups:
+                users = users + groups
             if n["via"]:
                 lines.append(_line("#EBBE6E", "⇢ " + " ⇢ ".join(graph_mod.chain_names(cg, n["via"]))))
             lines.append(_line("#9A9A9A", _t("used by: {names}").format(names=", ".join(u["name"] for u in users))
@@ -463,7 +494,7 @@ class CanvasInterface(QWidget):
         if not src or not dst:
             return
         from .. import graph as graph_mod
-        src_kind, _ = graph_mod.find(self.ctl.graph, src)
+        src_kind, src_node = graph_mod.find(self.ctl.graph, src)
         dst_kind, _ = graph_mod.find(self.ctl.graph, dst)
         if src_kind == "router":
             key = self.rule_of.get((out_port.node().id, out_port.name()))
@@ -471,6 +502,12 @@ class CanvasInterface(QWidget):
                 self._reject(in_port, out_port, _t("A router rule can only go to an outbound block or another router"))
                 return
             QTimer.singleShot(0, self, lambda: self._apply_rule(src, key, dst))
+            return
+        if src_kind == "outbound" and src_node["outbound"]["type"] == "group":
+            if dst_kind != "outbound":
+                self._reject(in_port, out_port, _t("A group's members can only be outbound blocks"))
+                return
+            QTimer.singleShot(0, self, lambda: self._apply_member(src, dst))
             return
         if src_kind == "outbound" and dst_kind == "router":
             self._reject(in_port, out_port, _t("An outbound's 'via' can only go to another outbound"))
@@ -508,6 +545,11 @@ class CanvasInterface(QWidget):
             self.sig = None
             self.ctl.refresh_lists()
 
+    def _apply_member(self, src, dst):
+        if not self.ctl.add_member(src, dst):
+            self.sig = None
+            self.ctl.refresh_lists()
+
     def _apply_rule(self, src, key, dst):
         if key is None or not self.ctl.set_rule_target(src, key, dst):
             self.sig = None
@@ -537,7 +579,9 @@ class CanvasInterface(QWidget):
                 self.ctl.set_rule_target(src, key, None)
             return
         if kind == "outbound":
-            if n["via"] == dst:
+            if dst in n.get("members", ()):
+                self.ctl.remove_member(src, dst)
+            elif n["via"] == dst:
                 self.ctl.set_via(src, None)
             return
         if dst == PC_ID:

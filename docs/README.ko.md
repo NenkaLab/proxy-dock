@@ -20,7 +20,7 @@
 | 구분 | 지원 |
 |---|---|
 | 받는 쪽 | SOCKS5 · SOCKS4/4a · HTTP · HTTPS(TLS) · Shadowsocks 서버 · Hysteria2 서버 · TUN(모든 앱) |
-| 내보내는 쪽 | Direct · 상위 HTTP / HTTPS / SOCKS4 / SOCKS5 프록시 · Shadowsocks 터널 · Hysteria2(QUIC) 터널 · WireGuard · VLESS(TLS / REALITY) · Trojan · TUIC · 구독 |
+| 내보내는 쪽 | Direct · 상위 HTTP / HTTPS / SOCKS4 / SOCKS5 프록시 · Shadowsocks 터널 · Hysteria2(QUIC) 터널 · WireGuard · VLESS(TLS / REALITY) · Trojan · TUIC · 구독 · 그룹 |
 | UDP | 받을 때 SOCKS5 · Shadowsocks · Hysteria2, 보낼 때 Direct · Shadowsocks · Hysteria2 · WireGuard · VLESS · Trojan · TUIC |
 
 - **캔버스**: 블루프린트식 편집기 - 받는 쪽 블록에서 내보내는 쪽 블록으로 선을 끌어 잇습니다. 여러 받는 쪽이 내보내는 쪽 하나를 같이 쓸 수 있고, 받는 쪽을 다른 받는 쪽에 이으면 그쪽을 거쳐 중계하며, Direct 는 보낼 IP 를 고를 수 있습니다
@@ -34,6 +34,7 @@
 - **TUN**: 이 PC의 모든 앱(프록시 설정이 없는 앱 포함)을 잡는 가상 랜카드입니다. Router에 이으면 프로그램 규칙(game.exe, chrome.exe)이 모든 앱에 적용됩니다. ProxyDock이 이미 관리자 권한이 아니면 켤 때 관리자 권한(UAC)을 묻습니다 (sing-box 엔진)
 - **VLESS / Trojan / TUIC**: TLS 또는 REALITY(Vision flow)를 쓰는 VLESS, Trojan, TUIC v5를 TCP·WebSocket·gRPC로 씁니다. 업체의 `vless://`, `trojan://`, `tuic://`, `ss://`, `hysteria2://` 링크를 복사한 뒤 **내보내는 쪽 추가 → 공유 링크로**(또는 편집기의 **공유 링크 붙여넣기**)를 누르면 됩니다. Cloudflare WARP는 WARP WireGuard 프로필(예: wgcf로 만든 것)을 WireGuard 블록으로 가져오세요 (sing-box 엔진)
 - **구독**: 업체의 구독 URL을 서버 전부를 담은 블록 하나로 씁니다. 서버를 고르거나 가장 빠른 서버를 쓰게 할 수 있습니다(몇 분마다 재 보고 멈춘 서버는 피함). 정해 둔 간격으로 갱신하고, 목록을 암호화해 저장해 두므로 인터넷이 끊겨도 시작됩니다 (sing-box 엔진)
+- **그룹**: 그룹 블록은 여러 출구 블록을 하나처럼 씁니다. 가장 빠른 것, 또는 정해 둔 순서에서 동작하는 첫 번째 것(자동 전환)을 씁니다. 멤버는 '멤버' 출력으로 잇고, 멈춘 서버는 자동으로 건너뜁니다 (sing-box 엔진)
 - **엔진**: 기본인 sing-box는 프록시마다 별도 프로세스로 실행합니다 - 멀티코어, 체인을 거치는 UDP, 다른 내보내는 쪽을 거치는 Hysteria2. 내장 Python 엔진은 대체용입니다 (설정 → 프록시 엔진)
 - **Shadowsocks**: AEAD 2018(aes-128/256-gcm, chacha20-ietf-poly1305) 과 2022(SIP022, blake3) 방식, TCP+UDP, `ss://` 링크 복사
 - **Hysteria2**: 공식 구현과 양방향 호환 확인 (TCP·UDP), 인증서 지문 고정, `hysteria2://` 링크 복사
@@ -100,6 +101,7 @@ macOS 빌드는 아직 실제 Mac 에서 확인하지 않았습니다.
 ## 알려진 제한
 
 - 구독은 공유 링크 목록(일반 또는 base64)만 읽고 Clash YAML은 읽지 않습니다. '가장 빠른 서버 자동'은 몇 분마다 작은 시험 페이지(gstatic.com generate_204)를 받아 서버를 잽니다.
+- 그룹은 트래픽을 여러 서버에 나눠 보내지 않습니다(부하 분산. sing-box 1.14에 그런 출구가 없음). 자동 전환 뒤에는 새 멤버도 멈출 때까지 그 멤버를 계속 씁니다.
 - TUN은 아직 실제 환경에서 시험하지 않았습니다. TUN 카드는 한 번에 하나이고, 잡힌 앱의 DNS는 이 PC에서 ProxyDock이
   답합니다. 엄격한 라우팅은 Windows에서 IPv6를 깨뜨릴 수 있어 기본으로 꺼 둡니다. macOS/Linux에서는 ProxyDock 자체를 root로 실행해야 합니다.
 - Router와 차단 블록은 sing-box 엔진이 필요합니다. IP·GeoIP 규칙은 이 PC에서 먼저 도메인을 해석하므로, 그 뒤의 터널은

@@ -95,15 +95,16 @@ def _tr_outbound_types():
         "trojan": _t("Trojan tunnel"),
         "tuic": _t("TUIC tunnel"),
         "subscription": _t("Subscription"),
+        "group": _t("Group"),
         "block": _t("Block"),
     })
 
 
 UDP_INBOUNDS = ("socks5", "shadowsocks", "hysteria2")     # inbound types that can receive UDP
-UDP_OUTBOUNDS = ("direct", "shadowsocks", "hysteria2", "wireguard", "vless", "trojan", "tuic", "subscription")
+UDP_OUTBOUNDS = ("direct", "shadowsocks", "hysteria2", "wireguard", "vless", "trojan", "tuic", "subscription", "group")
 NEEDS_UDP_VIA = ("wireguard", "tuic")       # UDP-based tunnels: may only go through blocks that carry UDP
 UDP_VIA_OK = ("shadowsocks", "hysteria2", "wireguard", "socks5", "vless", "trojan", "tuic", "subscription")
-SINGBOX_ONLY_OUTBOUNDS = ("block", "wireguard", "vless", "trojan", "tuic", "subscription")
+SINGBOX_ONLY_OUTBOUNDS = ("block", "wireguard", "vless", "trojan", "tuic", "subscription", "group")
 
 
 # --- logging ---

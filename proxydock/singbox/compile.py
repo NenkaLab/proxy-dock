@@ -176,6 +176,9 @@ def outbounds(ob, prefix="out"):
         if ob["type"] == "subscription":
             out += subscription_outbounds(ob, f"{prefix}{i}")
             break
+        if ob["type"] == "group":
+            out += group_outbounds(ob, f"{prefix}{i}")
+            break
         d = outbound(ob, f"{prefix}{i}")
         if ob.get("via"):
             d["detour"] = f"{prefix}{i + 1}"
@@ -212,6 +215,31 @@ def subscription_outbounds(ob, tag):
                  "url": ob.get("sub_test_url") or "https://www.gstatic.com/generate_204",
                  "interval": "3m", "tolerance": 50}
     return members + [group]
+
+
+FAILOVER_TOLERANCE = 30000     # ms: urltest never trades the current member for a faster one -> member order wins
+
+
+def group_outbounds(ob, tag):
+    """A group block: every member's chain (first hop <tag>_m<k>_0) plus a urltest with the block's tag.
+    auto = the fastest member; failover = the first member in order that answers: with a tolerance larger than any
+    measured delay urltest keeps the first working member it finds, and leaves it only when it stops answering
+    (sing-box 1.14 urltest.Select; see the version notes)."""
+    out, heads = [], []
+    for k, m in enumerate(ob.get("members") or []):
+        chain = outbounds(m["outbound"], f"{tag}_m{k}_")
+        if chain:
+            out += chain
+            heads.append(f"{tag}_m{k}_0")
+    if not heads:
+        raise ValueError("group without members")
+    failover = ob.get("group_mode") == "failover"
+    group = {"type": "urltest", "tag": tag, "outbounds": heads,
+             "url": ob.get("group_test_url") or "https://www.gstatic.com/generate_204",
+             "interval": f"{max(10, ob.get('group_interval') or 180)}s",
+             "tolerance": FAILOVER_TOLERANCE if failover else max(0, ob.get("group_tolerance", 50)),
+             "interrupt_exist_connections": True}
+    return out + [group]
 
 
 def _cidr(x):

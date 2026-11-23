@@ -662,11 +662,41 @@ class Controller:
         self._recompile()
         return True
 
+    def add_member(self, gid, mid):
+        """Outbound block mid becomes the last member of group gid."""
+        kind, g = graph_mod.find(self.graph, gid)
+        mkind, m = graph_mod.find(self.graph, mid)
+        if kind != "outbound" or g["outbound"]["type"] != "group":
+            return True
+        if mkind != "outbound" or mid == gid or m["outbound"]["type"] in graph_mod.NO_MEMBER:
+            info(self.window, "error", _t("Cannot connect"),
+                 _t("A group's members can only be outbound blocks (not another group or Block)"), 5000)
+            self.refresh_lists()
+            return False
+        if mid not in g["members"]:
+            g["members"].append(mid)
+            log(LOG_SETTING, _t("Saved proxy '{name}'").format(name=g['name']))
+            self._recompile()
+        return True
+
+    def remove_member(self, gid, mid):
+        kind, g = graph_mod.find(self.graph, gid)
+        if kind == "outbound" and mid in g.get("members", ()):
+            g["members"].remove(mid)
+            log(LOG_SETTING, _t("Saved proxy '{name}'").format(name=g['name']))
+            self._recompile()
+
     def set_via(self, oid, vid):
         """Outbound oid connects to its server through outbound vid (None = directly)."""
         kind, n = graph_mod.find(self.graph, oid)
         if kind != "outbound" or n["via"] == vid:
             return True
+        _, v = graph_mod.find(self.graph, vid) if vid else (None, None)
+        if v is not None and v["outbound"]["type"] == "group":
+            info(self.window, "error", _t("Cannot connect"),
+                 _t("Nothing can go through a group; make the block a member of the group instead"), 5000)
+            self.refresh_lists()
+            return False
         if vid and n["outbound"]["type"] in graph_mod.NO_VIA:
             info(self.window, "error", _t("Cannot connect"),
                  _t("Hysteria2 uses QUIC (UDP), so it cannot go through another outbound")

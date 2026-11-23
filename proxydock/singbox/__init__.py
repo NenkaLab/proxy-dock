@@ -55,8 +55,11 @@ def find_hysteria(glob=None):
 
 
 def _chain(ob):
+    """Every outbound of a chain, including the chains of a group's members."""
     while ob:
         yield ob
+        for m in ob.get("members") or ():
+            yield from _chain(m["outbound"])
         ob = ob.get("via")
 
 

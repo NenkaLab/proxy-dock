@@ -20,7 +20,7 @@
 | | 支持 |
 |---|---|
 | 入站 | SOCKS5 · SOCKS4/4a · HTTP · HTTPS (TLS) · Shadowsocks 服务器 · Hysteria2 服务器 · TUN (所有应用) |
-| 出站 | Direct · 上游 HTTP / HTTPS / SOCKS4 / SOCKS5 代理 · Shadowsocks 隧道 · Hysteria2 (QUIC) 隧道 · WireGuard · VLESS (TLS / REALITY) · Trojan · TUIC · 订阅 |
+| 出站 | Direct · 上游 HTTP / HTTPS / SOCKS4 / SOCKS5 代理 · Shadowsocks 隧道 · Hysteria2 (QUIC) 隧道 · WireGuard · VLESS (TLS / REALITY) · Trojan · TUIC · 订阅 · 分组 |
 | UDP | 入站 SOCKS5 · Shadowsocks · Hysteria2，出站 Direct · Shadowsocks · Hysteria2 · WireGuard · VLESS · Trojan · TUIC |
 
 - **画布**：蓝图式编辑器 - 从入站块拖线到出站块；多个入站可共用一个出站，把入站连到另一个入站会经由它中继，Direct 可以指定源 IP
@@ -33,6 +33,7 @@
 - **TUN**: 捕获本机所有应用 (包括没有代理设置的应用) 的虚拟网卡——连到路由后，程序规则 (game.exe、chrome.exe) 对所有应用生效。若 ProxyDock 不是以管理员身份运行，启动时会请求管理员权限 (UAC) (sing-box 引擎)
 - **VLESS / Trojan / TUIC**: 支持 TLS 或 REALITY (Vision flow) 的 VLESS、Trojan、TUIC v5，可走 TCP、WebSocket 或 gRPC。复制服务商的 `vless://`、`trojan://`、`tuic://`、`ss://` 或 `hysteria2://` 链接，然后点 **添加出站 → 从分享链接** (或编辑器里的 **粘贴分享链接**)。Cloudflare WARP：把 WARP 的 WireGuard 配置 (例如用 wgcf 生成) 导入 WireGuard 块 (sing-box 引擎)
 - **订阅**: 把服务商的订阅 URL 作为包含所有服务器的一个块。可手动选择或自动使用最快的服务器 (每隔几分钟测量并避开失效服务器)。按设定间隔更新，列表加密保存，离线也能启动 (sing-box 引擎)
+- **分组**: 分组块把多个出站块当作一个使用: 最快的，或按你设定的顺序第一个可用的 (故障转移)。从它的“成员”输出连接成员; 自动跳过失效服务器 (sing-box 引擎)
 - **引擎**: 默认的 sing-box 为每个代理单独运行一个进程 - 多核、经过链路的 UDP、经由其他出站的 Hysteria2。内置 Python 引擎作为备用 (设置 → 代理引擎)
 - **Shadowsocks**：AEAD 2018 (aes-128/256-gcm、chacha20-ietf-poly1305) 和 2022 (SIP022、blake3)，TCP+UDP，复制 `ss://` 链接
 - **Hysteria2**：已确认与官方实现双向互通 (TCP、UDP)，证书指纹固定，复制 `hysteria2://` 链接
@@ -98,6 +99,7 @@ macOS 构建尚未在真实的 Mac 上验证。
 ## 已知限制
 
 - 订阅只读取分享链接列表 (纯文本或 base64)，不支持 Clash YAML。“自动选择最快”每隔几分钟获取一个小测试页 (gstatic.com generate_204) 来测量服务器。
+- 分组不会把流量分摊到多个服务器 (负载均衡; sing-box 1.14 没有这种出站)。故障转移后，分组会一直使用新成员，直到它也失效。
 - TUN 尚未在真实环境中测试。同一时间只能有一个 TUN 卡片；被捕获应用的 DNS 由本机的 ProxyDock 应答；
   严格路由在 Windows 上可能破坏 IPv6 (默认关闭)。在 macOS/Linux 上需要以 root 身份运行 ProxyDock。
 - 路由和阻止块需要 sing-box 引擎。IP 和 GeoIP 规则会先在本机解析域名，因此其后的隧道直接连接 IP，而不是在远端解析域名。

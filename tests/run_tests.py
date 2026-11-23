@@ -354,6 +354,27 @@ def test_ui():
     w.editor.cancel()
     wait(300)
     ctl.delete_node(h2["id"])
+    gd = ctl.new_outbound({"type": "direct"}, edit=False)
+    gp = ctl.new_outbound({"type": "group"}, edit=False)
+    check("ui: group member added", ctl.add_member(gp["id"], gd["id"]) and gm.find(ctl.graph, gp["id"])[1]["members"] == [gd["id"]])
+    check("ui: a group cannot be a member", not ctl.add_member(gp["id"], gp["id"]))
+    wait(300)
+    gnode = w.canvas_page.node_of.get(gp["id"])
+    check("ui: group drawn with its member link", gnode is not None and len(gnode.output(0).connected_ports()) == 1)
+    ctl.edit_node(gp["id"])
+    wait(300)
+    check("ui: group editor lists the member", w.editor.r_grp_members.isVisible() and w.editor.lst_grp.count() == 1
+          and not w.editor.r_out_server.isVisible())
+    w.editor.cb_grp_mode.setCurrentIndex(1)
+    got = w.editor.collect()
+    check("ui: group values collected", got["outbound"]["group_mode"] == "failover" and got["members"] == [gd["id"]]
+          and not w.editor.r_grp_tol.isVisible())
+    w.editor.save()
+    wait(300)
+    check("ui: group saved", gm.find(ctl.graph, gp["id"])[1]["outbound"]["group_mode"] == "failover")
+    ctl.delete_node(gd["id"])
+    check("ui: deleting a member updates the group", gm.find(ctl.graph, gp["id"])[1]["members"] == [])
+    ctl.delete_node(gp["id"])
     tport, _, _ = tls_test_server()
     hb = ctl.new_outbound({"type": "https", "host": "127.0.0.1", "port": tport}, edit=False)
     ctl.edit_node(hb["id"])
@@ -1282,15 +1303,115 @@ def test_hy2_advanced_e2e():
         origin.shutdown()
 
 
+def test_group():
+    from proxydock import graph as gm
+    from proxydock.singbox import compile as sbc, engine_for
+    g = gm.empty()
+    a = gm.add_outbound(g, {"type": "socks5", "host": "a.example", "port": 1080}, "A")
+    hop = gm.add_outbound(g, {"type": "http", "host": "corp", "port": 8080}, "Corp")
+    a["via"] = hop["id"]
+    b = gm.add_outbound(g, {"type": "direct"}, "B")
+    blk = gm.add_outbound(g, {"type": "block"}, "Blk")
+    grp = gm.add_outbound(g, {"type": "group", "group_mode": "failover"}, "G")
+    other = gm.add_outbound(g, {"type": "group"}, "G2")
+    grp["members"] = [a["id"], b["id"], blk["id"], other["id"], grp["id"], "missing"]
+    other["members"] = [b["id"]]
+    s5 = gm.add_outbound(g, {"type": "socks5", "host": "x", "port": 1}, "S5")
+    s5["via"] = grp["id"]
+    gm.add_inbound(g, "in", {"type": "socks5", "port": 1080}, target=grp["id"])
+    g = gm.validate(json.loads(json.dumps(g)))
+    G = gm.find(g, grp["id"])[1]
+    check("group: only plain outbound members are kept", G["members"] == [a["id"], b["id"]], G["members"])
+    check("group: nothing goes via a group", gm.find(g, s5["id"])[1]["via"] is None)
+    p = gm.compile(g)[0]
+    check("group: compiled members with their chains", [m["name"] for m in p["outbound"]["members"]] == ["A", "B"]
+          and p["outbound"]["members"][0]["outbound"]["via"]["host"] == "corp")
+    conf, _ = sbc.build(p, config.resolve(p, config.validate_global({})), bans_path="b.json", api_port=1, api_secret="s")
+    tags = {o["tag"]: o for o in conf["outbounds"]}
+    ut = tags.get("out0", {})
+    check("group: urltest over the member chains", ut.get("type") == "urltest" and ut["outbounds"] == ["out0_m0_0", "out0_m1_0"]
+          and tags["out0_m0_0"]["detour"] == "out0_m0_1" and ut["tolerance"] == sbc.FAILOVER_TOLERANCE, ut)
+    G["outbound"]["group_mode"] = "auto"
+    G["outbound"]["group_tolerance"] = 80
+    p = gm.compile(g)[0]
+    conf, _ = sbc.build(p, config.resolve(p, config.validate_global({})), bans_path="b.json", api_port=1, api_secret="s")
+    check("group: fastest mode uses the tolerance", next(o for o in conf["outbounds"] if o["tag"] == "out0")["tolerance"] == 80)
+    check("group: needs sing-box", engine_for(p, config.validate_global({"engine": "python"}))[0] == "none")
+    gm.find(g, a["id"])[1]["outbound"]["type"] = "https"
+    gm.find(g, a["id"])[1]["outbound"]["pin_sha256"] = "ab" * 32
+    p = gm.compile(g)[0]
+    check("group: a pinned member is noticed", "1.15" in engine_for(p, config.validate_global({}))[1])
+    r = gm.add_router(g, "R")
+    r["rules"][0].update(match={"domain": ["x.example"]}, target=grp["id"])
+    r["default"] = b["id"]
+    g["inbounds"][0]["target"] = r["id"]
+    gm.find(g, a["id"])[1]["outbound"].update(type="socks5", pin_sha256="")
+    p = gm.compile(g)[0]
+    conf, _ = sbc.build(p, config.resolve(p, config.validate_global({})), bans_path="b.json", api_port=1, api_secret="s")
+    check("group: router rule -> group", any(o["tag"] == "r0_0" and o["type"] == "urltest" for o in conf["outbounds"])
+          and any(x.get("outbound") == "r0_0" for x in conf["route"]["rules"]))
+    gm.remove(g, b["id"])
+    check("group: deleting a member removes it from the group", gm.find(g, grp["id"])[1]["members"] == [a["id"]])
+    empty_grp = dict(config.OUTBOUND_DEFAULTS, type="group", members=[], via=None)
+    check("group: no members is an error", any("members" in e for e in config.outbound_errors(empty_grp)))
+
+
+def test_group_e2e():
+    """Group of two Shadowsocks servers (ProxyDock cards): failover skips a dead first member and otherwise keeps
+    the first one; fastest mode works."""
+    from proxydock.runtime import ProxyManager
+    from proxydock.ss import ss_generate_password
+    origin = ThreadingHTTPServer(("127.0.0.1", 0), Origin)
+    threading.Thread(target=origin.serve_forever, daemon=True).start()
+    oport = origin.server_address[1]
+    glob = config.validate_global({"engine": "sing-box"})
+    mgr = ProxyManager()
+    try:
+        servers, members = [], []
+        for name in ("Alpha", "Beta"):
+            key = ss_generate_password("2022-blake3-aes-128-gcm")
+            sp = config.new_proxy(name, {"type": "shadowsocks", "port": free_port(), "ss_method": "2022-blake3-aes-128-gcm",
+                                         "ss_password": key})
+            mgr.start(sp, glob).result(15)
+            servers.append(sp)
+            members.append({"id": name, "name": name, "outbound": dict(
+                config.OUTBOUND_DEFAULTS, type="shadowsocks", host="127.0.0.1", port=sp["inbound"]["port"],
+                ss_method="2022-blake3-aes-128-gcm", ss_password=key, via=None)})
+        dead = {"id": "Dead", "name": "Dead", "outbound": dict(members[0]["outbound"], port=free_port())}
+
+        def card(mode, mems):
+            c = config.new_proxy(f"group {mode}", {"type": "socks5", "port": free_port()})
+            c["outbound"] = dict(config.OUTBOUND_DEFAULTS, type="group", group_mode=mode, members=mems,
+                                 group_test_url=f"http://127.0.0.1:{oport}/", via=None)
+            mgr.start(c, glob).result(20)
+            time.sleep(1.5)         # first measurement
+            return c
+
+        c1 = card("failover", [members[0], members[1]])
+        before = [mgr.stats_for(x["id"]).total for x in servers]
+        ok = socks5_get(c1["inbound"]["port"], "127.0.0.1", oport) == "200"
+        time.sleep(0.5)
+        after = [mgr.stats_for(x["id"]).total for x in servers]
+        check("[sing-box] group: failover -> origin through the first member", ok and after[0] > before[0] and after[1] == before[1],
+              (ok, before, after))
+        c2 = card("failover", [dead, members[1]])
+        check("[sing-box] group: failover skips a dead first member", socks5_get(c2["inbound"]["port"], "127.0.0.1", oport) == "200")
+        c3 = card("auto", [dead, members[0], members[1]])
+        check("[sing-box] group: fastest mode -> origin", socks5_get(c3["inbound"]["port"], "127.0.0.1", oport) == "200")
+    finally:
+        mgr.stop_all()
+        origin.shutdown()
+
+
 def main():
     t0 = time.time()
     tests = [test_translations, test_graph, test_engine, test_singbox_compile, test_router_graph, test_router_singbox, test_interface,
              test_wireguard, test_tun, test_run_as_admin, test_protocols,
-             test_subscription, test_detect_sni, test_hy2_advanced]
+             test_subscription, test_detect_sni, test_hy2_advanced, test_group]
     from proxydock.singbox import find_binary
     if find_binary():
         tests += [lambda: test_engine("sing-box"), test_singbox_guard, test_router_e2e, test_interface_e2e, test_wireguard_e2e, test_helper,
-                  test_protocols_e2e, test_subscription_e2e, test_hy2_advanced_e2e]
+                  test_protocols_e2e, test_subscription_e2e, test_hy2_advanced_e2e, test_group_e2e]
         from proxydock.singbox import find_hysteria
         if find_hysteria():
             tests.append(test_hysteria)

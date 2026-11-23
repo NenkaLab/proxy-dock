@@ -2,7 +2,7 @@
 
 graph = {
   "inbounds":  [{"id", "name", "autostart", "inbound": {...}, "overrides": {...}, "target": id|None, "pos": [x, y]}],
-  "outbounds": [{"id", "name", "outbound": {...}, "via": id|None, "pos": [x, y]}],
+  "outbounds": [{"id", "name", "outbound": {...}, "via": id|None, "members": [id, ...], "pos": [x, y]}],
   "routers":   [{"id", "name", "rules": [{"id", "name", "match": {...}, "target": id|None}], "default": id|None,
                  "pos": [x, y]}],
   "pc":        {"inbound": id|None, "pos": [x, y], "backup": {...}|None, "applied": bool, "server": str},
@@ -12,6 +12,8 @@ An inbound's target is either an outbound block (traffic leaves through it) or a
 (relay: traffic is handed to that local inbound). Several inbounds can share one outbound block.
 An outbound block's "via" is another outbound block its own server connection goes through
 (e.g. Shadowsocks via the company HTTP proxy); Direct and Hysteria2 (QUIC/UDP) cannot have a via.
+A group outbound ("group") uses its member blocks (node["members"], in order) as one: the fastest one, or the
+first one that works (failover). Members are outbound blocks other than groups and Block; nothing goes "via" a group.
 An inbound can also target a router block: its rules (checked top to bottom) send matching traffic to an outbound
 block, the Block outbound or another router; everything else goes to the router's default. Routers need the
 sing-box engine (they become sing-box route rules).
@@ -26,7 +28,8 @@ from .common import INBOUND_TYPES, OUTBOUND_TYPES, host_port
 from .i18n import _t
 
 
-NO_VIA = ("direct", "hysteria2", "block", "subscription")   # end a chain (a subscription's servers dial out themselves)
+NO_VIA = ("direct", "hysteria2", "block", "subscription", "group")   # end a chain (their servers dial out themselves)
+NO_MEMBER = ("group", "block")      # cannot be a group member
 
 # router rule conditions: lists of strings, plus ip_private (bool). Inside one rule, sing-box ORs the address
 # conditions (domain*, ip_cidr, ip_private, geoip, geosite) and ANDs the rest (port, process_name).
@@ -65,10 +68,15 @@ def validate_outbound_node(raw):
     if not 0 <= ob["port"] <= 65535:
         ob["port"] = 0
     via = raw.get("via")
+    members = []
+    if ob["type"] == "group":
+        for m in raw.get("members") or []:
+            if isinstance(m, str) and m and m not in members:
+                members.append(m)
     return {"id": raw.get("id") if isinstance(raw.get("id"), str) and raw.get("id") else new_id(),
             "name": _name(raw.get("name"), default_outbound_name(ob)), "outbound": ob,
             "via": via if isinstance(via, str) and via and ob["type"] not in NO_VIA else None,
-            "pos": _pos(raw.get("pos"))}
+            "members": members, "pos": _pos(raw.get("pos"))}
 
 
 def validate_inbound_node(raw):
@@ -181,6 +189,12 @@ def validate(raw):
     for n in g["outbounds"]:            # a via loop cannot be used: cut it
         if via_loop(g, n["id"]):
             n["via"] = None
+    by_id = {n["id"]: n for n in g["outbounds"]}
+    for n in g["outbounds"]:            # nothing goes through a group; members are plain outbound blocks
+        if n["via"] and by_id[n["via"]]["outbound"]["type"] == "group":
+            n["via"] = None
+        n["members"] = [m for m in n["members"] if m in by_id and m != n["id"]
+                        and by_id[m]["outbound"]["type"] not in NO_MEMBER]
     pc = raw.get("pc") if isinstance(raw.get("pc"), dict) else {}
     g["pc"]["pos"] = _pos(pc.get("pos"), g["pc"]["pos"])
     if pc.get("inbound") in {n["id"] for n in g["inbounds"]}:
@@ -230,6 +244,9 @@ def resolve_outbound(graph, nid):
     for n in reversed(chain):
         d = copy.deepcopy(n["outbound"])
         d["via"] = ob
+        if d["type"] == "group":
+            d["members"] = [{"id": mid, "name": find(graph, mid)[1]["name"], "outbound": resolve_outbound(graph, mid)}
+                            for mid in n.get("members", []) if find(graph, mid)[0] == "outbound"]
         ob = d
     return ob
 
@@ -251,11 +268,18 @@ def users(graph, nid):
     return [n for n in graph["inbounds"] if n["target"] == nid]
 
 
+def groups_of(graph, nid):
+    """Group blocks that have outbound nid as a member."""
+    return [n for n in graph["outbounds"] if nid in n.get("members", ())]
+
+
 def default_outbound_name(ob):
     if ob["type"] == "block":
         return _t("Block")
     if ob["type"] == "subscription":
         return _t("Subscription")
+    if ob["type"] == "group":
+        return _t("Group")
     if ob["type"] == "direct":
         where = ob.get("interface") or ob.get("bind")
         return "Direct" + (f" ({where})" if where else "")
@@ -343,6 +367,8 @@ def compile(graph):
                                    "inbound": copy.deepcopy(n["inbound"]), "outbound": ob,
                                    "overrides": copy.deepcopy(n["overrides"])})
         p["outbound"]["via"] = ob.get("via")
+        if "members" in ob:
+            p["outbound"]["members"] = ob["members"]
         p["routes"] = routes
         p["target"] = n["target"]
         p["target_name"] = target_label(graph, n)
@@ -391,6 +417,8 @@ def remove(graph, nid):
     for n in graph["outbounds"]:
         if n["via"] == nid:
             n["via"] = None
+        if nid in n.get("members", ()):
+            n["members"].remove(nid)
     if graph["pc"]["inbound"] == nid:
         graph["pc"]["inbound"] = None
 
