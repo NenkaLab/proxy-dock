@@ -394,25 +394,13 @@ class Controller:
         self.window = MainWindow(self)
         self.tray = QSystemTrayIcon(make_icon())
         self.tray.setToolTip(APP_NAME)
-        self.menu = SystemTrayMenu()
-        self.act_show = Action(FIF.VIEW, "", self.menu)
-        self.act_stop_all = Action(FIF.PAUSE, "", self.menu)
-        self.act_startup = Action(FIF.POWER_BUTTON, "", self.menu)
-        self.act_hidden = Action(FIF.INFO, "", self.menu)
-        self.act_restart = Action(FIF.SYNC, "", self.menu)
-        self.act_exit = Action(FIF.CLOSE, "", self.menu)
-        self._retranslate_tray()
-        for act in (self.act_startup, self.act_hidden):
-            act.setCheckable(True)
-        self.act_show.triggered.connect(self.toggle_window)
-        self.window.visibilityChanged.connect(self._sync_show_action)
-        self.act_stop_all.triggered.connect(self.stop_all)
-        self.act_startup.triggered.connect(self.set_startup)
-        self.act_hidden.triggered.connect(self.set_hidden)
-        self.act_restart.triggered.connect(self.restart)
-        self.act_exit.triggered.connect(self.exit)
+        # the tray menu is made anew whenever it changes (see _rebuild_tray_proxies)
+        self.menu = None
+        self._tray_dirty = False
+        self._startup_state = (False, False)    # (start at login, hide the notification): shown in the menu
         self.proxy_actions = []
-        self.tray.setContextMenu(self.menu)
+        self._rebuild_tray_proxies()
+        self.window.visibilityChanged.connect(self._sync_show_action)
         self.tray.activated.connect(self._on_tray_activated)
         self.tray.messageClicked.connect(self.updater.on_tray_message_clicked)
         QTimer.singleShot(10 * 1000, self.updater.startup_check)
@@ -1337,12 +1325,7 @@ class Controller:
 
     # --- language: switch at once by rebuilding the window ---
     def _retranslate_tray(self):
-        self.act_stop_all.setText(_t("Stop all proxies"))
-        self.act_startup.setText(_t("Start at login"))
-        self.act_hidden.setText(_t("Hide startup notification"))
-        self.act_restart.setText(_t("Restart"))
-        self.act_exit.setText(_t("Quit"))
-        self._sync_show_action(self.window.isVisible() if hasattr(self, "window") else False)
+        self._rebuild_tray_proxies()
 
     def change_language(self, code):
         from .. import i18n
@@ -1470,9 +1453,32 @@ class Controller:
 
     # --- tray ---
     def _rebuild_tray_proxies(self):
-        m = self.menu
-        m.clear()
+        """A fresh tray menu with fresh actions. Refilling the old menu in place left it at an old, taller size
+        (empty rows above the items), so it is replaced instead - and never while it is open: then once it closes."""
+        old = self.menu
+        if old is not None and old.isVisible():
+            self._tray_dirty = True
+            return
+        self._tray_dirty = False
+        m = SystemTrayMenu()
+        m.closedSignal.connect(self._on_tray_menu_closed)
         self._tray_submenus = []
+        self.act_show = Action(FIF.VIEW, "", m)
+        self.act_show.triggered.connect(self.toggle_window)
+        self.act_stop_all = Action(FIF.PAUSE, _t("Stop all proxies"), m)
+        self.act_stop_all.triggered.connect(self.stop_all)
+        reg, hid = self._startup_state
+        self.act_startup = Action(FIF.POWER_BUTTON, "", m)
+        self.act_hidden = Action(FIF.INFO, "", m)
+        for a in (self.act_startup, self.act_hidden):
+            a.setCheckable(True)
+        self.act_startup.triggered.connect(self.set_startup)
+        self.act_hidden.triggered.connect(self.set_hidden)
+        self._show_startup_state(reg, hid)
+        self.act_restart = Action(FIF.SYNC, _t("Restart"), m)
+        self.act_restart.triggered.connect(self.restart)
+        self.act_exit = Action(FIF.CLOSE, _t("Quit"), m)
+        self.act_exit.triggered.connect(self.exit)
         m.addAction(self.act_show)
         m.addSeparator()
         self.proxy_actions = []
@@ -1493,7 +1499,15 @@ class Controller:
         m.addActions([self.act_startup, self.act_hidden])
         m.addSeparator()
         m.addActions([self.act_restart, self.act_exit])
-        self._sync_show_action(self.window.isVisible())
+        self.menu = m
+        self.tray.setContextMenu(m)
+        self._sync_show_action(self.window.isVisible() if hasattr(self, "window") else False)
+        if old is not None:
+            old.deleteLater()
+
+    def _on_tray_menu_closed(self):
+        if self._tray_dirty:
+            QTimer.singleShot(0, self._rebuild_tray_proxies)
 
     def _tray_quick_actions(self, m):
         """Tray: IF switches (e.g. a kill switch), the member of manual groups and the PC proxy, without the window."""
@@ -1536,6 +1550,8 @@ class Controller:
             self.window.show_window()
 
     def _sync_show_action(self, visible):
+        if getattr(self, "act_show", None) is None:
+            return
         self.act_show.setText(_t("Close window") if visible else _t("Open window"))
         self.act_show.setIcon(FIF.HIDE.icon() if visible else FIF.VIEW.icon())
 
@@ -1556,12 +1572,16 @@ class Controller:
     def refresh_states(self):
         reg = is_startup_registered()
         hid = is_startup_hidden()
+        self._startup_state = (reg, hid)
+        self._show_startup_state(reg, hid)
+        self.window.settings_page.refresh_startup(reg, hid)
+
+    def _show_startup_state(self, reg, hid):
         self.act_startup.setChecked(reg)
         self.act_startup.setText(_t("Start at login  ·  {value}").format(value=_t("On") if reg else _t("Off")))
         self.act_hidden.setChecked(hid)
         self.act_hidden.setText(_t("Hide startup notification  ·  {value}").format(value=_t("On") if hid else _t("Off")))
         self.act_hidden.setEnabled(reg)
-        self.window.settings_page.refresh_startup(reg, hid)
 
     def set_startup(self, checked):
         if update_startup_registry(bool(checked), hidden=is_startup_hidden()):

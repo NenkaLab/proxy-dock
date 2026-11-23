@@ -865,6 +865,20 @@ def test_ui():
     next(a for a in sub.actions() if a.text() == gm.find(ctl.graph, alt["id"])[1]["name"]).trigger()
     wait(200)
     check("ui: picking a member in the tray uses it", gm.find(ctl.graph, grp["id"])[1]["outbound"]["group_selected"] == alt["id"])
+    # the tray menu is made anew (a refilled one kept an old, taller size), never while it is open
+    m1 = ctl.menu
+    ctl.refresh_lists()
+    m2 = ctl.menu
+    check("ui: the tray menu is replaced when it changes", m2 is not m1 and ctl.tray.contextMenu() is m2)
+    m2.show()
+    wait(50)
+    ctl.refresh_lists()
+    check("ui: an open tray menu is left alone", ctl.menu is m2 and ctl._tray_dirty)
+    m2.hide()
+    m2.closedSignal.emit()
+    wait(100)
+    check("ui: and it is rebuilt once closed", ctl.menu is not m2 and not ctl._tray_dirty
+          and ctl.act_exit.text() and ctl.act_startup.isCheckable())
     ctl.delete_node(grp["id"])
     ctl.delete_node(alt["id"])
     ctl.delete_node(sw_if["id"])
