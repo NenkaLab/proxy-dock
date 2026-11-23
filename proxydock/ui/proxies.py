@@ -21,8 +21,8 @@ from qfluentwidgets import (
 )
 
 from .. import config
-from ..common import INBOUND_TYPES, OUTBOUND_TYPES, host_port, is_loopback_host
-from ..platform_utils import check_port, local_lan_ip
+from ..common import INBOUND_TYPES, IS_WIN, OUTBOUND_TYPES, host_port, is_loopback_host
+from ..platform_utils import check_port, default_route_ifaces, local_lan_ip
 from .common import STATE_COLORS, STATE_TEXT, info
 
 
@@ -111,8 +111,11 @@ def member_menu(ctl, nid, parent):
 
 
 def network_interfaces():
-    """[(name, label)] of the network interfaces that are up (loopback excluded), e.g. ("Tailscale", "Tailscale · 100.x")."""
+    """[(name, label, routed)] of the network interfaces that are up (loopback excluded), e.g.
+    ("Tailscale", "Tailscale · 100.x", False). routed = has a default route, i.e. can reach the internet
+    (always True when the routing table could not be read, so nothing is flagged by mistake)."""
     from PySide6.QtNetwork import QAbstractSocket, QNetworkInterface as Q
+    routes = default_route_ifaces()
     out = []
     for i in Q.allInterfaces():
         f = i.flags()
@@ -121,7 +124,11 @@ def network_interfaces():
         ips = [a.ip().toString() for a in i.addressEntries()
                if a.ip().protocol() == QAbstractSocket.IPv4Protocol and not a.ip().toString().startswith("169.254.")]
         name = i.humanReadableName()
-        out.append((name, f"{name} · {ips[0]}" if ips else name))
+        routed = routes is None or (i.index() if IS_WIN else i.name()) in routes
+        label = f"{name} · {ips[0]}" if ips else name
+        if not routed:
+            label += " · ⚠ " + _t("no internet route")
+        out.append((name, label, routed))
     return sorted(out, key=lambda x: x[0].lower())
 
 
@@ -809,6 +816,9 @@ class EditorInterface(ScrollArea):
         self.r_out_iface = s_out.add(Row(_t("Network interface"), _t("Leave through this network card, e.g. Tailscale, WireGuard, a VPN app or Wi-Fi, without changing the PC's routes. Needs the sing-box engine."), v)
                                      .right(self.cb_out_iface, b_iface))
         self.ifaces = [""]
+        self.ifaces_unrouted = set()
+        self._filling_ifaces = False
+        self.cb_out_iface.currentIndexChanged.connect(self._iface_picked)
         self.ed_out_user = LineEdit(v)
         self.ed_out_user.setPlaceholderText(_t("Username (leave empty if none)"))
         self.ed_out_user.setFixedWidth(170)
@@ -1502,14 +1512,28 @@ class EditorInterface(ScrollArea):
 
     def _fill_ifaces(self, current):
         names = network_interfaces()
-        self.ifaces = [""] + [n for n, _ in names]
-        labels = [_t("Automatic")] + [label for _, label in names]
+        self.ifaces = [""] + [n for n, _, _ in names]
+        self.ifaces_unrouted = {n for n, _, routed in names if not routed}
+        labels = [_t("Automatic")] + [label for _, label, _ in names]
         if current and current not in self.ifaces:          # saved name that is not up right now
             self.ifaces.append(current)
             labels.append(_t("{name} (not connected)").format(name=current))
-        self.cb_out_iface.clear()
-        self.cb_out_iface.addItems(labels)
-        self.cb_out_iface.setCurrentIndex(self.ifaces.index(current) if current in self.ifaces else 0)
+        self._filling_ifaces = True
+        try:
+            self.cb_out_iface.clear()
+            self.cb_out_iface.addItems(labels)
+            self.cb_out_iface.setCurrentIndex(self.ifaces.index(current) if current in self.ifaces else 0)
+        finally:
+            self._filling_ifaces = False
+
+    def _iface_picked(self, *_):
+        """Picking a card without a default route (e.g. a Hyper-V/VMware switch): warn that only its own network is reachable."""
+        name = self._iface_value()
+        if self._filling_ifaces or name not in self.ifaces_unrouted:
+            return
+        info(self.window(), "warning", _t("No internet route"),
+             _t("'{name}' has no gateway, so it only reaches its own network (e.g. VMs or a LAN). "
+                "Connections to the internet through it will fail.").format(name=name), 7000)
 
     def _iface_value(self):
         i = self.cb_out_iface.currentIndex()
