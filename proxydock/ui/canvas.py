@@ -857,13 +857,7 @@ class CanvasInterface(QWidget):
                          (QKeySequence("Ctrl+D"), self.duplicate_selected)):
             QShortcut(QKeySequence(keys), self, activated=lambda fn=fn, k=keys: self._undo_key(fn, k),
                       context=Qt.WidgetWithChildrenShortcut)
-        hint = CaptionLabel(_t("Drag from an inbound's output to an outbound block, to another inbound (relay) or to the PC. "
-                               "Double-click a block to edit it, right-click for more, Delete removes the selection.") + " "
-                           + _t("An outbound's 'via' output chains it through another outbound.") + " "
-                           + _t("A router sends each rule's traffic out of its own output.") + " "
-                           + _t("A group's 'members' output uses several outbounds as one (fastest or failover).") + " "
-                           + _t("Alt+Shift+drag cuts links.") + " "
-                           + _t("With a block selected, ←/→ jump along its links and ↑/↓ pick another of several."), self)
+        hint = CaptionLabel(_t("Drag from an output to an input to link blocks. Double-click a block to edit it."), self)
         hint.setWordWrap(True)
         self.pc_bar = PcBar(ctl, self)
 
@@ -1080,7 +1074,8 @@ class CanvasInterface(QWidget):
 
     def nav_key(self, key):
         """With one block selected: → selects the block it links to, ← the one linking into it (back where the
-        last step came from, if that is one of them); ↑/↓ switch to the other choices of that step.
+        last step came from, if that is one of them); ↑/↓ switch to the other choices of that step, or else
+        move to the nearest block above / below.
         Returns True if the key was used."""
         sel = self.graph.selected_nodes()
         if len(sel) != 1:
@@ -1095,6 +1090,13 @@ class CanvasInterface(QWidget):
                 self._came_from[options[0].id] = cur.id
                 self._select(options[0])
             return True
+        if not (self._nav and cur.id in self._nav[0] and len(self._nav[0]) > 1):
+            near = self.nearest_block(cur, key == Qt.Key_Up)      # no choices to switch: the block above / below
+            if near is None:
+                return True
+            self._nav = None
+            self._select(near)
+            return True
         if self._nav and cur.id in self._nav[0] and len(self._nav[0]) > 1:
             ids = self._nav[0]
             i = (ids.index(cur.id) + (1 if key == Qt.Key_Down else -1)) % len(ids)
@@ -1107,6 +1109,24 @@ class CanvasInterface(QWidget):
                 self._select(node)
                 return True
         return False
+
+    def nearest_block(self, node, up):
+        """The closest block above (up) or below node on the canvas; one in the same column wins over one beside."""
+        here = node.view.sceneBoundingRect()
+        best, best_score = None, None
+        for other in self.graph.all_nodes():
+            if other is node:
+                continue
+            r = other.view.sceneBoundingRect()
+            dy = (here.top() - r.bottom()) if up else (r.top() - here.bottom())
+            if dy < -here.height() / 2:            # not above / below
+                continue
+            overlap = min(here.right(), r.right()) - max(here.left(), r.left())
+            dx = 0 if overlap > 0 else abs(r.center().x() - here.center().x())
+            score = max(dy, 0) + 3 * dx
+            if best_score is None or score < best_score:
+                best, best_score = other, score
+        return best
 
     def _select(self, node):
         """Select node only and bring it into view if it is off screen."""
@@ -1301,8 +1321,8 @@ class CanvasInterface(QWidget):
         self.act_run = act(FIF.PLAY, _t("Run"), self.toggle_selected)
         self.act_prev = act(FIF.LEFT_ARROW, _t("Previous block (linking into it)"), lambda: self.nav_key(Qt.Key_Left), "←")
         self.act_next = act(FIF.RIGHT_ARROW, _t("Next block (it links to)"), lambda: self.nav_key(Qt.Key_Right), "→")
-        self.act_up = act(FIF.UP, _t("Other choice above"), lambda: self.nav_key(Qt.Key_Up), "↑")
-        self.act_down = act(FIF.DOWN, _t("Other choice below"), lambda: self.nav_key(Qt.Key_Down), "↓")
+        self.act_up = act(FIF.UP, _t("Block above (or the other choice)"), lambda: self.nav_key(Qt.Key_Up), "↑")
+        self.act_down = act(FIF.DOWN, _t("Block below (or the other choice)"), lambda: self.nav_key(Qt.Key_Down), "↓")
         self.btn_latency = act(FIF.SPEED_HIGH, _t("Test latency"), self.latency_selected)
         self.btn_fit = act(FIF.ZOOM, _t("Fit"), self.fit_view)
         self.btn_stop = act(FIF.PAUSE, _t("Stop all"), ctl.stop_all)
@@ -1405,8 +1425,8 @@ class CanvasInterface(QWidget):
         self.act_prev.setEnabled(node is not None and bool(self.neighbours(node, False)))
         self.act_next.setEnabled(node is not None and bool(self.neighbours(node, True)))
         choices = node is not None and self._nav is not None and node.id in self._nav[0] and len(self._nav[0]) > 1
-        self.act_up.setEnabled(choices)
-        self.act_down.setEnabled(choices)
+        self.act_up.setEnabled(choices or (node is not None and self.nearest_block(node, True) is not None))
+        self.act_down.setEnabled(choices or (node is not None and self.nearest_block(node, False) is not None))
         outs = [x for x in blocks if graph_mod.find(self.ctl.graph, x[1])[0] == "outbound"]
         if not self.ctl.latency_busy:
             self.btn_latency.setToolTip(_t("Measure the selected outbound blocks") if outs else

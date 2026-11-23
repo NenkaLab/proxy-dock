@@ -31,6 +31,7 @@ class Fonts:
     ui = "Segoe UI"                 # UI font actually in use
     ui_choice = ""                  # ui_font setting this run started with ("" = built-in)
     startup_scale = 100             # app scale (%) applied for this run
+    text_scale = 100                # text size (%) of the widgets made from now on (setting text_size)
     theme = "auto"
 
 
@@ -54,6 +55,39 @@ _CJK_UI_FONTS = {
 }
 
 
+_text_scale_installed = False
+
+
+def _install_text_scale():
+    """Make every Fluent widget's text Fonts.text_scale % of its own size. Fluent widgets set their sizes in pixels
+    in two places: getFont(size) (setFont calls it too) and the font lines of their style sheets. Both are wrapped
+    once; the scale is read each time a widget is styled, so widgets made after a change use the new size."""
+    global _text_scale_installed
+    if _text_scale_installed:
+        return
+    _text_scale_installed = True
+    import re
+    from qfluentwidgets.common import font as qf_font, style_sheet as qf_style
+    orig_get, orig_render = qf_font.getFont, qf_style.renderQss
+    px = re.compile(r"(font(?:-size)?\s*:[^;{}]*?)(\d+(?:\.\d+)?)px")
+
+    def scaled(n):
+        return max(1, round(float(n) * Fonts.text_scale / 100))
+
+    def get_font(fontSize=14, weight=QFont.Normal):
+        return orig_get(scaled(fontSize), weight)
+
+    def render_qss(qss):
+        qss = orig_render(qss)
+        if Fonts.text_scale == 100:
+            return qss
+        return px.sub(lambda m: f"{m.group(1)}{scaled(m.group(2))}px", qss)
+    for name, mod in list(sys.modules.items()):       # (modules that imported getFont by name hold the original)
+        if name.startswith("qfluentwidgets") and getattr(mod, "getFont", None) is orig_get:
+            mod.getFont = get_font
+    qf_style.renderQss = render_qss
+
+
 def load_fonts(app, glob):
     """Register the built-in fonts and set the UI font app-wide (Fluent widgets included). Call before creating any QWidget."""
     Fonts.builtin_mono = _register_font(MONO_FONT_FILE) or Fonts.builtin_mono
@@ -74,10 +108,12 @@ def load_fonts(app, glob):
     Fonts.ui = chosen or native or Fonts.builtin_ui
     families = [Fonts.ui] + cjk + [Fonts.builtin_ui, "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo",
                                    "Noto Sans CJK KR", "Noto Sans KR"]
+    Fonts.text_scale = glob.get("text_size", 100)
+    _install_text_scale()
     setFontFamilies(families)
     font = QFont()
     font.setFamilies(families)
-    font.setPointSize(10)
+    font.setPointSizeF(10 * Fonts.text_scale / 100)
     font.setHintingPreference(QFont.PreferNoHinting)
     app.setFont(font)
 

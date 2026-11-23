@@ -51,6 +51,7 @@ def _tr_themes():
 
 
 UI_SCALES = [90, 100, 110, 125, 150]
+TEXT_SIZES = [100, 115, 130, 150]       # % of the Fluent widgets' own text sizes (applied at once)
 ENGINES = ("sing-box", "python")
 
 GLOBAL_DEFAULTS = {
@@ -58,6 +59,7 @@ GLOBAL_DEFAULTS = {
     "language": "en",           # i18n.LANGUAGES code (applies after restart)
     "theme": "auto",
     "ui_scale": 100,
+    "text_size": 115,
     "ui_font": "",              # "" = built-in Pretendard
     "mono_font": "",            # "" = built-in JetBrains Mono
     "disable_ligatures": False,
@@ -68,6 +70,7 @@ GLOBAL_DEFAULTS = {
     "run_as_admin": False,      # Windows: restart ProxyDock elevated (UAC) at startup, so TUN cards need no prompt
     "singbox_path": "",         # "" = bundled sing-box (bin/ folder), then PATH
     "hysteria_path": "",        # "" = bundled official Hysteria2 core (bin/ folder), then PATH
+    "test_sites": [],           # sites the user added to the connection test (host names)
     "check_updates": True,      # ask GitHub for a newer release at startup (at most once a day, update.py)
     "update_checked": 0,        # time.time() of the last update check
     # proxy defaults (a proxy's local settings take precedence)
@@ -231,6 +234,27 @@ def _typed(defaults, raw):
     return out
 
 
+MAX_TEST_SITES = 30
+
+
+def test_site_host(text):
+    """Host name for the connection test from what the user typed ('https://Example.com/x' -> 'example.com'),
+    or None if it is no usable host."""
+    import re
+    t = (text or "").strip().lower()
+    t = re.sub(r"^[a-z][a-z0-9+.-]*://", "", t).split("/", 1)[0].split("?", 1)[0]
+    if t.count(":") == 1:                   # (host:port -> host; the test always uses HTTPS on 443)
+        t = t.split(":", 1)[0]
+    t = t.strip(".")
+    if not t or len(t) > 253 or "." not in t:
+        return None
+    try:
+        t.encode("idna")
+    except UnicodeError:
+        return None
+    return t if re.fullmatch(r"[\w.-]+", t) else None
+
+
 def validate_global(raw):
     from .ss import SS_METHODS  # noqa: F401  (keeps the import order for format checks)
     g = _typed(GLOBAL_DEFAULTS, raw)
@@ -241,7 +265,15 @@ def validate_global(raw):
         g["theme"] = "auto"
     if g["ui_scale"] not in UI_SCALES:
         g["ui_scale"] = 100
+    if g["text_size"] not in TEXT_SIZES:
+        g["text_size"] = GLOBAL_DEFAULTS["text_size"]
     g["log_font_size"] = min(max(g["log_font_size"], 8), 20)
+    hosts = []
+    for x in g["test_sites"]:
+        h = test_site_host(x)
+        if h and h not in hosts:
+            hosts.append(h)
+    g["test_sites"] = hosts[:MAX_TEST_SITES]
     g["timeout"] = min(max(g["timeout"], 10), 86400)
     if not g["allowed_domains"]:
         g["allowed_domains"] = ["*"]

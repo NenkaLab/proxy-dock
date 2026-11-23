@@ -666,6 +666,24 @@ def test_ui():
     ctl.delete_node(wl_in["id"])
     ctl.delete_node(wl["id"])
     wait(200)
+    # --- ↑/↓ without choices: the nearest block above / below ---
+    top_b = ctl.new_outbound({"type": "direct"}, [3200, 3000], edit=False)
+    low_b = ctl.new_outbound({"type": "direct"}, [3200, 3300], edit=False)
+    side_b = ctl.new_outbound({"type": "direct"}, [3900, 3150], edit=False)
+    wait(200)
+    cv.graph.clear_selection()
+    cv.node_of[top_b["id"]].set_selected(True)
+    cv._on_selection()
+    cv._nav = None
+    check("ui: ↑ is off when nothing is above in reach, ↓ on", cv.act_down.isEnabled())
+    QTest.keyClick(viewer, Qt.Key_Down)
+    check("ui: ↓ moves to the block below in the same column",
+          [cv.mid_of[n.id] for n in cv.graph.selected_nodes()] == [low_b["id"]])
+    QTest.keyClick(viewer, Qt.Key_Up)
+    check("ui: ↑ moves back up", [cv.mid_of[n.id] for n in cv.graph.selected_nodes()] == [top_b["id"]])
+    for b in (top_b, low_b, side_b):
+        ctl.delete_node(b["id"])
+    wait(200)
     # --- toolbar: the 'Add ...' buttons drop their names when the window is narrow ---
     size0 = w.size()
     w.resize(1700, size0.height())
@@ -1174,8 +1192,75 @@ def test_ui():
     ctl.change_language("ko")
     wait(600)
     check("ui: language switch rebuilds the window", ctl.window.canvas_page.btn_in.toolTip() == "받는 쪽 추가")
+    check("ui: How to use follows the language", "## 기본" in __import__("proxydock.ui.help", fromlist=["x"]).help_markdown()
+          and "받는 쪽" in ctl.window.help_page.view.toPlainText())
     ctl.change_language("en")
     wait(400)
+    w = ctl.window
+    # --- How to use: Markdown, one file per language with the same sections ---
+    from proxydock.ui.help import help_markdown
+    heads = {c: help_markdown(c).count("\n## ") + help_markdown(c).startswith("## ") for c in
+             ("en", "ko", "ja", "zh_CN", "zh_TW", "de", "fr", "es")}
+    check("ui: How to use exists in every language with the same sections", len(set(heads.values())) == 1
+          and heads["en"] >= 5, heads)
+    check("ui: How to use shows the Markdown", "Canvas keys" in w.help_page.view.toPlainText()
+          and w.help_page.view.document().rootFrame().childFrames())
+    # --- text size: Fluent widgets' pixel sizes scale, applied at once from the settings ---
+    from qfluentwidgets.common import font as qf_font, style_sheet as qf_style
+    from proxydock.ui.common import Fonts
+    check("ui: default text size is 115 %", ctl.glob["text_size"] == 115 and Fonts.text_scale == 115
+          and qf_font.getFont(14).pixelSize() == 16, (ctl.glob["text_size"], Fonts.text_scale, qf_font.getFont(14).pixelSize()))
+    check("ui: style sheet font sizes scale too", "font: 16px" in qf_style.renderQss("QLabel { font: 14px 'A'; }"))
+    w.switchTo(w.settings_page)
+    wait(200)
+    w.settings_page.cb_text.setCurrentIndex(config.TEXT_SIZES.index(130))
+    w.settings_page.apply()
+    wait(800)
+    w = ctl.window
+    check("ui: changing the text size applies at once", Fonts.text_scale == 130 and ctl.glob["text_size"] == 130
+          and qf_font.getFont(14).pixelSize() == 18 and w.isVisible() is not None)
+    w.switchTo(w.settings_page)
+    wait(200)
+    w.settings_page.cb_text.setCurrentIndex(config.TEXT_SIZES.index(115))
+    w.settings_page.apply()
+    wait(800)
+    w = ctl.window
+    # --- connection test: sites the user adds ---
+    tp = w.test_page
+    base = len(tp.sites())
+    tp.ed_site.setText("https://Example.ORG/path")
+    tp.add_site()
+    check("ui: a site can be added to the connection test", ctl.glob["test_sites"] == ["example.org"]
+          and tp.table.rowCount() == base + 1 and tp.table.item(base, 2).text() == "example.org")
+    saved = config.load()[0]["test_sites"]
+    check("ui: added sites are saved", saved == ["example.org"], saved)
+    tp.ed_site.setText("not a site")
+    said4 = []
+    import proxydock.ui.conntest as ct_mod
+    real_info4 = ct_mod.info
+    ct_mod.info = lambda *a, **k: said4.append(a[2])
+    try:
+        tp.add_site()
+        tp.ed_site.setText("example.org")
+        tp.add_site()
+    finally:
+        ct_mod.info = real_info4
+    check("ui: bad or repeated sites are refused", len(said4) == 2 and ctl.glob["test_sites"] == ["example.org"])
+    tp.remove_site("example.org")
+    check("ui: an added site can be removed", ctl.glob["test_sites"] == [] and tp.table.rowCount() == base)
+    # --- statistics: combined or one line per proxy card ---
+    from proxydock.common import Stats
+    sp = w.stats_page
+    pid = ctl.proxies[0]["id"]
+    s1 = Stats()
+    sp.push({"": (s1, 100.0, 2000.0), pid: (s1, 100.0, 2000.0)})
+    sp.mode.setCurrentItem("per_proxy")
+    sp._show()
+    check("ui: statistics per proxy draws a line per card", sp.per_proxy() and sp.chart.lines
+          and sp.chart.lines[0][0] == ctl.proxies[0]["name"] and sp.chart.lines[0][2][-1] == 2100.0, sp.chart.lines)
+    sp.mode.setCurrentItem("combined")
+    sp._show()
+    check("ui: combined shows download and upload again", sp.chart.lines is None)
     check("ui: autostart proxy running", any(s[0] == "running" for s in ctl.statuses().values()))
     check("ui: no exceptions", not errors, [repr(e) for e in errors][:3])
     ctl.manager.stop_all()

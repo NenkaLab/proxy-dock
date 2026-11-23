@@ -1,4 +1,4 @@
-"""Connection test page: pick a running proxy and connect to 21 sites through it."""
+"""Connection test page: pick a running proxy and connect to the test sites (built in + added by the user)."""
 from ..i18n import _t, on_language_change
 import threading
 import time
@@ -6,12 +6,15 @@ from concurrent.futures import ThreadPoolExecutor
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import QHBoxLayout, QTableWidgetItem, QVBoxLayout, QWidget
-from qfluentwidgets import CaptionLabel, FluentIcon as FIF, PrimaryPushButton, TableWidget, TitleLabel
+from qfluentwidgets import (
+    Action, CaptionLabel, FluentIcon as FIF, LineEdit, PrimaryPushButton, PushButton, RoundMenu, TableWidget, TitleLabel,
+)
 
+from .. import config
 from ..common import LOG_FAIL, LOG_INFO, LOG_TCP, log
 from ..probe import BRIDGE_ID, PROBE_COOLDOWN, PROBE_TIMEOUT, PROBE_WORKERS, TEST_SITES, bridge_for, bridge_port, \
     probe_site
-from .common import ProxyCombo, level_color
+from .common import ProxyCombo, info, level_color
 
 
 class _Signals(QObject):
@@ -50,7 +53,6 @@ class ConnTestInterface(QWidget):
         self.table = TableWidget(self)
         self.table.setColumnCount(len(COLS))
         self.table.setHorizontalHeaderLabels(COLS)
-        self.table.setRowCount(len(TEST_SITES))
         self.table.verticalHeader().hide()
         self.table.setEditTriggers(TableWidget.NoEditTriggers)
         self.table.setSelectionMode(TableWidget.NoSelection)
@@ -58,13 +60,20 @@ class ConnTestInterface(QWidget):
         self.table.setBorderRadius(8)
         self.table.setWordWrap(False)
         hdr = self.table.horizontalHeader()
-        for c, w in enumerate((80, 130, 190, 0, 100, 90)):
+        from .common import Fonts
+        for c, w in enumerate((80, 140, 200, 0, 110, 90)):      # (wider with a larger text size)
             if w:
-                self.table.setColumnWidth(c, w)
+                self.table.setColumnWidth(c, round(w * Fonts.text_scale / 100))
         hdr.setSectionResizeMode(3, hdr.ResizeMode.Stretch)
-        for r, (group, name, host) in enumerate(TEST_SITES):
-            for c, text in enumerate((group, name, host, "-", "", "")):
-                self.table.setItem(r, c, QTableWidgetItem(text))
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._row_menu)
+        self.ed_site = LineEdit(self)
+        self.ed_site.setPlaceholderText(_t("Add a site, e.g. example.com"))
+        self.ed_site.setFixedWidth(280)
+        self.ed_site.returnPressed.connect(self.add_site)
+        self.btn_add = PushButton(_t("Add"), self, FIF.ADD)
+        self.btn_add.clicked.connect(self.add_site)
+        self._fill_rows()
 
         header = QHBoxLayout()
         header.addWidget(title)
@@ -74,8 +83,12 @@ class ConnTestInterface(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(36, 20, 36, 28)
         root.setSpacing(10)
+        sub = QHBoxLayout()
+        sub.addWidget(self.summary, 1)
+        sub.addWidget(self.ed_site)
+        sub.addWidget(self.btn_add)
         root.addLayout(header)
-        root.addWidget(self.summary)
+        root.addLayout(sub)
         root.addWidget(self.table, 1)
 
         # against rapid clicks: wait briefly after a click and start once (debounce), then a cooldown (throttle)
@@ -87,6 +100,60 @@ class ConnTestInterface(QWidget):
         self._cool_timer.setInterval(1000)
         self._cool_timer.timeout.connect(self._cool_tick)
         self._sync_button()
+
+    # --- sites: the built-in list plus the ones the user added ---
+    def sites(self):
+        """[(region, name, host, added by the user)]."""
+        return [(g, n, h, False) for g, n, h in TEST_SITES] + \
+               [(_t("Added"), h, h, True) for h in self.ctl.glob.get("test_sites", [])]
+
+    def _fill_rows(self):
+        sites = self.sites()
+        self.table.setRowCount(len(sites))
+        for r, (group, name, host, _) in enumerate(sites):
+            for c, text in enumerate((group, name, host, "-", "", "")):
+                self.table.setItem(r, c, QTableWidgetItem(text))
+
+    def add_site(self):
+        if self.running:
+            return
+        host = config.test_site_host(self.ed_site.text())
+        if host is None:
+            info(self.window(), "warning", _t("Cannot add"), _t("Enter a site name like example.com"), 4000)
+            return
+        if host in [h for _, _, h, _ in self.sites()]:
+            info(self.window(), "info", _t("Already in the list"), host, 3000)
+            self.ed_site.clear()
+            return
+        if len(self.ctl.glob.get("test_sites", [])) >= config.MAX_TEST_SITES:
+            info(self.window(), "warning", _t("Cannot add"),
+                 _t("Up to {n} added sites").format(n=config.MAX_TEST_SITES), 4000)
+            return
+        self.ctl.set_test_sites(self.ctl.glob.get("test_sites", []) + [host])
+        self.ed_site.clear()
+        self.results.clear()
+        self._fill_rows()
+        self._sync_button()
+
+    def remove_site(self, host):
+        if self.running:
+            return
+        self.ctl.set_test_sites([h for h in self.ctl.glob.get("test_sites", []) if h != host])
+        self.results.clear()
+        self._fill_rows()
+        self._sync_button()
+
+    def _row_menu(self, pos):
+        r = self.table.rowAt(pos.y())
+        sites = self.sites()
+        if not 0 <= r < len(sites) or not sites[r][3]:
+            return
+        menu = RoundMenu(parent=self)
+        a = Action(FIF.DELETE, _t("Remove from the test"), menu)
+        a.setEnabled(not self.running)
+        a.triggered.connect(lambda: self.remove_site(sites[r][2]))
+        menu.addAction(a)
+        menu.exec(self.table.viewport().mapToGlobal(pos))
 
     def set_proxies(self, proxies, running_ids):
         self.proxy.set_proxies(proxies, only=running_ids)
@@ -100,7 +167,7 @@ class ConnTestInterface(QWidget):
         if has:
             p = self.ctl.proxy_by_id(self.proxy.current_id())
             self.summary.setText(
-                _t("Connects to {len} sites over HTTPS through '{name}' ({PROBE_WORKERS} at a time, up to {PROBE_TIMEOUT}s per site).").format(name=p['name'], len=len(TEST_SITES), PROBE_WORKERS=PROBE_WORKERS, PROBE_TIMEOUT=PROBE_TIMEOUT) if p else "")
+                _t("Connects to {len} sites over HTTPS through '{name}' ({PROBE_WORKERS} at a time, up to {PROBE_TIMEOUT}s per site).").format(name=p['name'], len=len(self.sites()), PROBE_WORKERS=PROBE_WORKERS, PROBE_TIMEOUT=PROBE_TIMEOUT) if p else "")
         else:
             self.summary.setText(_t("No proxy is running. Start one on the Proxies page first."))
 
@@ -119,10 +186,14 @@ class ConnTestInterface(QWidget):
         self.running = True
         self.results.clear()
         self.btn.setText(_t("Testing…"))
-        for r in range(len(TEST_SITES)):
+        self.ed_site.setEnabled(False)
+        self.btn_add.setEnabled(False)
+        self.hosts = [h for _, _, h, _ in self.sites()]
+        for r in range(len(self.hosts)):
             self._set_row(r, _t("Waiting…"), "", "", None)
-        self.summary.setText(_t("Testing '{name}'… 0 / {len}").format(name=proxy['name'], len=len(TEST_SITES)))
-        log(LOG_INFO, _t("Connection test started: {name} ({len} sites)").format(name=proxy['name'], len=len(TEST_SITES)))
+        self.summary.setText(_t("Testing '{name}'… 0 / {len}").format(name=proxy['name'], len=len(self.hosts)))
+        log(LOG_INFO, _t("Connection test started: {name} ({len} sites)").format(name=proxy['name'], len=len(self.hosts)))
+        hosts = list(self.hosts)
         mgr, glob = self.ctl.manager, self.ctl.glob
 
         def work():
@@ -132,7 +203,7 @@ class ConnTestInterface(QWidget):
                     raise RuntimeError(mgr.state(BRIDGE_ID)[1] or _t("Could not create the test connection"))
                 port = bridge_port(mgr)
                 with ThreadPoolExecutor(max_workers=PROBE_WORKERS) as ex:
-                    futs = {ex.submit(probe_site, host, port): r for r, (_, _, host) in enumerate(TEST_SITES)}
+                    futs = {ex.submit(probe_site, host, port): r for r, host in enumerate(hosts)}
                     for f in futs:
                         self.sig.result.emit(futs[f], f.result())
             except Exception as e:
@@ -162,17 +233,19 @@ class ConnTestInterface(QWidget):
         else:
             text = _t("Failed · {error}").format(error=res['error'])
         self._set_row(r, text, ms(res["connect_ms"]), ms(res["total_ms"]), res["ok"])
-        self.summary.setText(_t("Testing… {len} / {len2}").format(len=len(self.results), len2=len(TEST_SITES)))
+        self.summary.setText(_t("Testing… {len} / {len2}").format(len=len(self.results), len2=len(self.hosts)))
 
     def _on_done(self, err):
         self.running = False
+        self.ed_site.setEnabled(True)
+        self.btn_add.setEnabled(True)
         if err:
             self.summary.setText(_t("Could not start the test: {err}").format(err=err))
             log(LOG_FAIL, _t("Connection test failed: {err}").format(err=err))
         else:
             oks = [v for v in self.results.values() if v["ok"]]
             avg = sum(v["total_ms"] for v in oks) / len(oks) if oks else 0
-            msg = _t("Succeeded {len} / {len2}").format(len=len(oks), len2=len(TEST_SITES)) + (_t(" · average {avg:.0f} ms").format(avg=avg) if oks else "")
+            msg = _t("Succeeded {len} / {len2}").format(len=len(oks), len2=len(self.hosts)) + (_t(" · average {avg:.0f} ms").format(avg=avg) if oks else "")
             self.summary.setText(msg + _t("  ·  finished at {strftime}").format(strftime=time.strftime('%H:%M:%S')))
             log(LOG_INFO, _t("Connection test finished: {msg}").format(msg=msg))
         self.cooldown = PROBE_COOLDOWN

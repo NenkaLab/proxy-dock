@@ -1,16 +1,21 @@
-"""Statistics page: proxy selector (total / per proxy) + tiles + throughput graph."""
+"""Statistics page: proxy selector (total / per proxy) + tiles + throughput graph. The graph shows download and
+upload of the selection (Combined) or one line per running proxy card (Per proxy: download + upload together)."""
 from ..i18n import _t
 from collections import deque
 
-from PySide6.QtCore import QPointF
+from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QVBoxLayout, QWidget
-from qfluentwidgets import CaptionLabel, SimpleCardWidget, SubtitleLabel, TitleLabel, isDarkTheme, themeColor
+from qfluentwidgets import (
+    CaptionLabel, SegmentedWidget, SimpleCardWidget, SubtitleLabel, TitleLabel, isDarkTheme, themeColor,
+)
 
 from ..common import fmt_rate, fmt_size
 from .common import ProxyCombo
 
 POINTS = 60
+# line colours for cards without a colour of their own (the canvas palette)
+LINE_COLORS = ("#4f8ef7", "#e8912d", "#57ab5a", "#b76de0", "#e5534b", "#39c5bb", "#d9b92f", "#e26ba5", "#7c6cf2", "#9aa0a6")
 
 
 class StatTile(SimpleCardWidget):
@@ -36,10 +41,17 @@ class ThroughputChart(QWidget):
         super().__init__(parent)
         self.up = [0.0] * POINTS
         self.down = [0.0] * POINTS
+        self.lines = None       # Per proxy: [(name, "#rrggbb", values)]
         self.setMinimumHeight(180)
 
     def set_series(self, up, down):
-        self.up, self.down = list(up), list(down)
+        self.up, self.down, self.lines = list(up), list(down), None
+        if self.isVisible():
+            self.update()
+
+    def set_lines(self, lines):
+        """One line per card: [(name, colour, values)]."""
+        self.lines = [(n, c, list(v)) for n, c, v in lines]
         if self.isVisible():
             self.update()
 
@@ -53,7 +65,10 @@ class ThroughputChart(QWidget):
         muted = QColor(fg)
         muted.setAlpha(150)
         r = self.rect().adjusted(4, 26, -4, -4)
-        top = max(max(self.up), max(self.down), 1024.0)
+        if self.lines is not None:
+            top = max([max(v) for _, _, v in self.lines] + [1024.0])
+        else:
+            top = max(max(self.up), max(self.down), 1024.0)
         p.setPen(QPen(grid, 1))
         for i in range(5):
             y = r.top() + r.height() * i / 4
@@ -78,21 +93,33 @@ class ThroughputChart(QWidget):
             p.setPen(QPen(color, 2))
             p.drawPath(path)
 
-        down_c = themeColor()
-        up_c = QColor("#E3008C") if dark else QColor("#B4009E")
-        series(self.down, down_c, True)
-        series(self.up, up_c, False)
-        p.setPen(muted)
         f = p.font()
         f.setPixelSize(12)
         p.setFont(f)
+        if self.lines is not None:
+            legend = [(name, QColor(c)) for name, c, _ in self.lines]
+            for _, c, values in self.lines:
+                series(values, QColor(c), False)
+        else:
+            down_c = themeColor()
+            up_c = QColor("#E3008C") if dark else QColor("#B4009E")
+            series(self.down, down_c, True)
+            series(self.up, up_c, False)
+            legend = [(_t("Download"), down_c), (_t("Upload"), up_c)]
+        p.setPen(muted)
         p.drawText(4, 16, _t("max {fmt_rate}").format(fmt_rate=fmt_rate(top)))
-        x = self.width() - 200
-        for label, c in ((_t("Download"), down_c), (_t("Upload"), up_c)):
+        if self.lines is not None and not self.lines:
+            p.drawText(r, Qt.AlignCenter, _t("No proxy is running"))
+        metrics = p.fontMetrics()                   # legend from the right edge
+        x = self.width() - 4
+        for label, c in reversed(legend):
+            w = metrics.horizontalAdvance(label) + 26
+            x -= w
+            if x < 160:                             # (no room: the rest are left out)
+                break
             p.fillRect(x, 7, 10, 10, c)
             p.setPen(muted)
             p.drawText(x + 16, 16, label)
-            x += 90
         p.end()
 
 
@@ -102,10 +129,15 @@ class StatsInterface(QWidget):
         self.setObjectName("statsInterface")
         self.history = {}       # id ("" = total) -> (up deque, down deque)
         self.latest = {}        # id -> (Stats, up_rate, down_rate)
+        self.proxies, self.colors = [], {}
 
         title = TitleLabel(_t("Statistics"), self)
         self.proxy = ProxyCombo(self, _t("Total"), 240)
         self.proxy.currentIndexChanged.connect(lambda *_: self._show())
+        self.mode = SegmentedWidget(self)               # graph: the selection, or a line per card
+        self.mode.addItem("combined", _t("Combined"), lambda: self._show())
+        self.mode.addItem("per_proxy", _t("Per proxy"), lambda: self._show())
+        self.mode.setCurrentItem("combined")
         self.t_tcp = StatTile(_t("Active TCP connections"), self)
         self.t_udp = StatTile(_t("Active UDP sessions"), self)
         self.t_total = StatTile(_t("Total connections"), self)
@@ -122,13 +154,17 @@ class StatsInterface(QWidget):
         cl = QVBoxLayout(chart_card)
         cl.setContentsMargins(18, 14, 18, 14)
         self.chart_title = CaptionLabel(_t("Throughput (last 60 s)"), chart_card)
-        cl.addWidget(self.chart_title)
         cl.addWidget(self.chart, 1)
 
         header = QHBoxLayout()
         header.addWidget(title)
         header.addStretch(1)
         header.addWidget(self.proxy)
+        chart_head = QHBoxLayout()
+        chart_head.addWidget(self.chart_title)
+        chart_head.addStretch(1)
+        chart_head.addWidget(self.mode)
+        cl.insertLayout(0, chart_head)
         root = QVBoxLayout(self)
         root.setContentsMargins(36, 20, 36, 28)
         root.setSpacing(14)
@@ -136,8 +172,25 @@ class StatsInterface(QWidget):
         root.addLayout(grid)
         root.addWidget(chart_card, 1)
 
-    def set_proxies(self, proxies):
+    def set_proxies(self, proxies, colors=None):
+        """proxies: the cards; colors: {card id: '#rrggbb'} (their canvas colours, '' = none)."""
         self.proxy.set_proxies(proxies)
+        self.proxies, self.colors = list(proxies), dict(colors or {})
+
+    def per_proxy(self):
+        return self.mode.currentRouteKey() == "per_proxy"
+
+    def card_lines(self):
+        """[(name, colour, down + up per second)] of the cards with traffic history that are still there."""
+        out, k = [], 0
+        for p in self.proxies:
+            h = self.history.get(p["id"])
+            if h is None or p["id"] not in self.latest:
+                continue
+            color = self.colors.get(p["id"]) or LINE_COLORS[k % len(LINE_COLORS)]
+            k += 0 if self.colors.get(p["id"]) else 1
+            out.append((p["name"], color, [u + d for u, d in zip(h[0], h[1])]))
+        return out
 
     def push(self, snapshots):
         """snapshots: {id: (Stats, up_rate, down_rate)}, "" is the total. Called once a second."""
@@ -167,6 +220,9 @@ class StatsInterface(QWidget):
         self.t_down.set(fmt_rate(down), _t("total {fmt_size}").format(fmt_size=fmt_size(s.down)))
         self.t_up.set(fmt_rate(up), _t("total {fmt_size}").format(fmt_size=fmt_size(s.up)))
         self.t_err.set(f"{s.blocked:,} / {s.failed:,}")
+        if self.per_proxy():
+            self.chart.set_lines(self.card_lines())
+            return
         h = self.history.get(pid)
         if h:
             self.chart.set_series(h[0], h[1])

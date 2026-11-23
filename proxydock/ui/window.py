@@ -475,7 +475,7 @@ class Controller:
         w.proxies_page.refresh(self.graph, self.proxies, st)
         w.canvas_page.refresh(self.graph, self.proxies, st, self.pc_status())
         w.log_page.set_proxies(self.proxies)
-        w.stats_page.set_proxies(self.proxies)
+        w.stats_page.set_proxies(self.proxies, {n["id"]: n.get("color", "") for n in self.graph["inbounds"]})
         w.test_page.set_proxies(self.proxies, self.running_ids())
         self._rebuild_tray_proxies()
 
@@ -1321,6 +1321,8 @@ class Controller:
         from ..i18n import current as current_language
         if g["language"] != current_language():
             QTimer.singleShot(0, lambda code=g["language"]: self.change_language(code))
+        elif g["text_size"] != Fonts.text_scale:
+            QTimer.singleShot(0, self.change_text_size)
         if g["ui_scale"] != Fonts.startup_scale:
             pending.append(_t("App scale"))
         log(LOG_SETTING, _t("Settings saved") + (_t(" (applies after restart: {join})").format(join=', '.join(pending)) if pending else ""))
@@ -1358,6 +1360,20 @@ class Controller:
         load_fonts(app, self.glob)          # Japanese/Chinese use the system font of that language
         self.rebuild_window()
         log(LOG_SETTING, _t("Language changed"))
+
+    def set_test_sites(self, hosts):
+        """Sites the user added to the connection test (saved with the settings)."""
+        g = config.validate_global(dict(self.glob, test_sites=list(hosts)))
+        if g["test_sites"] != self.glob["test_sites"]:
+            self.glob = g
+            self._persist()
+        return g["test_sites"]
+
+    def change_text_size(self):
+        """Text size setting changed: new fonts, then the window is rebuilt with them."""
+        load_fonts(QApplication.instance(), self.glob)
+        self.rebuild_window()
+        log(LOG_SETTING, _t("Text size changed"))
 
     def rebuild_window(self):
         """Recreate the main window (all pages) in the current language, keeping position, page, logs and graphs."""

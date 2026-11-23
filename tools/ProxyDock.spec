@@ -58,6 +58,7 @@ DATAS = collect_data_files('qfluentwidgets') + collect_data_files('certifi') + c
     (src('fonts', 'PretendardJPVariable.ttf'), 'fonts'),
     (src('fonts', 'NotoSansSC.ttf'), 'fonts'), (src('fonts', 'NotoSansTC.ttf'), 'fonts'),
     (src('licenses', '*.txt'), 'licenses'), (src('proxydock', 'locales', '*.json'), 'proxydock/locales'),
+    (src('proxydock', 'locales', 'help', '*.md'), 'proxydock/locales/help'),   # (How to use page)
 ]
 
 def engine_binaries():

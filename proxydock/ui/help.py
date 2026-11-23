@@ -1,94 +1,105 @@
-"""How-to page."""
-from ..i18n import _t, on_language_change
+"""How-to page: proxydock/locales/help/<language>.md (English when a language has none), shown as Markdown."""
+import os
+
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
-from qfluentwidgets import (
-    BodyLabel, CaptionLabel, FluentIcon as FIF, IconWidget, PushButton, ScrollArea, SimpleCardWidget, StrongBodyLabel,
-    TitleLabel,
-)
+from PySide6.QtGui import QColor, QPalette, QTextCharFormat, QTextCursor, QTextFrameFormat, QTextTable
+from PySide6.QtWidgets import QFrame, QTextBrowser, QVBoxLayout, QWidget
+from qfluentwidgets import TitleLabel, isDarkTheme, qconfig
 
-from ..common import IS_WIN
-
-STEPS = []
+from .. import i18n
+from ..i18n import _t
 
 
-@on_language_change
-def _tr_steps():
-    STEPS[:] = [
-        (FIF.TILES, _t("1. ProxyDock is a \"dock\" for proxies"),
-         _t("Proxies are built from blocks. Inbound blocks accept connections on a port of this PC (SOCKS5 · SOCKS4 · HTTP · HTTPS · Shadowsocks · Hysteria2); outbound blocks decide how traffic reaches the destination (Direct, optionally from a chosen source IP · upstream HTTP/HTTPS/SOCKS4/SOCKS5 proxy · Shadowsocks tunnel · Hysteria2 tunnel).\nOn the Canvas, drag a line from an inbound's output to an outbound block. Several inbounds can share one outbound; linking an inbound into another inbound relays traffic through it.")),
-        (FIF.ADD, _t("2. Create and run"),
-         _t("Add blocks with 'Add inbound' / 'Add outbound' (or right-click the canvas), connect them, and double-click a block to edit it. The Proxy page shows the same blocks as a list.\nUse 'Check connection' in the editor to test the outbound and the inbound port before saving. Start/stop an inbound with its switch or right-click menu; 'Start with the app' starts it with ProxyDock.\nPC block: connect an HTTP inbound to it to use it as the Windows system proxy while that inbound runs. The previous settings are saved and put back when it stops or ProxyDock quits; 'Restore previous' and 'Off (default)' disconnect it.")),
-        (FIF.GLOBE, _t("3. Use it in your apps"),
-         _t("Copy the address (or link) with the copy button on a card and put it in your app's proxy settings.\n• Firefox: Settings → Network Settings → Manual proxy (for SOCKS5, check 'Proxy DNS when using SOCKS v5')\n• Chrome/Edge: append  --proxy-server=\"socks5://127.0.0.1:1080\"  to the shortcut target (http:// also works)\n• curl:  curl -x socks5h://127.0.0.1:1080 https://example.com   (HTTPS proxy: -x https://… --proxy-insecure)\n• Shadowsocks / Hysteria2 apps: paste the copied ss:// · hysteria2:// link")),
-        (FIF.VPN, _t("4. Tunnels and upstream proxies"),
-         _t("Changing the outbound hands connections over to another server.\n• Through a company proxy: inbound SOCKS5 (local) → outbound HTTP proxy (company address)\n• Encrypted tunnel: inbound SOCKS5 (local) → outbound Shadowsocks/Hysteria2 tunnel (remote server). The remote server can be a 'Shadowsocks server'/'Hysteria2 server' proxy in ProxyDock on another PC.\nUDP (QUIC, games, DNS) works when receiving via SOCKS5/Shadowsocks/Hysteria2 and sending via Direct/Shadowsocks/Hysteria2. Hysteria2 is a Python implementation, so expect about 100 Mbps.")
-         + "\n" + _t("Chaining: connect an outbound block's 'via' output to another outbound block on the Canvas (or pick it under 'Through' in the editor). Its own server connection then goes through that block - e.g. Shadowsocks (VPS) via the company HTTP proxy, or an upstream HTTPS proxy inside a Hysteria2 tunnel. Any number of hops; loops are refused. Hysteria2 can be a hop but cannot go through others (QUIC uses UDP), Direct ends a chain, and UDP is not sent through chained outbounds.")),
-        (FIF.SETTING, _t("5. Global and per-proxy settings"),
-         _t("The 'Proxy defaults' on the Settings page (allowed domains, private network blocking, timeout, logging) apply to every proxy.\nIn the proxy editor, uncheck 'Use global' on an item to give that proxy its own value.\nChanges made while running: allowed domains, private network blocking and logging apply to new connections; the timeout applies to current connections too. Changing the inbound/outbound restarts that proxy and drops its connections.\nWhen chaining proxies (A's outbound = B's inbound), a chain that loops cannot be saved.")),
-        (FIF.WIFI, _t("6. Use from / block other PCs"),
-         (_t("Set the inbound address to 0.0.0.0 and (for SOCKS5/HTTP/HTTPS) turn on user authentication. If the firewall block below is on, turn it off. If you only use it on this PC, keeping the block on is safer (an administrator prompt appears)."))
-         if IS_WIN else
-         (_t("Set the inbound address to 0.0.0.0 and (for SOCKS5/HTTP/HTTPS) turn on user authentication. If an OS firewall (macOS firewall, ufw/firewalld, etc.) is on, allow the port."))),
-        (FIF.MINIMIZE, _t("7. Closing and quitting"),
-         _t("By default, X only hides the window and the proxies keep running in the tray.\nTo quit completely, right-click the tray icon → Quit. (Change this in Settings → Display → 'Quit with the X button')")
-         + "\n" + _t("The mouse back/forward buttons (and Alt+←/→) move between the pages you visited; in the editor, back cancels it.")),
-    ]
+def help_markdown(code=None):
+    """The how-to text (Markdown) for language code (default: the current one)."""
+    folder = os.path.join(i18n.locale_dir(), "help")
+    for c in (code or i18n.current(), i18n.DEFAULT_LANGUAGE):
+        try:
+            with open(os.path.join(folder, f"{c}.md"), encoding="utf-8") as f:
+                return f.read()
+        except OSError:
+            continue
+    return ""
 
 
-
-
-class HelpInterface(ScrollArea):
+class HelpInterface(QWidget):
     def __init__(self, ctl, parent=None):
         super().__init__(parent)
         self.setObjectName("helpInterface")
-        self.view = QWidget(self)
-        self.setWidget(self.view)
-        self.setWidgetResizable(True)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.enableTransparentBackground()
+        root = QVBoxLayout(self)
+        root.setContentsMargins(36, 20, 36, 12)
+        root.setSpacing(8)
+        root.addWidget(TitleLabel(_t("How to use"), self))
+        self.view = QTextBrowser(self)
+        self.view.setFrameShape(QFrame.NoFrame)
+        self.view.setOpenExternalLinks(True)
+        self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.view.viewport().setAutoFillBackground(False)
+        self.view.setStyleSheet("QTextBrowser { background: transparent; border: none; }")
+        from qfluentwidgets.components.widgets.scroll_bar import SmoothScrollDelegate
+        self._scroll = SmoothScrollDelegate(self.view)          # (Fluent scroll bars)
+        root.addWidget(self.view, 1)
+        self._render()
+        qconfig.themeChanged.connect(lambda *_: self._render())
 
-        root = QVBoxLayout(self.view)
-        root.setContentsMargins(36, 20, 36, 28)
-        root.setSpacing(12)
-        root.addWidget(TitleLabel(_t("How to use"), self.view))
-        for i, (icon, title, body) in enumerate(STEPS):
-            card = SimpleCardWidget(self.view)
-            lay = QHBoxLayout(card)
-            lay.setContentsMargins(20, 16, 20, 16)
-            lay.setSpacing(16)
-            ic = IconWidget(icon, card)
-            ic.setFixedSize(20, 20)
-            lay.addWidget(ic, 0, Qt.AlignTop)
-            col = QVBoxLayout()
-            col.setSpacing(4)
-            col.addWidget(StrongBodyLabel(title, card))
-            text = BodyLabel(body, card)
-            text.setWordWrap(True)
-            text.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            col.addWidget(text)
-            lay.addLayout(col, 1)
-            if i == 5 and IS_WIN:
-                box = QVBoxLayout()
-                box.setSpacing(6)
-                self.fw_label = CaptionLabel(_t("Firewall block: checking…"), card)
-                self.btn_fw_on = PushButton(_t("Turn block on"), card, FIF.CERTIFICATE)
-                self.btn_fw_off = PushButton(_t("Turn block off"), card, FIF.CLOSE)
-                self.btn_fw_on.clicked.connect(lambda: ctl.firewall(True))
-                self.btn_fw_off.clicked.connect(lambda: ctl.firewall(False))
-                box.addWidget(self.fw_label, 0, Qt.AlignRight)
-                row = QHBoxLayout()
-                row.addWidget(self.btn_fw_on)
-                row.addWidget(self.btn_fw_off)
-                box.addLayout(row)
-                lay.addLayout(box)
-            root.addWidget(card)
-        root.addStretch(1)
+    def _render(self):
+        from qfluentwidgets.common import font as qf_font    # (the module's getFont follows the text size setting)
+        dark = isDarkTheme()
+        text = QColor(235, 235, 235) if dark else QColor(28, 28, 28)
+        pal = self.view.palette()
+        pal.setColor(QPalette.Text, text)
+        pal.setColor(QPalette.Link, QColor(108, 203, 255) if dark else QColor(0, 95, 184))
+        self.view.setPalette(pal)
+        base = qf_font.getFont(15)
+        self.view.setFont(base)
+        doc = self.view.document()
+        doc.setDocumentMargin(2)
+        doc.setMarkdown(help_markdown())
+        self._tidy(doc, base, QColor(255, 255, 255, 40) if dark else QColor(0, 0, 0, 30))
+        self.view.moveCursor(QTextCursor.Start)
+        self.view.verticalScrollBar().setValue(0)
+
+    @staticmethod
+    def _tidy(doc, base, line):
+        """Headings with room above them, list items a little apart, tables with light rules only."""
+        cur = QTextCursor(doc)
+        block = doc.begin()
+        while block.isValid():
+            cur.setPosition(block.position())
+            fmt = block.blockFormat()
+            if fmt.headingLevel():
+                fmt.setTopMargin(0 if block == doc.begin() else 22)
+                fmt.setBottomMargin(6)
+                cur.setBlockFormat(fmt)
+                cur.select(QTextCursor.LineUnderCursor)
+                ch = QTextCharFormat()
+                ch.setFontPointSize(base.pointSizeF() * 1.3 if base.pointSizeF() > 0 else 0)
+                if base.pixelSize() > 0:
+                    ch.setProperty(QTextCharFormat.FontPixelSize, round(base.pixelSize() * 1.3))
+                ch.setFontWeight(600)
+                cur.mergeCharFormat(ch)
+            elif block.textList() is not None:
+                fmt.setBottomMargin(4)
+                cur.setBlockFormat(fmt)
+            block = block.next()
+        for frame in doc.rootFrame().childFrames():
+            if isinstance(frame, QTextTable):
+                tf = frame.format()
+                tf.setBorder(0)
+                tf.setBorderStyle(QTextFrameFormat.BorderStyle_None)
+                tf.setCellSpacing(0)
+                tf.setCellPadding(7)
+                tf.setTopMargin(6)
+                frame.setFormat(tf)
+                for r in range(frame.rows()):
+                    for c in range(frame.columns()):
+                        cell = frame.cellAt(r, c)
+                        cf = cell.format().toTableCellFormat()
+                        cf.setBottomBorder(1)
+                        cf.setBottomBorderBrush(line)
+                        cf.setBottomBorderStyle(QTextFrameFormat.BorderStyle_Solid)
+                        cf.setRightPadding(28)
+                        cell.setFormat(cf)
 
     def set_firewall_status(self, state):
-        if not hasattr(self, "fw_label"):
-            return
-        self.fw_label.setText(_t("Firewall block: ") + {True: _t("On"), False: _t("Off"), None: _t("Checking…")}[state])
-        busy = state is None
-        self.btn_fw_on.setEnabled(not busy and state is not True)
-        self.btn_fw_off.setEnabled(not busy and state is not False)
+        """(The firewall rule lives on the Settings page.)"""

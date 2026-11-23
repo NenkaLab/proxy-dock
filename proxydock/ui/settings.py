@@ -83,6 +83,11 @@ class SettingsInterface(ScrollArea):
         self.cb_scale.addItems([f"{s}%" + (_t(" (default)") if s == 100 else "") for s in config.UI_SCALES])
         self.cb_scale.setFixedWidth(160)
         s_view.add(Row(_t("App scale"), _t("Scales text and UI elements together (applies after restart)"), v).right(self.cb_scale))
+        self.cb_text = ComboBox(v)
+        self.cb_text.addItems([f"{s}%" + (_t(" (default)") if s == config.GLOBAL_DEFAULTS["text_size"] else "")
+                               for s in config.TEXT_SIZES])
+        self.cb_text.setFixedWidth(160)
+        s_view.add(Row(_t("Text size"), _t("Size of the text in menus and pages (applies right away)"), v).right(self.cb_text))
         self.sp_logsize = SpinBox(v)
         self.sp_logsize.setRange(8, 20)
         self.sp_logsize.setFixedWidth(150)
@@ -163,6 +168,7 @@ class SettingsInterface(ScrollArea):
         self.cb_lang.setCurrentIndex(LANGUAGE_CODES.index(g["language"]))
         self.cb_theme.setCurrentIndex([k for k, _ in config.THEMES].index(g["theme"]))
         self.cb_scale.setCurrentIndex(config.UI_SCALES.index(g["ui_scale"]))
+        self.cb_text.setCurrentIndex(config.TEXT_SIZES.index(g["text_size"]))
         self.sp_logsize.setValue(g["log_font_size"])
         self.sw_close.setChecked(g["close_exits"])
         self.cb_uifont.setCurrentIndex(self.ui_fonts.index(g["ui_font"]) if g["ui_font"] in self.ui_fonts else 0)
@@ -190,6 +196,7 @@ class SettingsInterface(ScrollArea):
             language=LANGUAGE_CODES[max(self.cb_lang.currentIndex(), 0)],
             theme=config.THEMES[max(self.cb_theme.currentIndex(), 0)][0],
             ui_scale=config.UI_SCALES[max(self.cb_scale.currentIndex(), 0)],
+            text_size=config.TEXT_SIZES[max(self.cb_text.currentIndex(), 0)],
             log_font_size=self.sp_logsize.value(), close_exits=self.sw_close.isChecked(),
             ui_font=self.ui_fonts[max(self.cb_uifont.currentIndex(), 0)],
             mono_font=self.mono_fonts[max(self.cb_monofont.currentIndex(), 0)],

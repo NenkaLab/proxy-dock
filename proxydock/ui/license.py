@@ -59,7 +59,7 @@ class LicenseInterface(QWidget):
         self.combo.setFixedWidth(340)
         btn_folder = PushButton(_t("Open folder"), self, FIF.FOLDER)
         btn_folder.clicked.connect(self._open_dir)
-        desc = CaptionLabel(_t("Licenses of the fonts and open source components included in this program. The same texts are in the {LICENSE_DIR} folder.").format(LICENSE_DIR=LICENSE_DIR), self)
+        desc = CaptionLabel(_t("Fonts and open source components included in ProxyDock (also in the {LICENSE_DIR} folder).").format(LICENSE_DIR=LICENSE_DIR), self)
         desc.setWordWrap(True)
         self.view = TextView(self)
         self.view.setFont(make_mono_font(glob))

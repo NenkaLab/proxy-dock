@@ -443,7 +443,7 @@ class ProxiesInterface(ScrollArea):
         header.addWidget(self.btn_new_router)
         header.addWidget(self.btn_new_out)
         header.addWidget(self.btn_new)
-        self.hint = CaptionLabel(_t("Proxy = inbound (how it accepts connections on a port of this PC) → outbound (how it reaches the destination). Click a card to edit; use the switch to start/stop."), self.view)
+        self.hint = CaptionLabel(_t("Inbound blocks accept connections on this PC, outbound blocks are where traffic leaves. Click a card to edit it."), self.view)
         self.hint.setWordWrap(True)
         self.list = QVBoxLayout()
         self.list.setSpacing(8)
