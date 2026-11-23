@@ -30,7 +30,8 @@ def helper_command(port, token, config_path, workdir):
 def app_command(*extra):
     """Command line that starts ProxyDock itself (frozen exe, or python proxydock.py while developing)."""
     if getattr(sys, "frozen", False):
-        return [sys.executable, *extra]
+        from ..common import self_exe
+        return [self_exe(), *extra]
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     return [sys.executable, os.path.join(root, "proxydock.py"), *extra]
 

@@ -2,7 +2,7 @@
 
     python tools/build.py win|linux|mac|all
     python tools/build.py package win|linux|mac
-    python tools/build.py installer
+    python tools/build.py installer | dmg | appimage
 
   win    Windows app folder   -> dist/win/ProxyDock/ProxyDock.exe   (on Windows only)
   linux  Linux app folder     -> dist/linux/ProxyDock/ProxyDock     (natively on Linux, with Docker on Windows/macOS)
@@ -12,6 +12,10 @@
                     (+ .sha256), used by the release workflow (.github/workflows/release.yml)
   installer         Windows installer from an existing win build (Inno Setup 6, tools/ProxyDock.iss)
                     -> dist/release/ProxyDock-<version>-windows-<arch>-setup.exe (+ .sha256)
+  dmg               macOS disk image from an existing mac build (hdiutil, on macOS)
+                    -> dist/release/ProxyDock-<version>-macos-<arch>.dmg (+ .sha256)
+  appimage          Linux AppImage from an existing linux build (appimagetool, downloaded if missing, on Linux)
+                    -> dist/release/ProxyDock-<version>-linux-<arch>.AppImage (+ .sha256)
 
 Creates a virtual environment per OS (.venv / .venv-linux / .venv-mac), installs only the packages that are
 missing or differ from requirements.txt, then builds with tools/ProxyDock.spec.
@@ -25,7 +29,9 @@ import re
 import shutil
 import subprocess
 import sys
+import stat
 import tarfile
+import urllib.request
 import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -54,10 +60,14 @@ def run(cmd, **kw):
     return subprocess.run(cmd, cwd=ROOT, **kw)
 
 
-def venv_python(target):
+def venv_python(target, quiet=False):
     default = {"win": ".venv", "linux": ".venv-linux", "mac": ".venv-mac"}[target]
     venv = os.environ.get("VENV_DIR") or os.path.join(ROOT, default)
     py = os.path.join(venv, "Scripts", "python.exe") if target == "win" else os.path.join(venv, "bin", "python")
+    if quiet:
+        if not os.path.exists(py):
+            raise RuntimeError(f"virtual environment not found: {venv} - build first")
+        return py
     if os.path.exists(py):
         say(target, "1/5", f"checking virtual environment: {os.path.relpath(venv, ROOT) if venv.startswith(ROOT) else venv}")
     else:
@@ -223,14 +233,16 @@ def checksum(path, what):
 
 
 def find_iscc():
-    """Inno Setup 6 compiler: PATH, then the usual install folders (machine or per-user install)."""
+    """Inno Setup compiler: PATH, then the usual install folders (machine or per-user install)."""
     found = shutil.which("ISCC") or shutil.which("iscc")
     if found:
         return found
+    import glob
     for base in (os.environ.get("ProgramFiles(x86)"), os.environ.get("ProgramFiles"),
                  os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs")):
-        if base and os.path.isfile(os.path.join(base, "Inno Setup 6", "ISCC.exe")):
-            return os.path.join(base, "Inno Setup 6", "ISCC.exe")
+        found = sorted(glob.glob(os.path.join(base, "Inno Setup *", "ISCC.exe"))) if base else []
+        if found:
+            return found[0]         # "Inno Setup 6" before 7 (tools/innosetup/*.isl are 6.x messages)
     return None
 
 
@@ -245,12 +257,105 @@ def installer():
         raise Skip("Inno Setup 6 is not installed (winget install JRSoftware.InnoSetup)")
     out_dir = os.path.join(ROOT, "dist", "release")
     os.makedirs(out_dir, exist_ok=True)
-    name = f"ProxyDock-{version()}-windows-{arch()}-setup"
+    name = release_name("windows") + "-setup"
     r = run([iscc, "/Q", f"/DAppVersion={version()}", f"/DSourceDir={app_folder('win')}",
              f"/DOutputDir={out_dir}", f"/DOutputName={name}", "tools/ProxyDock.iss"])
     if r.returncode != 0:
         raise RuntimeError("Inno Setup failed (tools/ProxyDock.iss)")
     return checksum(os.path.join(out_dir, name + ".exe"), "installer")
+
+
+def release_name(os_name):
+    return f"ProxyDock-{version()}-{os_name}-{arch()}"
+
+
+def dmg():
+    """macOS disk image: ProxyDock.app + a link to /Applications to drag it onto (+ licenses)."""
+    if PLATFORM != "mac":
+        raise Skip("a .dmg can only be made on macOS")
+    app = os.path.join(ROOT, OUTPUTS["mac"])
+    if not os.path.isdir(app):
+        raise RuntimeError(f"{OUTPUTS['mac']} not found - build it first (python tools/build.py mac)")
+    staging = os.path.join(ROOT, "build", "dmg")
+    shutil.rmtree(staging, ignore_errors=True)
+    os.makedirs(staging)
+    shutil.copytree(app, os.path.join(staging, "ProxyDock.app"), symlinks=True)
+    lic = os.path.join(ROOT, "dist", "mac", "licenses")
+    if os.path.isdir(lic):
+        shutil.copytree(lic, os.path.join(staging, "licenses"))
+    os.symlink("/Applications", os.path.join(staging, "Applications"))
+    out_dir = os.path.join(ROOT, "dist", "release")
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, release_name("macos") + ".dmg")
+    if run(["hdiutil", "create", "-volname", "ProxyDock", "-srcfolder", staging, "-fs", "HFS+",
+            "-format", "UDZO", "-imagekey", "zlib-level=9", "-ov", path]).returncode != 0:
+        raise RuntimeError("hdiutil failed")
+    return checksum(path, "disk image")
+
+
+APPIMAGETOOL_URL = "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-{arch}.AppImage"
+DESKTOP = """[Desktop Entry]
+Type=Application
+Name=ProxyDock
+Comment=Local proxy manager
+Exec=ProxyDock
+Icon=proxydock
+Categories=Network;
+Terminal=false
+"""
+APPRUN = """#!/bin/sh
+HERE="$(dirname "$(readlink -f "$0")")"
+exec "$HERE/usr/lib/proxydock/ProxyDock" "$@"
+"""
+
+
+def appimagetool():
+    found = os.environ.get("APPIMAGETOOL") or shutil.which("appimagetool")
+    if found:
+        return found
+    machine = {"x64": "x86_64", "arm64": "aarch64"}.get(arch(), arch())
+    path = os.path.join(ROOT, "build", "tools", f"appimagetool-{machine}.AppImage")
+    if not os.path.isfile(path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        url = APPIMAGETOOL_URL.format(arch=machine)
+        print(f"          downloading {url}", flush=True)
+        urllib.request.urlretrieve(url, path + ".part")
+        os.replace(path + ".part", path)
+    os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return path
+
+
+def appimage():
+    """Linux AppImage: one file that runs on most distributions (mounted, not unpacked to /tmp)."""
+    if PLATFORM != "linux":
+        raise Skip("an AppImage can only be made on Linux (python tools/build.py linux builds in Docker)")
+    folder = app_folder("linux")
+    if not os.path.exists(os.path.join(ROOT, OUTPUTS["linux"])):
+        raise RuntimeError(f"{OUTPUTS['linux']} not found - build it first (python tools/build.py linux)")
+    appdir = os.path.join(ROOT, "build", "appimage", "ProxyDock.AppDir")
+    shutil.rmtree(appdir, ignore_errors=True)
+    shutil.copytree(folder, os.path.join(appdir, "usr", "lib", "proxydock"), symlinks=True)
+    with open(os.path.join(appdir, "AppRun"), "w", encoding="utf-8", newline="\n") as f:
+        f.write(APPRUN)
+    os.chmod(os.path.join(appdir, "AppRun"), 0o755)
+    with open(os.path.join(appdir, "proxydock.desktop"), "w", encoding="utf-8", newline="\n") as f:
+        f.write(DESKTOP)
+    icon = os.path.join(appdir, "proxydock.png")
+    r = run([venv_python("linux", quiet=True), "-c",
+             "import sys; from PySide6.QtWidgets import QApplication; app = QApplication(['x', '-platform', 'offscreen']);"
+             "from proxydock.ui.common import make_icon; sys.exit(0 if make_icon().pixmap(256, 256).save(sys.argv[1]) else 1)",
+             icon], capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if r.returncode != 0:
+        raise RuntimeError("could not draw the icon: " + r.stderr.strip()[-300:])
+    os.symlink("proxydock.png", os.path.join(appdir, ".DirIcon"))
+    out_dir = os.path.join(ROOT, "dist", "release")
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, release_name("linux") + ".AppImage")
+    env = dict(os.environ, APPIMAGE_EXTRACT_AND_RUN="1",      # no FUSE needed (containers, CI)
+               ARCH={"x64": "x86_64", "arm64": "aarch64"}.get(arch(), arch()))
+    if run([appimagetool(), "--no-appstream", appdir, path], env=env).returncode != 0:
+        raise RuntimeError("appimagetool failed")
+    return checksum(path, "AppImage")
 
 
 def build(target):
@@ -272,9 +377,9 @@ def main(argv):
         except RuntimeError as e:
             print(f"failed: {e}")
             return 1
-    if argv[1:] == ["installer"]:
+    if len(argv) == 2 and argv[1] in ("installer", "dmg", "appimage"):
         try:
-            installer()
+            {"installer": installer, "dmg": dmg, "appimage": appimage}[argv[1]]()
             return 0
         except Skip as e:
             print(f"skipped: {e}")

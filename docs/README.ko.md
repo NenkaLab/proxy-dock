@@ -40,7 +40,7 @@
 
 ## 실행
 
-Windows에서는 `ProxyDock-<버전>-windows-x64-setup.exe`가 현재 사용자에게 설치합니다(관리자 권한 필요 없음). `.zip`은 같은 앱을 폴더로 담은 것입니다.
+Windows에서는 `ProxyDock-<버전>-windows-x64-setup.exe`가 현재 사용자에게 설치합니다(관리자 권한 필요 없음). `.zip`은 같은 앱을 폴더로 담은 것입니다. macOS는 `.dmg`를 열고 ProxyDock을 응용 프로그램 폴더로 끌어 넣습니다. Linux는 `.AppImage`에 실행 권한을 주고 실행합니다.
 
 [Releases](https://github.com/NenkaLab/proxy-dock/releases)에서 빌드를 받거나, 소스로 실행합니다(Python 3.14):
 
@@ -60,7 +60,7 @@ python proxydock.py
 `tools\build_win.bat` → `dist/win/ProxyDock/ProxyDock.exe` (Linux: `tools/build_linux.sh`, macOS: `tools/build_mac.sh`).
 빌드는 sing-box와 Hysteria를 내려받아(SHA-256 확인) 앱 안에 넣습니다.
 테스트: `python tests/run_tests.py`. 릴리스: `tools\release.bat <버전>`이 태그를 달고 push하면 GitHub Actions가 빌드합니다.
-설치기: `python tools/build.py installer` (Inno Setup 6).
+설치기: `python tools/build.py installer` (Inno Setup 6). macOS: `python tools/build.py dmg`, Linux: `python tools/build.py appimage`.
 
 ## 제한
 

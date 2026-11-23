@@ -11,6 +11,13 @@ import time
 from collections import deque
 from datetime import datetime
 
+def self_exe():
+    """Program that starts ProxyDock again (restart, start at login, TUN helper). In an AppImage sys.executable is
+    inside a temporary mount that disappears when this process exits (and root cannot read it), so use the
+    AppImage file itself."""
+    return os.environ.get("APPIMAGE") or sys.executable
+
+
 APP_NAME = "ProxyDock"
 APP_ID = "ProxyDock"                    # settings folder, autostart name, etc.
 OLD_APP_ID = "ProxyLocal"               # settings folder name of the previous version (SOCKS5 Proxy)

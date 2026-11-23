@@ -7,7 +7,7 @@ import socket
 import subprocess
 import sys
 
-from .common import APP_ID, APP_NAME, IS_MAC, IS_WIN, LOG_ERROR, LOG_INFO, log
+from .common import APP_ID, APP_NAME, IS_MAC, IS_WIN, LOG_ERROR, LOG_INFO, log, self_exe
 
 if IS_WIN:
     import winreg
@@ -149,7 +149,7 @@ OLD_LINUX_AUTOSTART = os.path.join(_XDG, "autostart", "proxylocal.desktop")
 
 def _launch_argv(hidden):
     if getattr(sys, "frozen", False):
-        argv = [sys.executable]
+        argv = [self_exe()]
     else:
         exe = sys.executable
         if IS_WIN:      # use pythonw.exe when running as a script so no console window appears

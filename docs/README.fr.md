@@ -43,7 +43,7 @@ le moteur Python intégré sert de secours.
 
 ## Lancer
 
-Sous Windows, `ProxyDock-<version>-windows-x64-setup.exe` l'installe pour votre compte (sans droits administrateur) ; le `.zip` contient la même application sous forme de dossier.
+Sous Windows, `ProxyDock-<version>-windows-x64-setup.exe` l'installe pour votre compte (sans droits administrateur) ; le `.zip` contient la même application sous forme de dossier. Sous macOS, ouvrez le `.dmg` et glissez ProxyDock dans Applications. Sous Linux, rendez le `.AppImage` exécutable puis lancez-le.
 
 Téléchargez une version sur [Releases](https://github.com/NenkaLab/proxy-dock/releases), ou lancez depuis les sources
 (Python 3.14) :
@@ -64,7 +64,7 @@ Linux : `~/.config/ProxyDock`). La page **Mode d'emploi** de l'application expli
 `tools\build_win.bat` → `dist/win/ProxyDock/ProxyDock.exe` (Linux : `tools/build_linux.sh`, macOS : `tools/build_mac.sh`).
 La compilation télécharge sing-box et Hysteria (SHA-256 vérifié) et les place dans l'application.
 Tests : `python tests/run_tests.py`. Publication : `tools\release.bat <version>` crée le tag et pousse ; GitHub Actions compile.
-Installateur : `python tools/build.py installer` (Inno Setup 6).
+Installateur : `python tools/build.py installer` (Inno Setup 6). macOS : `python tools/build.py dmg`, Linux : `python tools/build.py appimage`.
 
 ## Limites
 

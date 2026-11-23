@@ -43,7 +43,7 @@ die eingebaute Python-Engine dient als Ersatz.
 
 ## Starten
 
-Unter Windows installiert `ProxyDock-<Version>-windows-x64-setup.exe` für Ihr Benutzerkonto (keine Administratorrechte nötig); die `.zip` ist dieselbe App als Ordner.
+Unter Windows installiert `ProxyDock-<Version>-windows-x64-setup.exe` für Ihr Benutzerkonto (keine Administratorrechte nötig); die `.zip` ist dieselbe App als Ordner. Unter macOS die `.dmg` öffnen und ProxyDock in „Programme“ ziehen. Unter Linux die `.AppImage` ausführbar machen und starten.
 
 Einen Build von [Releases](https://github.com/NenkaLab/proxy-dock/releases) laden oder aus dem Quellcode starten
 (Python 3.14):
@@ -64,7 +64,7 @@ Linux: `~/.config/ProxyDock`). Den Rest erklärt die Seite **Anleitung** in der 
 `tools\build_win.bat` → `dist/win/ProxyDock/ProxyDock.exe` (Linux: `tools/build_linux.sh`, macOS: `tools/build_mac.sh`).
 Der Build lädt sing-box und Hysteria herunter (SHA-256 geprüft) und packt sie in die App.
 Tests: `python tests/run_tests.py`. Releases: `tools\release.bat <Version>` setzt ein Tag und pusht; GitHub Actions baut.
-Installer: `python tools/build.py installer` (Inno Setup 6).
+Installer: `python tools/build.py installer` (Inno Setup 6). macOS: `python tools/build.py dmg`, Linux: `python tools/build.py appimage`.
 
 ## Einschränkungen
 

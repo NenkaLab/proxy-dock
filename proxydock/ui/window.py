@@ -1209,7 +1209,8 @@ class Controller:
         self.window.show_window()
 
     def restart(self):
-        cmd = [sys.executable] if getattr(sys, "frozen", False) else [sys.executable, sys.argv[0]]
+        from ..common import self_exe
+        cmd = [self_exe()] if getattr(sys, "frozen", False) else [sys.executable, sys.argv[0]]
         cmd += [a for a in sys.argv[1:] if a != "--restart"] + ["--restart"]
         try:
             if IS_WIN:

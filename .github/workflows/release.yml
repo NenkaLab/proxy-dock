@@ -1,7 +1,7 @@
 name: Release
 
 # Pushing a tag v<version> (tools/release.py does it) builds Windows / Linux / macOS and publishes a
-# GitHub Release with the archives, the Windows installer and SHA-256 checksums. "Run workflow" builds without releasing.
+# GitHub Release with the archives, the Windows installer, the macOS .dmg, the Linux AppImage and SHA-256 checksums. "Run workflow" builds without releasing.
 on:
   push:
     tags: ["v*"]
@@ -47,7 +47,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends binutils \
+          sudo apt-get install -y -qq --no-install-recommends binutils file \
             libgl1 libegl1 libglib2.0-0 libdbus-1-3 libfontconfig1 libfreetype6 \
             libxkbcommon0 libxkbcommon-x11-0 libx11-xcb1 libxcb1 libxcb-cursor0 libxcb-icccm4 \
             libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 \
@@ -80,8 +80,20 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+          # the same Inno Setup version as tools/innosetup/*.isl
+          choco install innosetup --version=6.7.3 -y --no-progress --allow-downgrade
+          if ($LASTEXITCODE -ne 0) { choco install innosetup -y --no-progress }
           python tools/build.py installer
+
+      - name: Disk image (macOS)
+        if: runner.os == 'macOS'
+        run: python tools/build.py dmg
+
+      - name: AppImage (Linux)
+        if: runner.os == 'Linux'
+        env:
+          VENV_DIR: ${{ runner.temp }}/venv
+        run: python tools/build.py appimage
 
       - uses: actions/upload-artifact@v4
         with:
@@ -108,14 +120,15 @@ jobs:
         shell: bash
         run: |
           ls -l release
-          if ! ls release/*.zip release/*.tar.gz >/dev/null 2>&1; then
+          shopt -s nullglob
+          files=(release/*.zip release/*.tar.gz release/*-setup.exe release/*.dmg release/*.AppImage)
+          if [ ${#files[@]} -eq 0 ]; then
             echo "::error::no build succeeded"; exit 1
           fi
           cat release/*.sha256 > release/SHA256SUMS.txt
           version="${GITHUB_REF_NAME#v}"
           prerelease=""
           case "$version" in *-*) prerelease="--prerelease" ;; esac
-          files=(release/*.zip release/*.tar.gz release/SHA256SUMS.txt)
-          ls release/*-setup.exe >/dev/null 2>&1 && files+=(release/*-setup.exe)
+          files+=(release/SHA256SUMS.txt)
           gh release create "$GITHUB_REF_NAME" "${files[@]}" \
             --title "ProxyDock $version" --generate-notes $prerelease
