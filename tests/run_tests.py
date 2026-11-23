@@ -38,6 +38,15 @@ config.CERT_DIR = os.path.join(TMP, "certs")
 config.WINDOW_STATE_PATH = os.path.join(TMP, "window.json")
 config.app_dir = lambda name="x": os.path.join(TMP, "none")
 
+from proxydock import update as update_mod  # noqa: E402
+
+
+def _no_network(url, *args, **kwargs):
+    raise ValueError("no network in tests")
+
+
+update_mod.http_get = _no_network       # the UI test's startup update check must not reach GitHub
+
 results = []
 
 

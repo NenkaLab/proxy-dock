@@ -377,6 +377,8 @@ class Controller:
         self.file_handler = None
 
         self.has_tray = QSystemTrayIcon.isSystemTrayAvailable()
+        from .updater import Updater
+        self.updater = Updater(self)
         self.window = MainWindow(self)
         self.tray = QSystemTrayIcon(make_icon())
         self.tray.setToolTip(APP_NAME)
@@ -400,6 +402,8 @@ class Controller:
         self.proxy_actions = []
         self.tray.setContextMenu(self.menu)
         self.tray.activated.connect(self._on_tray_activated)
+        self.tray.messageClicked.connect(self.updater.on_tray_message_clicked)
+        QTimer.singleShot(10 * 1000, self.updater.startup_check)
 
         self.theme_listener = _ThemeListener()
         self.theme_listener.systemThemeChanged.connect(

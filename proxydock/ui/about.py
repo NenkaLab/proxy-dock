@@ -121,6 +121,9 @@ class AboutInterface(ScrollArea):
             root.addWidget(s)
         root.addStretch(1)
 
+        updater = getattr(ctl, "updater", None)
+        if updater is not None:
+            self.set_update_status(updater.status, updater._checking)
         _bridge_obj().done.connect(self._show_cores)
         self._show_cores()
         probe_cores(ctl.glob)
