@@ -89,6 +89,9 @@ INBOUND_DEFAULTS = {
     "ss_method": "2022-blake3-aes-256-gcm",
     "ss_password": "",
     "hy2_password": "",
+    "hy2_obfs_password": "",    # Hysteria2 server: Salamander obfuscation ("" = off; sing-box / official core)
+    "hy2_up_mbps": 0,           # Hysteria2 server bandwidth limits (Brutal, 0 = no limit)
+    "hy2_down_mbps": 0,
     "tun_stack": "mixed",       # TUN: sing-box network stack (mixed / system / gvisor)
     "tun_strict_route": False,  # TUN: block traffic that would bypass the TUN (can break IPv6 on Windows)
 }
@@ -104,6 +107,11 @@ OUTBOUND_DEFAULTS = {
     "ss_method": "2022-blake3-aes-256-gcm",
     "ss_password": "",
     "hy2_password": "",
+    "hy2_obfs_password": "",    # Salamander obfuscation, must match the server ("" = off)
+    "hy2_up_mbps": 0,           # Brutal: this PC's real upload / download speed in Mbps (0 = BBR, automatic)
+    "hy2_down_mbps": 0,
+    "hy2_ports": "",            # port hopping: e.g. "20000-30000" or "443,5000-6000" ("" = off)
+    "hy2_hop_interval": 30,     # seconds between port hops
     "bind": "",                 # Direct only: source address to connect from ("" = automatic)
     "interface": "",            # network interface to leave from (Tailscale, a VPN, Wi-Fi...; "" = automatic, sing-box)
     # WireGuard tunnel (host/port = the peer's endpoint)
@@ -136,7 +144,7 @@ OUTBOUND_DEFAULTS = {
     "sub_updated": 0,           # time of the last update (epoch seconds)
     "sub_test_url": "https://www.gstatic.com/generate_204",     # what "auto" measures
 }
-SECRET_FIELDS = ("password", "ss_password", "hy2_password", "wg_private_key", "wg_preshared_key",
+SECRET_FIELDS = ("password", "ss_password", "hy2_password", "hy2_obfs_password", "wg_private_key", "wg_preshared_key",
                  "sub_url", "sub_servers")      # (subscription URLs carry tokens, the server list has passwords)
 
 
@@ -365,6 +373,23 @@ def check_proxy(p, proxies):
     return errs
 
 
+def hop_ports(text):
+    """'443,5000-6000' -> ["443:443", "5000:6000"] (sing-box server_ports), or None if invalid."""
+    out = []
+    for part in text.replace(" ", "").split(","):
+        if not part:
+            continue
+        a, _, b = part.partition("-")
+        try:
+            lo, hi = int(a), int(b or a)
+        except ValueError:
+            return None
+        if not 1 <= lo <= hi <= 65535:
+            return None
+        out.append(f"{lo}:{hi}")
+    return out or None
+
+
 def outbound_errors(ob):
     """Problems in an outbound's settings, including the blocks it goes through (empty list = OK)."""
     from .ss import ss_make_key
@@ -400,6 +425,13 @@ def outbound_errors(ob):
                 errs.append(_t("Outbound: {e}").format(e=e))
         if ob["type"] == "hysteria2" and not ob["hy2_password"]:
             errs.append(_t("Enter the outbound Hysteria2 password"))
+        if ob["type"] == "hysteria2" and ob["hy2_ports"].strip():
+            if hop_ports(ob["hy2_ports"]) is None:
+                errs.append(_t("Port hopping: use ports or ranges like 20000-30000 or 443,5000-6000"))
+            if not 5 <= ob["hy2_hop_interval"] <= 3600:
+                errs.append(_t("Port hopping: the interval must be 5 to 3600 seconds"))
+        if ob["type"] == "hysteria2" and not (0 <= ob["hy2_up_mbps"] <= 100000 and 0 <= ob["hy2_down_mbps"] <= 100000):
+            errs.append(_t("Bandwidth must be 0 to 100000 Mbps"))
         if ob["type"] in ("vless", "tuic"):
             import uuid as _uuid
             try:

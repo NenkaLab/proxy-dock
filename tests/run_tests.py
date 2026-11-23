@@ -342,6 +342,18 @@ def test_ui():
     check("ui: background subscription update", '"Three"' in gm.find(ctl.graph, sb["id"])[1]["outbound"]["sub_servers"])
     ctl.delete_node(sb["id"])
     web.shutdown()
+    h2 = ctl.new_outbound({"type": "hysteria2", "host": "h.example", "port": 443}, edit=False)
+    ctl.edit_node(h2["id"])
+    wait(300)
+    check("ui: Hysteria2 editor shows Salamander, bandwidth and port hopping",
+          w.editor.r_out_obfs.isVisible() and w.editor.r_out_bw.isVisible() and w.editor.r_out_hop.isVisible())
+    w.editor.ed_out_obfs.setText("x")
+    w.editor.ed_out_hop.setText("20000-30000")
+    got = w.editor.collect()["outbound"]
+    check("ui: Hysteria2 advanced values collected", got["hy2_obfs_password"] == "x" and got["hy2_ports"] == "20000-30000")
+    w.editor.cancel()
+    wait(300)
+    ctl.delete_node(h2["id"])
     tport, _, _ = tls_test_server()
     hb = ctl.new_outbound({"type": "https", "host": "127.0.0.1", "port": tport}, edit=False)
     ctl.edit_node(hb["id"])
@@ -1193,15 +1205,92 @@ def test_detect_sni():
             pr.terminate()
 
 
+def test_hy2_advanced():
+    from proxydock import links
+    from proxydock.singbox import compile as sbc, engine_for
+    ob, _ = links.parse("hysteria2://pw@h.example:443,5000-6000/?obfs=salamander&obfs-password=s3cret&sni=h.example#H")
+    check("hy2 adv: link with Salamander and port hopping", ob["hy2_obfs_password"] == "s3cret" and ob["port"] == 443
+          and ob["hy2_ports"] == "443,5000-6000", ob)
+    ob6, _ = links.parse("hy2://pw@[2001:db8::1]:443?mport=20000-30000#V6")
+    check("hy2 adv: IPv6 + mport", ob6["host"] == "2001:db8::1" and ob6["hy2_ports"] == "20000-30000", ob6)
+    try:
+        links.parse("hy2://pw@h:443?obfs=other")
+        check("hy2 adv: unknown obfuscation refused", False)
+    except ValueError:
+        check("hy2 adv: unknown obfuscation refused", True)
+    check("hy2 adv: port list parsing", config.hop_ports("443, 5000-6000") == ["443:443", "5000:6000"]
+          and config.hop_ports("70000") is None and config.hop_ports("9-1") is None)
+    full = dict(config.OUTBOUND_DEFAULTS, **ob, hy2_up_mbps=20, hy2_down_mbps=100, via=None)
+    d = sbc.outbound(full, "o")
+    check("hy2 adv: sing-box outbound fields", d["obfs"] == {"type": "salamander", "password": "s3cret"}
+          and d["up_mbps"] == 20 and d["down_mbps"] == 100 and d["server_ports"] == ["443:443", "5000:6000"]
+          and d["hop_interval"] == "30s", d)
+    check("hy2 adv: bad hop range reported", any("hopping" in e for e in config.outbound_errors(dict(full, hy2_ports="x"))))
+    ib = dict(config.INBOUND_DEFAULTS, type="hysteria2", hy2_password="pw123456", hy2_obfs_password="o", hy2_up_mbps=10)
+    si = sbc.inbound(ib, ("c", "k"))
+    check("hy2 adv: sing-box server fields", si["obfs"]["password"] == "o" and si["up_mbps"] == 10 and "down_mbps" not in si)
+    p = config.new_proxy("h", {"type": "socks5", "port": 1080})
+    p["outbound"] = full
+    check("hy2 adv: needs sing-box", engine_for(p, config.validate_global({"engine": "python"}))[0] == "none")
+    srv = config.new_proxy("hs", dict(ib, port=4443))
+    check("hy2 adv: server options need sing-box too", engine_for(srv, config.validate_global({"engine": "python"}))[0] == "none")
+
+
+def test_hy2_advanced_e2e():
+    """Salamander + bandwidth on both ends, port hopping on the client, on sing-box and on the official core."""
+    from proxydock import singbox
+    from proxydock.runtime import ProxyManager
+    origin = ThreadingHTTPServer(("127.0.0.1", 0), Origin)
+    threading.Thread(target=origin.serve_forever, daemon=True).start()
+    oport = origin.server_address[1]
+    glob = config.validate_global({"engine": "sing-box"})
+    mgr = ProxyManager()
+
+    def client(port, obfs, hop=""):
+        c = config.new_proxy("hy2 client", {"type": "socks5", "port": free_port()})
+        c["outbound"] = dict(config.OUTBOUND_DEFAULTS, type="hysteria2", host="127.0.0.1", port=port, hy2_password="hy2-adv-pass",
+                             tls_verify=False, hy2_obfs_password=obfs, hy2_up_mbps=50, hy2_down_mbps=200,
+                             hy2_ports=hop, hy2_hop_interval=10, via=None)
+        mgr.start(c, glob).result(20)
+        return socks5_get(c["inbound"]["port"], "127.0.0.1", oport)
+
+    def server(name):
+        sp = config.new_proxy(name, {"type": "hysteria2", "port": free_port(), "hy2_password": "hy2-adv-pass",
+                                     "hy2_obfs_password": "obfs-secret", "hy2_up_mbps": 500, "hy2_down_mbps": 500})
+        mgr.start(sp, glob).result(20)
+        return sp
+
+    try:
+        s1 = server("hy2 sing-box server")
+        check("[sing-box] hy2 adv: server card runs on sing-box", getattr(mgr.instances.get(s1["id"]), "engine", "") == "sing-box")
+        port = s1["inbound"]["port"]
+        check("[sing-box] hy2 adv: Salamander + Brutal -> origin", client(port, "obfs-secret") == "200")
+        check("[sing-box] hy2 adv: port hopping range -> origin", client(port, "obfs-secret", f"{port}-{port}") == "200")
+        check("[sing-box] hy2 adv: wrong Salamander password fails", client(port, "wrong") != "200")
+        from proxydock.singbox import find_hysteria
+        if find_hysteria():
+            singbox.FORCE_HYSTERIA = True
+            try:
+                s2 = server("hy2 official server")
+                check("[hysteria] hy2 adv: official core server with Salamander",
+                      getattr(mgr.instances.get(s2["id"]), "engine", "") == "hysteria"
+                      and client(s2["inbound"]["port"], "obfs-secret") == "200")
+            finally:
+                singbox.FORCE_HYSTERIA = False
+    finally:
+        mgr.stop_all()
+        origin.shutdown()
+
+
 def main():
     t0 = time.time()
     tests = [test_translations, test_graph, test_engine, test_singbox_compile, test_router_graph, test_router_singbox, test_interface,
              test_wireguard, test_tun, test_run_as_admin, test_protocols,
-             test_subscription, test_detect_sni]
+             test_subscription, test_detect_sni, test_hy2_advanced]
     from proxydock.singbox import find_binary
     if find_binary():
         tests += [lambda: test_engine("sing-box"), test_singbox_guard, test_router_e2e, test_interface_e2e, test_wireguard_e2e, test_helper,
-                  test_protocols_e2e, test_subscription_e2e]
+                  test_protocols_e2e, test_subscription_e2e, test_hy2_advanced_e2e]
         from proxydock.singbox import find_hysteria
         if find_hysteria():
             tests.append(test_hysteria)

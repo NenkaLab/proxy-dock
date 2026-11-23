@@ -106,7 +106,7 @@ macOS 构建尚未在真实的 Mac 上验证。
   (sing-box 不报告密码错误，无法封禁 IP)；收到的流量再经 sing-box 发出。证书固定的卡片仍使用 Python 引擎 (需要 sing-box 1.15)。
   单 IP 连接上限是事后断开多出的连接；空闲超时只作用于 UDP；不支持“记录连接关闭详情”。
 - Python 引擎: Hysteria2 不能*经由*其他出站，串联的出站不转发 UDP，Hysteria2 (aioquic) 约 100 Mbps。
-  两种引擎都不支持 Hysteria2 带宽设置 (Brutal)、Salamander 和端口跳跃。
+  Hysteria2 带宽设置 (Brutal)、Salamander 和端口跳跃需要 sing-box 引擎；监听端口范围的服务器需要在该服务器上做端口转发 (ProxyDock 不会设置)。
 - 官方 Hysteria2 服务器 (以及其他检查名称的服务器) 会拒绝与证书不符的 SNI。出站使用 IP 时，点 SNI 栏旁的 **从服务器检测** 读取证书中的名称。
 - HTTP 入站的普通 (非 CONNECT) 请求每个连接只处理一个。
 - SOCKS4 协议没有密码认证，请仅在本机使用。

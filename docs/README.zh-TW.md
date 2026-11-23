@@ -106,7 +106,7 @@ macOS 建置尚未在實體 Mac 上驗證。
   (sing-box 不回報密碼錯誤，無法封鎖 IP)；收到的流量再經 sing-box 送出。憑證固定的卡片仍以 Python 引擎執行 (需要 sing-box 1.15)。
   單一 IP 連線上限是事後中斷多出的連線；閒置逾時只作用於 UDP；不支援「記錄連線關閉詳情」。
 - Python 引擎: Hysteria2 無法*經由*其他傳出端，串接的傳出端不轉送 UDP，Hysteria2 (aioquic) 約 100 Mbps。
-  兩種引擎都不支援 Hysteria2 頻寬設定 (Brutal)、Salamander 與連接埠跳躍。
+  Hysteria2 頻寬設定 (Brutal)、Salamander 與連接埠跳躍需要 sing-box 引擎；接聽連接埠範圍的伺服器需要在該伺服器上做連接埠轉送 (ProxyDock 不會設定)。
 - 官方 Hysteria2 伺服器 (以及其他會檢查名稱的伺服器) 會拒絕與憑證不符的 SNI。傳出端使用 IP 時，按 SNI 欄旁的 **從伺服器偵測** 讀取憑證中的名稱。
 - HTTP 接收端的一般 (非 CONNECT) 要求每個連線只處理一個。
 - SOCKS4 通訊協定沒有密碼驗證，請只在這台電腦使用。

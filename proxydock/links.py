@@ -78,16 +78,29 @@ def parse(link):
         return {"type": "shadowsocks", "host": host, "port": port, "ss_method": method,
                 "ss_password": password}, name or "Shadowsocks"
 
-    host, port = _host_port(u.netloc)
     if scheme in ("hysteria2", "hy2"):
+        # the official format allows port hopping in the address: host:443,5000-6000
+        hp = u.netloc.rsplit("@", 1)[-1]
+        hosts, _, ports = (hp[1:].partition("]")[0], None, hp.partition("]")[2].lstrip(":")) if hp.startswith("[") \
+            else (hp.rpartition(":")[0], None, hp.rpartition(":")[2])
+        hop = q.get("mport", "")
+        if ports and not ports.isdigit():
+            hop, ports = ports, ports.replace("-", ",").split(",")[0]
+        host, port = _host_port(f"[{hosts}]:{ports}" if ":" in hosts else f"{hosts}:{ports}")
         ob = {"type": "hysteria2", "host": host, "port": port, "hy2_password": user, **_tls_fields(q)}
         ob.pop("fingerprint", None)
         ob.pop("alpn", None)
         if q.get("pinSHA256"):
             ob["pin_sha256"] = q["pinSHA256"]
         if q.get("obfs"):
-            raise ValueError(_t("Hysteria2 obfuscation (Salamander) is not supported yet"))
+            if q["obfs"].lower() != "salamander":
+                raise ValueError(_t("Hysteria2 obfuscation '{value}' is not supported").format(value=q["obfs"]))
+            ob["hy2_obfs_password"] = q.get("obfs-password", "")
+        if hop:
+            ob["hy2_ports"] = hop
         return ob, name or "Hysteria2"
+
+    host, port = _host_port(u.netloc)
 
     if scheme == "vless":
         sec = (q.get("security") or "none").lower()

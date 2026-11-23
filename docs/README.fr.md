@@ -111,7 +111,7 @@ La compilation macOS n'a pas encore été essayée sur un vrai Mac.
   sing-box. L'épinglage de certificat reste sur le moteur Python (sing-box 1.15 requis). La limite par IP ferme les connexions en trop
   après coup ; le délai d'inactivité ne vaut que pour l'UDP ; « Détails de fermeture » n'existe pas.
 - Moteur Python : Hysteria2 ne peut pas passer *par* d'autres sorties, l'UDP n'est pas relayé à travers les sorties chaînées, et
-  Hysteria2 (aioquic) atteint environ 100 Mbit/s. Aucun moteur ne gère les réglages de bande passante Hysteria2 (Brutal), Salamander ni le saut de ports.
+  Hysteria2 (aioquic) atteint environ 100 Mbit/s. La bande passante Hysteria2 (Brutal), Salamander et le saut de ports nécessitent le moteur sing-box ; un serveur sur une plage de ports a besoin d'une redirection de ports sur ce serveur (non configurée par ProxyDock).
 - Le serveur Hysteria2 officiel (et les autres serveurs qui vérifient le nom) refuse un SNI qui ne correspond pas à son certificat. Si la sortie utilise une IP, cliquez sur **Détecter depuis le serveur** à côté du champ SNI pour lire le nom du certificat.
 - L'entrée HTTP ne traite qu'une requête ordinaire (non CONNECT) par connexion.
 - SOCKS4 n'a pas d'authentification par mot de passe : ne l'utilisez que sur ce PC.

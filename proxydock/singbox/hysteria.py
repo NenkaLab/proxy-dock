@@ -151,6 +151,15 @@ class HysteriaInstance:
                 "addr": f"127.0.0.1:{self.inner_port}", "username": self.inner_user, "password": self.inner_pass}}],
             "udpIdleTimeout": f"{self.cfg['timeout']}s",
         }
+        if ib.get("hy2_obfs_password"):
+            conf["obfs"] = {"type": "salamander", "salamander": {"password": ib["hy2_obfs_password"]}}
+        bw = {}
+        if ib.get("hy2_up_mbps"):
+            bw["up"] = f"{ib['hy2_up_mbps']} mbps"
+        if ib.get("hy2_down_mbps"):
+            bw["down"] = f"{ib['hy2_down_mbps']} mbps"
+        if bw:
+            conf["bandwidth"] = bw
         os.makedirs(guard.RUN_DIR, exist_ok=True)
         fd = os.open(self.config_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:

@@ -111,7 +111,7 @@ Der macOS-Build wurde noch nicht auf einem echten Mac getestet.
   sing-box. Zertifikat-Pinning läuft weiter mit der Python-Engine (braucht sing-box 1.15). Das Limit pro IP trennt überzählige
   Verbindungen nachträglich; die Leerlaufzeit gilt nur für UDP; 'Details zum Verbindungsende' gibt es nicht.
 - Python-Engine: Hysteria2 kann nicht *über* andere Ausgänge laufen, UDP wird über verkettete Ausgänge nicht weitergeleitet, und
-  Hysteria2 (aioquic) schafft etwa 100 Mbit/s. Keine Engine unterstützt Hysteria2-Bandbreiteneinstellungen (Brutal), Salamander oder Port-Hopping.
+  Hysteria2 (aioquic) schafft etwa 100 Mbit/s. Hysteria2-Bandbreite (Brutal), Salamander und Port-Hopping brauchen die sing-box-Engine; ein Server auf einem Portbereich braucht dort eine Portweiterleitung (richtet ProxyDock nicht ein).
 - Der offizielle Hysteria2-Server (und andere Server, die den Namen prüfen) lehnt eine SNI ab, die nicht zum Zertifikat passt. Nutzt der Ausgang eine IP, neben dem SNI-Feld auf **Vom Server erkennen** klicken, um den Namen aus dem Zertifikat zu lesen.
 - Der HTTP-Eingang bearbeitet pro Verbindung nur eine normale (Nicht-CONNECT-)Anfrage.
 - SOCKS4 hat keine Passwort-Anmeldung, nutzen Sie es daher nur auf diesem PC.

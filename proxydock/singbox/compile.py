@@ -47,8 +47,15 @@ def inbound(ib, cert=None):
     if t == "shadowsocks":
         return {"type": "shadowsocks", **base, "method": ib["ss_method"], "password": ib["ss_password"]}
     if t == "hysteria2":
-        return {"type": "hysteria2", **base, "users": [{"password": ib["hy2_password"]}],
-                "tls": {"enabled": True, "certificate_path": cert[0], "key_path": cert[1]}}
+        d = {"type": "hysteria2", **base, "users": [{"password": ib["hy2_password"]}],
+             "tls": {"enabled": True, "certificate_path": cert[0], "key_path": cert[1]}}
+        if ib.get("hy2_obfs_password"):
+            d["obfs"] = {"type": "salamander", "password": ib["hy2_obfs_password"]}
+        if ib.get("hy2_up_mbps"):
+            d["up_mbps"] = ib["hy2_up_mbps"]
+        if ib.get("hy2_down_mbps"):
+            d["down_mbps"] = ib["hy2_down_mbps"]
+        return d
     raise ValueError(f"unsupported inbound {t}")
 
 
@@ -113,7 +120,20 @@ def outbound(ob, tag):
     if t == "shadowsocks":
         return {"type": "shadowsocks", **srv, "method": ob["ss_method"], "password": ob["ss_password"]}
     if t == "hysteria2":
-        return {"type": "hysteria2", **srv, "password": ob["hy2_password"], "tls": _tls(ob)}
+        d = {"type": "hysteria2", **srv, "password": ob["hy2_password"], "tls": _tls(ob)}
+        if ob.get("hy2_obfs_password"):
+            d["obfs"] = {"type": "salamander", "password": ob["hy2_obfs_password"]}
+        if ob.get("hy2_up_mbps"):           # Brutal (both needed; 0 = BBR)
+            d["up_mbps"] = ob["hy2_up_mbps"]
+        if ob.get("hy2_down_mbps"):
+            d["down_mbps"] = ob["hy2_down_mbps"]
+        if (ob.get("hy2_ports") or "").strip():
+            from ..config import hop_ports
+            ports = hop_ports(ob["hy2_ports"])
+            if ports:
+                d["server_ports"] = ports
+                d["hop_interval"] = f"{ob.get('hy2_hop_interval') or 30}s"
+        return d
     if t == "vless":
         d = {"type": "vless", **srv, "uuid": ob["uuid"].strip(), "packet_encoding": "xudp"}
         if ob.get("vless_flow"):

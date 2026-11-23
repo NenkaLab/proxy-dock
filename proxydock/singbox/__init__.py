@@ -64,6 +64,13 @@ def needs_singbox(proxy):
     """Router rules and the Block outbound only exist as sing-box route rules; binding to a network interface is
     a sing-box dial option."""
     chains = [proxy["outbound"]] + [r["outbound"] for r in proxy.get("routes") or []]
+    ib = proxy["inbound"]
+    if ib["type"] == "hysteria2" and (ib.get("hy2_obfs_password") or ib.get("hy2_up_mbps") or ib.get("hy2_down_mbps")):
+        return True             # Salamander / bandwidth: native engines only
+    if any(ob["type"] == "hysteria2" and (ob.get("hy2_obfs_password") or ob.get("hy2_up_mbps") or ob.get("hy2_down_mbps")
+                                          or (ob.get("hy2_ports") or "").strip())
+           for c in chains for ob in _chain(c)):
+        return True
     return (bool(proxy.get("routes")) or proxy["outbound"]["type"] == "block" or proxy["inbound"]["type"] == "tun"
             or any(ob.get("interface") or ob["type"] in SINGBOX_ONLY_OUTBOUNDS for c in chains for ob in _chain(c)))
 

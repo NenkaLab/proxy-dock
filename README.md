@@ -110,7 +110,7 @@ The macOS build has not been tried on a real Mac yet.
   pinning still runs on the Python engine (needs sing-box 1.15). The per-IP connection limit closes extra connections after
   the fact; the idle timeout applies to UDP only; 'Log connection close details' is not available.
 - Python engine: Hysteria2 cannot go *through* other outbounds, UDP is not relayed through chained outbounds, and Hysteria2
-  (aioquic) reaches about 100 Mbps. Neither engine supports Hysteria2 bandwidth settings (Brutal), Salamander or port hopping.
+  (aioquic) reaches about 100 Mbps. Hysteria2 bandwidth (Brutal), Salamander and port hopping need the sing-box engine; a server listening on a port range needs a port redirect on that server (not set up by ProxyDock).
 - The official Hysteria2 server (and other servers that check the name) rejects an SNI that does not match its certificate. When the outbound uses an IP, click **Detect from server** next to the SNI field to read the certificate's name.
 - The HTTP inbound handles one plain (non-CONNECT) request per connection.
 - SOCKS4 has no password authentication, so only use it on this PC.

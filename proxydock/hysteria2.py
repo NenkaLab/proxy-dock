@@ -781,10 +781,13 @@ class Hy2Egress:
         self.session.deliver(host, port, data)
 
 
-def hy2_link(host, port, password, sni="", insecure=False, name="ProxyDock"):
+def hy2_link(host, port, password, sni="", insecure=False, name="ProxyDock", obfs=""):
     import urllib.parse
     h = f"[{host}]" if ":" in host else host
     q = []
+    if obfs:
+        q.append("obfs=salamander")
+        q.append(f"obfs-password={urllib.parse.quote(obfs, safe='')}")
     if sni:
         q.append(f"sni={urllib.parse.quote(sni)}")
     if insecure:

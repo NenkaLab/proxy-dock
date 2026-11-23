@@ -41,7 +41,8 @@ def client_url(p):
     if t == "shadowsocks":
         return ss_link(host, ib["port"], ib["ss_method"], ib["ss_password"], p["name"])
     if t == "hysteria2":
-        return hy2_link(host, ib["port"], ib["hy2_password"], insecure=not ib["tls_cert"], name=p["name"])
+        return hy2_link(host, ib["port"], ib["hy2_password"], insecure=not ib["tls_cert"], name=p["name"],
+                        obfs=ib.get("hy2_obfs_password", ""))
     scheme = {"socks5": "socks5", "socks4": "socks4a", "http": "http", "https": "https"}[t]
     cred = ""
     if t in ("socks5", "http", "https") and ib["auth_enabled"]:
@@ -579,6 +580,21 @@ class EditorInterface(ScrollArea):
         g2 = PushButton(_t("Generate"), v, FIF.SYNC)
         g2.clicked.connect(lambda: self.ed_in_hy.setText(_token()))
         self.r_in_hy = s_in.add(Row(_t("Hysteria2 password"), _t("At least 8 characters"), v).right(self.ed_in_hy, g2))
+        self.ed_in_obfs = PasswordLineEdit(v)
+        self.ed_in_obfs.setPlaceholderText(_t("(off)"))
+        self.ed_in_obfs.setFixedWidth(260)
+        g3 = PushButton(_t("Generate"), v, FIF.SYNC)
+        g3.clicked.connect(lambda: self.ed_in_obfs.setText(_token()))
+        self.r_in_obfs = s_in.add(Row(_t("Salamander obfuscation"), _t("Makes the traffic look like random data. Clients need the same password. Needs the sing-box engine"), v)
+                                  .right(self.ed_in_obfs, g3))
+        self.sp_in_up = SpinBox(v)
+        self.sp_in_up.setRange(0, 100000)
+        self.sp_in_up.setFixedWidth(150)
+        self.sp_in_down = SpinBox(v)
+        self.sp_in_down.setRange(0, 100000)
+        self.sp_in_down.setFixedWidth(150)
+        self.r_in_bw = s_in.add(Row(_t("Speed limit up · down (Mbps)"), _t("Upper limit per client. 0 = no limit"), v)
+                                .right(self.sp_in_up, self.sp_in_down))
         self.in_note = CaptionLabel("", v)
         self.in_note.setWordWrap(True)
         s_in.add(self.in_note)
@@ -727,6 +743,27 @@ class EditorInterface(ScrollArea):
         self.ed_out_hy = PasswordLineEdit(v)
         self.ed_out_hy.setFixedWidth(260)
         self.r_out_hy = s_out.add(Row(_t("Hysteria2 password"), "", v).right(self.ed_out_hy))
+        self.ed_out_obfs = PasswordLineEdit(v)
+        self.ed_out_obfs.setPlaceholderText(_t("(off)"))
+        self.ed_out_obfs.setFixedWidth(260)
+        self.r_out_obfs = s_out.add(Row(_t("Salamander obfuscation"), _t("Only if the server uses it (obfs-password in the link)"), v)
+                                    .right(self.ed_out_obfs))
+        self.sp_out_up = SpinBox(v)
+        self.sp_out_up.setRange(0, 100000)
+        self.sp_out_up.setFixedWidth(150)
+        self.sp_out_down = SpinBox(v)
+        self.sp_out_down.setRange(0, 100000)
+        self.sp_out_down.setFixedWidth(150)
+        self.r_out_bw = s_out.add(Row(_t("Bandwidth up · down (Mbps)"), _t("Brutal: enter your real line speed to push through lossy networks. 0 = automatic (BBR)"), v)
+                                  .right(self.sp_out_up, self.sp_out_down))
+        self.ed_out_hop = LineEdit(v)
+        self.ed_out_hop.setPlaceholderText("20000-30000")
+        self.ed_out_hop.setFixedWidth(200)
+        self.sp_out_hop = SpinBox(v)
+        self.sp_out_hop.setRange(5, 3600)
+        self.sp_out_hop.setFixedWidth(150)
+        self.r_out_hop = s_out.add(Row(_t("Port hopping · interval (s)"), _t("Ports the server listens on, e.g. 20000-30000 or 443,5000-6000. Empty = off"), v)
+                                   .right(self.ed_out_hop, self.sp_out_hop))
         # WireGuard
         b_wg_import = PushButton(_t("Import .conf…"), v, FIF.DOCUMENT)
         b_wg_import.clicked.connect(self._wg_import)
@@ -879,6 +916,9 @@ class EditorInterface(ScrollArea):
         self.cb_in_ss.setCurrentIndex(self.ss_methods.index(ib["ss_method"]))
         self.ed_in_ss_pw.setText(ib["ss_password"])
         self.ed_in_hy.setText(ib["hy2_password"])
+        self.ed_in_obfs.setText(ib["hy2_obfs_password"])
+        self.sp_in_up.setValue(ib["hy2_up_mbps"])
+        self.sp_in_down.setValue(ib["hy2_down_mbps"])
         self.cb_tun_stack.setCurrentIndex(self.tun_stacks.index(ib["tun_stack"]))
         self.sw_tun_strict.setChecked(ib["tun_strict_route"])
         self._fill_outbound(ob)
@@ -904,6 +944,11 @@ class EditorInterface(ScrollArea):
         self.cb_out_ss.setCurrentIndex(self.ss_methods.index(ob["ss_method"]))
         self.ed_out_ss_pw.setText(ob["ss_password"])
         self.ed_out_hy.setText(ob["hy2_password"])
+        self.ed_out_obfs.setText(ob["hy2_obfs_password"])
+        self.sp_out_up.setValue(ob["hy2_up_mbps"])
+        self.sp_out_down.setValue(ob["hy2_down_mbps"])
+        self.ed_out_hop.setText(ob["hy2_ports"])
+        self.sp_out_hop.setValue(ob["hy2_hop_interval"])
         self.ed_wg_key.setText(ob["wg_private_key"])
         self.ed_wg_addr.setText(ob["wg_address"])
         self.ed_wg_peer.setText(ob["wg_peer_public_key"])
@@ -1139,6 +1184,8 @@ class EditorInterface(ScrollArea):
         self.r_in_ss_method.setVisible(it == "shadowsocks")
         self.r_in_ss_pw.setVisible(it == "shadowsocks")
         self.r_in_hy.setVisible(it == "hysteria2")
+        self.r_in_obfs.setVisible(it == "hysteria2")
+        self.r_in_bw.setVisible(it == "hysteria2")
         notes = {
             "socks5": _t("The most widely used proxy. Relays both TCP and UDP (QUIC, DNS, etc.)."),
             "socks4": _t("SOCKS4/4a. TCP only, no password authentication (the user ID is ignored). Use it on this PC only."),
@@ -1180,6 +1227,8 @@ class EditorInterface(ScrollArea):
         self.r_out_ss_method.setVisible(ot == "shadowsocks")
         self.r_out_ss_pw.setVisible(ot == "shadowsocks")
         self.r_out_hy.setVisible(ot == "hysteria2")
+        for r in (self.r_out_obfs, self.r_out_bw, self.r_out_hop):
+            r.setVisible(ot == "hysteria2")
         for r in (self.r_wg_import, self.r_wg_key, self.r_wg_addr, self.r_wg_peer, self.r_wg_psk, self.r_wg_allowed, self.r_wg_mtu):
             r.setVisible(ot == "wireguard")
         out_notes = {
@@ -1189,7 +1238,7 @@ class EditorInterface(ScrollArea):
             "socks4": _t("Through an upstream SOCKS4a proxy. No UDP or IPv6 destinations."),
             "socks5": _t("Through an upstream SOCKS5 proxy (TCP). UDP cannot be sent."),
             "shadowsocks": _t("Encrypted tunnel to a remote Shadowsocks server (TCP+UDP)."),
-            "hysteria2": _t("QUIC tunnel to a remote Hysteria2 server (TCP+UDP). Bandwidth settings (Brutal), obfuscation and port hopping are not supported."),
+            "hysteria2": _t("QUIC tunnel to a remote Hysteria2 server (TCP+UDP). Bandwidth (Brutal), Salamander obfuscation and port hopping need the sing-box engine."),
             "block": _t("Refuses every connection. Connect router rules to it (e.g. ads, trackers). Needs the sing-box engine."),
             "vless": _t("VLESS tunnel (TCP+UDP) with TLS or REALITY, optionally over WebSocket/gRPC. Paste a vless:// link to fill everything in. Needs the sing-box engine."),
             "trojan": _t("Trojan tunnel over TLS (TCP+UDP), optionally over WebSocket/gRPC. Paste a trojan:// link to fill everything in. Needs the sing-box engine."),
@@ -1305,7 +1354,8 @@ class EditorInterface(ScrollArea):
                       username=self.ed_in_user.text(), password=self.ed_in_pass.text(),
                       tls_cert=self.ed_cert.text().strip(), tls_key=self.ed_key.text().strip(),
                       ss_method=self.ss_methods[self.cb_in_ss.currentIndex()], ss_password=self.ed_in_ss_pw.text().strip(),
-                      hy2_password=self.ed_in_hy.text(),
+                      hy2_password=self.ed_in_hy.text(), hy2_obfs_password=self.ed_in_obfs.text(),
+                      hy2_up_mbps=self.sp_in_up.value(), hy2_down_mbps=self.sp_in_down.value(),
                       tun_stack=self.tun_stacks[max(self.cb_tun_stack.currentIndex(), 0)],
                       tun_strict_route=self.sw_tun_strict.isChecked())
             if ib["type"] not in ("socks5", "http", "https"):
@@ -1323,6 +1373,9 @@ class EditorInterface(ScrollArea):
                              pin_sha256=self.ed_out_pin.text().strip(),
                              ss_method=self.ss_methods[self.cb_out_ss.currentIndex()],
                              ss_password=self.ed_out_ss_pw.text().strip(), hy2_password=self.ed_out_hy.text(),
+                             hy2_obfs_password=self.ed_out_obfs.text(), hy2_up_mbps=self.sp_out_up.value(),
+                             hy2_down_mbps=self.sp_out_down.value(), hy2_ports=self.ed_out_hop.text().strip(),
+                             hy2_hop_interval=self.sp_out_hop.value(),
                              bind=self.ed_out_bind.text().strip() if ot == "direct" else "",
                              interface=self._iface_value() if ot != "block" else "",
                              wg_private_key=self.ed_wg_key.text().strip(), wg_address=self.ed_wg_addr.text().strip(),

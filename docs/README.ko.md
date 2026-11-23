@@ -109,7 +109,7 @@ macOS 빌드는 아직 실제 Mac 에서 확인하지 않았습니다.
   Python 엔진으로 실행됩니다(sing-box 1.15 필요). IP당 연결 제한은 넘친 연결을 나중에 끊는 방식이고,
   유휴 시간 제한은 UDP에만 적용되며, '연결 종료 상세 기록'은 지원하지 않습니다.
 - Python 엔진: Hysteria2 는 다른 내보내는 쪽을 *거쳐* 나갈 수 없고, 체인으로 이은 내보내는 쪽으로는 UDP 를 보내지 않으며,
-  Hysteria2(aioquic)는 약 100 Mbps 수준입니다. 두 엔진 모두 Hysteria2 대역폭 지정(Brutal), Salamander, 포트 호핑은 지원하지 않습니다.
+  Hysteria2(aioquic)는 약 100 Mbps 수준입니다. Hysteria2 대역폭 지정(Brutal), Salamander, 포트 호핑은 sing-box 엔진이 필요합니다. 포트 범위로 받는 서버는 그 서버에서 포트 전달 설정이 필요합니다(ProxyDock이 설정하지 않음).
 - 공식 Hysteria2 서버(이름을 확인하는 다른 서버도)는 인증서와 다른 SNI를 거부합니다. 내보내는 쪽이 IP를 쓴다면 SNI 칸 옆의 **서버에서 감지**를 눌러 인증서의 이름을 넣으세요.
 - HTTP 받는 쪽의 일반(비 CONNECT) 요청은 연결당 요청 하나만 처리합니다.
 - SOCKS4 는 프로토콜에 비밀번호 인증이 없으므로 이 PC 에서만 쓰세요.
