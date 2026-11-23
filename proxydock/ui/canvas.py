@@ -14,14 +14,17 @@ from NodeGraphQt.constants import PipeEnum, PortEnum
 from NodeGraphQt.qgraphics.node_abstract import AbstractNodeItem
 from NodeGraphQt.qgraphics.node_base import NodeItem
 from NodeGraphQt.qgraphics.port import PortItem
-from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, Qt, QTimer
+from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import (
-    QColor, QFontMetrics, QIcon, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QShortcut,
+    QColor, QFont, QFontMetrics, QIcon, QKeyEvent, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QPolygonF,
+    QShortcut, QTextCursor, QTextOption,
 )
-from PySide6.QtWidgets import QGraphicsItem, QGraphicsPathItem, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QApplication, QGraphicsItem, QGraphicsPathItem, QGraphicsTextItem, QHBoxLayout, QLabel, QVBoxLayout, QWidget,
+)
 from qfluentwidgets import (
-    Action, CaptionLabel, DropDownPushButton, FluentIcon as FIF, PrimaryDropDownPushButton, PushButton, RoundMenu,
-    TitleLabel, isDarkTheme, qconfig,
+    Action, CaptionLabel, CommandBar, FluentIcon as FIF, RoundMenu, TitleLabel, TransparentDropDownPushButton,
+    isDarkTheme, qconfig,
 )
 
 from ..common import INBOUND_TYPES, host_port
@@ -219,6 +222,7 @@ class BlockItem(NodeItem):
         self.swatch_mixed = False   # swatch_fill is a mix of incoming colours
         self.on_swatch = None
         self.out_swatches = []      # [{"key", "own", "fill", "mixed", "on_click", "tip"}] (instead of the block swatch)
+        self.badge = None           # (text, "#rrggbb", tooltip): a small label left of the swatches (latency)
 
     def swatch_rect(self, k=0):
         """The k-th swatch from the right."""
@@ -234,8 +238,40 @@ class BlockItem(NodeItem):
             return []
         return [(self.swatch_rect(), self.swatch, self.swatch_fill, self.swatch_mixed, self.on_swatch, "")]
 
+    BADGE_FONT = 7.5
+
+    def badge_rect(self):
+        if not self.badge:
+            return None
+        font = QFont(self.scene().font() if self.scene() else QFont())
+        font.setPointSizeF(self.BADGE_FONT)
+        w = QFontMetrics(font).horizontalAdvance(self.badge[0]) + 10
+        right = self._width - (self.SWATCH + 5) * len(self.swatches()) - 6
+        return QRectF(right - w, 4.5, w, 14)
+
+    def _paint_badge(self, painter):
+        r = self.badge_rect()
+        if r is None:
+            return
+        text, color = self.badge[0], QColor(self.badge[1])
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        fill = QColor(color)
+        fill.setAlpha(60)
+        painter.setBrush(fill)
+        painter.setPen(QPen(color, 1.0))
+        painter.drawRoundedRect(r, 7, 7)
+        font = painter.font()
+        font.setPointSizeF(self.BADGE_FONT)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.setPen(QColor(255, 255, 255))
+        painter.drawText(r, Qt.AlignCenter, text)
+        painter.restore()
+
     def paint(self, painter, option, widget):
         super().paint(painter, option, widget)
+        self._paint_badge(painter)
         sw = self.swatches()
         if not sw:
             return
@@ -265,9 +301,11 @@ class BlockItem(NodeItem):
 
     def hoverMoveEvent(self, event):
         hit = self.swatch_at(event.pos())
+        from PySide6.QtWidgets import QToolTip
         if hit is not None and hit[5]:
-            from PySide6.QtWidgets import QToolTip
             QToolTip.showText(event.screenPos(), hit[5])
+        elif self.badge and self.badge[2] and self.badge_rect().contains(event.pos()):
+            QToolTip.showText(event.screenPos(), self.badge[2])
         super().hoverMoveEvent(event)
 
 
@@ -518,35 +556,105 @@ class RelayNode(BaseNode):
         super().__init__(RelayItem)
 
 
+class NumberEdit(QGraphicsTextItem):
+    """Inline editor over a wireless block's number: Enter or clicking away applies, Esc cancels."""
+
+    def __init__(self, text, font, rect, on_done, parent):
+        super().__init__(text, parent)
+        self.on_done = on_done
+        self.finished = False
+        self.setFont(font)
+        self.setDefaultTextColor(QColor(255, 255, 255))
+        self.setTextInteractionFlags(Qt.TextEditorInteraction)
+        self.document().setDocumentMargin(1)
+        self.setTextWidth(rect.width())
+        self.document().setDefaultTextOption(QTextOption(Qt.AlignCenter))
+        self.setPos(rect.left(), rect.center().y() - self.boundingRect().height() / 2)
+        self.setZValue(5)
+
+    def start(self):
+        self.setFocus(Qt.MouseFocusReason)
+        cursor = self.textCursor()
+        cursor.select(QTextCursor.Document)
+        self.setTextCursor(cursor)
+
+    def paint(self, painter, option, widget):
+        painter.save()
+        painter.setPen(QPen(QColor(108, 203, 95), 1.4))
+        painter.setBrush(QColor(0, 0, 0, 110))
+        painter.drawRoundedRect(self.boundingRect(), 3, 3)
+        painter.restore()
+        super().paint(painter, option, widget)
+
+    def _finish(self, apply):
+        if self.finished:
+            return
+        self.finished = True
+        text = self.toPlainText().strip().lstrip("#").strip()
+        cb = self.on_done
+        QTimer.singleShot(0, lambda: cb(text if apply else None))      # (the canvas may be redrawn: leave first)
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            self._finish(True)
+            return
+        if event.key() == Qt.Key_Escape:
+            self._finish(False)
+            return
+        super().keyPressEvent(event)
+
+    def focusOutEvent(self, event):
+        super().focusOutEvent(event)
+        self._finish(True)
+
+
 class WirelessItem(BlockItem):
-    """One half of a wireless pair: the pair's name in large type and, under it, where the traffic comes from or
-    goes. A half whose partner was deleted is drawn greyed out with a dashed amber border."""
+    """One half of a wireless pair: its title on the title bar, the pair's number in large type (double-click it to
+    change it) and, under it, where the traffic comes from or goes. A half whose partner was deleted is drawn greyed
+    out with a dashed amber border."""
     MIN_W, MIN_H = 170.0, 76.0
 
     def __init__(self, name="node", parent=None):
         super().__init__(name, parent)
-        self.pair_name = ""
+        self.pair_name = ""         # "#3"
         self.info_text = ""
         self.broken = False
         self.on_moved = None        # callback while the block is dragged (the pair's arc follows)
+        self.on_number = None       # callback(text, or None if cancelled) after the number was edited
+        self.number_edit = None
         self.setFlag(QGraphicsItem.ItemSendsGeometryChanges, True)
 
     def _calc_size_horizontal(self):
         w, h = super()._calc_size_horizontal()
         return max(w, self.MIN_W), max(h, self.MIN_H)
 
+    def _body(self):
+        r = self.boundingRect()
+        return QRectF(r.left() + 14, r.top() + 22, r.width() - 28, r.height() - 26)
+
+    def number_rect(self):
+        b = self._body()
+        return QRectF(b.left() + b.width() * 0.25, b.top(), b.width() * 0.5, 28)
+
+    def _number_font(self):
+        font = self.scene().font() if self.scene() else QFont()
+        font.setPointSizeF(15)
+        font.setBold(True)
+        return font
+
     def paint(self, painter, option, widget):
         super().paint(painter, option, widget)
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing, True)
         r = self.boundingRect()
-        body = QRectF(r.left() + 14, r.top() + 22, r.width() - 28, r.height() - 26)
+        body = self._body()
         font = painter.font()
         font.setPointSizeF(15)
         font.setBold(True)
         painter.setFont(font)
         painter.setPen(QColor(150, 150, 150) if self.broken else QColor(240, 240, 240))
-        painter.drawText(QRectF(body.left(), body.top(), body.width(), 28), Qt.AlignCenter, self.pair_name)
+        if self.number_edit is None:
+            painter.drawText(QRectF(body.left(), body.top(), body.width(), 28), Qt.AlignCenter, self.pair_name)
         font.setPointSizeF(8)
         font.setBold(False)
         painter.setFont(font)
@@ -564,6 +672,29 @@ class WirelessItem(BlockItem):
         if change == QGraphicsItem.ItemPositionHasChanged and self.on_moved:
             self.on_moved()
         return out
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.LeftButton and self.on_number and self.number_rect().contains(event.pos()):
+            event.accept()
+            self.edit_number()
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def edit_number(self):
+        """Open the inline editor over the number."""
+        if self.number_edit is not None or self.on_number is None:
+            return
+
+        def done(text):
+            edit, self.number_edit = self.number_edit, None
+            if edit is not None and edit.scene() is not None:
+                edit.scene().removeItem(edit)
+            self.update()
+            if self.on_number:
+                self.on_number(text)
+        self.number_edit = NumberEdit(self.pair_name.lstrip("#"), self._number_font(), self.number_rect(), done, self)
+        self.update()
+        self.number_edit.start()
 
 
 class WirelessInNode(BaseNode):
@@ -614,6 +745,33 @@ def _line(color, text):
 NAV_KEYS = (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down)
 
 
+class AddButton(TransparentDropDownPushButton):
+    """Toolbar 'Add ...' drop-down that can shrink to its icon (compact); the button places its icon from its
+    minimum width, so a compact one reports the compact width."""
+    COMPACT_W = 52
+    compact = False
+    full_text = None
+    # (no __init__ of its own: qfluentwidgets buttons call __init__ again with other arguments)
+
+    def set_compact(self, compact):
+        if self.full_text is None:
+            self.full_text = self.text()
+            self.setToolTip(self.full_text)
+        self.compact = compact
+        self.setText("" if compact else self.full_text)
+        if compact:
+            self.setFixedWidth(self.COMPACT_W)
+        else:
+            self.setMinimumWidth(0)
+            self.setMaximumWidth(16777215)
+            self.adjustSize()
+
+    def minimumSizeHint(self):
+        if self.compact:
+            return QSize(self.COMPACT_W, super().minimumSizeHint().height())
+        return super().minimumSizeHint()
+
+
 class _ViewerFilter(QObject):
     """Right-click on the canvas: our own (Fluent) menu instead of NodeGraphQt's. Arrow keys walk the links."""
 
@@ -627,11 +785,24 @@ class _ViewerFilter(QObject):
             return True
         if event.type() == QEvent.KeyPress and event.key() in NAV_KEYS and event.modifiers() in (
                 Qt.NoModifier, Qt.KeypadModifier):
-            from PySide6.QtWidgets import QGraphicsProxyWidget, QGraphicsTextItem
-            focus = obj.scene().focusItem() if obj.scene() else None
-            if isinstance(focus, (QGraphicsTextItem, QGraphicsProxyWidget)):
-                return False        # typing in a title or a widget inside a block: its own keys
+            if self._typing(obj):
+                return False        # editing a title or a text field inside a block: its own keys
             return self.page.nav_key(event.key())
+        return False
+
+    @staticmethod
+    def _typing(viewer):
+        """True while a block title or a text input inside a block is being edited. (Clicking a block's body
+        only focuses its read-only info text: the arrows still walk the links then.)"""
+        from PySide6.QtWidgets import (
+            QAbstractSpinBox, QComboBox, QGraphicsProxyWidget, QGraphicsTextItem, QLineEdit, QPlainTextEdit, QTextEdit,
+        )
+        focus = viewer.scene().focusItem() if viewer.scene() else None
+        if isinstance(focus, QGraphicsTextItem):
+            return bool(focus.textInteractionFlags() & Qt.TextEditable)
+        if isinstance(focus, QGraphicsProxyWidget) and focus.widget() is not None:
+            w = focus.widget().focusWidget() or focus.widget()
+            return isinstance(w, (QLineEdit, QAbstractSpinBox, QComboBox, QTextEdit, QPlainTextEdit))
         return False
 
 
@@ -661,7 +832,7 @@ class CanvasInterface(QWidget):
         self.graph.port_disconnected.connect(self._on_disconnected)
         self.graph.node_double_clicked.connect(self._on_double_clicked)
         self.graph.node_selection_changed.connect(lambda *_: self._on_selection())
-        self.graph.property_changed.connect(self._on_property_changed)
+        self.graph.viewer().node_name_changed.connect(self._on_title_edited)
         self._focus = None          # wireless pair shown (the rest faded, an arc between its halves)
         self._arc = None
         self._nav = None            # ([NodeGraphQt node id, ...], index): the choices of the last arrow step
@@ -673,16 +844,19 @@ class CanvasInterface(QWidget):
         QShortcut(QKeySequence.Delete, viewer, activated=self.delete_selected)
 
         title = TitleLabel(_t("Canvas"), self)
-        self.btn_in = PrimaryDropDownPushButton(FIF.ADD, _t("Add inbound"), self)
+        # "Add ..." drop-downs: the first group of the toolbar
+        self.btn_in = AddButton(FIF.ADD, _t("Add inbound"), self)
         self.btn_in.setMenu(self._inbound_menu())
-        self.btn_out = DropDownPushButton(FIF.SEND, _t("Add outbound"), self)
+        self.btn_out = AddButton(FIF.SEND, _t("Add outbound"), self)
         self.btn_out.setMenu(self._outbound_menu())
-        self.btn_router = DropDownPushButton(FIF.SHARE, _t("Add router"), self)
+        self.btn_router = AddButton(FIF.SHARE, _t("Add router"), self)
         self.btn_router.setMenu(self._router_menu())
-        self.btn_fit = PushButton(_t("Fit"), self, FIF.ZOOM)
-        self.btn_fit.clicked.connect(self.fit)
-        self.btn_stop = PushButton(_t("Stop all"), self, FIF.PAUSE)
-        self.btn_stop.clicked.connect(ctl.stop_all)
+        self._build_toolbar()
+        for keys, fn in ((QKeySequence.Undo, ctl.undo), (QKeySequence.Redo, ctl.redo),
+                         (QKeySequence("Ctrl+Shift+Z"), ctl.redo), (QKeySequence("F2"), self.rename_selected),
+                         (QKeySequence("Ctrl+D"), self.duplicate_selected)):
+            QShortcut(QKeySequence(keys), self, activated=lambda fn=fn, k=keys: self._undo_key(fn, k),
+                      context=Qt.WidgetWithChildrenShortcut)
         hint = CaptionLabel(_t("Drag from an inbound's output to an outbound block, to another inbound (relay) or to the PC. "
                                "Double-click a block to edit it, right-click for more, Delete removes the selection.") + " "
                            + _t("An outbound's 'via' output chains it through another outbound.") + " "
@@ -696,20 +870,23 @@ class CanvasInterface(QWidget):
         header = QHBoxLayout()
         header.addWidget(title)
         header.addStretch(1)
-        for b in (self.btn_fit, self.btn_stop, self.btn_router, self.btn_out, self.btn_in):
-            header.addWidget(b)
+        header.addWidget(self.status_label, 0, Qt.AlignBottom | Qt.AlignRight)     # what is selected / progress
+        self.sync_undo(ctl.can_undo(), ctl.can_redo())
         root = QVBoxLayout(self)
         root.setContentsMargins(36, 20, 36, 20)
         root.setSpacing(10)
         root.addLayout(header)
         root.addWidget(hint)
         root.addWidget(self.pc_bar)
+        root.addWidget(self.toolbar)
         root.addWidget(self.graph.widget, 1)
+        self.sync_toolbar()
         self._apply_theme()
         qconfig.themeChanged.connect(self._on_theme_changed)
 
     def _on_theme_changed(self, *_):
         self._apply_theme()
+        self._redo_icon()
 
     # --- menus ---
     def _inbound_menu(self, pos=None, parent=None):
@@ -774,7 +951,8 @@ class CanvasInterface(QWidget):
             if item is not None:
                 node = self.graph.get_node_by_id(item.id)
                 break
-        if node is not None and port_item is not None and self._port_color_menu(node, port_item, global_pos):
+        if node is not None and port_item is not None and (self._port_color_menu(node, port_item, global_pos)
+                                                           or self._lane_menu(node, port_item, global_pos)):
             return
         menu = RoundMenu(parent=self)
         p = [scene_pos.x(), scene_pos.y()]
@@ -785,7 +963,17 @@ class CanvasInterface(QWidget):
             menu.addSeparator()
             fit = Action(FIF.ZOOM, _t("Fit"), menu)
             fit.triggered.connect(self.fit)
-            menu.addAction(fit)
+            lat = Action(FIF.SPEED_HIGH, _t("Test latency"), menu)
+            lat.triggered.connect(lambda: self.ctl.test_latency())
+            undo = Action(FIF.RETURN, _t("Undo"), menu)
+            undo.triggered.connect(self.ctl.undo)
+            undo.setEnabled(self.ctl.can_undo())
+            redo = Action(self.btn_redo.icon(), _t("Redo"), menu)
+            redo.triggered.connect(self.ctl.redo)
+            redo.setEnabled(self.ctl.can_redo())
+            menu.addActions([fit, lat])
+            menu.addSeparator()
+            menu.addActions([undo, redo])
         elif split_mid(self.mid_of.get(node.id))[1]:
             self._wireless_menu(menu, *split_mid(self.mid_of.get(node.id)))
         else:
@@ -824,6 +1012,11 @@ class CanvasInterface(QWidget):
                         add_out = Action(FIF.ADD, _t("Add an output lane"), menu)
                         add_out.triggered.connect(lambda: self.ctl.add_lane(mid, "outputs"))
                         menu.addAction(add_out)
+                    menu.addMenu(self._remove_lane_menu(gn, menu))
+                if kind == "outbound" and gn["outbound"]["type"] != "block":
+                    lat = Action(FIF.SPEED_HIGH, _t("Test latency"), menu)
+                    lat.triggered.connect(lambda: self.ctl.test_latency([mid]))
+                    menu.addAction(lat)
                 if self.outputs_of(mid):
                     menu.addMenu(self._output_colors_menu(mid, menu))
                 if kind == "outbound" and gn["via"]:
@@ -938,6 +1131,7 @@ class CanvasInterface(QWidget):
     # --- wireless pair focus: the other blocks fade and an arc joins the two halves ---
     def _on_selection(self):
         from .. import graph as graph_mod
+        self.sync_toolbar()
         pair = None
         for n in self.graph.selected_nodes():
             rid, half = split_mid(self.mid_of.get(n.id))
@@ -1002,7 +1196,7 @@ class CanvasInterface(QWidget):
         self._focus = None
 
     def _port_color_menu(self, node, port_item, global_pos):
-        """Right-click on an output of a router / IF / pass-through: that output's colour. True if shown."""
+        """Right-click on an output of a router / IF: that output's colour. True if shown."""
         mid = split_mid(self.mid_of.get(node.id))[0]
         port = next((p for p in node.output_ports() if p.view is port_item), None)
         if port is None or not mid:
@@ -1014,8 +1208,48 @@ class CanvasInterface(QWidget):
         self.output_color_menu(mid, key, global_pos, _t("Link colour") + " · " + label)
         return True
 
+    def _remove_lane_menu(self, r, parent):
+        """'Remove a lane' submenu of pass-through r: straight = lane n (both sides), routed = each input and output."""
+        menu = RoundMenu(_t("Remove a lane"), parent)
+        menu.setIcon(FIF.REMOVE.icon())
+        if r["routed"]:
+            items = [(x["id"], _t("Input {n}").format(n=i + 1)) for i, x in enumerate(r["inputs"])] + \
+                    [(x["id"], _t("Output {n}").format(n=i + 1)) for i, x in enumerate(r["outputs"])]
+        else:
+            items = [(x["id"], _t("Lane {n}").format(n=i + 1)) for i, x in enumerate(r["inputs"])]
+        for lane_id, label in items:
+            a = Action(label, menu)
+            a.triggered.connect(lambda _=False, lid=lane_id: self.ctl.remove_lane(r["id"], lid))
+            menu.addAction(a)
+        return menu
+
+    def _lane_menu(self, node, port_item, global_pos):
+        """Right-click on a pass-through lane (port): remove it. True if shown."""
+        from .. import graph as graph_mod
+        mid = self.mid_of.get(node.id)
+        kind, r = graph_mod.find(self.ctl.graph, mid)
+        if kind != "relay" or r.get("wireless"):
+            return False
+        port = next((p for p in node.input_ports() + node.output_ports() if p.view is port_item), None)
+        if port is None:
+            return False
+        lane = self.in_lane_of.get((node.id, port.name())) or self.out_lane_of.get((node.id, port.name()))
+        if lane is None:
+            return False
+        menu = RoundMenu(parent=self)
+        a = Action(FIF.REMOVE, _t("Remove this lane"), menu)
+        a.triggered.connect(lambda: self.ctl.remove_lane(mid, lane))
+        a.setEnabled(len(r["inputs" if lane in {x["id"] for x in r["inputs"]} else "outputs"]) > 1)
+        menu.addAction(a)
+        menu.exec(global_pos)
+        return True
+
     def delete_selected(self):
         from .. import graph as graph_mod
+        viewer = self.graph.viewer()
+        if _ViewerFilter._typing(viewer):           # (the Delete shortcut caught a key meant for the text)
+            QApplication.sendEvent(viewer.scene(), QKeyEvent(QEvent.KeyPress, Qt.Key_Delete, Qt.NoModifier))
+            return
         ids, halves = [], {}
         for n in self.graph.selected_nodes():
             rid, half = split_mid(self.mid_of.get(n.id))
@@ -1044,6 +1278,250 @@ class CanvasInterface(QWidget):
         self.graph.fit_to_selection()
         self.graph.clear_selection()
 
+    # --- toolbar: like a document editor's, the block actions light up for the selection ---
+    def _build_toolbar(self):
+        ctl = self.ctl
+        bar = self.toolbar = CommandBar(self)
+        bar.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        bar.setButtonTight(True)        # (icon buttons as narrow as the icon: everything fits in one row)
+
+        def act(icon, text, fn, keys=""):
+            a = Action(icon, text, bar)
+            a.setToolTip(text + (f" ({keys})" if keys else ""))
+            a.triggered.connect(fn)
+            return a
+        self.btn_undo = act(QIcon(), _t("Undo"), ctl.undo, "Ctrl+Z")
+        self.btn_redo = act(QIcon(), _t("Redo"), ctl.redo, "Ctrl+Y")
+        self._redo_icon()
+        self.act_edit = act(FIF.EDIT, _t("Edit"), self.edit_selected, _t("double-click"))
+        self.act_rename = act(FIF.LABEL, _t("Rename"), self.rename_selected, "F2")
+        self.act_duplicate = act(FIF.COPY, _t("Duplicate"), self.duplicate_selected, "Ctrl+D")
+        self.act_delete = act(FIF.DELETE, _t("Delete"), self.delete_selected, "Delete")
+        self.act_unlink = act(FIF.REMOVE_FROM, _t("Disconnect all links"), self.disconnect_selected)
+        self.act_run = act(FIF.PLAY, _t("Run"), self.toggle_selected)
+        self.act_prev = act(FIF.LEFT_ARROW, _t("Previous block (linking into it)"), lambda: self.nav_key(Qt.Key_Left), "←")
+        self.act_next = act(FIF.RIGHT_ARROW, _t("Next block (it links to)"), lambda: self.nav_key(Qt.Key_Right), "→")
+        self.act_up = act(FIF.UP, _t("Other choice above"), lambda: self.nav_key(Qt.Key_Up), "↑")
+        self.act_down = act(FIF.DOWN, _t("Other choice below"), lambda: self.nav_key(Qt.Key_Down), "↓")
+        self.btn_latency = act(FIF.SPEED_HIGH, _t("Test latency"), self.latency_selected)
+        self.btn_fit = act(FIF.ZOOM, _t("Fit"), self.fit_view)
+        self.btn_stop = act(FIF.PAUSE, _t("Stop all"), ctl.stop_all)
+        self._add_buttons = (self.btn_in, self.btn_out, self.btn_router)
+        for b in self._add_buttons:
+            b.set_compact(False)        # (remembers the name, sets it as the tooltip)
+        self._add_full_w = sum(b.width() for b in self._add_buttons)
+        self._compact = False
+        for b in self._add_buttons:
+            bar.addWidget(b)
+        bar.addSeparator()
+        for group in ((self.btn_undo, self.btn_redo),
+                      (self.act_edit, self.act_rename, self.act_duplicate, self.act_delete, self.act_unlink, self.act_run),
+                      (self.act_prev, self.act_next, self.act_up, self.act_down),
+                      (self.btn_latency, self.btn_fit, self.btn_stop)):
+            if bar.actions():
+                bar.addSeparator()
+            bar.addActions(list(group))
+        self.status_label = CaptionLabel("", self)
+        self.status_label.setTextColor(QColor(96, 96, 96), QColor(170, 170, 170))
+
+    @staticmethod
+    def _curved_arrow(redo):
+        """Undo / redo icon: a curved arrow (Fluent has none); drawn in the theme's text colour."""
+        size = 64
+        color = QColor(255, 255, 255) if isDarkTheme() else QColor(32, 32, 32)
+        icon = QIcon()
+        for mode, alpha in ((QIcon.Normal, 230), (QIcon.Disabled, 80)):
+            pm = QPixmap(size, size)
+            pm.fill(Qt.transparent)
+            p = QPainter(pm)
+            p.setRenderHint(QPainter.Antialiasing, True)
+            if redo:
+                p.translate(size, 0)
+                p.scale(-1, 1)
+            c = QColor(color)
+            c.setAlpha(alpha)
+            p.setPen(QPen(c, 5.5, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            path = QPainterPath(QPointF(16, 26))          # hook from the left, round over the top, down the right
+            path.cubicTo(QPointF(26, 14), QPointF(48, 14), QPointF(52, 32))
+            path.cubicTo(QPointF(55, 44), QPointF(46, 52), QPointF(34, 52))
+            p.drawPath(path)
+            p.setBrush(c)
+            p.setPen(Qt.NoPen)
+            p.drawPolygon(QPolygonF([QPointF(8, 30), QPointF(22, 12), QPointF(26, 34)]))
+            p.end()
+            icon.addPixmap(pm, mode)
+        return icon
+
+    def _fit_toolbar(self):
+        """The 'Add ...' buttons show their names when the toolbar has room for them and every other button,
+        else only their icons (the name stays as the tooltip)."""
+        bar = self.toolbar
+        others = bar.suitableWidth() - sum(b.width() for b in self._add_buttons)
+        compact = others + self._add_full_w > bar.width()
+        if compact == self._compact:
+            return
+        self._compact = compact
+        for b in self._add_buttons:
+            b.set_compact(compact)
+        bar.updateGeometry()
+        bar.update()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        QTimer.singleShot(0, self._fit_toolbar)
+
+    def _redo_icon(self):
+        """(Re)draw the undo / redo icons, e.g. after the theme changed."""
+        self.btn_undo.setIcon(self._curved_arrow(False))
+        self.btn_redo.setIcon(self._curved_arrow(True))
+
+    def _selection(self):
+        """[(canvas id, model id, half)] of the selected blocks."""
+        out = []
+        for n in self.graph.selected_nodes():
+            mid = self.mid_of.get(n.id)
+            if mid:
+                out.append((mid,) + split_mid(mid))
+        return out
+
+    def sync_toolbar(self):
+        """Enable what the selection allows (nothing selected: only undo / redo, latency, fit, stop all)."""
+        from .. import graph as graph_mod
+        sel = self._selection()
+        blocks = [x for x in sel if x[0] != PC_ID]
+        one = sel[0] if len(sel) == 1 else None
+        kind = graph_mod.find(self.ctl.graph, one[1])[0] if one and one[0] != PC_ID else None
+        self.act_edit.setEnabled(kind is not None)
+        self.act_rename.setEnabled(kind is not None)
+        self.act_duplicate.setEnabled(bool(blocks))
+        self.act_delete.setEnabled(bool(blocks))
+        self.act_unlink.setEnabled(bool(sel))
+        running = kind == "inbound" and self.ctl.manager.state(one[1])[0] in ("running", "starting")
+        self.act_run.setEnabled(kind == "inbound")
+        self.act_run.setIcon(FIF.PAUSE if running else FIF.PLAY)
+        self.act_run.setText(_t("Stop") if running else _t("Run"))
+        self.act_run.setToolTip(self.act_run.text())
+        node = self.graph.get_node_by_id(self.node_of[one[0]].id) if one and one[0] in self.node_of else None
+        self.act_prev.setEnabled(node is not None and bool(self.neighbours(node, False)))
+        self.act_next.setEnabled(node is not None and bool(self.neighbours(node, True)))
+        choices = node is not None and self._nav is not None and node.id in self._nav[0] and len(self._nav[0]) > 1
+        self.act_up.setEnabled(choices)
+        self.act_down.setEnabled(choices)
+        outs = [x for x in blocks if graph_mod.find(self.ctl.graph, x[1])[0] == "outbound"]
+        if not self.ctl.latency_busy:
+            self.btn_latency.setToolTip(_t("Measure the selected outbound blocks") if outs else
+                                        _t("Measure every outbound block (an HTTPS request through it)"))
+        if self.ctl.latency_busy:
+            pass                            # (latency_progress shows the progress)
+        elif one:
+            title = self.node_of[one[0]].view.name if one[0] in self.node_of else ""
+            self.status_label.setText(_t("Selected: {name}").format(name=title))
+        elif sel:
+            self.status_label.setText(_t("{n} blocks selected").format(n=len(sel)))
+        else:
+            self.status_label.setText("")
+
+    def _one(self):
+        sel = self._selection()
+        return sel[0] if len(sel) == 1 and sel[0][0] != PC_ID else None
+
+    def edit_selected(self):
+        one = self._one()
+        if one:
+            self.ctl.edit_node(one[1])
+
+    def rename_selected(self):
+        """Edit the selected block's title right on its title bar (Enter applies, Esc cancels)."""
+        one = self._one()
+        node = self.node_of.get(one[0]) if one else None
+        if node is None:
+            return
+        text = node.view._text_item
+        text.set_editable(True)
+        text.setFocus(Qt.OtherFocusReason)
+        cursor = text.textCursor()
+        cursor.select(QTextCursor.Document)
+        text.setTextCursor(cursor)
+
+    def duplicate_selected(self):
+        ids = []
+        for _, mid, _ in self._selection():
+            if mid != PC_ID and mid not in ids:
+                ids.append(mid)
+        for mid in ids:                 # (one turn of the event loop: one undo step)
+            self.ctl.duplicate_node(mid)
+
+    def disconnect_selected(self):
+        self.ctl.disconnect_all([(mid, half) for _, mid, half in self._selection()])
+
+    def toggle_selected(self):
+        one = self._one()
+        if one:
+            running = self.ctl.manager.state(one[1])[0] in ("running", "starting")
+            self.ctl.toggle_proxy(one[1], not running)
+            QTimer.singleShot(300, self.sync_toolbar)
+
+    def latency_selected(self):
+        """Measure the selected outbound blocks, or all of them when none is selected."""
+        from .. import graph as graph_mod
+        ids = [mid for _, mid, _ in self._selection() if graph_mod.find(self.ctl.graph, mid)[0] == "outbound"
+               and graph_mod.find(self.ctl.graph, mid)[1]["outbound"]["type"] != "block"]
+        self.ctl.test_latency(ids or None)
+
+    def fit_view(self):
+        """Fit the selection, or everything when nothing is selected."""
+        if self.graph.selected_nodes():
+            self.graph.fit_to_selection()
+        else:
+            self.fit()
+
+    def sync_undo(self, can_undo, can_redo):
+        self.btn_undo.setEnabled(can_undo)
+        self.btn_redo.setEnabled(can_redo)
+
+    def _undo_key(self, fn, keys):
+        """Ctrl+Z / Ctrl+Y: undo / redo the last change, or the typing while a title or number is being edited."""
+        viewer = self.graph.viewer()
+        if _ViewerFilter._typing(viewer):
+            seq = QKeySequence(keys)[0]
+            QApplication.sendEvent(viewer.scene(), QKeyEvent(QEvent.KeyPress, seq.key(), seq.keyboardModifiers()))
+            return
+        fn()
+
+    # --- latency badges on outbound blocks ---
+    def latency_progress(self, done, total):
+        """done/total while a latency test runs, (None, None) when it is over."""
+        if done is None:
+            self.btn_latency.setEnabled(True)
+            self.sync_toolbar()
+        else:
+            self.btn_latency.setEnabled(False)
+            self.status_label.setText(_t("Testing… {done}/{total}").format(done=done, total=total))
+
+    def update_latency(self):
+        """Badges from ctl.latency: green / amber / red by time, ✕ when the block did not respond, … while testing.
+        A result is shown only while the block (and its chain) is unchanged."""
+        from .. import probe
+        cg = self.ctl.graph
+        for n in cg["outbounds"]:
+            node = self.node_of.get(n["id"])
+            if node is None:
+                continue
+            res = self.ctl.latency.get(n["id"])
+            if n["id"] in self.ctl.latency_busy:
+                badge = ("…", "#9AA0A6", _t("Testing…"))
+            elif res is None or res["key"] != probe.latency_key(cg, n["id"]):
+                badge = None
+            elif res["ok"]:
+                ms = res["ms"]
+                badge = (f"{ms} ms", "#3FA34D" if ms < 400 else "#D9A21B" if ms < 1000 else "#E5534B",
+                         _t("HTTPS request through this block took {ms} ms").format(ms=ms))
+            else:
+                badge = ("✕", "#E5534B", _t("Not responding: {error}").format(error=res["error"] or "-"))
+            if node.view.badge != badge:
+                node.view.badge = badge
+                node.view.update()
+
     def _apply_theme(self):
         dark = isDarkTheme()
         if dark:
@@ -1065,7 +1543,7 @@ class CanvasInterface(QWidget):
                             n.get("color"), n.get("default_color")] for n in graph.get("routers", [])] +
                           [[n["id"], n["name"], n["routed"], [[x["id"], x["gap"], x["out"]] for x in n["inputs"]],
                             [[x["id"], x["gap"], x["target"], x.get("color")] for x in n["outputs"]], n.get("color"),
-                            n.get("wireless"), n.get("broken")]
+                            n.get("wireless"), n.get("broken"), n.get("number"), n.get("name_out")]
                            for n in graph.get("relays", [])] +
                           [graph["pc"]["inbound"]])
 
@@ -1087,16 +1565,21 @@ class CanvasInterface(QWidget):
             self.node_of, self.mid_of, self.rule_of = {}, {}, {}
             self.in_lane_of, self.out_lane_of, self.lane_port = {}, {}, {}
 
-            def make(kind, mid, name, pos, color):
-                node = g.create_node(f"proxydock.{kind}", name=name, pos=list(pos), color=color,
+            def make(kind, mid, title, pos, color):
+                # NodeGraphQt keeps node names unique and would quietly add " 1" to a repeated one: every node is
+                # named by its canvas id instead, and only the title bar shows the block's title
+                node = g.create_node(f"proxydock.{kind}", name=mid, pos=list(pos), color=color,
                                      text_color=(235, 235, 235), selected=False, push_undo=False)
+                node.view.name = title
+                node.view.draw_node()
                 self.node_of[mid] = node
                 self.mid_of[node.id] = mid
                 if mid != PC_ID:
                     model = split_mid(mid)[0]
-                    _, gn = graph_mod.find(graph, model)
+                    gkind, gn = graph_mod.find(graph, model)
                     node.view.swatch = gn.get("color", "") if gn else ""
-                    node.view.on_swatch = lambda at, mid=model: self.color_menu(mid, at)
+                    if gkind != "relay":    # (a pass-through's lanes follow what comes in: no colour to pick)
+                        node.view.on_swatch = lambda at, mid=model: self.color_menu(mid, at)
                 return node
 
             from .. import graph as graph_mod
@@ -1137,14 +1620,14 @@ class CanvasInterface(QWidget):
                 if r.get("wireless"):
                     broken = r.get("broken")
                     for half, kind, title, pos in (
-                            ("in", "WirelessInNode", _t("Wireless in · {name}"), r["pos"]),
-                            ("out", "WirelessOutNode", _t("Wireless out · {name}"), r.get("pos_out", r["pos"]))):
+                            ("in", "WirelessInNode", r["name"], r["pos"]),
+                            ("out", "WirelessOutNode", r.get("name_out", ""), r.get("pos_out", r["pos"]))):
                         if broken == half:
                             continue
-                        node = make(kind, f"{r['id']}~{half}", title.format(name=r["name"]), pos,
-                                    BROKEN_COLOR if broken else WIRELESS_COLOR)
+                        node = make(kind, f"{r['id']}~{half}", title, pos, BROKEN_COLOR if broken else WIRELESS_COLOR)
                         item = node.view
-                        item.pair_name, item.broken, item.on_moved = r["name"], bool(broken), self._update_arc
+                        item.pair_name, item.broken, item.on_moved = f"#{r['number']}", bool(broken), self._update_arc
+                        item.on_number = lambda text, rid=r["id"]: self._apply_number(rid, text)
                         if half == "in":
                             port = node.add_input("in", multi_input=True, display_name=False, color=LANE_COLOR)
                             self.in_lane_of[(node.id, "in")] = r["inputs"][0]["id"]
@@ -1197,6 +1680,7 @@ class CanvasInterface(QWidget):
         if not self.fitted and self.isVisible():
             self.fitted = True
             self._fit_all()
+        self.sync_toolbar()
 
     def _paint_wires(self, graph):
         """Links take the colour of the block they leave; pass-through lanes hand on what comes in."""
@@ -1285,15 +1769,13 @@ class CanvasInterface(QWidget):
         menu.exec(at.toPoint() if hasattr(at, "toPoint") else at)
 
     def outputs_of(self, mid):
-        """[(output key, label)] of a router / IF / pass-through block, in port order ([] for other blocks)."""
+        """[(output key, label)] of a router / IF block, in port order ([] for other blocks)."""
         from .. import graph as graph_mod
         kind, n = graph_mod.find(self.ctl.graph, mid)
         if kind == "router":
             if n.get("style") == "if":
                 return [(n["rules"][0]["id"], _t("then")), ("default", _t("else"))]
             return [(x["id"], f"{i + 1}. {x['name']}") for i, x in enumerate(n["rules"])] + [("default", _t("default"))]
-        if kind == "relay" and not n.get("wireless"):
-            return [(x["id"], _t("Output {n}").format(n=i + 1)) for i, x in enumerate(n["outputs"])]
         return []
 
     def _output_colors_menu(self, mid, parent):
@@ -1347,6 +1829,8 @@ class CanvasInterface(QWidget):
 
     def update_states(self, proxies, statuses, pc_status):
         from .. import graph as graph_mod
+        self.update_latency()
+        self.sync_toolbar()
         cg = self.ctl.graph
         for p in proxies:
             node = self.node_of.get(p["id"])
@@ -1389,7 +1873,8 @@ class CanvasInterface(QWidget):
             if node is None:
                 continue
             users = graph_mod.users(cg, r["id"])
-            _, d = graph_mod.find(cg, r["default"]) if r["default"] else (None, None)
+            # (the default may lead through pass-through lanes: name the block at their end)
+            _, d = graph_mod.find(cg, graph_mod.follow(cg, r["default"])) if r["default"] else (None, None)
             if r.get("switch"):
                 lines = [_line("#6CCB5F" if r.get("switch_on") else "#9A9A9A",
                                _t("Switch: on → then") if r.get("switch_on") else _t("Switch: off → else"))]
@@ -1591,19 +2076,29 @@ class CanvasInterface(QWidget):
         if n is not None and n["target"] == dst:
             self.ctl.set_target(src, None)
 
-    def _on_property_changed(self, node, prop, value):
-        """A block's title was edited on the canvas (double-click the title): rename the block."""
-        if self.syncing or prop != "name":
+    def _on_title_edited(self, node_id, name):
+        """A block's title was edited on the canvas (double-click the title): rename the block (a wireless half:
+        just its title)."""
+        if self.syncing:
             return
-        mid, half = split_mid(self.mid_of.get(node.id))
+        mid, half = split_mid(self.mid_of.get(node_id))
         if not mid:
             return
-        name = str(value).strip()
-        if half:        # a wireless half shows "Wireless in · #1": keep only what stands for the pair's name
-            pre, _, post = (_t("Wireless in · {name}") if half == "in" else _t("Wireless out · {name}")).partition("{name}")
-            if name.startswith(pre.strip()) and name.endswith(post) and len(name) >= len(pre.strip()) + len(post):
-                name = name[len(pre.strip()):len(name) - len(post)].strip()
+        name = str(name).strip()
+        if half:
+            QTimer.singleShot(0, self, lambda: self.ctl.set_wireless_title(mid, half, name))
+            return
         QTimer.singleShot(0, self, lambda: self._apply_rename(mid, name))
+
+    def _apply_number(self, rid, text):
+        """The number of a wireless pair was edited on its block (None = cancelled)."""
+        if text is None:
+            return
+        try:
+            number = int(text)
+        except ValueError:
+            number = -1
+        self.ctl.set_wireless_number(rid, number)
 
     def _apply_rename(self, mid, name):
         from .. import graph as graph_mod

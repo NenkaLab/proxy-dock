@@ -7,7 +7,7 @@ import copy
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
-from qfluentwidgets import BodyLabel, CaptionLabel, ComboBox, SimpleCardWidget, SpinBox, SubtitleLabel
+from qfluentwidgets import BodyLabel, CaptionLabel, ComboBox, LineEdit, SimpleCardWidget, SpinBox, SubtitleLabel
 
 from .. import graph as graph_mod
 from ..i18n import _t
@@ -76,6 +76,37 @@ class RelaySection(QWidget):
                                        "partner. Deleting one half disables the other until the partner is recreated."), self)
         self.wl_note.setWordWrap(True)
         lay.addWidget(self.wl_note)
+        self.wl_card = SimpleCardWidget(self)          # wireless pair: its number and the output block's title
+        wl = QHBoxLayout(self.wl_card)
+        wl.setContentsMargins(16, 10, 16, 10)
+        wl.setSpacing(10)
+        col = QVBoxLayout()
+        col.setSpacing(1)
+        col.addWidget(BodyLabel(_t("Pair number"), self.wl_card))
+        hint = CaptionLabel(_t("Shown in large type on both blocks; each wireless pair has its own. "
+                               "You can also double-click the number on the canvas."), self.wl_card)
+        hint.setWordWrap(True)
+        col.addWidget(hint)
+        wl.addLayout(col, 1)
+        self.sp_number = SpinBox(self.wl_card)
+        self.sp_number.setRange(1, graph_mod.MAX_WIRELESS)
+        self.sp_number.setFixedWidth(140)
+        wl.addWidget(self.sp_number, 0, Qt.AlignVCenter)
+        lay.addWidget(self.wl_card)
+        self.out_title_card = SimpleCardWidget(self)
+        ot = QHBoxLayout(self.out_title_card)
+        ot.setContentsMargins(16, 10, 16, 10)
+        ot.setSpacing(10)
+        col = QVBoxLayout()
+        col.setSpacing(1)
+        col.addWidget(BodyLabel(_t("Output block title"), self.out_title_card))
+        hint = CaptionLabel(_t("The name above is the input block's title."), self.out_title_card)
+        col.addWidget(hint)
+        ot.addLayout(col, 1)
+        self.ed_out_title = LineEdit(self.out_title_card)
+        self.ed_out_title.setFixedWidth(260)
+        ot.addWidget(self.ed_out_title, 0, Qt.AlignVCenter)
+        lay.addWidget(self.out_title_card)
         self.note = note
         head = SimpleCardWidget(self)
         self.head = head
@@ -129,6 +160,11 @@ class RelaySection(QWidget):
         self.head.setVisible(not wireless)
         self.note.setVisible(not wireless)
         self.wl_note.setVisible(wireless)
+        self.wl_card.setVisible(wireless)
+        self.out_title_card.setVisible(wireless)
+        if wireless:
+            self.sp_number.setValue(relay.get("number") or 1)
+            self.ed_out_title.setText(relay.get("name_out", ""))
         for w in (self.cb_mode, self.sp_in, self.sp_out):
             w.blockSignals(True)
         self.cb_mode.setCurrentIndex(1 if relay["routed"] else 0)
@@ -203,12 +239,24 @@ class RelaySection(QWidget):
         self._read()
         n = copy.deepcopy(self.relay)
         n["name"] = node["name"]
+        out_title = None
+        if n.get("wireless"):
+            n["number"] = self.sp_number.value()
+            out_title = self.ed_out_title.text().strip()[:60]
+            n["name_out"] = out_title
         out = graph_mod.validate_relay_node(n)
         out["name"] = n["name"]             # keep an empty name so the error check can report it
+        if out_title is not None:
+            out["name_out"] = out_title     # (the same for the output block's title)
         return out
 
     def errors(self, n):
         errs = [] if n["name"] else [_t("Enter a name")]
+        if n.get("wireless"):
+            if not n.get("name_out"):
+                errs.append(_t("Enter the output block's title"))
+            if graph_mod.wireless_number_owner(self.ctl.graph, n["number"], but=n["id"]) is not None:
+                errs.append(_t("#{n} is already used by another wireless pair").format(n=n["number"]))
         g = copy.deepcopy(self.ctl.graph)
         g["relays"] = [n if x["id"] == n["id"] else x for x in g.get("relays", [])]
         if any(x["target"] and graph_mod.lane_loop(g, x["target"]) for x in n["outputs"]) or \

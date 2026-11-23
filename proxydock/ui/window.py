@@ -108,6 +108,10 @@ class MainWindow(FluentWindow):
         self._back_button = panel.returnButton
         QShortcut(QKeySequence(QKeySequence.Back), self, activated=self.go_back)
         QShortcut(QKeySequence(QKeySequence.Forward), self, activated=self.go_forward)
+        # undo / redo on the list page too (the canvas has its own, which leaves typing in a title alone)
+        for keys, name in ((QKeySequence.Undo, "undo"), (QKeySequence.Redo, "redo"), (QKeySequence("Ctrl+Shift+Z"), "redo")):
+            QShortcut(QKeySequence(keys), self.proxies_page, activated=lambda n=name: getattr(self.ctl, n)(),
+                      context=Qt.WidgetWithChildrenShortcut)
         self._mouse_nav = _MouseNavFilter(self)
         QApplication.instance().installEventFilter(self._mouse_nav)
         self._sync_back_button()
@@ -348,6 +352,7 @@ class _Bridge(QObject):
     sub_updated = Signal(str, object, str)      # outbound id, new fields (None = failed), note
     notify = Signal(str)
     firewall = Signal(object, str)
+    latency = Signal(str, object)       # outbound id, result (worker thread -> UI)
 
 
 class Controller:
@@ -356,7 +361,14 @@ class Controller:
         self.glob = glob
         self.graph = graph
         self.proxies = graph_mod.compile(graph)
+        # undo / redo: snapshots of the graph (JSON) before each change; changes made in one go are one step
+        self._undo, self._redo = [], []
+        self._undo_base = self._snapshot()
+        self._undo_open = False
+        self._undo_quiet = False        # background changes (subscription refresh) are not steps
+        self.latency, self.latency_busy, self._latency_round = {}, set(), None
         self.sig = _Bridge()
+        self.sig.latency.connect(self._on_latency)
         self.sig.status.connect(self._on_status)
         self.sig.notify.connect(self.on_notify)
         self.sig.firewall.connect(self._on_firewall)
@@ -470,6 +482,66 @@ class Controller:
     def _persist(self):
         if not config.save(self.glob, self.graph):
             info(self.window, "error", _t("Save failed"), _t("Could not save the settings file. Check the log."))
+        self._note_change()
+
+    # --- undo / redo ---
+    UNDO_LIMIT = 100
+    PC_RUNTIME = ("backup", "applied", "server")    # the PC block's live state: never undone
+
+    def _snapshot(self):
+        pc = {k: v for k, v in self.graph["pc"].items() if k not in self.PC_RUNTIME}
+        return json.dumps(dict(self.graph, pc=pc), sort_keys=True)
+
+    def _note_change(self):
+        """After a save: if the graph changed, the state before it becomes an undo step (one per burst of changes)."""
+        snap = self._snapshot()
+        if snap == self._undo_base:
+            return
+        if not self._undo_quiet and not self._undo_open:
+            self._undo.append(self._undo_base)
+            del self._undo[:-self.UNDO_LIMIT]
+            self._redo.clear()
+            self._undo_open = True
+            QTimer.singleShot(0, self._close_undo_step)
+        self._undo_base = snap
+        self._sync_undo_buttons()
+
+    def _close_undo_step(self):
+        self._undo_open = False
+
+    def can_undo(self):
+        return bool(self._undo)
+
+    def can_redo(self):
+        return bool(self._redo)
+
+    def undo(self):
+        return self._step(self._undo, self._redo, _t("Undone"))
+
+    def redo(self):
+        return self._step(self._redo, self._undo, _t("Redone"))
+
+    def _step(self, source, dest, what):
+        if not source:
+            return False
+        dest.append(self._snapshot())
+        g = graph_mod.validate(json.loads(source.pop()))
+        g["pc"].update({k: self.graph["pc"][k] for k in self.PC_RUNTIME if k in self.graph["pc"]})
+        self.graph = g
+        self._undo_quiet = True
+        try:
+            self._recompile()
+        finally:
+            self._undo_quiet = False
+        self._undo_base = self._snapshot()
+        log(LOG_SETTING, what)
+        self._sync_undo_buttons()
+        return True
+
+    def _sync_undo_buttons(self):
+        page = getattr(getattr(self, "window", None), "canvas_page", None)
+        if page is not None:
+            page.sync_undo(self.can_undo(), self.can_redo())
 
     def _recompile(self, refresh=True):
         """Graph changed: rebuild the runtime proxies, apply to running ones, save."""
@@ -496,7 +568,8 @@ class Controller:
             self.refresh_lists()
 
     def _unique_name(self, base):
-        names = {n["name"] for kind in ("inbounds", "outbounds", "routers", "relays") for n in self.graph.get(kind, [])}
+        names = {n["name"] for kind in ("inbounds", "outbounds", "routers", "relays") for n in self.graph.get(kind, [])
+                 if not n.get("wireless")}          # (wireless halves have titles that may repeat)
         if base not in names:
             return base
         i = 2
@@ -559,8 +632,8 @@ class Controller:
     def new_wireless(self, pos=None):
         """New wireless pair (input half at pos, output half to its right)."""
         pos = pos or [230, (max([r["pos"][1] for r in self.graph.get("relays", [])], default=-170) + 170)]
-        n = graph_mod.add_wireless(self.graph, graph_mod.next_wireless_name(self.graph), pos)
-        log(LOG_SETTING, _t("Created block '{name}'").format(name=_t("Wireless {name}").format(name=n["name"])))
+        n = graph_mod.add_wireless(self.graph, pos)
+        log(LOG_SETTING, _t("Created block '{name}'").format(name=graph_mod.wireless_label(n)))
         self._recompile()
         return n
 
@@ -574,7 +647,7 @@ class Controller:
             self.delete_node(rid)
             return
         graph_mod.break_wireless(self.graph, rid, half)
-        name = _t("Wireless {name}").format(name=r["name"])
+        name = graph_mod.wireless_label(r)
         log(LOG_SETTING, _t("Deleted proxy '{name}'").format(name=name + " · " + (_t("in") if half == "in" else _t("out"))))
         self._recompile()
         info(self.window, "warning", _t("Wireless pair broken"),
@@ -585,21 +658,60 @@ class Controller:
         """Recreate the missing half of a broken wireless pair."""
         if graph_mod.repair_wireless(self.graph, rid):
             log(LOG_SETTING, _t("Saved proxy '{name}'").format(
-                name=_t("Wireless {name}").format(name=graph_mod.find(self.graph, rid)[1]["name"])))
+                name=graph_mod.wireless_label(graph_mod.find(self.graph, rid)[1])))
             self._recompile()
+
+    def set_wireless_number(self, rid, number):
+        """Pair number of wireless pair rid (1..9999, not used by another pair). False (with a message) if refused."""
+        kind, r = graph_mod.find(self.graph, rid)
+        if kind != "relay" or not r.get("wireless"):
+            return False
+        if not graph_mod.valid_wireless_number(number):
+            info(self.window, "warning", _t("Cannot change the number"),
+                 _t("Enter a number from 1 to {max}").format(max=graph_mod.MAX_WIRELESS), 4000)
+            self.sig_refresh()
+            return False
+        other = graph_mod.wireless_number_owner(self.graph, number, but=rid)
+        if other is not None:
+            info(self.window, "warning", _t("Cannot change the number"),
+                 _t("#{n} is already used by another wireless pair").format(n=number), 4000)
+            self.sig_refresh()
+            return False
+        if r["number"] != number:
+            r["number"] = number
+            log(LOG_SETTING, _t("Saved proxy '{name}'").format(name=graph_mod.wireless_label(r)))
+            self._recompile()
+        return True
+
+    def set_wireless_title(self, rid, half, title):
+        """Title of one half ("in"/"out") of wireless pair rid (titles may repeat; empty = unchanged)."""
+        kind, r = graph_mod.find(self.graph, rid)
+        key = "name" if half == "in" else "name_out"
+        title = title.strip()[:60]
+        if kind != "relay" or not r.get("wireless") or not title or r.get(key) == title:
+            self.sig_refresh()
+            return
+        r[key] = title
+        log(LOG_SETTING, _t("Saved proxy '{name}'").format(name=graph_mod.wireless_label(r) + " · " + title))
+        self._recompile()
+
+    def sig_refresh(self):
+        """Redraw the canvas from the model (after an edit on it was refused)."""
+        self.window.canvas_page.sig = None
+        self.refresh_lists()
 
     def set_color(self, nid, color):
         """Block colour ('#rrggbb', '' = default): the canvas draws the links leaving the block in it."""
         kind, n = graph_mod.find(self.graph, nid)
         color = graph_mod.valid_color(color)
-        if n is None or n.get("color", "") == color:
+        if n is None or kind == "relay" or n.get("color", "") == color:     # (pass-throughs follow what comes in)
             return
         n["color"] = color
         self._persist()
         self.refresh_lists()
 
     def set_output_color(self, nid, key, color):
-        """Own colour of one output of a router (rule id / "default") or pass-through (output lane id); '' = none."""
+        """Own colour of one output of a router (rule id / "default"); '' = none."""
         color = graph_mod.valid_color(color)
         if graph_mod.output_color(self.graph, nid, key) == color:
             return
@@ -659,6 +771,87 @@ class Controller:
         log(LOG_SETTING, _t("Saved proxy '{name}'").format(name=r['name']))
         self._recompile()
         return True
+
+    def disconnect_all(self, items):
+        """Cut every link into and out of the given blocks: [(block id, half)] (half "in"/"out" for a wireless
+        half, else None; "__pc__" = the PC block). One undo step."""
+        changed = False
+        for bid, half in items:
+            if bid == "__pc__":
+                changed |= self.graph["pc"]["inbound"] is not None
+                self.graph["pc"]["inbound"] = None
+                continue
+            changed |= graph_mod.cut_links(self.graph, bid, half)
+        if changed:
+            log(LOG_SETTING, _t("Disconnected all links"))
+            self._recompile()
+        return changed
+
+    def remove_lane(self, rid, lane_id):
+        """Remove one lane of pass-through rid (links into a removed input lane are cut)."""
+        r = self._relay(rid)
+        if r is None:
+            return False
+        if not graph_mod.remove_lane(r, lane_id):
+            info(self.window, "warning", _t("Cannot remove"), _t("A pass-through keeps at least one lane"), 4000)
+            return False
+        graph_mod.drop_dead_lane_links(self.graph)
+        log(LOG_SETTING, _t("Saved proxy '{name}'").format(name=r["name"]))
+        self._recompile()
+        return True
+
+    # --- latency of outbound blocks ---
+    def latency_targets(self):
+        """Outbound blocks that can be tested (everything but Block)."""
+        return [n["id"] for n in self.graph["outbounds"] if n["outbound"]["type"] != "block"]
+
+    def test_latency(self, ids=None):
+        """Measure each outbound block (an HTTPS request through it) in the background, 4 at a time.
+        Results arrive one by one in self.latency {id: {"ok", "ms", "error", "key"}} (signal latency)."""
+        from concurrent.futures import ThreadPoolExecutor
+        from .. import probe
+        ids = [i for i in (ids or self.latency_targets()) if i not in self.latency_busy]
+        if not ids:
+            return
+        jobs = [(oid, probe.outbound_proxy(self.graph, oid), probe.latency_key(self.graph, oid)) for oid in ids]
+        self.latency_busy.update(ids)
+        self._latency_round = {"total": len(ids), "done": 0, "ok": 0}
+        self.window.canvas_page.latency_progress(0, len(ids))
+        self.window.canvas_page.update_latency()
+        mgr, glob, emit = self.manager, self.glob, self.sig.latency.emit
+
+        def one(job):
+            oid, p, key = job
+            try:
+                r = probe.check_outbound(mgr, p, glob, check_id=f"__latency_{oid}__")
+            except Exception as e:      # (never leave a block 'testing')
+                r = {"ok": False, "error": str(e) or type(e).__name__}
+            ms = r.get("total_ms") if r.get("ok") else None
+            emit(oid, {"ok": bool(r.get("ok")), "ms": round(ms) if ms is not None else None,
+                       "error": r.get("detail") or r.get("error") or "", "key": key})
+
+        def work():
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                list(ex.map(one, jobs))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_latency(self, oid, result):
+        self.latency_busy.discard(oid)
+        self.latency[oid] = result
+        rnd = self._latency_round
+        if rnd:
+            rnd["done"] += 1
+            rnd["ok"] += 1 if result["ok"] else 0
+        page = self.window.canvas_page
+        page.update_latency()
+        if rnd and rnd["done"] >= rnd["total"]:
+            self._latency_round = None
+            page.latency_progress(None, None)
+            failed = rnd["total"] - rnd["ok"]
+            info(self.window, "success" if not failed else "warning", _t("Latency test finished"),
+                 _t("{ok} working, {failed} not responding").format(ok=rnd["ok"], failed=failed), 4000)
+        elif rnd:
+            page.latency_progress(rnd["done"], rnd["total"])
 
     def add_lane(self, rid, side="inputs"):
         """One more lane on pass-through rid (straight: on both sides)."""
@@ -733,13 +926,17 @@ class Controller:
         if fields is None:
             log(LOG_WARN, _t("Subscription '{name}' could not be updated: {note}").format(name=n["name"], note=note))
             return
-        if fields["sub_servers"] == n["outbound"]["sub_servers"]:
-            n["outbound"]["sub_updated"] = fields["sub_updated"]
-            self._persist()
-            return
-        n["outbound"].update(fields)
-        log(LOG_SETTING, _t("Subscription '{name}' updated: {note}").format(name=n["name"], note=note))
-        self._recompile()
+        self._undo_quiet = True             # (a background refresh is not something to undo)
+        try:
+            if fields["sub_servers"] == n["outbound"]["sub_servers"]:
+                n["outbound"]["sub_updated"] = fields["sub_updated"]
+                self._persist()
+                return
+            n["outbound"].update(fields)
+            log(LOG_SETTING, _t("Subscription '{name}' updated: {note}").format(name=n["name"], note=note))
+            self._recompile()
+        finally:
+            self._undo_quiet = False
 
     def rename_node(self, nid, name):
         kind, n = graph_mod.find(self.graph, nid)
@@ -906,7 +1103,7 @@ class Controller:
             for x in n["outputs"]:
                 x["target"] = None
             if n.get("wireless"):          # a new pair of its own, both halves
-                n["name"] = graph_mod.next_wireless_name(self.graph)
+                n["number"] = graph_mod.next_wireless_number(self.graph)
                 n["pos_out"] = [src["pos_out"][0] + 40, src["pos_out"][1] + 40]
                 n["broken"] = None
                 n["inputs"][0]["out"] = n["outputs"][0]["id"]
@@ -1259,6 +1456,7 @@ class Controller:
     def _rebuild_tray_proxies(self):
         m = self.menu
         m.clear()
+        self._tray_submenus = []
         m.addAction(self.act_show)
         m.addSeparator()
         self.proxy_actions = []
@@ -1272,10 +1470,48 @@ class Controller:
         if self.proxies:
             m.addAction(self.act_stop_all)
             m.addSeparator()
+        quick = self._tray_quick_actions(m)
+        if quick:
+            m.addActions(quick)
+            m.addSeparator()
         m.addActions([self.act_startup, self.act_hidden])
         m.addSeparator()
         m.addActions([self.act_restart, self.act_exit])
         self._sync_show_action(self.window.isVisible())
+
+    def _tray_quick_actions(self, m):
+        """Tray: IF switches (e.g. a kill switch), the member of manual groups and the PC proxy, without the window."""
+        out = []
+        for r in self.graph.get("routers", []):
+            if r.get("style") == "if" and r.get("switch"):
+                on = bool(r.get("switch_on"))
+                act = Action(FIF.ACCEPT if on else FIF.CANCEL, _t("{name}: switch {state}").format(
+                    name=r["name"], state=_t("Switched on") if on else _t("Switched off")), m)
+                act.triggered.connect(lambda _=False, rid=r["id"], v=not on: self.set_switch(rid, v))
+                out.append(act)
+        for n in self.graph["outbounds"]:
+            ob = n["outbound"]
+            if ob["type"] != "group" or ob.get("group_mode") != "select" or not n.get("members"):
+                continue
+            cur = ob["group_selected"] if ob["group_selected"] in n["members"] else n["members"][0]
+            sub = SystemTrayMenu(_t("{name}: use member").format(name=n["name"]), m)
+            sub.setIcon(FIF.SHARE.icon())
+            for mid in n["members"]:
+                _, mem = graph_mod.find(self.graph, mid)
+                if mem is None:
+                    continue
+                a = Action(FIF.ACCEPT if mid == cur else FIF.SEND, mem["name"], sub)
+                a.triggered.connect(lambda _=False, g=n["id"], x=mid: self.select_member(g, x))
+                sub.addAction(a)
+            out.append(sub.menuAction())
+            self._tray_submenus = getattr(self, "_tray_submenus", []) + [sub]
+        pc_id = self.graph["pc"]["inbound"]
+        _, pc_in = graph_mod.find(self.graph, pc_id) if pc_id else (None, None)
+        if pc_in is not None:
+            act = Action(FIF.GLOBE, _t("PC proxy: {name} - turn off").format(name=pc_in["name"]), m)
+            act.triggered.connect(self.pc_off)
+            out.append(act)
+        return out
 
     def toggle_window(self):
         if self.window.isVisible() and not self.window.isMinimized():

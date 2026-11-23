@@ -292,7 +292,8 @@ def test_ui():
     from PySide6.QtWidgets import QApplication
     from proxydock.ui import common as uic
     from proxydock.ui import window as winmod
-    from proxydock.ui.canvas import ToggleWidget
+    from proxydock.ui.canvas import ToggleWidget, _ViewerFilter
+    from proxydock.i18n import _t as tr_
     winmod.system_proxy_supported = lambda: True
     winmod.get_system_proxy = lambda: {"ProxyEnable": 0}
     winmod.set_system_proxy = lambda v: None
@@ -553,11 +554,13 @@ def test_ui():
           and all(tuple(p.color)[:3] == (175, 95, 30) for p in pipes))
     rn = gm.find(ctl.graph, relay["id"])[1]
     ctl.set_output_color(relay["id"], rn["outputs"][0]["id"], "#57ab5a")
+    ctl.set_color(relay["id"], "#57ab5a")
     wait(200)
     pipes = list(cv.node_of[relay["id"]].output_ports()[0].view.connected_pipes)
-    check("ui: a pass-through lane's own colour", pipes and all(tuple(p.color)[:3] == (87, 171, 90) for p in pipes),
-          [tuple(p.color) for p in pipes])
-    check("ui: pass-through menu offers output colours", [k for k, _ in cv.outputs_of(relay["id"])] == [x["id"] for x in rn["outputs"]])
+    check("ui: a pass-through takes no colour of its own", pipes and gm.find(ctl.graph, relay["id"])[1]["color"] == ""
+          and all(tuple(p.color)[:3] != (87, 171, 90) for p in pipes), [tuple(p.color) for p in pipes])
+    check("ui: a pass-through has no swatch or output colour menu", cv.node_of[relay["id"]].view.swatches() == []
+          and cv.outputs_of(relay["id"]) == [])
     iff = ctl.new_router([900, 900], edit=False, style="if")
     ctl.set_rule_target(iff["id"], "default", d["id"])
     ctl.set_output_color(iff["id"], "default", "#e5534b")
@@ -627,6 +630,17 @@ def test_ui():
     cv.graph.clear_selection()
     QTest.keyClick(viewer, Qt.Key_Right)
     check("ui: arrows do nothing without a selection", sel() == [])
+    from PySide6.QtWidgets import QApplication as _QApp
+    card = cv.node_of[wl_in["id"]]
+    card.view.setZValue(card.view.zValue() + 100)          # (the test layout puts other blocks on top of it)
+    cv.graph.center_on([card])
+    wait(100)
+    r_ = card.view.sceneBoundingRect()
+    QTest.mouseClick(viewer.viewport(), Qt.LeftButton, Qt.NoModifier,
+                     viewer.mapFromScene(r_.center().x(), r_.top() + r_.height() * 0.45))   # on the info text
+    wait(100)
+    QTest.keyClick(_QApp.focusWidget() or viewer, Qt.Key_Right)
+    check("ui: → works after clicking a block's body", sel() == [wl["id"] + "~in"], sel())
     ctl.delete_node(wl_x["id"])
     wait(200)
     toasts = []
@@ -651,8 +665,228 @@ def test_ui():
           and wl["id"] + "~out" in cv.node_of and not cv.node_of[wl["id"] + "~in"].view.broken)
     ctl.delete_node(wl_in["id"])
     ctl.delete_node(wl["id"])
+    wait(200)
+    # --- toolbar: the 'Add ...' buttons drop their names when the window is narrow ---
+    size0 = w.size()
+    w.resize(1700, size0.height())
+    wait(300)
+    wide = (cv.btn_in.text(), cv.btn_out.text(), cv.btn_router.text())
+    w.resize(900, size0.height())
+    wait(300)
+    narrow = (cv.btn_in.text(), cv.btn_out.text(), cv.btn_router.text())
+    check("ui: toolbar names show when wide, icons only when narrow", all(wide) and not any(narrow)
+          and cv.btn_in.toolTip() == wide[0], (wide, narrow))
+    w.resize(size0)
+    wait(300)
+    # --- toolbar: block actions follow the selection ---
+    t_in = ctl.new_inbound("TB", {"type": "http", "port": free_port()}, None, [2400, 1800], edit=False)
+    t_out = ctl.new_outbound({"type": "socks5", "host": "192.0.2.7", "port": 1}, [2800, 1800], edit=False)
+    ctl.set_target(t_in["id"], t_out["id"])
+    ctl.set_via(t_out["id"], d["id"])
+    wait(200)
+    cv.graph.clear_selection()
+    cv._on_selection()
+    block_acts = (cv.act_edit, cv.act_rename, cv.act_duplicate, cv.act_delete, cv.act_unlink, cv.act_run,
+                  cv.act_prev, cv.act_next, cv.act_up, cv.act_down)
+    check("ui: toolbar block actions are off without a selection", not any(a.isEnabled() for a in block_acts)
+          and cv.btn_latency.isEnabled() and cv.btn_fit.isEnabled())
+    cv.node_of[t_in["id"]].set_selected(True)
+    cv._on_selection()
+    check("ui: selecting an inbound turns its actions on", all(a.isEnabled() for a in (
+        cv.act_edit, cv.act_rename, cv.act_duplicate, cv.act_delete, cv.act_unlink, cv.act_run, cv.act_next))
+        and not cv.act_prev.isEnabled() and "TB" in cv.status_label.text(), cv.status_label.text())
+    buttons = {b.action(): b for b in cv.toolbar.commandButtons if hasattr(b, "action") and b.action() is not None}
+    check("ui: toolbar buttons follow their actions", cv.act_next in buttons and buttons[cv.act_next].isEnabled()
+          and cv.act_prev in buttons and not buttons[cv.act_prev].isEnabled(), list(buttons)[:3])
+    cv.act_next.trigger()
+    check("ui: the → button walks the link like the key", [cv.mid_of[n.id] for n in cv.graph.selected_nodes()] == [t_out["id"]]
+          and cv.act_prev.isEnabled())
+    cv.act_prev.trigger()
+    check("ui: the ← button walks back", [cv.mid_of[n.id] for n in cv.graph.selected_nodes()] == [t_in["id"]])
+    cv.node_of[t_out["id"]].set_selected(True)
+    cv._on_selection()
+    check("ui: several selected: single-block actions off", not cv.act_edit.isEnabled() and not cv.act_rename.isEnabled()
+          and cv.act_delete.isEnabled() and cv.act_unlink.isEnabled() and "2" in cv.status_label.text())
+    cv.graph.clear_selection()
+    cv.node_of[t_out["id"]].set_selected(True)
+    cv._on_selection()
+    cv.act_unlink.trigger()
+    wait(200)
+    nt_in, nt_out = gm.find(ctl.graph, t_in["id"])[1], gm.find(ctl.graph, t_out["id"])[1]
+    check("ui: 'disconnect all' cuts links in and out", nt_in["target"] is None and nt_out["via"] is None)
+    ctl.undo()
+    wait(200)
+    check("ui: and it is one undo step", gm.find(ctl.graph, t_in["id"])[1]["target"] == t_out["id"]
+          and gm.find(ctl.graph, t_out["id"])[1]["via"] == d["id"])
+    cv.graph.clear_selection()
+    cv.node_of[t_out["id"]].set_selected(True)
+    cv._on_selection()
+    cv.act_rename.trigger()
+    wait(50)
+    t_item = cv.node_of[t_out["id"]].view._text_item
+    check("ui: rename opens the title for typing", viewer.scene().focusItem() is t_item
+          and bool(t_item.textInteractionFlags() & Qt.TextEditable) and _ViewerFilter._typing(viewer))
+    QTest.keyClicks(viewer, "Tokyo")
+    QTest.keyClick(viewer, Qt.Key_Return)
+    wait(300)
+    check("ui: the typed title is saved", gm.find(ctl.graph, t_out["id"])[1]["name"] == "Tokyo",
+          gm.find(ctl.graph, t_out["id"])[1]["name"])
+    before = len(ctl.graph["outbounds"])
+    cv.graph.clear_selection()
+    cv.node_of[t_out["id"]].set_selected(True)
+    cv._on_selection()
+    cv.act_duplicate.trigger()
+    wait(200)
+    check("ui: duplicate from the toolbar", len(ctl.graph["outbounds"]) == before + 1)
+    ctl.undo()
+    wait(200)
+    ctl.delete_node(t_in["id"])
+    ctl.delete_node(t_out["id"])
+    wait(200)
+    # --- undo / redo ---
+    gone = ctl.new_outbound({"type": "direct"}, [2000, 2000], edit=False)
+    wait(200)
+    ctl.delete_node(gone["id"])
+    wait(200)
+    check("ui: undo is offered after a change", ctl.can_undo() and cv.btn_undo.isEnabled() and not ctl.can_redo())
+    from PySide6.QtWidgets import QApplication as _QA
+    w.activateWindow()
+    _QA.setActiveWindow(w)
+    cv.graph.viewer().setFocus()
+    wait(50)
+    QTest.keyClick(_QA.focusWidget() or cv, Qt.Key_Z, Qt.ControlModifier)
+    wait(200)
+    check("ui: Ctrl+Z brings a deleted block back", gm.find(ctl.graph, gone["id"])[1] is not None
+          and gone["id"] in cv.node_of and ctl.can_redo() and cv.btn_redo.isEnabled())
+    QTest.keyClick(_QA.focusWidget() or cv, Qt.Key_Y, Qt.ControlModifier)
+    wait(200)
+    check("ui: Ctrl+Y does it again", gm.find(ctl.graph, gone["id"])[1] is None and gone["id"] not in cv.node_of)
+    steps = len(ctl._undo)
+    burst = ctl.new_outbound({"type": "direct"}, [2000, 2100], edit=False)
+    ctl.rename_node(burst["id"], "Burst")                 # (same turn of the event loop: one step)
+    wait(50)
+    check("ui: changes made in one go are one undo step", len(ctl._undo) == steps + 1 and not ctl.can_redo())
+    ctl.undo()
+    wait(200)
+    check("ui: undoing that step removes both changes", gm.find(ctl.graph, burst["id"])[1] is None)
+    ctl.redo()
+    wait(200)
+    check("ui: redo restores both", gm.find(ctl.graph, burst["id"])[1]["name"] == "Burst")
+    before = ctl._snapshot()                                 # (the PC block's live state is no part of a step)
+    ctl.graph["pc"]["server"] = ctl.graph["pc"].get("server", "") + "x"
+    check("ui: undo leaves the PC block's live state alone", ctl._snapshot() == before)
+    ctl.graph["pc"]["server"] = ctl.graph["pc"]["server"][:-1]
+    steps = len(ctl._undo)
+    ctl._undo_quiet = True                                  # (as a background subscription refresh does)
+    ctl.rename_node(d["id"], gm.find(ctl.graph, d["id"])[1]["name"] + " q")
+    ctl._undo_quiet = False
+    check("ui: background changes are no undo step", len(ctl._undo) == steps)
+    ui_in, d = gm.find(ctl.graph, ui_in["id"])[1], gm.find(ctl.graph, d["id"])[1]     # (undo swapped the graph)
+    # --- latency badges (the checks themselves are faked: no internet in the tests) ---
+    import proxydock.probe as probe_mod
+    real_check, calls = probe_mod.check_outbound, []
+
+    def fake_check(mgr, p, glob, check_id="__check__"):
+        calls.append((p["outbound"]["type"], check_id))
+        time.sleep(0.05)
+        if p["outbound"]["type"] == "direct":
+            return {"ok": True, "total_ms": 123.4}
+        return {"ok": False, "error": "refused", "detail": ""}
+    probe_mod.check_outbound = fake_check
+    lat_up = ctl.new_outbound({"type": "socks5", "host": "192.0.2.1", "port": 9}, [2000, 2200], edit=False)
+    wait(200)
+    try:
+        ctl.test_latency()
+        check("ui: latency test shows progress", not cv.btn_latency.isEnabled()
+              and cv.node_of[d["id"]].view.badge is not None and cv.node_of[d["id"]].view.badge[0] == "…")
+        for _ in range(100):
+            wait(50)
+            if not ctl.latency_busy:
+                break
+        wait(100)
+        bd, bu = cv.node_of[d["id"]].view.badge, cv.node_of[lat_up["id"]].view.badge
+        check("ui: latency badges show the result", bd is not None and bd[0] == "123 ms" and bu is not None and bu[0] == "✕"
+              and cv.btn_latency.isEnabled(), (bd, bu))
+        check("ui: each block is tested with its own temporary id",
+              len({c[1] for c in calls}) == len(calls) == len(ctl.latency_targets()), calls)
+        ctl.rename_node(lat_up["id"], "Up renamed")             # (the name is not part of the result)
+        n_up = gm.find(ctl.graph, lat_up["id"])[1]
+        n_up["outbound"]["port"] = 10                           # changed settings: the old result is not shown
+        ctl._recompile()
+        wait(200)
+        check("ui: a changed block drops its old latency", cv.node_of[lat_up["id"]].view.badge is None
+              and cv.node_of[d["id"]].view.badge[0] == "123 ms")
+    finally:
+        probe_mod.check_outbound = real_check
+    ctl.delete_node(lat_up["id"])
+    # --- tray quick controls ---
+    sw_if = ctl.new_router([2000, 2300], edit=False, style="if")
+    gm.find(ctl.graph, sw_if["id"])[1].update(switch=True, default=d["id"])
+    ctl._recompile()
+    wait(200)
+
+    def tray_texts():
+        out = []
+        for a in ctl.menu.actions():
+            out.append(a.text())
+            if a.menu() is not None:
+                out += ["  " + b.text() for b in a.menu().actions()]
+        return out
+    sw_act = next((a for a in ctl.menu.actions() if a.text().startswith(sw_if["name"] + ":")), None)
+    check("ui: tray lists IF switches", sw_act is not None, tray_texts())
+    sw_act.trigger()
+    wait(200)
+    check("ui: the tray turns a switch on", gm.find(ctl.graph, sw_if["id"])[1]["switch_on"] is True)
+    grp = ctl.new_outbound({"type": "group", "group_mode": "select"}, [2000, 2400], edit=False)
+    alt = ctl.new_outbound({"type": "direct"}, [2000, 2500], edit=False)
+    ctl.add_member(grp["id"], d["id"])
+    ctl.add_member(grp["id"], alt["id"])
+    wait(200)
+    sub = next((a.menu() for a in ctl.menu.actions() if a.menu() is not None and grp["name"] in a.text()), None)
+    check("ui: tray offers the member of a manual group", sub is not None and len(sub.actions()) == 2, tray_texts())
+    next(a for a in sub.actions() if a.text() == gm.find(ctl.graph, alt["id"])[1]["name"]).trigger()
+    wait(200)
+    check("ui: picking a member in the tray uses it", gm.find(ctl.graph, grp["id"])[1]["outbound"]["group_selected"] == alt["id"])
+    ctl.delete_node(grp["id"])
+    ctl.delete_node(alt["id"])
+    ctl.delete_node(sw_if["id"])
+    wait(200)
+    # --- removing pass-through lanes ---
+    lr = ctl.new_relay([2000, 2600], lanes=3)
+    ctl.set_target(ui_in["id"], lr["inputs"][1]["id"])
+    wait(200)
+    mid_out = lr["outputs"][1]["id"]
+    check("ui: removing a straight lane removes both sides and cuts its links",
+          ctl.remove_lane(lr["id"], lr["inputs"][1]["id"]) and len(gm.find(ctl.graph, lr["id"])[1]["inputs"]) == 2
+          and len(gm.find(ctl.graph, lr["id"])[1]["outputs"]) == 2 and ui_in["target"] is None
+          and mid_out not in [x["id"] for x in gm.find(ctl.graph, lr["id"])[1]["outputs"]])
+    rl = gm.find(ctl.graph, lr["id"])[1]
+    rl["routed"] = True
+    ctl._recompile()
+    ctl.add_lane(lr["id"], "outputs")
+    rl = gm.find(ctl.graph, lr["id"])[1]
+    ctl.set_lane_map(lr["id"], rl["inputs"][0]["id"], rl["outputs"][2]["id"])
+    check("ui: removing a routed output unwires inputs that used it",
+          ctl.remove_lane(lr["id"], rl["outputs"][2]["id"]) and gm.find(ctl.graph, lr["id"])[1]["inputs"][0]["out"] is None
+          and len(gm.find(ctl.graph, lr["id"])[1]["inputs"]) == 2)
+    rl = gm.find(ctl.graph, lr["id"])[1]
+    wait(50)
+    ctl.remove_lane(lr["id"], rl["inputs"][0]["id"])
+    wait(50)
+    said = []
+    real_info3 = win_mod.info
+    win_mod.info = lambda *a, **k: said.append(a[2])
+    try:
+        last = ctl.remove_lane(lr["id"], gm.find(ctl.graph, lr["id"])[1]["inputs"][0]["id"])
+    finally:
+        win_mod.info = real_info3
+    check("ui: the last lane stays", last is False and said and len(gm.find(ctl.graph, lr["id"])[1]["inputs"]) == 1)
+    check("ui: lane removal can be undone", ctl.undo() and len(gm.find(ctl.graph, lr["id"])[1]["inputs"]) == 2)
+    ctl.delete_node(lr["id"])
+    ctl.set_target(ui_in["id"], gm.find(ctl.graph, relay["id"])[1]["inputs"][0]["id"])
     ctl.delete_node(relay["id"])
     wait(200)
+    ui_in, d = gm.find(ctl.graph, ui_in["id"])[1], gm.find(ctl.graph, d["id"])[1]
     check("ui: deleting the pass-through hands its links on", ui_in["target"] is None and relay["id"] not in cv.node_of)
     ctl.set_target(ui_in["id"], d["id"])
     w.editor.cancel()
@@ -736,22 +970,69 @@ def test_ui():
     tw.btn_off.click()
     wait(100)
     check("ui: clicking 'Off' turns it off", gm.find(ctl.graph, ifb["id"])[1]["switch_on"] is False)
+    bus = ctl.new_relay([1600, 1600])                     # else -> pass-through lane -> Direct: still has a default
+    ctl.set_rule_target(ifb["id"], "default", bus["inputs"][0]["id"])
+    ctl.set_lane_target(bus["id"], bus["outputs"][0]["id"], d["id"])
+    wait(200)
+    info_if = w.canvas_page.node_of[ifb["id"]].get_widget("info").get_value()
+    check("ui: an IF whose else goes through a pass-through has a default", tr_("no default target") not in info_if, info_if)
+    ctl.delete_node(bus["id"])
+    wait(200)
     cv_ = w.canvas_page
-    cv_.node_of[blk2["id"]].set_name("Ads blocker")
-    wait(200)
+    from PySide6.QtTest import QTest
+
+    def type_title(node, text):          # what NodeGraphQt's title editor does on Enter
+        node.view._text_item.set_node_name(text)
+        wait(200)
+    type_title(cv_.node_of[blk2["id"]], "Ads blocker")
     check("ui: renaming a block's title on the canvas saves it", gm.find(ctl.graph, blk2["id"])[1]["name"] == "Ads blocker"
-          and cv_.node_of[blk2["id"]].name() == "Ads blocker")
-    cv_.node_of[blk2["id"]].set_name("   ")
-    wait(200)
+          and cv_.node_of[blk2["id"]].view.name == "Ads blocker")
+    check("ui: canvas nodes are named by block id, the title is only shown",
+          all(node.name() == mid for mid, node in cv_.node_of.items())
+          and cv_.node_of[blk2["id"]].view._text_item.toPlainText() == "Ads blocker")
+    type_title(cv_.node_of[blk2["id"]], gm.find(ctl.graph, d["id"])[1]["name"])     # a name another block has
+    check("ui: a title taken by another block gets a number", gm.find(ctl.graph, blk2["id"])[1]["name"]
+          == gm.find(ctl.graph, d["id"])[1]["name"] + " 2", gm.find(ctl.graph, blk2["id"])[1]["name"])
+    type_title(cv_.node_of[blk2["id"]], "Ads blocker")
+    type_title(cv_.node_of[blk2["id"]], "   ")
     check("ui: an empty title is not saved", gm.find(ctl.graph, blk2["id"])[1]["name"] == "Ads blocker"
-          and cv_.node_of[blk2["id"]].name() == "Ads blocker", cv_.node_of[blk2["id"]].name())
+          and cv_.node_of[blk2["id"]].view.name == "Ads blocker", cv_.node_of[blk2["id"]].view.name)
     wl2 = ctl.new_wireless([1400, 1400])
+    wl3 = ctl.new_wireless([1400, 1700])
     wait(200)
-    from proxydock.i18n import _t as tr
-    cv_.node_of[wl2["id"] + "~out"].set_name(tr("Wireless out · {name}").format(name="VPN"))
-    wait(200)
-    check("ui: renaming a wireless half renames the pair", gm.find(ctl.graph, wl2["id"])[1]["name"] == "VPN"
-          and cv_.node_of[wl2["id"] + "~in"].view.pair_name == "VPN", gm.find(ctl.graph, wl2["id"])[1]["name"])
+    type_title(cv_.node_of[wl2["id"] + "~out"], "VPN exit")
+    n2 = gm.find(ctl.graph, wl2["id"])[1]
+    check("ui: a wireless half's title is its own", n2["name_out"] == "VPN exit" and n2["name"] != "VPN exit"
+          and cv_.node_of[wl2["id"] + "~out"].view.name == "VPN exit", (n2["name"], n2["name_out"]))
+    check("ui: wireless titles may repeat", cv_.node_of[wl3["id"] + "~in"].view.name == cv_.node_of[wl2["id"] + "~in"].view.name)
+    item2 = cv_.node_of[wl2["id"] + "~in"].view
+    check("ui: the number is shown apart from the title", item2.pair_name == f"#{n2['number']}" and item2.name != item2.pair_name)
+    item2.setZValue(item2.zValue() + 100)
+    cv_.graph.center_on([cv_.node_of[wl2["id"] + "~in"]])
+    wait(100)
+    QTest.mouseDClick(viewer.viewport(), Qt.LeftButton, Qt.NoModifier,
+                      viewer.mapFromScene(item2.mapToScene(item2.number_rect().center())))
+    wait(100)
+    check("ui: double-clicking the number opens its editor", item2.number_edit is not None
+          and w.stackedWidget.currentWidget() is not w.editor)
+    QTest.keyClick(viewer, Qt.Key_Delete)               # (deletes a digit, not the block)
+    QTest.keyClicks(viewer, "42")
+    QTest.keyClick(viewer, Qt.Key_Return)
+    wait(300)
+    check("ui: the edited number is saved", gm.find(ctl.graph, wl2["id"])[1]["number"] == 42
+          and cv_.node_of[wl2["id"] + "~out"].view.pair_name == "#42", gm.find(ctl.graph, wl2["id"])[1]["number"])
+    n3 = gm.find(ctl.graph, wl3["id"])[1]["number"]
+    import proxydock.ui.window as win_mod2
+    real_info2, said = win_mod2.info, []
+    win_mod2.info = lambda *a, **k: said.append(a[3] if len(a) > 3 else a)
+    try:
+        refused = ctl.set_wireless_number(wl3["id"], 42)
+        bad = ctl.set_wireless_number(wl3["id"], 0)
+    finally:
+        win_mod2.info = real_info2
+    check("ui: a number in use or out of range is refused", refused is False and bad is False and len(said) == 2
+          and gm.find(ctl.graph, wl3["id"])[1]["number"] == n3, said)
+    ctl.delete_node(wl3["id"])
     ctl.delete_node(wl2["id"])
     ctl.delete_node(blk2["id"])
     ctl.delete_node(ifb["id"])
@@ -892,7 +1173,7 @@ def test_ui():
     ctl.set_target(graph["inbounds"][0]["id"], d["id"])
     ctl.change_language("ko")
     wait(600)
-    check("ui: language switch rebuilds the window", ctl.window.canvas_page.btn_in.text() == "받는 쪽 추가")
+    check("ui: language switch rebuilds the window", ctl.window.canvas_page.btn_in.toolTip() == "받는 쪽 추가")
     ctl.change_language("en")
     wait(400)
     check("ui: autostart proxy running", any(s[0] == "running" for s in ctl.statuses().values()))
@@ -1405,7 +1686,14 @@ def test_wireless_graph():
     d = gm.add_outbound(g, {"type": "direct"}, "Direct")
     w = gm.add_wireless(g)
     w2 = gm.add_wireless(g)
-    check("wireless: numbered names", (w["name"], w2["name"]) == ("#1", "#2") and gm.next_wireless_name(g) == "#3")
+    check("wireless: numbered pairs", (w["number"], w2["number"]) == (1, 2) and gm.next_wireless_number(g) == 3
+          and w["name"] != w["name_out"] and "#" not in w["name"])
+    raw = {"relays": [{"id": "x1", "name": "#7", "wireless": True}, {"id": "x2", "name": "Up", "wireless": True, "number": 7},
+                      {"id": "x3", "name": "Down", "wireless": True, "number": "bad"}]}
+    old = gm.validate(raw)["relays"]
+    check("wireless: an old '#n' name becomes the number", old[0]["number"] == 7 and "#" not in old[0]["name"], old[0])
+    check("wireless: numbers stay unique", len({r["number"] for r in old}) == 3 and old[1]["name"] == "Up"
+          and all(gm.valid_wireless_number(r["number"]) for r in old), [r["number"] for r in old])
     check("wireless: one straight lane, output half to the right", w["wireless"] and not w["routed"] and len(w["inputs"]) == 1
           and len(w["outputs"]) == 1 and w["inputs"][0]["out"] == w["outputs"][0]["id"] and w["pos_out"][0] > w["pos"][0])
     lane = w["inputs"][0]["id"]
@@ -1460,25 +1748,24 @@ def test_block_colors():
     rt["color"] = "#d9b92f"
     rt["default"] = r["inputs"][2]["id"]
     v = gm.validate(json.loads(json.dumps(g)))
-    check("color: kept by validate on every block", v["inbounds"][0]["color"] == "#e5534b" and v["outbounds"][0]["color"] == "#57ab5a"
-          and v["relays"][0]["color"] == "#9aa0a6" and v["routers"][0]["color"] == "#d9b92f")
+    r["outputs"][1]["color"] = "#b76de0"                  # (old settings: a pass-through colour and a lane colour)
+    v = gm.validate(json.loads(json.dumps(g)))
+    check("color: kept by validate on every block but pass-throughs", v["inbounds"][0]["color"] == "#e5534b"
+          and v["outbounds"][0]["color"] == "#57ab5a"
+          and v["routers"][0]["color"] == "#d9b92f" and v["relays"][0]["color"] == ""
+          and "color" not in v["relays"][0]["outputs"][1])
     rv = v["relays"][0]
-    lanes = gm.wire_colors(v)
-    check("color: a pass-through's own colour is its lanes' colour",
-          all(lanes[x["id"]] == ("#9aa0a6", ("#9aa0a6",)) for x in rv["outputs"]), [lanes[x["id"]] for x in rv["outputs"]])
-    rv["outputs"][1]["color"] = "#b76de0"
-    v = gm.validate(json.loads(json.dumps(v)))
-    rv = v["relays"][0]
-    lanes = gm.wire_colors(v)
-    check("color: a lane's own colour is kept and wins", rv["outputs"][1]["color"] == "#b76de0"
-          and lanes[rv["outputs"][1]["id"]] == ("#b76de0", ("#b76de0",)) and lanes[rv["outputs"][0]["id"]][0] == "#9aa0a6")
-    rv["color"] = rv["outputs"][1]["color"] = ""
+    lanes = gm.wire_colors(g)                           # (even unvalidated, a pass-through colour is ignored)
+    check("color: a pass-through colour is ignored", lanes[r["outputs"][0]["id"]] == ("#e5534b", ("#e5534b",))
+          and lanes[r["outputs"][1]["id"]] == ("", ()) and lanes[r["id"]][0] != "#9aa0a6", lanes[r["outputs"][1]["id"]])
     lanes = gm.wire_colors(v)
     check("color: a lane hands on what comes in", lanes[rv["outputs"][0]["id"]] == ("#e5534b", ("#e5534b",))
           and lanes[rv["inputs"][1]["id"]][0] == "#4f8ef7" and lanes[rv["inputs"][2]["id"]][0] == "#d9b92f")
+    check("color: pass-through outputs take no colour", not gm.set_output_color(v, rv["id"], rv["outputs"][0]["id"], "#b76de0")
+          and gm.output_color(v, rv["id"], rv["outputs"][0]["id"]) == "")
     merged = lanes[rv["outputs"][2]["id"]]
     check("color: merging colours mix", merged == (gm.mix_colors(["#4f8ef7", "#d9b92f"]), ("#4f8ef7", "#d9b92f")), merged)
-    check("color: nothing coming in and no colour: default", lanes[rv["outputs"][1]["id"]] == ("", ()))
+    check("color: nothing coming in: default", lanes[rv["outputs"][1]["id"]] == ("", ()))
     rtv = v["routers"][0]
     gm.set_output_color(v, rtv["id"], "default", "#39C5BB")
     lanes = gm.wire_colors(v)

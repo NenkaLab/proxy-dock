@@ -545,12 +545,12 @@ def confirm_delete(ctl, ids, parent, halves=()):
     from .. import graph as graph_mod
 
     def label(n):
-        return _t("Wireless {name}").format(name=n["name"]) if n.get("wireless") else n["name"]
+        return graph_mod.wireless_label(n) if n.get("wireless") else n["name"]
     names = [label(n) for n in (graph_mod.find(ctl.graph, i)[1] for i in ids) if n is not None]
     for rid, half in halves:
         _, n = graph_mod.find(ctl.graph, rid)
         if n is not None:
-            names.append(label(n) + " · " + (_t("in") if half == "in" else _t("out")))
+            names.append(label(n) + " · " + (n["name"] if half == "in" else n.get("name_out", "")))
     if not names:
         return
     box = ConfirmBox(_t("Delete proxy"), _t("Delete '{name}'? It will be stopped if it is running.").format(name=", ".join(names)), parent)

@@ -6,8 +6,9 @@ graph = {
   "routers":   [{"id", "name", "style": "router"|"if", "rules": [{"id", "name", "match": {...}, "target": id|None, "color"}],
                  "default": id|None, "default_color", "pos": [x, y]}],
   "relays":    [{"id", "name", "routed": bool, "inputs": [{"id", "gap", "out": output lane id|None}],
-                 "outputs": [{"id", "gap", "target": id|None, "color"}], "pos": [x, y],
-                 "wireless": bool, "pos_out": [x, y], "broken": None|"in"|"out"  (the last two: wireless only)}],
+                 "outputs": [{"id", "gap", "target": id|None}], "pos": [x, y],
+                 "wireless": bool, "pos_out": [x, y], "broken": None|"in"|"out", "number": int,
+                 "name_out": str  (the last four: wireless only)}],
   "pc":        {"inbound": id|None, "pos": [x, y], "backup": {...}|None, "applied": bool, "server": str},
 }
 
@@ -28,20 +29,23 @@ pass-through lane. Straight blocks wire lane i to lane i; routed ones ("routed":
 different input and output counts. "gap" = empty rows above a lane on the canvas. compile() follows the lanes
 (without_relays) so the runtime never sees them.
 A wireless pair is a one-lane straight pass-through ("wireless": True) drawn as two separate blocks: the input half
-at "pos", the output half at "pos_out", linked without a visible wire. Deleting one half breaks the pair
+at "pos" titled "name", the output half at "pos_out" titled "name_out", linked without a visible wire. The pair is
+known by its "number" (#1, #2, ...), unique among the wireless pairs. Deleting one half breaks the pair
 ("broken": "in"|"out" = the half that is gone): every link of the pair is cut and the half left over is disabled
 until its partner is recreated.
-Every block can have a "color" ("#rrggbb", "" = automatic): the canvas draws the links leaving it in that colour.
-A block without one follows the links coming into it (their mix where different colours meet, drawn dashed), and
-a pass-through does the same lane by lane - see wire_colors().
-Blocks with several outputs can also colour each output: a router rule's "color", a router's "default_color" (an
-IF's then / else are these two; an IF has no block colour of its own) and a pass-through output lane's "color".
-An output without its own colour uses the block's colour, or follows what comes in when that is automatic too.
+Every block except a pass-through can have a "color" ("#rrggbb", "" = automatic): the canvas draws the links
+leaving it in that colour. A block without one follows the links coming into it (their mix where different colours
+meet, drawn dashed). A pass-through (and a wireless pair) has no colour of its own: each lane hands on what comes
+into it, mixed where two or more colours meet - see wire_colors().
+A router can also colour each output: a rule's "color" and the router's "default_color" (an IF's then / else are
+these two; an IF has no block colour of its own). An output without its own colour uses the block's colour, or
+follows what comes in when that is automatic too.
 The runtime still works with one "proxy" per inbound (inbound + resolved outbound + overrides, plus "routes" for a
 router: [{"match": [match, ...], "outbound": resolved chain, "name": rule name}]); compile() builds them.
 """
 import copy
 import json
+import re
 import uuid
 
 from .common import INBOUND_TYPES, OUTBOUND_TYPES, host_port
@@ -184,14 +188,24 @@ def _lanes(items, key):
         v = x.get(key)
         lane = {"id": lid, "gap": gap if type(gap) is int and 0 <= gap <= MAX_GAP else 0,
                 key: v if isinstance(v, str) and v else None}
-        if key == "target":     # output lanes can have their own link colour
-            lane["color"] = valid_color(x.get("color"))
         out.append(lane)
     return out
 
 
 def new_lane(key):
-    return {"id": new_id(), "gap": 0, key: None, **({"color": ""} if key == "target" else {})}
+    return {"id": new_id(), "gap": 0, key: None}
+
+
+MAX_WIRELESS = 9999
+
+
+def valid_wireless_number(v):
+    return type(v) is int and 1 <= v <= MAX_WIRELESS
+
+
+def wireless_label(r):
+    """'Wireless #3' - how a wireless pair is named in lists and messages."""
+    return _t("Wireless {name}").format(name=f"#{r.get('number', 0)}")
 
 
 def validate_relay_node(raw):
@@ -216,10 +230,17 @@ def validate_relay_node(raw):
             o["gap"] = i["gap"]
             i["out"] = o["id"]
     n = {"id": raw.get("id") if isinstance(raw.get("id"), str) and raw.get("id") else new_id(),
-         "name": _name(raw.get("name"), "#1" if wireless else _t("Pass-through")), "routed": routed,
-         "inputs": ins, "outputs": outs, "pos": _pos(raw.get("pos")), "color": valid_color(raw.get("color")),
+         "name": _name(raw.get("name"), _t("Wireless in") if wireless else _t("Pass-through")), "routed": routed,
+         "inputs": ins, "outputs": outs, "pos": _pos(raw.get("pos")), "color": "",     # (lanes follow what comes in)
          "wireless": wireless}
     if wireless:
+        number = raw.get("number")
+        old = re.fullmatch(r"#(\d{1,4})", n["name"])     # (before 2.4.1 the pair's name was its number)
+        if old:
+            n["name"] = _t("Wireless in")
+            number = number if valid_wireless_number(number) else int(old.group(1))
+        n["number"] = number if valid_wireless_number(number) else 0       # (0: validate() gives it a free one)
+        n["name_out"] = _name(raw.get("name_out"), _t("Wireless out"))
         n["pos_out"] = _pos(raw.get("pos_out"), (n["pos"][0] + 300, n["pos"][1] + 120))
         n["broken"] = raw.get("broken") if raw.get("broken") in ("in", "out") else None
         if n["broken"]:         # a lone half: nothing goes through it
@@ -275,7 +296,7 @@ def lane_label(graph, tid):
         return None
     r, lane = hit
     if r.get("wireless"):
-        return _t("Wireless {name}").format(name=r["name"])
+        return wireless_label(r)
     return _t("{name} · lane {n}").format(name=r["name"], n=r["inputs"].index(lane) + 1)
 
 
@@ -339,8 +360,8 @@ def wire_colors(graph):
     - A block with its own colour uses it.
     - A block without one follows the links coming into it: their one colour, or the mix where different
       colours come in; with nothing coming in, the default colour.
-    - A pass-through lane hands on what comes into it the same way; a lane with nothing coming in uses the
-      pass-through's own colour (parts = ())."""
+    - A pass-through lane hands on what comes into it the same way (a pass-through has no colour of its own);
+      a lane with nothing coming in has parts = () and the default colour."""
     ins, outs = lane_index(graph)
     feeds = {}                  # block id / input lane id -> [("b", source block id) | ("o", output lane id)]
 
@@ -384,12 +405,13 @@ def wire_colors(graph):
         n = blocks.get(bid)
         if n is None:
             return ()
-        if n.get("color"):
+        relay = n in graph.get("relays", ())
+        if n.get("color") and not relay:
             return (n["color"],)
         if bid in busy:                     # (a loop: cannot be used anyway)
             return ()
         got = incoming(bid, busy | {bid})
-        if n in graph.get("relays", ()):    # a pass-through with nothing flowing through: its own (default) colour
+        if relay:                           # a pass-through with nothing flowing through: the default colour
             return tuple(sorted(got))
         return tuple(sorted(got)) or ("",)
 
@@ -414,11 +436,7 @@ def wire_colors(graph):
         if oid in busy:
             return ()
         busy = busy | {oid}
-        r, lane = outs[oid]
-        own = lane.get("color") or r.get("color")
-        if own:                             # the lane's own colour, else the pass-through's
-            memo[oid] = (own,)
-            return memo[oid]
+        r, _ = outs[oid]
         got = set()
         for x in r["inputs"]:
             if x["out"] == oid:
@@ -433,13 +451,13 @@ def wire_colors(graph):
     out = {}
     for bid, n in blocks.items():
         parts = block_parts(bid, frozenset())
-        out[bid] = (colour(parts, n.get("color", "")), parts)
+        out[bid] = (colour(parts, "" if n in graph.get("relays", ()) else n.get("color", "")), parts)
     for oid, (r, _) in outs.items():
         parts = out_parts(oid, frozenset())
-        out[oid] = (colour(parts, r.get("color", "")), parts)
+        out[oid] = (colour(parts), parts)
     for lid, (r, _) in ins.items():
         parts = in_parts(lid, frozenset())
-        out[lid] = (colour(parts, r.get("color", "")), parts)
+        out[lid] = (colour(parts), parts)
     for key in rule_color:
         parts = rout_parts(key, frozenset())
         out[key] = (colour(parts), parts)
@@ -452,30 +470,26 @@ def router_out_key(rid, key):
 
 
 def output_color(graph, bid, key):
-    """Own colour of output key of block bid (router: rule id or "default"; pass-through: output lane id)."""
+    """Own colour of output key (rule id or "default") of router bid; '' for anything else."""
     kind, n = find(graph, bid)
     if kind == "router":
         if key == "default":
             return n.get("default_color", "")
         return next((x.get("color", "") for x in n["rules"] if x["id"] == key), "")
-    if kind == "relay":
-        return next((x.get("color", "") for x in n["outputs"] if x["id"] == key), "")
     return ""
 
 
 def set_output_color(graph, bid, key, color):
-    """Give output key of block bid its own colour ('' = none). False if there is no such output."""
+    """Give output key (rule id or "default") of router bid its own colour ('' = none). False if there is no such
+    output (pass-throughs have no colours: their lanes follow what comes in)."""
     kind, n = find(graph, bid)
     color = valid_color(color)
+    x = None
     if kind == "router":
         if key == "default":
             n["default_color"] = color
             return True
         x = next((x for x in n["rules"] if x["id"] == key), None)
-    elif kind == "relay":
-        x = next((x for x in n["outputs"] if x["id"] == key), None)
-    else:
-        x = None
     if x is None:
         return False
     x["color"] = color
@@ -540,6 +554,15 @@ def validate(raw):
         if n["id"] not in seen and not seen & set(lane_ids):
             seen |= {n["id"], *lane_ids}
             g["relays"].append(n)
+    used = set()                            # wireless pair numbers: unique, missing ones get a free number
+    for r in g["relays"]:
+        if r.get("wireless"):
+            if r["number"] in used:
+                r["number"] = 0
+            used.add(r["number"])
+    for r in g["relays"]:
+        if r.get("wireless") and not r["number"]:
+            r["number"] = next_wireless_number(g)
     lanes_in = set(lane_index(g)[0])
     ids = {n["id"] for n in g["inbounds"]} | {n["id"] for n in g["outbounds"]} | {n["id"] for n in g["routers"]}
     for n in g["inbounds"]:
@@ -668,7 +691,8 @@ def lane_sources(graph, lane_id):
     """Names of the blocks linked straight into input lane lane_id (inbounds, router outputs, other lanes)."""
     names = [n["name"] for n in graph["inbounds"] if n["target"] == lane_id]
     names += [r["name"] for r in graph.get("routers", []) if any(t == lane_id for _, t in router_targets(r))]
-    names += [r["name"] for r in graph.get("relays", []) if any(x["target"] == lane_id for x in r["outputs"])]
+    names += [r.get("name_out", r["name"]) if r.get("wireless") else r["name"]
+              for r in graph.get("relays", []) if any(x["target"] == lane_id for x in r["outputs"])]
     return names
 
 
@@ -816,19 +840,25 @@ def add_relay(graph, name=None, pos=None, lanes=3):
     return n
 
 
-def next_wireless_name(graph):
-    """'#n' with the smallest n no wireless pair uses yet."""
-    used = {r["name"] for r in graph.get("relays", ()) if r.get("wireless")}
+def next_wireless_number(graph):
+    """The smallest number no wireless pair uses yet."""
+    used = {r.get("number") for r in graph.get("relays", ()) if r.get("wireless")}
     i = 1
-    while f"#{i}" in used:
+    while i in used:
         i += 1
-    return f"#{i}"
+    return i
 
 
-def add_wireless(graph, name=None, pos=None):
+def wireless_number_owner(graph, number, but=None):
+    """The wireless pair (other than id but) that uses number, else None."""
+    return next((r for r in graph.get("relays", ()) if r.get("wireless") and r.get("number") == number
+                 and r["id"] != but), None)
+
+
+def add_wireless(graph, pos=None, number=None):
     """New wireless pair: the input half at pos, the output half to the right of it."""
     pos = pos or [230, 0]
-    n = validate_relay_node({"id": new_id(), "name": name or next_wireless_name(graph), "pos": pos, "wireless": True,
+    n = validate_relay_node({"id": new_id(), "pos": pos, "wireless": True, "number": number or next_wireless_number(graph),
                              "pos_out": [pos[0] + 300, pos[1]], "inputs": [new_lane("out")]})
     graph.setdefault("relays", []).append(n)
     return n
@@ -905,6 +935,28 @@ def set_lane_count(n, side, count):
             x["out"] = None
 
 
+def remove_lane(n, lane_id):
+    """Remove one lane (input or output lane id) from pass-through n. A straight block loses the lane on both sides;
+    a routed one only on that side (inputs wired to a removed output become unwired). A block keeps at least one lane
+    on each side. Returns False if nothing was removed. Afterwards call drop_dead_lane_links() on the graph."""
+    if n.get("wireless"):
+        return False
+    side = "inputs" if any(x["id"] == lane_id for x in n["inputs"]) else \
+        "outputs" if any(x["id"] == lane_id for x in n["outputs"]) else None
+    if side is None or len(n[side]) <= 1:
+        return False
+    i = next(k for k, x in enumerate(n[side]) if x["id"] == lane_id)
+    sides = ("inputs", "outputs") if not n["routed"] else (side,)
+    for s in sides:
+        if i < len(n[s]):
+            del n[s][i]
+    out_ids = {o["id"] for o in n["outputs"]}
+    for x in n["inputs"]:
+        if x["out"] not in out_ids:
+            x["out"] = None
+    return True
+
+
 def drop_dead_lane_links(graph):
     """Links into pass-through lanes that no longer exist (the block lost lanes) are cut."""
     lanes = set(lane_index(graph)[0])
@@ -921,6 +973,43 @@ def drop_dead_lane_links(graph):
     for r in graph.get("relays", []):
         for x in r["outputs"]:
             x["target"] = alive(x["target"])
+
+
+def cut_links(graph, bid, half=None):
+    """Cut every link into and out of block bid (the block stays). half = "in"/"out": only that half of a wireless
+    pair (its incoming / outgoing links). A pass-through keeps its inside wiring. Returns True if anything changed."""
+    kind, b = find(graph, bid)
+    if b is None:
+        return False
+    take_in = half in (None, "in")
+    take_out = half in (None, "out")
+    into = set()                    # ids that links into this block point at
+    if take_in:
+        into = {x["id"] for x in b["inputs"]} if kind == "relay" else {bid}
+    before = json.dumps(graph, sort_keys=True)
+
+    def cut(t):
+        return None if t in into else t
+    for n in graph["inbounds"]:
+        n["target"] = None if take_out and n["id"] == bid else cut(n["target"])
+    for r in graph.get("routers", []):
+        mine = take_out and r["id"] == bid
+        r["default"] = None if mine else cut(r["default"])
+        for x in r["rules"]:
+            x["target"] = None if mine else cut(x["target"])
+    for r in graph.get("relays", []):
+        mine = take_out and r["id"] == bid
+        for x in r["outputs"]:
+            x["target"] = None if mine else cut(x["target"])
+    for n in graph["outbounds"]:
+        if take_out and n["id"] == bid:
+            n["via"], n["members"] = None, []
+            continue
+        n["via"] = cut(n["via"])
+        n["members"] = [m for m in n.get("members", []) if m not in into]
+    if graph["pc"]["inbound"] == bid and take_out:
+        graph["pc"]["inbound"] = None
+    return json.dumps(graph, sort_keys=True) != before
 
 
 def remove(graph, nid):

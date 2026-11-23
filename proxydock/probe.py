@@ -144,33 +144,34 @@ CHECK_ID = "__check__"
 CHECK_SITES = ("www.google.com", "www.cloudflare.com", "www.microsoft.com")
 
 
-def checker_for(proxy, glob):
+def checker_for(proxy, glob, check_id=CHECK_ID):
     """Temporary SOCKS5 proxy (127.0.0.1, free port) with the same outbound + local settings as the proxy being edited."""
     import copy
     p = config.new_proxy(_t("Check connection"), {"type": "socks5", "host": "127.0.0.1", "port": 1},
                          copy.deepcopy(proxy["outbound"]))
-    p["id"] = CHECK_ID
+    p["id"] = check_id
     p["inbound"]["port"] = 0
     p["overrides"] = config.resolve(proxy, glob)
     p["overrides"].update(allowed_domains=["*"], log_connections=False, log_close=False)
     return p
 
 
-def check_outbound(manager, proxy, glob):
+def check_outbound(manager, proxy, glob, check_id=CHECK_ID):
     """Check that one of CHECK_SITES can be reached over HTTPS through the outbound.
-    Result dict: ok, site, status, connect_ms, total_ms, error, detail (failure reason logged by the proxy), note."""
+    Result dict: ok, site, status, connect_ms, total_ms, error, detail (failure reason logged by the proxy), note.
+    check_id: id of the temporary proxy (give each check running at the same time its own)."""
     res = {"ok": False, "site": "", "error": "", "detail": ""}
     try:
-        checker = checker_for(proxy, glob)
+        checker = checker_for(proxy, glob, check_id)
         from .singbox import needs_singbox
         if needs_singbox(checker):      # sing-box needs a real port (the Python engine binds port 0)
             from .singbox.process import _free_port
             checker["inbound"]["port"] = _free_port()
         if not manager.start(checker, glob).result(20):
-            res["error"] = manager.state(CHECK_ID)[1] or _t("Could not create the check connection")
+            res["error"] = manager.state(check_id)[1] or _t("Could not create the check connection")
             return res
-        inst = manager.instances.get(CHECK_ID)
-        port = bridge_port_for(manager, CHECK_ID)
+        inst = manager.instances.get(check_id)
+        port = bridge_port_for(manager, check_id)
         for site in CHECK_SITES:
             inst.last_error = inst.last_reason = ""
             r = probe_site(site, port)
@@ -186,9 +187,29 @@ def check_outbound(manager, proxy, glob):
         return res
     finally:
         try:
-            manager.stop(CHECK_ID).result(5)
+            manager.stop(check_id).result(5)
         except Exception:
             pass
+
+
+def outbound_proxy(graph, oid):
+    """A proxy (as compile() makes them) that leaves through outbound block oid, for check_outbound()."""
+    from . import graph as graph_mod
+    _, n = graph_mod.find(graph, oid)
+    ob = graph_mod.resolve_outbound(graph, oid)
+    p = config.validate_proxy({"id": "__latency__", "name": n["name"] if n else oid,
+                               "inbound": {"type": "socks5", "host": "127.0.0.1", "port": 1}, "outbound": ob})
+    p["outbound"]["via"] = ob.get("via")
+    if "members" in ob:
+        p["outbound"]["members"] = ob["members"]
+    return p
+
+
+def latency_key(graph, oid):
+    """What a latency result depends on (the outbound and its chain): a stored result is shown only while it matches."""
+    import json
+    from . import graph as graph_mod
+    return json.dumps(graph_mod.resolve_outbound(graph, oid), sort_keys=True, default=str)
 
 
 def bridge_port_for(manager, pid):
