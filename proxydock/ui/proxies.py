@@ -373,17 +373,17 @@ class RouterCard(OutboundCard):
         from .. import graph as graph_mod
         self.name.setText(node["name"])
         g = self.page.ctl.graph
-        _, d = graph_mod.find(g, node["default"]) if node["default"] else (None, None)
+        _, d = graph_mod.find(g, graph_mod.follow(g, node["default"])) if node["default"] else (None, None)
         if node.get("switch"):
             rule = node["rules"][0]
-            _, t = graph_mod.find(g, rule["target"]) if rule["target"] else (None, None)
+            _, t = graph_mod.find(g, graph_mod.follow(g, rule["target"])) if rule["target"] else (None, None)
             on = node.get("switch_on")
             text = (_t("Switch: on → then") if on else _t("Switch: off → else")) + "  ·  " + _t("then") + " → " \
                 + (t["name"] if t else "-") + "  ·  " + _t("else") + " → " + (d["name"] if d else "-")
         elif node.get("style") == "if":
             from .router import match_summary
             rule = node["rules"][0]
-            _, t = graph_mod.find(g, rule["target"]) if rule["target"] else (None, None)
+            _, t = graph_mod.find(g, graph_mod.follow(g, rule["target"])) if rule["target"] else (None, None)
             text = "IF " + (match_summary(rule["match"]) or _t("(no condition)")) + "  →  " + (t["name"] if t else "-") \
                 + "  ·  " + _t("else") + " → " + (d["name"] if d else "-")
         else:
@@ -1085,6 +1085,8 @@ class EditorInterface(ScrollArea):
         # router blocks
         from .router import RouterSection
         self.s_router = RouterSection(ctl, v)
+        from .relay import RelaySection
+        self.s_relay = RelaySection(ctl, v)
 
         header = QHBoxLayout()
         header.addWidget(self.title)
@@ -1096,8 +1098,8 @@ class EditorInterface(ScrollArea):
         root.setSpacing(18)
         root.addLayout(header)
         self.sections = {"basic": s_basic, "in": s_in, "link": s_link, "out": s_out, "check": s_check, "local": s_local,
-                         "router": self.s_router}
-        for s in (s_basic, s_in, s_link, s_out, s_check, s_local, self.s_router):
+                         "router": self.s_router, "relay": self.s_relay}
+        for s in (s_basic, s_in, s_link, s_out, s_check, s_local, self.s_router, self.s_relay):
             root.addWidget(s)
         root.addStretch(1)
 
@@ -1125,11 +1127,21 @@ class EditorInterface(ScrollArea):
 
     # --- display ---
     def load_node(self, kind, node):
-        """Edit an inbound, outbound or router block of the graph."""
+        """Edit an inbound, outbound, router or pass-through block of the graph."""
         from .. import config as cfg
         self.kind = kind
         self.node = copy.deepcopy(node)
         n = self.node
+        if kind == "relay":
+            for key, sec in self.sections.items():
+                sec.setVisible(key in ("basic", "relay"))
+            self.r_auto.setVisible(False)
+            self.r_restart.setVisible(False)
+            self.title.setText(_t("Edit pass-through"))
+            self.ed_name.setText(n["name"])
+            self.s_relay.load(n)
+            self.verticalScrollBar().setValue(0)
+            return
         if kind == "router":
             for key, sec in self.sections.items():
                 sec.setVisible(key in ("basic", "router"))
@@ -1331,6 +1343,7 @@ class EditorInterface(ScrollArea):
         info(self.window(), "success", _t("Filled in from the link"), name, 3000)
 
     def _after_fill(self, n, inbound, ib):
+        from .. import graph as graph_mod
         if not inbound:
             g = self.ctl.graph
             others = [x for x in g["outbounds"] if x["id"] != n["id"] and x["outbound"]["type"] not in ("direct", "group")]
@@ -1343,11 +1356,13 @@ class EditorInterface(ScrollArea):
         if inbound:
             g = self.ctl.graph
             routers = g.get("routers", [])
+            lanes = graph_mod.lane_choices(g)
             self.targets = [None] + [x["id"] for x in g["outbounds"]] + [x["id"] for x in routers] + \
-                [x["id"] for x in g["inbounds"] if x["id"] != n["id"]]
+                [x["id"] for x in g["inbounds"] if x["id"] != n["id"]] + [i for i, _ in lanes]
             labels = [_t("(not connected)")] + [x["name"] for x in g["outbounds"]] + \
                 [_t("Router {name}").format(name=x["name"]) for x in routers] + \
-                [_t("relay → {name}").format(name=x["name"]) for x in g["inbounds"] if x["id"] != n["id"]]
+                [_t("relay → {name}").format(name=x["name"]) for x in g["inbounds"] if x["id"] != n["id"]] + \
+                [label for _, label in lanes]
             self.cb_target.clear()
             self.cb_target.addItems(labels)
             self.cb_target.setCurrentIndex(self.targets.index(n["target"]) if n["target"] in self.targets else 0)
@@ -1760,6 +1775,8 @@ class EditorInterface(ScrollArea):
         from .. import graph as graph_mod
         n = copy.deepcopy(self.node)
         n["name"] = self.ed_name.text().strip()
+        if self.kind == "relay":
+            return self.s_relay.collect(n)
         if self.kind == "router":
             r = self.s_router.collect(n)
             out = graph_mod.validate_router_node(r)
@@ -1854,6 +1871,8 @@ class EditorInterface(ScrollArea):
         return p, []
 
     def _errors(self, n, for_check=False):
+        if self.kind == "relay":
+            return self.s_relay.errors(n)
         if self.kind == "router":
             return self.s_router.errors(n)
         if self.kind == "outbound":

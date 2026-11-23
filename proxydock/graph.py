@@ -5,6 +5,8 @@ graph = {
   "outbounds": [{"id", "name", "outbound": {...}, "via": id|None, "members": [id, ...], "pos": [x, y]}],
   "routers":   [{"id", "name", "style": "router"|"if", "rules": [{"id", "name", "match": {...}, "target": id|None}],
                  "default": id|None, "pos": [x, y]}],
+  "relays":    [{"id", "name", "routed": bool, "inputs": [{"id", "gap", "out": output lane id|None}],
+                 "outputs": [{"id", "gap", "target": id|None}], "pos": [x, y]}],
   "pc":        {"inbound": id|None, "pos": [x, y], "backup": {...}|None, "applied": bool, "server": str},
 }
 
@@ -19,6 +21,14 @@ block, the Block outbound or another router; everything else goes to the router'
 sing-box engine (they become sing-box route rules). An IF block is a router with exactly one rule: its "then"
 output is the rule's target, its "else" output the default. An IF in switch mode ("switch": True) has no condition:
 "switch_on" sends everything to "then", off to "else" (a manual switch / kill switch).
+A pass-through block ("relays") only tidies the wiring: a link can go to one of its input lanes, and each input
+lane is wired inside the block to an output lane, whose link goes on to an outbound block, a router or another
+pass-through lane. Straight blocks wire lane i to lane i; routed ones ("routed": True) can cross, merge and have
+different input and output counts. "gap" = empty rows above a lane on the canvas. compile() follows the lanes
+(without_relays) so the runtime never sees them.
+Every block can have a "color" ("#rrggbb", "" = automatic): the canvas draws the links leaving it in that colour.
+A block without one follows the links coming into it (their mix where different colours meet, drawn dashed), and
+a pass-through does the same lane by lane - see wire_colors().
 The runtime still works with one "proxy" per inbound (inbound + resolved outbound + overrides, plus "routes" for a
 router: [{"match": [match, ...], "outbound": resolved chain, "name": rule name}]); compile() builds them.
 """
@@ -44,7 +54,7 @@ def new_id():
 
 
 def empty():
-    return {"inbounds": [], "outbounds": [], "routers": [],
+    return {"inbounds": [], "outbounds": [], "routers": [], "relays": [],
             "pc": {"inbound": None, "pos": [460, -200], "backup": None, "applied": False, "server": ""}}
 
 
@@ -56,6 +66,17 @@ def _pos(v, default=(0, 0)):
 
 def _name(v, default):
     return v.strip()[:60] if isinstance(v, str) and v.strip() else default
+
+
+def valid_color(v):
+    """'#rrggbb' (lower case) or '' (no colour: the default)."""
+    if isinstance(v, str) and len(v) == 7 and v[0] == "#":
+        try:
+            int(v[1:], 16)
+            return v.lower()
+        except ValueError:
+            pass
+    return ""
 
 
 def validate_outbound_node(raw):
@@ -78,7 +99,7 @@ def validate_outbound_node(raw):
     return {"id": raw.get("id") if isinstance(raw.get("id"), str) and raw.get("id") else new_id(),
             "name": _name(raw.get("name"), default_outbound_name(ob)), "outbound": ob,
             "via": via if isinstance(via, str) and via and ob["type"] not in NO_VIA else None,
-            "members": members, "pos": _pos(raw.get("pos"))}
+            "members": members, "pos": _pos(raw.get("pos")), "color": valid_color(raw.get("color"))}
 
 
 def validate_inbound_node(raw):
@@ -89,7 +110,7 @@ def validate_inbound_node(raw):
     return {"id": p["id"], "name": p["name"], "autostart": p["autostart"], "auto_restart": p["auto_restart"],
             "inbound": p["inbound"],
             "overrides": p["overrides"], "target": target if isinstance(target, str) and target else None,
-            "pos": _pos(raw.get("pos"))}
+            "pos": _pos(raw.get("pos")), "color": valid_color(raw.get("color"))}
 
 
 def validate_match(raw):
@@ -128,7 +149,261 @@ def validate_router_node(raw):
     return {"id": raw.get("id") if isinstance(raw.get("id"), str) and raw.get("id") else new_id(),
             "name": _name(raw.get("name"), "IF" if style == "if" else "Router"), "style": style, "rules": rules,
             "switch": style == "if" and raw.get("switch") is True, "switch_on": raw.get("switch_on") is True,
-            "default": d if isinstance(d, str) and d else None, "pos": _pos(raw.get("pos"))}
+            "default": d if isinstance(d, str) and d else None, "pos": _pos(raw.get("pos")),
+            "color": valid_color(raw.get("color"))}
+
+
+MAX_LANES = 24
+MAX_GAP = 4
+
+
+def _lanes(items, key):
+    out, seen = [], set()
+    for x in (items if isinstance(items, list) else [])[:MAX_LANES]:
+        if not isinstance(x, dict):
+            continue
+        lid = x.get("id") if isinstance(x.get("id"), str) and x.get("id") else new_id()
+        if lid in seen:
+            lid = new_id()
+        seen.add(lid)
+        gap = x.get("gap")
+        v = x.get(key)
+        out.append({"id": lid, "gap": gap if type(gap) is int and 0 <= gap <= MAX_GAP else 0,
+                    key: v if isinstance(v, str) and v else None})
+    return out
+
+
+def new_lane(key):
+    return {"id": new_id(), "gap": 0, key: None}
+
+
+def validate_relay_node(raw):
+    raw = raw if isinstance(raw, dict) else {}
+    routed = raw.get("routed") is True
+    ins = _lanes(raw.get("inputs"), "out") or [new_lane("out")]
+    outs = _lanes(raw.get("outputs"), "target") or [new_lane("target")]
+    if routed:
+        out_ids = {o["id"] for o in outs}
+        for i in ins:
+            if i["out"] not in out_ids:
+                i["out"] = None
+    else:                       # straight: lane i -> lane i, the output side mirrors the input side
+        while len(outs) < len(ins):
+            outs.append(new_lane("target"))
+        outs = outs[:len(ins)]
+        for i, o in zip(ins, outs):
+            o["gap"] = i["gap"]
+            i["out"] = o["id"]
+    return {"id": raw.get("id") if isinstance(raw.get("id"), str) and raw.get("id") else new_id(),
+            "name": _name(raw.get("name"), _t("Pass-through")), "routed": routed,
+            "inputs": ins, "outputs": outs, "pos": _pos(raw.get("pos")), "color": valid_color(raw.get("color"))}
+
+
+def lane_index(graph):
+    """({input lane id: (relay, lane)}, {output lane id: (relay, lane)})."""
+    ins, outs = {}, {}
+    for r in graph.get("relays", ()):
+        for x in r["inputs"]:
+            ins[x["id"]] = (r, x)
+        for x in r["outputs"]:
+            outs[x["id"]] = (r, x)
+    return ins, outs
+
+
+def _walk(graph, tid, index=None):
+    """(block id at the end of the pass-through lanes from tid or None, True if they loop)."""
+    ins, outs = index or lane_index(graph)
+    seen = set()
+    while tid in ins:
+        if tid in seen:
+            return None, True
+        seen.add(tid)
+        o = outs.get(ins[tid][1]["out"])
+        tid = o[1]["target"] if o else None
+    return tid, False
+
+
+def follow(graph, tid, index=None):
+    """Where a link to tid really goes: through pass-through lanes to the block behind them (None = nowhere)."""
+    return _walk(graph, tid, index)[0]
+
+
+def lane_loop(graph, tid):
+    """True if following pass-through lanes from tid comes back around."""
+    return _walk(graph, tid)[1]
+
+
+def is_lane(graph, tid):
+    return tid in lane_index(graph)[0]
+
+
+def lane_label(graph, tid):
+    """'Pass-through name · 3' for an input lane id (None if it is not one)."""
+    hit = lane_index(graph)[0].get(tid)
+    if hit is None:
+        return None
+    r, lane = hit
+    return _t("{name} · lane {n}").format(name=r["name"], n=r["inputs"].index(lane) + 1)
+
+
+def lane_choices(graph):
+    """[(input lane id, label)] of every pass-through lane, for target pickers."""
+    return [(x["id"], lane_label(graph, x["id"])) for r in graph.get("relays", ()) for x in r["inputs"]]
+
+
+DEFAULT_LINK = "#af5f1e"         # the canvas's default link colour (NodeGraphQt's pipe colour)
+
+
+def _srgb_to_oklab(hexc):
+    def lin(c):
+        c /= 255
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+    r, g, b = (lin(int(hexc[i:i + 2], 16)) for i in (1, 3, 5))
+    l_ = (0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b) ** (1 / 3)
+    m_ = (0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b) ** (1 / 3)
+    s_ = (0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b) ** (1 / 3)
+    return (0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_,
+            1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_,
+            0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_)
+
+
+def _oklab_to_srgb(lab):
+    L, A, B = lab
+    l_ = (L + 0.3963377774 * A + 0.2158037573 * B) ** 3
+    m_ = (L - 0.1055613458 * A - 0.0638541728 * B) ** 3
+    s_ = (L - 0.0894841775 * A - 1.2914855480 * B) ** 3
+    rgb = (4.0767416621 * l_ - 3.3077115913 * m_ + 0.2309699292 * s_,
+           -1.2684380046 * l_ + 2.6097574011 * m_ - 0.3413193965 * s_,
+           -0.0041960863 * l_ - 0.7034186147 * m_ + 1.7076147010 * s_)
+
+    def enc(c):
+        c = min(max(c, 0.0), 1.0)
+        return round(255 * (12.92 * c if c <= 0.0031308 else 1.055 * c ** (1 / 2.4) - 0.055))
+    return "#%02x%02x%02x" % tuple(enc(c) for c in rgb)
+
+
+def mix_colors(colors):
+    """Even mix of '#rrggbb' colours ('' = the default link colour) in OKLCh: lightness and chroma are averaged
+    and the hue is the circular mean, so red + blue gives a vivid magenta instead of a muddy grey-purple."""
+    import math
+    labs = [_srgb_to_oklab(c or DEFAULT_LINK) for c in colors]
+    if not labs:
+        return ""
+    n = len(labs)
+    L = sum(x[0] for x in labs) / n
+    C = sum(math.hypot(x[1], x[2]) for x in labs) / n
+    ux = sum(x[1] for x in labs)            # hue: mean direction weighted by chroma (a grey hardly pulls it)
+    uy = sum(x[2] for x in labs)
+    if math.hypot(ux, uy) < 1e-3 * n:       # hues cancel out (e.g. opposite colours): plain average
+        return _oklab_to_srgb((L, sum(x[1] for x in labs) / n, sum(x[2] for x in labs) / n))
+    h = math.atan2(uy, ux)
+    return _oklab_to_srgb((L, C * math.cos(h), C * math.sin(h)))
+
+
+def wire_colors(graph):
+    """Link colours on the canvas: {block id or pass-through lane id: (colour, parts)}.
+    parts = the colours that make it up ('' = the default colour); len(parts) > 1 = a mix (drawn dashed).
+    - A block with its own colour uses it.
+    - A block without one follows the links coming into it: their one colour, or the mix where different
+      colours come in; with nothing coming in, the default colour.
+    - A pass-through lane hands on what comes into it the same way; a lane with nothing coming in uses the
+      pass-through's own colour (parts = ())."""
+    ins, outs = lane_index(graph)
+    feeds = {}                  # block id / input lane id -> [("b", source block id) | ("o", output lane id)]
+
+    def feed(target, source):
+        if target:
+            feeds.setdefault(target, []).append(source)
+    for n in graph["inbounds"]:
+        feed(n["target"], ("b", n["id"]))
+    for r in graph.get("routers", []):
+        for _, t in router_targets(r):
+            feed(t, ("b", r["id"]))
+    for n in graph["outbounds"]:
+        feed(n.get("via"), ("b", n["id"]))
+        for m in n.get("members", ()):
+            feed(m, ("b", n["id"]))
+    for r in graph.get("relays", []):
+        for x in r["outputs"]:
+            feed(x["target"], ("o", x["id"]))
+        for x in r["inputs"]:               # a pass-through block (its swatch) shows what flows through it
+            feed(r["id"], ("i", x["id"]))
+    blocks = {n["id"]: n for kind in ("inbounds", "outbounds", "routers", "relays") for n in graph.get(kind, [])}
+    memo = {}
+
+    def source_parts(src, busy):
+        kind, v = src
+        if kind == "b":
+            return block_parts(v, busy)
+        if kind == "o":
+            return out_parts(v, busy)
+        return in_parts(v, busy)
+
+    def incoming(target, busy):
+        got = set()
+        for src in feeds.get(target, ()):
+            got |= set(source_parts(src, busy))
+        return got
+
+    def block_parts(bid, busy):
+        n = blocks.get(bid)
+        if n is None:
+            return ()
+        if n.get("color"):
+            return (n["color"],)
+        if bid in busy:                     # (a loop: cannot be used anyway)
+            return ()
+        got = incoming(bid, busy | {bid})
+        if n in graph.get("relays", ()):    # a pass-through with nothing flowing through: its own (default) colour
+            return tuple(sorted(got))
+        return tuple(sorted(got)) or ("",)
+
+    def in_parts(lid, busy):
+        if lid in busy:
+            return ()
+        return tuple(sorted(incoming(lid, busy | {lid})))
+
+    def out_parts(oid, busy):
+        if oid in memo:
+            return memo[oid]
+        if oid in busy:
+            return ()
+        busy = busy | {oid}
+        r, _ = outs[oid]
+        got = set()
+        for x in r["inputs"]:
+            if x["out"] == oid:
+                got |= set(in_parts(x["id"], busy))
+        memo[oid] = tuple(sorted(got))
+        return memo[oid]
+
+    def colour(parts, own=""):
+        if not parts:
+            return own
+        return parts[0] if len(parts) == 1 else mix_colors(parts)
+    out = {}
+    for bid, n in blocks.items():
+        parts = block_parts(bid, frozenset())
+        out[bid] = (colour(parts, n.get("color", "")), parts)
+    for oid, (r, _) in outs.items():
+        parts = out_parts(oid, frozenset())
+        out[oid] = (colour(parts, r.get("color", "")), parts)
+    for lid, (r, _) in ins.items():
+        parts = in_parts(lid, frozenset())
+        out[lid] = (colour(parts, r.get("color", "")), parts)
+    return out
+
+
+def without_relays(graph):
+    """The graph with every link into a pass-through lane replaced by where the lanes lead (and no relays)."""
+    if not graph.get("relays"):
+        return graph
+    idx = lane_index(graph)
+    return dict(graph, relays=[],
+                inbounds=[dict(n, target=follow(graph, n["target"], idx)) for n in graph["inbounds"]],
+                routers=[dict(r, default=follow(graph, r["default"], idx),
+                              rules=[dict(x, target=follow(graph, x["target"], idx)) for x in r["rules"]])
+                         for r in graph.get("routers", [])])
 
 
 def router_targets(r):
@@ -139,7 +414,8 @@ def router_targets(r):
 def router_loop(graph, rid):
     """True if following router links from router rid comes back to it."""
     routers = {r["id"]: r for r in graph.get("routers", [])}
-    stack, seen = ([t for _, t in router_targets(routers[rid])] if rid in routers else []), set()
+    idx = lane_index(graph)
+    stack, seen = ([follow(graph, t, idx) for _, t in router_targets(routers[rid])] if rid in routers else []), set()
     while stack:
         cur = stack.pop()
         if cur == rid:
@@ -147,7 +423,7 @@ def router_loop(graph, rid):
         if cur in seen or cur not in routers:
             continue
         seen.add(cur)
-        stack += [t for _, t in router_targets(routers[cur])]
+        stack += [follow(graph, t, idx) for _, t in router_targets(routers[cur])]
     return False
 
 
@@ -170,21 +446,36 @@ def validate(raw):
         if n["id"] not in seen:
             seen.add(n["id"])
             g["routers"].append(n)
+    for item in raw.get("relays") or []:
+        n = validate_relay_node(item)
+        lane_ids = [x["id"] for x in n["inputs"] + n["outputs"]]
+        if n["id"] not in seen and not seen & set(lane_ids):
+            seen |= {n["id"], *lane_ids}
+            g["relays"].append(n)
+    lanes_in = set(lane_index(g)[0])
     ids = {n["id"] for n in g["inbounds"]} | {n["id"] for n in g["outbounds"]} | {n["id"] for n in g["routers"]}
     for n in g["inbounds"]:
-        if n["target"] not in ids or n["target"] == n["id"]:
+        if n["target"] not in ids | lanes_in or n["target"] == n["id"]:
             n["target"] = None
     rule_ids = {n["id"] for n in g["outbounds"]} | {n["id"] for n in g["routers"]}
     router_ids = {n["id"] for n in g["routers"]}
-    for r in g["routers"]:                  # router links go to outbound blocks or other routers
-        for x in r["rules"]:
-            if x["target"] not in rule_ids or x["target"] == r["id"]:
+    for r in g["relays"]:                   # lanes lead on to outbound blocks, routers or other lanes
+        for x in r["outputs"]:
+            if x["target"] not in rule_ids | lanes_in:
                 x["target"] = None
-        if r["default"] not in rule_ids or r["default"] == r["id"]:
+    for r in g["relays"]:                   # lanes going round in a circle cannot be used: cut them
+        for x in r["outputs"]:
+            if x["target"] in lanes_in and lane_loop(g, x["target"]):
+                x["target"] = None
+    for r in g["routers"]:                  # router links go to outbound blocks, other routers or lanes
+        for x in r["rules"]:
+            if x["target"] not in rule_ids | lanes_in or x["target"] == r["id"]:
+                x["target"] = None
+        if r["default"] not in rule_ids | lanes_in or r["default"] == r["id"]:
             r["default"] = None
     for r in g["routers"]:                  # a router loop cannot be used: cut it
         while router_loop(g, r["id"]):
-            key = next(k for k, t in reversed(router_targets(r)) if t in router_ids)
+            key = next(k for k, t in reversed(router_targets(r)) if follow(g, t) in router_ids)
             if key == "default":
                 r["default"] = None
             else:
@@ -217,8 +508,8 @@ def validate(raw):
 # --- lookups ---
 
 def find(graph, nid):
-    """('inbound'|'outbound'|'router', node) or (None, None)."""
-    for kind in ("inbounds", "outbounds", "routers"):
+    """('inbound'|'outbound'|'router'|'relay', node) or (None, None). Pass-through lane ids are not blocks."""
+    for kind in ("inbounds", "outbounds", "routers", "relays"):
         for n in graph.get(kind, ()):
             if n["id"] == nid:
                 return kind[:-1], n
@@ -271,14 +562,25 @@ def chain_names(graph, nid):
 
 
 def users(graph, nid):
-    """Inbound blocks whose target is nid."""
-    return [n for n in graph["inbounds"] if n["target"] == nid]
+    """Inbound blocks whose traffic goes to nid (directly or through pass-through lanes)."""
+    idx = lane_index(graph)
+    return [n for n in graph["inbounds"] if n["target"] and follow(graph, n["target"], idx) == nid]
 
 
 def used_by(graph, nid):
-    """Names of the blocks that send traffic to block nid: inbounds, groups (members) and routers (rule targets)."""
+    """Names of the blocks that send traffic to block nid: inbounds, groups (members) and routers (rule targets),
+    looking through pass-through blocks."""
+    idx = lane_index(graph)
     names = [n["name"] for n in users(graph, nid)] + [n["name"] for n in groups_of(graph, nid)]
-    names += [r["name"] for r in graph.get("routers", []) if any(t == nid for _, t in router_targets(r))]
+    names += [r["name"] for r in graph.get("routers", []) if any(follow(graph, t, idx) == nid for _, t in router_targets(r))]
+    return names
+
+
+def lane_sources(graph, lane_id):
+    """Names of the blocks linked straight into input lane lane_id (inbounds, router outputs, other lanes)."""
+    names = [n["name"] for n in graph["inbounds"] if n["target"] == lane_id]
+    names += [r["name"] for r in graph.get("routers", []) if any(t == lane_id for _, t in router_targets(r))]
+    names += [r["name"] for r in graph.get("relays", []) if any(x["target"] == lane_id for x in r["outputs"])]
     return names
 
 
@@ -361,6 +663,7 @@ def flatten_router(graph, rid, prefix=(), seen=()):
 def compile(graph):
     """Runtime proxies (one per inbound block). 'unlinked' = no target, cannot start."""
     from . import config
+    graph = without_relays(graph)
     out = []
     for n in graph["inbounds"]:
         kind, t = find(graph, n["target"]) if n["target"] else (None, None)
@@ -418,19 +721,98 @@ def add_router(graph, name=None, pos=None, style="router"):
     return n
 
 
+def add_relay(graph, name=None, pos=None, lanes=3):
+    n = validate_relay_node({"id": new_id(), "name": name, "pos": pos or [230, 0],
+                             "inputs": [new_lane("out") for _ in range(lanes)]})
+    graph.setdefault("relays", []).append(n)
+    return n
+
+
+def copy_relay(n):
+    """Deep copy of relay node n with fresh block and lane ids (the inside wiring kept)."""
+    c = copy.deepcopy(n)
+    c["id"] = new_id()
+    new_out = {}
+    for x in c["outputs"]:
+        new_out[x["id"]] = x["id"] = new_id()
+    for x in c["inputs"]:
+        x["id"] = new_id()
+        x["out"] = new_out.get(x["out"])
+    return c
+
+
+def set_lane_count(n, side, count):
+    """Grow or shrink relay n's 'inputs' or 'outputs' to count lanes (1..MAX_LANES); straight blocks keep both sides equal."""
+    count = max(1, min(MAX_LANES, count))
+    sides = ("inputs", "outputs") if not n["routed"] else (side,)
+    for s in sides:
+        key = "out" if s == "inputs" else "target"
+        while len(n[s]) < count:
+            n[s].append(new_lane(key))
+        del n[s][count:]
+    out_ids = {o["id"] for o in n["outputs"]}
+    for i, x in enumerate(n["inputs"]):
+        if not n["routed"]:
+            x["out"] = n["outputs"][i]["id"]
+            n["outputs"][i]["gap"] = x["gap"]
+        elif x["out"] not in out_ids:
+            x["out"] = None
+
+
+def drop_dead_lane_links(graph):
+    """Links into pass-through lanes that no longer exist (the block lost lanes) are cut."""
+    lanes = set(lane_index(graph)[0])
+    blocks = {n["id"] for kind in ("inbounds", "outbounds", "routers") for n in graph.get(kind, [])}
+
+    def alive(t):
+        return t if t is None or t in lanes or t in blocks else None
+    for n in graph["inbounds"]:
+        n["target"] = alive(n["target"])
+    for r in graph.get("routers", []):
+        r["default"] = alive(r["default"])
+        for x in r["rules"]:
+            x["target"] = alive(x["target"])
+    for r in graph.get("relays", []):
+        for x in r["outputs"]:
+            x["target"] = alive(x["target"])
+
+
 def remove(graph, nid):
+    kind, gone = find(graph, nid)
+    replace = {}                # links into a deleted pass-through's lanes -> where the lanes led (splice)
+    if kind == "relay":
+        outs = {o["id"]: o["target"] for o in gone["outputs"]}
+        own = {x["id"] for x in gone["inputs"]}
+        for x in gone["inputs"]:
+            t = outs.get(x["out"])
+            replace[x["id"]] = t if t not in own else None
     graph["inbounds"] = [n for n in graph["inbounds"] if n["id"] != nid]
     graph["outbounds"] = [n for n in graph["outbounds"] if n["id"] != nid]
     graph["routers"] = [n for n in graph.get("routers", []) if n["id"] != nid]
+    graph["relays"] = [n for n in graph.get("relays", []) if n["id"] != nid]
+
+    def fix(t):
+        return None if t == nid else replace.get(t, t)
     for r in graph["routers"]:
         for x in r["rules"]:
-            if x["target"] == nid:
+            x["target"] = fix(x["target"])
+        r["default"] = fix(r["default"])
+    for r in graph["relays"]:
+        for x in r["outputs"]:
+            x["target"] = fix(x["target"])
+            if x["target"] and lane_loop(graph, x["target"]):
                 x["target"] = None
-        if r["default"] == nid:
-            r["default"] = None
     for n in graph["inbounds"]:
-        if n["target"] == nid:
+        n["target"] = fix(n["target"])
+        if n["target"] == n["id"]:
             n["target"] = None
+    for r in graph["routers"]:              # splicing can close a router loop: cut it
+        while router_loop(graph, r["id"]):
+            key = next(k for k, t in reversed(router_targets(r)) if find(graph, follow(graph, t))[0] == "router")
+            if key == "default":
+                r["default"] = None
+            else:
+                next(x for x in r["rules"] if x["id"] == key)["target"] = None
     for n in graph["outbounds"]:
         if n["via"] == nid:
             n["via"] = None
