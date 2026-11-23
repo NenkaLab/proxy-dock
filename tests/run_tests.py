@@ -38,6 +38,15 @@ config.CERT_DIR = os.path.join(TMP, "certs")
 config.WINDOW_STATE_PATH = os.path.join(TMP, "window.json")
 config.app_dir = lambda name="x": os.path.join(TMP, "none")
 
+from proxydock import update as update_mod  # noqa: E402
+
+
+def _no_network(url, *args, **kwargs):
+    raise ValueError("no network in tests")
+
+
+update_mod.http_get = _no_network       # the UI test's startup update check must not reach GitHub
+
 results = []
 
 
@@ -311,7 +320,7 @@ def test_ui():
     w.show()
     wait(800)
     for page in (w.canvas_page, w.proxies_page, w.log_page, w.stats_page, w.test_page, w.help_page,
-                 w.license_page, w.settings_page):
+                 w.license_page, w.about_page, w.settings_page):
         w.switchTo(page)
         wait(150)
     ctl.edit_node(graph["inbounds"][0]["id"])
@@ -748,6 +757,7 @@ def test_ui():
     check("ui: settings keep 'Run as administrator'", ctl.glob["run_as_admin"] is True)
     w.settings_page.sw_admin.setChecked(False)
     w.settings_page.apply()
+    ui_update(ctl, w, wait)
     ctl.set_target(graph["inbounds"][0]["id"], d["id"])
     ctl.change_language("ko")
     wait(600)
@@ -757,6 +767,227 @@ def test_ui():
     check("ui: autostart proxy running", any(s[0] == "running" for s in ctl.statuses().values()))
     check("ui: no exceptions", not errors, [repr(e) for e in errors][:3])
     ctl.manager.stop_all()
+
+
+def ui_update(ctl, w, wait):
+    """About page, update check and in-app update against a fake GitHub (part of test_ui)."""
+    import io
+    from PySide6.QtCore import QTimer
+    from proxydock.ui.updater import ReleaseDialog
+
+    def until(cond, ms=5000):
+        for _ in range(ms // 50):
+            if cond():
+                return True
+            wait(50)
+        return cond()
+
+    w.settings_page.sw_updates.setChecked(False)
+    w.settings_page.apply()
+    check("ui: settings switch the update check off", ctl.glob["check_updates"] is False and not update_mod.due(ctl.glob))
+    w.settings_page.sw_updates.setChecked(True)
+    w.settings_page.apply()
+    rel_json, payload, sums = release_fixture("9.9.9")
+    updater = ctl.updater
+    old_get, old_stream = update_mod.http_get, update_mod.open_stream
+    update_mod.http_get = fake_github(rel_json, sums)
+    update_mod.open_stream = lambda url: io.BytesIO(payload)
+    shown, asked = [], []
+    updater.show_dialog = lambda: shown.append(1)       # the real one is modal (tested below)
+    updater.ask_install = lambda kind: asked.append(kind) or False
+    updater.install_info = lambda: ("linux", "x64", "appimage")
+    try:
+        w.switchTo(w.about_page)
+        wait(150)
+        w.about_page.btn_check.click()
+        until(lambda: not updater._checking)
+        check("ui: About 'Check for updates' finds the new version", "9.9.9" in w.about_page.r_app.desc.text() and shown
+              and updater.release["version"] == "9.9.9" and ctl.glob["update_checked"] > 0, w.about_page.r_app.desc.text())
+        name, kind = updater.asset_for(updater.release)
+        check("ui: update picks the AppImage", (name, kind) == ("ProxyDock-9.9.9-linux-x64.AppImage", "appimage"), name)
+        updater.start_download(updater.release, name, kind)
+        until(lambda: not updater._downloading)
+        check("ui: update downloads, verifies, then asks before installing", asked == ["appimage"], asked)
+        update_mod.open_stream = lambda url: io.BytesIO(b"tampered" + payload[8:])
+        updater.start_download(updater.release, name, kind)
+        until(lambda: not updater._downloading)
+        check("ui: a file with a wrong SHA-256 is not offered for install", asked == ["appimage"], asked)
+        from proxydock.ui import common as uic
+        mac = uic.DIALOG_NO_EFFECTS
+        for no_fade in sorted({mac, True}):         # the macOS path (no effects) runs everywhere
+            uic.DIALOG_NO_EFFECTS = no_fade
+            dlg = ReleaseDialog(updater.release, "Install", w)
+            QTimer.singleShot(300, dlg.reject)
+            check(f"ui: release notes dialog opens and closes (effects {'off' if no_fade else 'on'})",
+                  not dlg.exec() and "Something" in dlg.notes.toPlainText() and dlg.graphicsEffect() is None
+                  and (not no_fade or dlg.widget.graphicsEffect() is None))
+            update_mod.open_stream = lambda url: io.BytesIO(payload)
+            updater.start_download(updater.release, name, kind)
+            until(lambda: not updater._downloading)
+            wait(300)
+            check(f"ui: download dialog closes after the download (effects {'off' if no_fade else 'on'})",
+                  asked[-1] == "appimage" and updater._dialog is None)
+            from PySide6.QtGui import QColor
+            from proxydock.ui.router import ProgramPicker
+            closed = []
+            for make in (lambda: uic.ConfirmBox("Delete proxy", "Delete?", w), lambda: ProgramPicker(w, []),
+                         lambda: uic.ColorPicker(QColor("#3080ff"), "Link colour", w)):
+                box = make()
+                QTimer.singleShot(300, box.reject)
+                closed.append(not box.exec() and box.graphicsEffect() is None
+                              and (not no_fade or box.widget.graphicsEffect() is None))
+            check(f"ui: confirm, program and colour dialogs open and close (effects {'off' if no_fade else 'on'})", all(closed), closed)
+        uic.DIALOG_NO_EFFECTS = mac
+    finally:
+        update_mod.http_get, update_mod.open_stream = old_get, old_stream
+        for attr in ("show_dialog", "ask_install"):
+            delattr(updater, attr)
+
+
+def release_fixture(version="9.9.9", payload=b"a new ProxyDock build", **changes):
+    """-> (GitHub release JSON text, file content, SHA256SUMS.txt text) shaped like a real release."""
+    import hashlib
+    names = [f"ProxyDock-{version}-{s}" for s in ("windows-x64-setup.exe", "windows-x64.zip", "macos-arm64.dmg",
+                                                  "macos-arm64.zip", "linux-x64.AppImage", "linux-x64.tar.gz")]
+    base = f"https://github.com/NenkaLab/proxy-dock/releases/download/v{version}/"
+    assets = [{"name": n, "size": len(payload), "browser_download_url": base + n} for n in names]
+    assets.append({"name": "SHA256SUMS.txt", "size": 600, "browser_download_url": base + "SHA256SUMS.txt"})
+    data = {"tag_name": f"v{version}", "name": f"v{version}", "draft": False, "prerelease": False,
+            "html_url": f"https://github.com/NenkaLab/proxy-dock/releases/tag/v{version}",
+            "body": "## What's Changed\n* Something new", "assets": assets}
+    data.update(changes)
+    sums = "".join(f"{hashlib.sha256(payload).hexdigest()}  {n}\n" for n in names)
+    return json.dumps(data), payload, sums
+
+
+def fake_github(release_json, sums, calls=None):
+    def get(url, max_bytes=0, accept=None):
+        if calls is not None:
+            calls.append(url)
+        return (sums if url.endswith("/SHA256SUMS.txt") else release_json).encode()
+    return get
+
+
+def test_update():
+    import io
+    from proxydock import __version__, update
+    from proxydock.singbox import parse_core_version
+    # versions
+    check("update: version compare", update.is_newer("v2.10.0", "2.9.9") and update.is_newer("v2.2.2", "2.2.1")
+          and not update.is_newer("v2.2.1", "2.2.1") and not update.is_newer("v2.2.0", "2.2.1")
+          and not update.is_newer("v3.0.0-rc1", "2.2.1") and not update.is_newer("latest", "2.2.1"))
+    check("update: version parse", update.parse_version("v2.2.1") == (2, 2, 1) and update.parse_version("2.0.10") == (2, 0, 10)
+          and update.parse_version("v2.2") is None and update.parse_version(None) is None)
+    # release JSON
+    rel_json, payload, sums = release_fixture("9.9.9")
+    rel = update.parse_release(rel_json)
+    check("update: release JSON parsed", rel["version"] == "9.9.9" and rel["tag"] == "v9.9.9" and "Something new" in rel["notes"]
+          and len(rel["assets"]) == 7 and rel["url"].endswith("/v9.9.9")
+          and rel["assets"]["SHA256SUMS.txt"]["url"].startswith("https://github.com/"), rel)
+    check("update: drafts and prereleases ignored", update.parse_release(release_fixture(draft=True)[0]) is None
+          and update.parse_release(release_fixture(prerelease=True)[0]) is None
+          and update.parse_release(release_fixture("9.9.9-beta")[0]) is None)
+    bad = False
+    try:
+        update.parse_release(b"<html>rate limited</html>")
+    except ValueError:
+        bad = True
+    check("update: a non-JSON answer is an error", bad)
+    calls = []
+    check("update: check finds a newer release", update.check("2.2.1", fetch_github := fake_github(rel_json, sums, calls))["version"] == "9.9.9"
+          and calls == [update.API_URL])
+    check("update: no newer release", update.check("9.9.9", fetch_github) is None
+          and update.check(__version__, fake_github(release_fixture(__version__)[0], sums)) is None)
+    check("update: User-Agent is generic", update.USER_AGENT == f"ProxyDock/{__version__}")
+    # once a day, off switch
+    check("update: startup check once a day", update.due({"check_updates": True, "update_checked": 0}, 100000)
+          and not update.due({"check_updates": True, "update_checked": 100000 - 3600}, 100000)
+          and update.due({"check_updates": True, "update_checked": 100000 - 86400}, 100000)
+          and not update.due({"check_updates": False, "update_checked": 0}, 100000))
+    g = config.validate_global({"check_updates": False, "update_checked": 123})
+    check("update: settings kept", g["check_updates"] is False and g["update_checked"] == 123
+          and config.validate_global({})["check_updates"] is True)
+    # asset per platform
+    check("update: platform names", update.platform_key("win32", "AMD64") == ("windows", "x64")
+          and update.platform_key("darwin", "arm64") == ("macos", "arm64") and update.platform_key("linux", "x86_64") == ("linux", "x64")
+          and update.platform_key("linux", "aarch64") == ("linux", "arm64"))
+    pick = lambda os_name, arch, appimage=False, installed=True: update.pick_asset(
+        rel, os_name, arch, update.install_kind(os_name, appimage, installed))
+    check("update: asset for Windows (installer)", pick("windows", "x64") == "ProxyDock-9.9.9-windows-x64-setup.exe")
+    check("update: asset for macOS (dmg)", pick("macos", "arm64") == "ProxyDock-9.9.9-macos-arm64.dmg")
+    check("update: asset for a Linux AppImage", pick("linux", "x64", appimage=True) == "ProxyDock-9.9.9-linux-x64.AppImage")
+    check("update: release page otherwise", pick("windows", "x64", installed=False) is None and pick("linux", "x64") is None
+          and pick("macos", "x64") is None and pick("windows", "arm64") is None and pick("macos", "arm64", installed=False) is None)
+    # checksums
+    folder = tempfile.mkdtemp(dir=TMP)
+    path = os.path.join(folder, "f.bin")
+    with open(path, "wb") as f:
+        f.write(payload)
+    name = "ProxyDock-9.9.9-linux-x64.AppImage"
+    update.verify(path, name, sums)
+    check("update: checksum parse", update.parse_sums(sums)[name] == update.sha256_file(path)
+          and update.parse_sums("0" * 64 + " *x.zip\r\nnot a line\n") == {"x.zip": "0" * 64})
+
+    def fails(fn, *a):
+        try:
+            fn(*a)
+        except ValueError as e:
+            return str(e)
+        return ""
+    check("update: wrong checksum refused", "SHA-256" in fails(update.verify, path, name, sums.replace(name, "other")
+                                                                + "f" * 64 + "  " + name + "\n"))
+    check("update: missing checksum refused", "not listed" in fails(update.verify, path, "ProxyDock-9.9.9-linux-arm64.AppImage", sums))
+    # download + verify with a fake GitHub
+    old_get, old_stream = update.http_get, update.open_stream
+    opened = []
+    update.http_get = fake_github(rel_json, sums)
+    update.open_stream = lambda url: opened.append(url) or io.BytesIO(payload)
+    try:
+        dl = tempfile.mkdtemp(dir=TMP)
+        got = update.fetch_verified(rel, name, dl)
+        check("update: download verified", open(got, "rb").read() == payload and opened == [rel["assets"][name]["url"]])
+        update.open_stream = lambda url: io.BytesIO(b"X" + payload[1:])
+        err = fails(update.fetch_verified, rel, "ProxyDock-9.9.9-windows-x64.zip", dl)
+        check("update: tampered download refused and deleted", "SHA-256" in err
+              and not os.path.exists(os.path.join(dl, "ProxyDock-9.9.9-windows-x64.zip")), err)
+        update.http_get = fake_github(rel_json, sums.replace(name, "something-else"))
+        opened.clear()
+        update.open_stream = lambda url: opened.append(url) or io.BytesIO(payload)
+        err = fails(update.fetch_verified, rel, name, dl)
+        check("update: unlisted file refused before downloading", "not listed" in err and not opened, err)
+        no_sums = dict(rel, assets={k: v for k, v in rel["assets"].items() if k != "SHA256SUMS.txt"})
+        check("update: release without SHA256SUMS refused", "cannot be verified" in fails(update.fetch_verified, no_sums, name, dl))
+        update.http_get = fake_github(rel_json, sums)
+        update.open_stream = lambda url: io.BytesIO(payload[:5])
+        check("update: short download refused", "incomplete" in fails(update.fetch_verified, rel, name, dl))
+        update.open_stream = lambda url: io.BytesIO(payload)
+        cancelled = False
+        try:
+            update.fetch_verified(rel, name, dl, cancelled=lambda: True)
+        except update.Cancelled:
+            cancelled = not os.path.exists(os.path.join(dl, name))
+        check("update: download can be cancelled", cancelled)
+    finally:
+        update.http_get, update.open_stream = old_get, old_stream
+    # installers
+    env = {"ProgramFiles": r"C:\Program Files", "ProgramW6432": r"C:\Program Files", "ProgramFiles(x86)": r"C:\Program Files (x86)"}
+    pf = update.installer_command("setup.exe", r"C:\Program Files\ProxyDock", "ko", env)
+    user = update.installer_command("setup.exe", r"C:\Users\me\AppData\Local\Programs\ProxyDock", "en", env)
+    check("update: Windows installer arguments", "/ALLUSERS" in pf and "/CURRENTUSER" in user and "/SILENT" in pf
+          and r"/DIR=C:\Program Files\ProxyDock" in pf and "/LANG=ko" in pf and "/RELAUNCH=1" in user
+          and not update.under_program_files(r"C:\Program Files Extra\x", env), pf)
+    iss = open(os.path.join(ROOT, "tools", "ProxyDock.iss"), encoding="utf-8-sig").read()
+    check("update: installer script handles /RELAUNCH and /ALLUSERS", "{param:RELAUNCH|0}" in iss and "runasoriginaluser" in iss
+          and "PrivilegesRequiredOverridesAllowed=commandline" in iss)
+    target = os.path.join(folder, "ProxyDock.AppImage")
+    with open(target, "wb") as f:
+        f.write(b"old")
+    update.replace_appimage(path, target)
+    check("update: AppImage replaced", open(target, "rb").read() == payload and (sys.platform == "win32" or os.access(target, os.X_OK))
+          and not os.path.exists(os.path.join(folder, ".ProxyDock.AppImage.new")))
+    # engine versions on the About page
+    check("about: core version parse", parse_core_version("sing-box version 1.14.4\n\nEnvironment: go1.26") == "1.14.4"
+          and parse_core_version("Version:\tv2.14.0\nBuildDate: x") == "2.14.0" and parse_core_version("garbage") is None)
 
 
 def test_singbox_compile():
@@ -2411,7 +2642,7 @@ def test_engine_died_e2e():
 
 def main():
     t0 = time.time()
-    tests = [test_translations, test_graph, test_engine, test_singbox_compile, test_router_graph, test_relay_graph, test_block_colors, test_router_singbox, test_interface,
+    tests = [test_translations, test_update, test_graph, test_engine, test_singbox_compile, test_router_graph, test_relay_graph, test_block_colors, test_router_singbox, test_interface,
              test_wireguard, test_tun, test_run_as_admin, test_protocols,
              test_subscription, test_detect_sni, test_hy2_advanced, test_group, test_dns, test_review_fixes, test_clash, test_wg_server, test_if_forward_select]
     from proxydock.singbox import find_binary

@@ -21,6 +21,8 @@ def self_exe():
 APP_NAME = "ProxyDock"
 APP_ID = "ProxyDock"                    # settings folder, autostart name, etc.
 OLD_APP_ID = "ProxyLocal"               # settings folder name of the previous version (SOCKS5 Proxy)
+REPO_URL = "https://github.com/NenkaLab/proxy-dock"
+RELEASES_URL = REPO_URL + "/releases"
 
 IS_WIN = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"

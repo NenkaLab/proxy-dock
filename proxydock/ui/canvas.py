@@ -861,8 +861,8 @@ class CanvasInterface(QWidget):
         menu.exec(at.toPoint() if hasattr(at, "toPoint") else at)
 
     def _pick_color(self, mid, cur):
-        from qfluentwidgets import ColorDialog
-        dlg = ColorDialog(QColor(cur) if cur else QColor(*_rgba("")[:3]), _t("Link colour"), self.window())
+        from .common import ColorPicker
+        dlg = ColorPicker(QColor(cur) if cur else QColor(*_rgba("")[:3]), _t("Link colour"), self.window())
         dlg.colorChanged.connect(lambda c: self.ctl.set_color(mid, c.name()))
         dlg.exec()
 

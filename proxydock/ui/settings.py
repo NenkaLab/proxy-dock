@@ -121,7 +121,12 @@ class SettingsInterface(ScrollArea):
                                   .right(self.sw_admin))
         self.r_admin.setVisible(IS_WIN)
 
-        sections = [s_def, s_eng, s_log, s_view, s_font, s_start]
+        s_upd = Section(_t("Updates"), v)
+        self.sw_updates = _switch(v)
+        s_upd.add(Row(_t("Check for updates at startup"), _t("Asks GitHub for the latest release at most once a day. Only the app version is sent (as the User-Agent)."), v)
+                  .right(self.sw_updates))
+
+        sections = [s_def, s_eng, s_log, s_view, s_font, s_start, s_upd]
         if IS_WIN:
             s_fw = Section(_t("Windows Firewall"), v)
             self.fw_label = BodyLabel(_t("Checking…"), v)
@@ -165,6 +170,7 @@ class SettingsInterface(ScrollArea):
         self.sw_liga.setChecked(g["disable_ligatures"])
         self.cb_engine.setCurrentIndex(config.ENGINES.index(g["engine"]))
         self.sw_admin.setChecked(g["run_as_admin"])
+        self.sw_updates.setChecked(g["check_updates"])
 
     def apply(self):
         domains = [d.strip() for d in self.ed_allow.text().replace(";", ",").split(",") if d.strip()]
@@ -190,6 +196,7 @@ class SettingsInterface(ScrollArea):
             disable_ligatures=self.sw_liga.isChecked(),
             engine=config.ENGINES[max(self.cb_engine.currentIndex(), 0)],
             run_as_admin=self.sw_admin.isChecked(),
+            check_updates=self.sw_updates.isChecked(),
         )
         self.ctl.apply_global(config.validate_global(g))
 

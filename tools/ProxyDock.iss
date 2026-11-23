@@ -118,6 +118,9 @@ Name: "{autodesktop}\ProxyDock"; Filename: "{app}\ProxyDock.exe"; Tasks: desktop
 
 [Run]
 Filename: "{app}\ProxyDock.exe"; Description: "{cm:LaunchProgram,ProxyDock}"; Flags: nowait postinstall skipifsilent
+; in-app update (ProxyDock runs setup with /SILENT ... /RELAUNCH=1, proxydock/update.py): start the new version again,
+; as the user who started setup (not the administrator of an /ALLUSERS install)
+Filename: "{app}\ProxyDock.exe"; Flags: nowait runasoriginaluser; Check: RelaunchRequested
 
 [UninstallRun]
 Filename: "{sys}\taskkill.exe"; Parameters: "/F /T /IM ProxyDock.exe"; Flags: runhidden; RunOnceId: "StopProxyDock"
@@ -128,6 +131,11 @@ const
 
 var
   Relaunching: Boolean;
+
+function RelaunchRequested: Boolean;
+begin
+  Result := WizardSilent and (ExpandConstant('{param:RELAUNCH|0}') = '1');
+end;
 
 function ProgramFilesDir: String;
 begin

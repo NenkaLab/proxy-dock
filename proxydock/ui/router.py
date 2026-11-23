@@ -18,6 +18,7 @@ from qfluentwidgets import (
 )
 
 from .. import graph as graph_mod
+from .common import MacSafeDialog
 
 FIELDS = []         # (match key, label, placeholder)
 PRIVATE = "ip_private"
@@ -89,7 +90,7 @@ def match_errors(name, m):
     return errs
 
 
-class ProgramPicker(MessageBoxBase):
+class ProgramPicker(MacSafeDialog, MessageBoxBase):
     """Pick programs for a rule: the ones running now, or an executable file."""
 
     def __init__(self, parent, current):

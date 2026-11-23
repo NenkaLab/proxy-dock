@@ -68,6 +68,8 @@ GLOBAL_DEFAULTS = {
     "run_as_admin": False,      # Windows: restart ProxyDock elevated (UAC) at startup, so TUN cards need no prompt
     "singbox_path": "",         # "" = bundled sing-box (bin/ folder), then PATH
     "hysteria_path": "",        # "" = bundled official Hysteria2 core (bin/ folder), then PATH
+    "check_updates": True,      # ask GitHub for a newer release at startup (at most once a day, update.py)
+    "update_checked": 0,        # time.time() of the last update check
     # proxy defaults (a proxy's local settings take precedence)
     "allowed_domains": ["*"],
     "block_private": False,
