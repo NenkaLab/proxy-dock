@@ -115,6 +115,7 @@ def _tr_outbound_new():
         ("hysteria2", _t("Hysteria2 tunnel (remote server)")),
         ("wireguard", _t("WireGuard tunnel (no VPN app needed)")),
         ("vless", _t("VLESS tunnel (TLS / REALITY)")),
+        ("vmess", _t("VMess tunnel")),
         ("trojan", _t("Trojan tunnel")),
         ("tuic", _t("TUIC tunnel (QUIC)")),
         ("subscription", _t("Subscription (a provider's server list from a URL)")),
@@ -321,6 +322,22 @@ class OutboundCard(CardWidget):
         m.exec(self.btn_more.mapToGlobal(self.btn_more.rect().bottomLeft()))
 
 
+class RouterCard(OutboundCard):
+    """A router block on the list page (rules are edited in the editor, links on the canvas)."""
+
+    def __init__(self, page, node, parent=None):
+        super().__init__(page, node, parent)
+        self.icon.setIcon(FIF.SHARE)
+
+    def update_from(self, node, user_names):
+        from .. import graph as graph_mod
+        self.name.setText(node["name"])
+        _, d = graph_mod.find(self.page.ctl.graph, node["default"]) if node["default"] else (None, None)
+        text = _t("{count} rules").format(count=len(node["rules"])) + " · " + _t("default: {name}").format(name=d["name"] if d else "-")
+        self.desc.setText(text if d else text + "  ⚠ " + _t("no default target"))
+        self.used.setText(_t("used by: {names}").format(names=", ".join(user_names)) if user_names else _t("not used"))
+
+
 class ProxiesInterface(ScrollArea):
     def __init__(self, ctl, parent=None):
         super().__init__(parent)
@@ -348,7 +365,10 @@ class ProxiesInterface(ScrollArea):
             act.triggered.connect(lambda _=False, t=t: ctl.new_outbound({"type": t}))
             omenu.addAction(act)
         self.btn_new_out.setMenu(omenu)
+        self.btn_new_router = PushButton(_t("Add router"), self.view, FIF.SHARE)
+        self.btn_new_router.clicked.connect(lambda: ctl.new_router())
         self.out_cards = {}
+        self.router_cards = {}
         self.pc_bar = PcBar(ctl, self.view)
         self.btn_stop = PushButton(_t("Stop all"), self.view, FIF.PAUSE)
         self.btn_stop.clicked.connect(ctl.stop_all)
@@ -358,6 +378,7 @@ class ProxiesInterface(ScrollArea):
         header.addWidget(title)
         header.addStretch(1)
         header.addWidget(self.btn_stop)
+        header.addWidget(self.btn_new_router)
         header.addWidget(self.btn_new_out)
         header.addWidget(self.btn_new)
         self.hint = CaptionLabel(_t("Proxy = inbound (how it accepts connections on a port of this PC) → outbound (how it reaches the destination). Click a card to edit; use the switch to start/stop."), self.view)
@@ -367,6 +388,9 @@ class ProxiesInterface(ScrollArea):
         self.out_list = QVBoxLayout()
         self.out_list.setSpacing(8)
         self.out_empty = CaptionLabel(_t("No outbound blocks."), self.view)
+        self.router_list = QVBoxLayout()
+        self.router_list.setSpacing(8)
+        self.router_title = SubtitleLabel(_t("Routers"), self.view)
         root = QVBoxLayout(self.view)
         root.setContentsMargins(36, 20, 36, 28)
         root.setSpacing(12)
@@ -380,6 +404,9 @@ class ProxiesInterface(ScrollArea):
         root.addWidget(SubtitleLabel(_t("Outbound"), self.view))
         root.addWidget(self.out_empty)
         root.addLayout(self.out_list)
+        root.addSpacing(8)
+        root.addWidget(self.router_title)
+        root.addLayout(self.router_list)
         root.addStretch(1)
 
     def refresh(self, graph, proxies, statuses):
@@ -394,8 +421,20 @@ class ProxiesInterface(ScrollArea):
                 card = self.out_cards[n["id"]] = OutboundCard(self, n, self.view)
             self.out_list.removeWidget(card)
             self.out_list.insertWidget(i, card)
-            card.update_from(n, [u["name"] for u in graph_mod.users(graph, n["id"])])
+            card.update_from(n, graph_mod.used_by(graph, n["id"]))
         self.out_empty.setVisible(not graph["outbounds"])
+        routers = graph.get("routers", [])
+        for nid in list(self.router_cards):
+            if nid not in [r["id"] for r in routers]:
+                self.router_cards.pop(nid).deleteLater()
+        for i, r in enumerate(routers):
+            card = self.router_cards.get(r["id"])
+            if card is None:
+                card = self.router_cards[r["id"]] = RouterCard(self, r, self.view)
+            self.router_list.removeWidget(card)
+            self.router_list.insertWidget(i, card)
+            card.update_from(r, graph_mod.used_by(graph, r["id"]))
+        self.router_title.setVisible(bool(routers))
         self.pc_bar.set_status(self.ctl.pc_status())
         ids = [p["id"] for p in proxies]
         for pid in list(self.cards):
@@ -724,6 +763,16 @@ class EditorInterface(ScrollArea):
         self.r_grp_tol = s_out.add(Row(_t("Tolerance (ms)"), _t("Switch only when another member is at least this much faster (avoids switching back and forth)"), v)
                                    .right(self.sp_grp_tol))
         self._sub = {"sub_servers": "", "sub_updated": 0}
+        # VMess
+        self.vmess_ciphers = list(config.VMESS_CIPHERS)
+        self.cb_vmess = ComboBox(v)
+        self.cb_vmess.addItems([_t("auto (recommended)")] + self.vmess_ciphers[1:])
+        self.cb_vmess.setFixedWidth(200)
+        self.sp_vmess_aid = SpinBox(v)
+        self.sp_vmess_aid.setRange(0, 65535)
+        self.sp_vmess_aid.setFixedWidth(150)
+        self.r_vmess = s_out.add(Row(_t("Encryption · alterId"), _t("Use what the server expects. alterId 0 = current servers (AEAD)"), v)
+                                 .right(self.cb_vmess, self.sp_vmess_aid))
         # VLESS / Trojan / TUIC
         self.ed_out_uuid = LineEdit(v)
         self.ed_out_uuid.setPlaceholderText("0b5b8d9e-xxxx-xxxx-xxxx-xxxxxxxxxxxx")
@@ -1028,6 +1077,8 @@ class EditorInterface(ScrollArea):
         self.ed_out_uuid.setText(ob["uuid"])
         self.cb_out_sec.setCurrentIndex(self.securities.index(ob["security"]) if ob["security"] in self.securities else 1)
         self.cb_out_flow.setCurrentIndex(self.flows.index(ob["vless_flow"]) if ob["vless_flow"] in self.flows else 0)
+        self.cb_vmess.setCurrentIndex(self.vmess_ciphers.index(ob["vmess_cipher"]) if ob["vmess_cipher"] in self.vmess_ciphers else 0)
+        self.sp_vmess_aid.setValue(ob["vmess_alter_id"])
         self.ed_out_pbk.setText(ob["reality_public_key"])
         self.ed_out_sid.setText(ob["reality_short_id"])
         self.cb_out_fp.setCurrentIndex(self.fingerprints.index(ob["fingerprint"]) if ob["fingerprint"] in self.fingerprints else 1)
@@ -1128,7 +1179,7 @@ class EditorInterface(ScrollArea):
             fields, name = parse(text)
         except ValueError as e:
             info(self.window(), "error", _t("Cannot use the clipboard"),
-                 f"{e}\n" + _t("Copy a vless://, trojan://, tuic://, ss:// or hysteria2:// link first"), 6000)
+                 f"{e}\n" + _t("Copy a vless://, vmess://, trojan://, tuic://, ss:// or hysteria2:// link first"), 6000)
             return
         ob = dict(config.OUTBOUND_DEFAULTS, **fields)
         self._fill_outbound(ob)
@@ -1317,6 +1368,9 @@ class EditorInterface(ScrollArea):
         self.r_grp_mode.desc.setText(_t("Uses the member that answers fastest, and moves away from members that stop working")
                                      if self.grp_modes[max(self.cb_grp_mode.currentIndex(), 0)] == "auto" else
                                      _t("Uses the first member that works; when it stops working, the next one. It stays there until that one fails too"))
+        self.r_grp_mode.desc.setVisible(True)
+        self.r_out_sec.desc.setText(_t("Use what the server is set up with (REALITY usually with xtls-rprx-vision)") if ot == "vless"
+                                    else _t("Use what the server is set up with"))
         for r in (self.r_sub_url, self.r_sub_mode, self.r_sub_hours):
             r.setVisible(ot == "subscription")
         self.cb_sub_server.setVisible(self.sub_modes[max(self.cb_sub_mode.currentIndex(), 0)] == "select")
@@ -1330,15 +1384,17 @@ class EditorInterface(ScrollArea):
         self.ed_out_user.setVisible(ot not in ("trojan", "tuic"))
         self.ed_out_pass.setVisible(ot != "socks4")
         sec = self.securities[max(self.cb_out_sec.currentIndex(), 0)]
-        tls = ot in ("https", "hysteria2", "trojan", "tuic") or (ot == "vless" and sec != "none")
+        tls = ot in ("https", "hysteria2", "trojan", "tuic") or (ot in ("vless", "vmess") and sec != "none")
         self.r_out_verify.setVisible(tls and not (ot == "vless" and sec == "reality"))
         self.r_out_sni.setVisible(tls)
-        self.r_out_uuid.setVisible(ot in ("vless", "tuic"))
-        self.r_out_sec.setVisible(ot == "vless")
+        self.r_out_uuid.setVisible(ot in ("vless", "vmess", "tuic"))
+        self.r_out_sec.setVisible(ot in ("vless", "vmess"))
+        self.cb_out_flow.setVisible(ot == "vless")
+        self.r_vmess.setVisible(ot == "vmess")
         self.r_out_reality.setVisible(ot == "vless" and sec == "reality")
-        self.r_out_fp.setVisible(ot in ("vless", "trojan") and sec != "none" or ot == "tuic")
+        self.r_out_fp.setVisible(ot in ("vless", "vmess", "trojan") and sec != "none" or ot == "tuic")
         self.cb_out_fp.setVisible(ot != "tuic")
-        self.r_out_tr.setVisible(ot in ("vless", "trojan"))
+        self.r_out_tr.setVisible(ot in ("vless", "vmess", "trojan"))
         tr = self.transports[max(self.cb_out_tr.currentIndex(), 0)]
         self.ed_out_tr_path.setVisible(tr != "tcp")
         self.ed_out_tr_host.setVisible(tr == "ws")
@@ -1361,6 +1417,7 @@ class EditorInterface(ScrollArea):
             "hysteria2": _t("QUIC tunnel to a remote Hysteria2 server (TCP+UDP). Bandwidth (Brutal), Salamander obfuscation and port hopping need the sing-box engine."),
             "block": _t("Refuses every connection. Connect router rules to it (e.g. ads, trackers). Needs the sing-box engine."),
             "vless": _t("VLESS tunnel (TCP+UDP) with TLS or REALITY, optionally over WebSocket/gRPC. Paste a vless:// link to fill everything in. Needs the sing-box engine."),
+            "vmess": _t("VMess tunnel (TCP+UDP), optionally with TLS and over WebSocket/gRPC. Paste a vmess:// link to fill everything in. Needs the sing-box engine."),
             "trojan": _t("Trojan tunnel over TLS (TCP+UDP), optionally over WebSocket/gRPC. Paste a trojan:// link to fill everything in. Needs the sing-box engine."),
             "subscription": _t("All servers of a provider's subscription link as one block. Pick a server or let it use the fastest one (it also moves away from servers that stop working). The server list is saved, so it works offline too. Needs the sing-box engine."),
             "group": _t("Uses several outbound blocks as one: the fastest, or the first that works (failover). Servers that stop working are skipped automatically. Needs the sing-box engine."),
@@ -1509,6 +1566,8 @@ class EditorInterface(ScrollArea):
                              uuid=self.ed_out_uuid.text().strip(),
                              security=self.securities[max(self.cb_out_sec.currentIndex(), 0)],
                              vless_flow=self.flows[max(self.cb_out_flow.currentIndex(), 0)],
+                             vmess_cipher=self.vmess_ciphers[max(self.cb_vmess.currentIndex(), 0)],
+                             vmess_alter_id=self.sp_vmess_aid.value(),
                              reality_public_key=self.ed_out_pbk.text().strip(), reality_short_id=self.ed_out_sid.text().strip(),
                              fingerprint=self.fingerprints[max(self.cb_out_fp.currentIndex(), 0)],
                              alpn=self.ed_out_alpn.text().strip(),

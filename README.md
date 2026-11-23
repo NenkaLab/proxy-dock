@@ -21,8 +21,8 @@ Shadowsocks server" is a single card.
 | | Supported |
 |---|---|
 | Inbound | SOCKS5 · SOCKS4/4a · HTTP · HTTPS (TLS) · Shadowsocks server · Hysteria2 server · TUN (all apps) |
-| Outbound | Direct · upstream HTTP / HTTPS / SOCKS4 / SOCKS5 proxy · Shadowsocks tunnel · Hysteria2 (QUIC) tunnel · WireGuard · VLESS (TLS / REALITY) · Trojan · TUIC · subscription · group |
-| UDP | inbound SOCKS5 · Shadowsocks · Hysteria2, outbound Direct · Shadowsocks · Hysteria2 · WireGuard · VLESS · Trojan · TUIC |
+| Outbound | Direct · upstream HTTP / HTTPS / SOCKS4 / SOCKS5 proxy · Shadowsocks tunnel · Hysteria2 (QUIC) tunnel · WireGuard · VLESS (TLS / REALITY) · VMess · Trojan · TUIC · subscription · group |
+| UDP | inbound SOCKS5 · Shadowsocks · Hysteria2, outbound Direct · Shadowsocks · Hysteria2 · WireGuard · VLESS · VMess · Trojan · TUIC |
 
 - **Canvas**: blueprint-style editor - drag lines from inbound blocks to outbound blocks; several inbounds can share one outbound, an inbound linked into another inbound relays through it, and Direct can leave from a chosen source IP
 - **PC block**: link an HTTP inbound to use it as the Windows system proxy while it runs; the previous settings are saved and put back when it stops or the app quits (Restore previous / Off buttons)
@@ -33,7 +33,7 @@ Shadowsocks server" is a single card.
 - **Network interface**: any outbound can leave through a chosen network card - Tailscale, WireGuard, a VPN app, Wi-Fi - without changing the PC's routes, so only the traffic you link there uses it (sing-box engine)
 - **WireGuard**: a WireGuard tunnel block run inside ProxyDock - no VPN app, so several countries can be up at once for different apps; import a provider's `.conf`; put one WireGuard block 'via' another for a double VPN (sing-box engine)
 - **TUN**: a virtual network card that captures every app on this PC, also those without proxy settings - link it to a router and program rules (game.exe, chrome.exe) apply to all apps. Asks for administrator permission (UAC) when it starts, unless ProxyDock already runs as administrator (sing-box engine)
-- **VLESS / Trojan / TUIC**: VLESS with TLS or REALITY (Vision flow), Trojan, TUIC v5, over TCP, WebSocket or gRPC. Copy a provider's `vless://`, `trojan://`, `tuic://`, `ss://` or `hysteria2://` link and use **Add outbound → From a share link** (or **Paste share link** in the editor). Cloudflare WARP: import a WARP WireGuard profile (e.g. made with wgcf) into a WireGuard block (sing-box engine)
+- **VLESS / VMess / Trojan / TUIC**: VLESS with TLS or REALITY (Vision flow), Trojan, TUIC v5, over TCP, WebSocket or gRPC. Copy a provider's `vless://`, `vmess://`, `trojan://`, `tuic://`, `ss://` or `hysteria2://` link and use **Add outbound → From a share link** (or **Paste share link** in the editor). Cloudflare WARP: import a WARP WireGuard profile (e.g. made with wgcf) into a WireGuard block (sing-box engine)
 - **Subscriptions**: a provider's subscription URL becomes one block holding all its servers - pick one, or let it use the fastest (it measures every few minutes and moves away from dead servers). Updates on a schedule; the list is saved (encrypted) so it also starts offline (sing-box engine)
 - **Groups**: a group block uses several outbound blocks as one - the fastest, or the first that works in the order you set (failover). Link the members from its 'members' output; dead servers are skipped automatically (sing-box engine)
 - **DNS**: choose the DNS server ProxyDock uses where it looks names up itself (Direct, IP rules, TUN) - the PC's DNS, or UDP/TCP, DoT (tls://), DoH (https://), DoQ (quic://), HTTP/3 (h3://). Globally or per card; optionally sent through the card's own tunnel. TUN cards can use Fake-IP so names are looked up at the exit, not on the local network (sing-box engine)
@@ -112,7 +112,7 @@ The macOS build has not been tried on a real Mac yet.
 - sing-box engine: a Hysteria2 server open to other PCs runs on the official Hysteria2 core, which asks ProxyDock about every
   login (sing-box cannot report wrong passwords, so IP bans would not work); its traffic then goes through sing-box. Certificate
   pinning still runs on the Python engine (needs sing-box 1.15). The per-IP connection limit closes extra connections after
-  the fact; the idle timeout applies to UDP only; 'Log connection close details' is not available.
+  the fact; the TCP idle timeout and 'Log connection close details' are checked once a second, so very short connections get no close line.
 - Python engine: Hysteria2 cannot go *through* other outbounds, UDP is not relayed through chained outbounds, and Hysteria2
   (aioquic) reaches about 100 Mbps. Hysteria2 bandwidth (Brutal), Salamander and port hopping need the sing-box engine; a server listening on a port range needs a port redirect on that server (not set up by ProxyDock).
 - The official Hysteria2 server (and other servers that check the name) rejects an SNI that does not match its certificate. When the outbound uses an IP, click **Detect from server** next to the SNI field to read the certificate's name.

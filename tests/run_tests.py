@@ -354,6 +354,13 @@ def test_ui():
     w.editor.cancel()
     wait(300)
     ctl.delete_node(h2["id"])
+    rt = ctl.new_router(edit=False)
+    wait(300)
+    check("ui: router listed on the proxies page", rt["id"] in w.proxies_page.router_cards
+          and w.proxies_page.router_title.isVisibleTo(w.proxies_page))
+    ctl.delete_node(rt["id"])
+    wait(200)
+    check("ui: deleted router leaves the list", rt["id"] not in w.proxies_page.router_cards)
     gd = ctl.new_outbound({"type": "direct"}, edit=False)
     gp = ctl.new_outbound({"type": "group"}, edit=False)
     check("ui: group member added", ctl.add_member(gp["id"], gd["id"]) and gm.find(ctl.graph, gp["id"])[1]["members"] == [gd["id"]])
@@ -1047,6 +1054,11 @@ def test_protocols_e2e():
                          "transport": {"type": "grpc", "service_name": "svc"}},
                         {"type": "trojan", "password": pw, "tls_verify": False, "sni": "localhost", "transport": "grpc",
                          "transport_path": "svc"}),
+        "vmess-tls": ({"type": "vmess", "users": [{"uuid": uid, "alterId": 0}], "tls": tls_in},
+                      {"type": "vmess", "uuid": uid, "security": "tls", "tls_verify": False, "sni": "localhost"}),
+        "vmess-ws": ({"type": "vmess", "users": [{"uuid": uid}], "transport": {"type": "ws", "path": "/vm"}},
+                     {"type": "vmess", "uuid": uid, "security": "none", "transport": "ws", "transport_path": "/vm",
+                      "vmess_cipher": "chacha20-poly1305"}),
         "tuic": ({"type": "tuic", "users": [{"uuid": uid, "password": pw}], "congestion_control": "bbr",
                   "tls": dict(tls_in, alpn=["h3"])},
                  {"type": "tuic", "uuid": uid, "password": pw, "tls_verify": False, "sni": "localhost"}),
@@ -1283,7 +1295,10 @@ def test_hy2_advanced_e2e():
                              tls_verify=False, hy2_obfs_password=obfs, hy2_up_mbps=50, hy2_down_mbps=200,
                              hy2_ports=hop, hy2_hop_interval=10, via=None)
         mgr.start(c, glob).result(20)
-        return socks5_get(c["inbound"]["port"], "127.0.0.1", oport)
+        try:
+            return socks5_get(c["inbound"]["port"], "127.0.0.1", oport)
+        except OSError as e:          # (a wrong Salamander password may just time out)
+            return repr(e)
 
     def server(name):
         sp = config.new_proxy(name, {"type": "hysteria2", "port": free_port(), "hy2_password": "hy2-adv-pass",
@@ -1550,15 +1565,108 @@ def test_dns_e2e():
         origin.shutdown()
 
 
+def test_review_fixes():
+    import base64
+    from proxydock import links
+    from proxydock.singbox import compile as sbc
+    from proxydock.singbox.process import SingBoxInstance
+    vm = {"v": "2", "ps": "JP vm", "add": "vm.example", "port": "443", "id": "0b5b8d9e-1111-2222-3333-444455556666",
+          "aid": "0", "scy": "auto", "net": "ws", "type": "none", "host": "cdn.example", "path": "/ray", "tls": "tls",
+          "sni": "vm.example", "fp": "chrome"}
+    ob, name = links.parse("vmess://" + base64.b64encode(json.dumps(vm).encode()).decode())
+    check("review: vmess:// link", name == "JP vm" and ob["type"] == "vmess" and ob["security"] == "tls"
+          and ob["transport"] == "ws" and ob["transport_host"] == "cdn.example" and ob["sni"] == "vm.example", ob)
+    full = dict(config.OUTBOUND_DEFAULTS, **ob, via=None)
+    d = sbc.outbound(full, "o")
+    check("review: vmess sing-box outbound", d["type"] == "vmess" and d["tls"]["server_name"] == "vm.example"
+          and d["transport"]["type"] == "ws" and d["alter_id"] == 0 and not config.outbound_errors(full), d)
+    check("review: vmess REALITY refused", any("VMess" in e for e in config.outbound_errors(dict(full, security="reality"))))
+    try:
+        links.parse("vmess://" + base64.b64encode(json.dumps(dict(vm, net="tcp", type="http")).encode()).decode())
+        check("review: vmess HTTP header obfuscation refused", False)
+    except ValueError:
+        check("review: vmess HTTP header obfuscation refused", True)
+    p = config.new_proxy("r", {"type": "socks5", "port": 1080})
+    glob = config.validate_global({})
+    inst = SingBoxInstance.__new__(SingBoxInstance)
+    inst.proxy, inst.cfg = p, config.resolve(p, glob)
+    check("review: changing the DNS server restarts a running card",
+          inst.needs_restart(p, config.validate_global({"dns_server": "1.1.1.1"})) and not inst.needs_restart(p, glob))
+    g = gm.empty()
+    a = gm.add_outbound(g, {"type": "direct"}, "A")
+    grp = gm.add_outbound(g, {"type": "group"}, "G")
+    grp["members"] = [a["id"]]
+    r = gm.add_router(g, "R")
+    r["default"] = a["id"]
+    gm.add_inbound(g, "In", {"type": "socks5", "port": 1080}, target=a["id"])
+    check("review: used-by lists inbounds, groups and routers", sorted(gm.used_by(g, a["id"])) == ["G", "In", "R"])
+
+
+def test_close_log_e2e():
+    """sing-box engine: close details in the log, and the TCP idle timeout closes a silent connection."""
+    from proxydock import common
+    from proxydock.runtime import ProxyManager
+    origin = ThreadingHTTPServer(("127.0.0.1", 0), Origin)
+    threading.Thread(target=origin.serve_forever, daemon=True).start()
+    oport = origin.server_address[1]
+    silent = socket.socket()
+    silent.bind(("127.0.0.1", 0))
+    silent.listen()
+    held = []
+    threading.Thread(target=lambda: held.append(silent.accept()), daemon=True).start()
+    glob = config.validate_global({"engine": "sing-box"})
+    mgr = ProxyManager()
+    try:
+        c = config.new_proxy("close log", {"type": "socks5", "port": free_port()})
+        c["overrides"]["log_close"] = True
+        mgr.start(c, glob).result(20)
+        s1 = socket.create_connection(("127.0.0.1", c["inbound"]["port"]), timeout=10)
+        s1.sendall(b"\x05\x01\x00")
+        s1.recv(2)
+        s1.sendall(b"\x05\x01\x00\x01\x7f\x00\x00\x01" + struct.pack("!H", oport))
+        s1.recv(10)
+        time.sleep(1.5)             # seen by a poll
+        s1.sendall(b"GET / HTTP/1.0\r\nHost: x\r\n\r\n")
+        while s1.recv(65536):
+            pass
+        s1.close()
+        time.sleep(2)
+        lines = [e[2] for e in common.pending_logs if e[3] == c["id"]]
+        check("[sing-box] close details logged", any(" closed · " in x and "↓" in x for x in lines), lines[-5:])
+        inst = mgr.instances[c["id"]]
+        inst.cfg["timeout"] = 2     # (the setting's minimum is 10 s; shortened for the test)
+        s2 = socket.create_connection(("127.0.0.1", c["inbound"]["port"]), timeout=10)
+        s2.sendall(b"\x05\x01\x00")
+        s2.recv(2)
+        s2.sendall(b"\x05\x01\x00\x01\x7f\x00\x00\x01" + struct.pack("!H", silent.getsockname()[1]))
+        s2.recv(10)
+        s2.settimeout(8)
+        t0 = time.monotonic()
+        try:
+            closed = s2.recv(10) == b""
+        except (socket.timeout, OSError):
+            closed = False
+        took = time.monotonic() - t0
+        s2.close()
+        time.sleep(1.2)
+        lines = [e[2] for e in common.pending_logs if e[3] == c["id"]]
+        check("[sing-box] idle TCP connection closed after the timeout", closed and took < 7
+              and any("idle timeout" in x for x in lines), (closed, took, lines[-3:]))
+    finally:
+        mgr.stop_all()
+        silent.close()
+        origin.shutdown()
+
+
 def main():
     t0 = time.time()
     tests = [test_translations, test_graph, test_engine, test_singbox_compile, test_router_graph, test_router_singbox, test_interface,
              test_wireguard, test_tun, test_run_as_admin, test_protocols,
-             test_subscription, test_detect_sni, test_hy2_advanced, test_group, test_dns]
+             test_subscription, test_detect_sni, test_hy2_advanced, test_group, test_dns, test_review_fixes]
     from proxydock.singbox import find_binary
     if find_binary():
         tests += [lambda: test_engine("sing-box"), test_singbox_guard, test_router_e2e, test_interface_e2e, test_wireguard_e2e, test_helper,
-                  test_protocols_e2e, test_subscription_e2e, test_hy2_advanced_e2e, test_group_e2e, test_dns_e2e]
+                  test_protocols_e2e, test_subscription_e2e, test_hy2_advanced_e2e, test_group_e2e, test_dns_e2e, test_close_log_e2e]
         from proxydock.singbox import find_hysteria
         if find_hysteria():
             tests.append(test_hysteria)

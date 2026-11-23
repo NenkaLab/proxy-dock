@@ -247,7 +247,7 @@ class CanvasInterface(QWidget):
             fields, name = parse(QApplication.clipboard().text())
         except ValueError as e:
             info(self.window(), "error", _t("Cannot use the clipboard"),
-                 f"{e}\n" + _t("Copy a vless://, trojan://, tuic://, ss:// or hysteria2:// link first"), 6000)
+                 f"{e}\n" + _t("Copy a vless://, vmess://, trojan://, tuic://, ss:// or hysteria2:// link first"), 6000)
             return
         n = self.ctl.new_outbound(fields, pos, edit=False)
         self.ctl.rename_node(n["id"], name)
@@ -448,7 +448,7 @@ class CanvasInterface(QWidget):
             node = self.node_of.get(n["id"])
             if node is None:
                 continue
-            users = graph_mod.users(cg, n["id"])
+            users = graph_mod.used_by(cg, n["id"])
             members = [graph_mod.find(cg, m)[1]["name"] for m in n.get("members", []) if graph_mod.find(cg, m)[1]]
             if n["outbound"]["type"] == "group":
                 mode = _t("Fastest") if n["outbound"]["group_mode"] != "failover" else _t("Failover in order")
@@ -457,12 +457,9 @@ class CanvasInterface(QWidget):
                     lines.append(_line("#E8B339", "⚠ " + _t("no members")))
             else:
                 lines = [_line("#DADADA", outbound_summary(n["outbound"]))]
-            groups = graph_mod.groups_of(cg, n["id"])
-            if groups:
-                users = users + groups
             if n["via"]:
                 lines.append(_line("#EBBE6E", "⇢ " + " ⇢ ".join(graph_mod.chain_names(cg, n["via"]))))
-            lines.append(_line("#9A9A9A", _t("used by: {names}").format(names=", ".join(u["name"] for u in users))
+            lines.append(_line("#9A9A9A", _t("used by: {names}").format(names=", ".join(users))
                                if users else _t("not used")))
             node.get_widget("info").set_value("<br>".join(lines))
         for r in cg.get("routers", []):

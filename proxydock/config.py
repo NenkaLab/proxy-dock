@@ -79,6 +79,7 @@ GLOBAL_DEFAULTS = {
 }
 OVERRIDABLE = ("allowed_domains", "block_private", "timeout", "log_connections", "log_close", "dns_server",
                "dns_via_outbound")
+VMESS_CIPHERS = ("auto", "aes-128-gcm", "chacha20-poly1305", "none", "zero")
 DNS_PRESETS = ["", "https://cloudflare-dns.com/dns-query", "https://dns.google/dns-query", "https://dns.quad9.net/dns-query",
                "tls://1.1.1.1", "1.1.1.1"]
 DNS_DEFAULT_PORTS = {"udp": 53, "tcp": 53, "tls": 853, "https": 443, "quic": 853, "h3": 443}
@@ -165,6 +166,8 @@ OUTBOUND_DEFAULTS = {
     "uuid": "",                 # VLESS / TUIC user id
     "security": "tls",          # VLESS: "none", "tls" or "reality"
     "vless_flow": "",           # VLESS: "" or "xtls-rprx-vision"
+    "vmess_cipher": "auto",     # VMess: auto / aes-128-gcm / chacha20-poly1305 / none / zero
+    "vmess_alter_id": 0,        # VMess: 0 = AEAD (current servers); > 0 only for very old servers
     "reality_public_key": "",
     "reality_short_id": "",
     "fingerprint": "chrome",    # uTLS client fingerprint ("" = Go's own TLS); REALITY needs one
@@ -492,7 +495,14 @@ def outbound_errors(ob):
                 errs.append(_t("Port hopping: the interval must be 5 to 3600 seconds"))
         if ob["type"] == "hysteria2" and not (0 <= ob["hy2_up_mbps"] <= 100000 and 0 <= ob["hy2_down_mbps"] <= 100000):
             errs.append(_t("Bandwidth must be 0 to 100000 Mbps"))
-        if ob["type"] in ("vless", "tuic"):
+        if ob["type"] == "vmess":
+            if ob["security"] not in ("none", "tls"):
+                errs.append(_t("VMess security: choose none or TLS"))
+            if ob["vmess_cipher"] not in VMESS_CIPHERS:
+                errs.append(_t("Choose the VMess encryption"))
+            if not 0 <= ob["vmess_alter_id"] <= 65535:
+                errs.append(_t("VMess alterId must be 0 to 65535"))
+        if ob["type"] in ("vless", "vmess", "tuic"):
             import uuid as _uuid
             try:
                 _uuid.UUID(ob["uuid"].strip())
@@ -518,7 +528,7 @@ def outbound_errors(ob):
                     errs.append(_t("REALITY: enter the server name (SNI) of the site the server imitates"))
                 if not ob["fingerprint"]:
                     errs.append(_t("REALITY needs a browser fingerprint"))
-        if ob["type"] in ("vless", "trojan") and ob["transport"] not in ("tcp", "ws", "grpc"):
+        if ob["type"] in ("vless", "vmess", "trojan") and ob["transport"] not in ("tcp", "ws", "grpc"):
             errs.append(_t("Choose the transport (TCP, WebSocket or gRPC)"))
         if ob["type"] == "wireguard":
             from .wgconf import valid_cidrs, valid_key

@@ -12,9 +12,10 @@ import sys
 
 from .. import config
 from ..common import (
-    IS_WIN, LOG_AUTH, LOG_BLOCKED, LOG_ERROR, LOG_FAIL, LOG_INFO, LOG_TCP, LOG_UDP, LOG_WARN, host_port, log,
+    IS_WIN, LOG_AUTH, LOG_BLOCKED, LOG_ERROR, LOG_FAIL, LOG_INFO, LOG_TCP, LOG_UDP, LOG_WARN, fmt_size, host_port, log,
     split_host_port,
 )
+import time
 from . import compile as sbc, guard
 from . import find_binary
 
@@ -133,6 +134,7 @@ class SingBoxInstance:
         self._clients = {}          # sing-box connection id -> client "ip:port"
         self._targets = {}          # sing-box connection id -> destination "host:port"
         self._last_totals = (0, 0)
+        self._live = {}             # Clash API connection id -> what we know (close details, idle timeout)
         self.update(proxy, glob)
 
     # --- settings ---
@@ -148,7 +150,7 @@ class SingBoxInstance:
     def needs_restart(self, proxy, glob):
         """Route settings live in the sing-box config, so changing them restarts the process (only this card)."""
         new = config.resolve(proxy, glob)
-        keys = ("allowed_domains", "block_private", "timeout")
+        keys = ("allowed_domains", "block_private", "timeout", "dns_server", "dns_via_outbound")
         return any(new[k] != self.cfg[k] for k in keys) or proxy.get("routes") != self.proxy.get("routes")
 
     @property
@@ -362,6 +364,51 @@ class SingBoxInstance:
             self.log(LOG_FAIL, f"{who} -> {dest} " + _SECRET.sub(r"\1=***", err) + hint)
             return
 
+    # --- close details and TCP idle timeout (sing-box only has a UDP timeout) ---
+    def _track(self, conns):
+        """Follow the open connections between polls. Returns the TCP connections idle for longer than the timeout
+        (to close). Logs a close line for connections that are gone (amounts as of the last poll)."""
+        now = time.monotonic()
+        timeout = self.cfg["timeout"]
+        seen, idle = set(), []
+        for c in conns:
+            cid = c.get("id")
+            if not cid:
+                continue
+            seen.add(cid)
+            up, down = c.get("upload", 0), c.get("download", 0)
+            e = self._live.get(cid)
+            if e is None:
+                md = c.get("metadata") or {}
+                try:
+                    port = int(md.get("destinationPort") or 0)
+                except ValueError:
+                    port = 0
+                e = self._live[cid] = {
+                    "who": host_port(md.get("sourceIP", "?"), md.get("sourcePort", "?")),
+                    "target": host_port(md.get("host") or md.get("destinationIP") or "?", port),
+                    "udp": md.get("network") == "udp", "up": up, "down": down, "start": _started(c.get("start")),
+                    "change": now, "reason": None}
+            elif (up, down) != (e["up"], e["down"]):
+                e.update(up=up, down=down, change=now)
+            if not e["udp"] and e["reason"] is None and now - e["change"] >= timeout:
+                e["reason"] = _t("idle timeout")
+                idle.append(cid)
+        for cid in [k for k in self._live if k not in seen]:
+            self._closed(self._live.pop(cid))
+        return idle
+
+    def _closed(self, e):
+        secs = max(time.time() - e["start"], 0.0)
+        if e["udp"]:
+            if self.cfg["log_close"] or self.cfg["log_connections"]:
+                self.log(LOG_UDP, _t("{who} UDP session ended · ↑ {fmt_size} ↓ {fmt_size2} · {value:.1f}s{extra}").format(
+                    who=e["who"], fmt_size=fmt_size(e["up"]), fmt_size2=fmt_size(e["down"]), value=secs, extra=""))
+        elif self.cfg["log_close"]:
+            self.log(LOG_TCP, _t("{who} -> {target} closed · {reason} · ↑ {fmt_size} ↓ {fmt_size2} · {value:.1f}s").format(
+                who=e["who"], target=e["target"], reason=e["reason"] or _t("normal close"), fmt_size=fmt_size(e["up"]),
+                fmt_size2=fmt_size(e["down"]), value=secs))
+
     # --- statistics / per-IP limit through the Clash API ---
     async def _api(self, method, path):
         r, w = await asyncio.wait_for(asyncio.open_connection("127.0.0.1", self.api_port), 3)
@@ -395,8 +442,26 @@ class SingBoxInstance:
                 st.blocked += len(over)
                 self.log(LOG_BLOCKED, _t("Closed {count} connections over the per-IP limit ({limit})").format(
                     count=len(over), limit=guard.MAX_CONN_PER_IP))
-            for cid in over:
+            idle = self._track(conns)
+            for cid in list(over) + idle:
                 try:
                     await self._api("DELETE", f"/connections/{cid}")
                 except (OSError, asyncio.TimeoutError, ValueError):
                     pass
+
+
+_ISO = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d+))?(Z|[+-]\d\d:\d\d)?$")
+
+
+def _started(text):
+    """Clash API 'start' (RFC 3339 with nanoseconds) -> epoch seconds (now if it cannot be read)."""
+    from datetime import datetime
+    m = _ISO.match(text or "")
+    if not m:
+        return time.time()
+    base, frac, tz = m.groups()
+    tz = "+00:00" if tz in (None, "Z") else tz
+    try:
+        return datetime.fromisoformat(f"{base}.{(frac or '0')[:6].ljust(6, '0')}{tz}").timestamp()
+    except ValueError:
+        return time.time()

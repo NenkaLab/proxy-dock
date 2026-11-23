@@ -20,8 +20,8 @@
 | 구분 | 지원 |
 |---|---|
 | 받는 쪽 | SOCKS5 · SOCKS4/4a · HTTP · HTTPS(TLS) · Shadowsocks 서버 · Hysteria2 서버 · TUN(모든 앱) |
-| 내보내는 쪽 | Direct · 상위 HTTP / HTTPS / SOCKS4 / SOCKS5 프록시 · Shadowsocks 터널 · Hysteria2(QUIC) 터널 · WireGuard · VLESS(TLS / REALITY) · Trojan · TUIC · 구독 · 그룹 |
-| UDP | 받을 때 SOCKS5 · Shadowsocks · Hysteria2, 보낼 때 Direct · Shadowsocks · Hysteria2 · WireGuard · VLESS · Trojan · TUIC |
+| 내보내는 쪽 | Direct · 상위 HTTP / HTTPS / SOCKS4 / SOCKS5 프록시 · Shadowsocks 터널 · Hysteria2(QUIC) 터널 · WireGuard · VLESS(TLS / REALITY) · VMess · Trojan · TUIC · 구독 · 그룹 |
+| UDP | 받을 때 SOCKS5 · Shadowsocks · Hysteria2, 보낼 때 Direct · Shadowsocks · Hysteria2 · WireGuard · VLESS · VMess · Trojan · TUIC |
 
 - **캔버스**: 블루프린트식 편집기 - 받는 쪽 블록에서 내보내는 쪽 블록으로 선을 끌어 잇습니다. 여러 받는 쪽이 내보내는 쪽 하나를 같이 쓸 수 있고, 받는 쪽을 다른 받는 쪽에 이으면 그쪽을 거쳐 중계하며, Direct 는 보낼 IP 를 고를 수 있습니다
 - **PC 블록**: HTTP 받는 쪽을 이으면 실행 중일 때 Windows 시스템 프록시로 씁니다. 이전 설정은 저장해 두었다가 중지하거나 앱을 끄면 되돌립니다 (이전으로 되돌리기 / 끄기 버튼)
@@ -32,7 +32,7 @@
 - **네트워크 인터페이스**: 어떤 내보내는 쪽이든 고른 네트워크 카드(Tailscale, WireGuard, VPN 앱, Wi-Fi)로 내보낼 수 있습니다. PC 라우팅은 바꾸지 않으므로 거기에 이은 트래픽만 그 카드를 씁니다 (sing-box 엔진)
 - **WireGuard**: ProxyDock 안에서 도는 WireGuard 터널 블록 - VPN 앱이 없어도 되므로 여러 나라 터널을 동시에 켜 두고 앱마다 나눠 쓸 수 있습니다. 업체의 `.conf`를 가져올 수 있고, WireGuard 블록을 다른 WireGuard 블록 '경유'로 이으면 이중 VPN이 됩니다 (sing-box 엔진)
 - **TUN**: 이 PC의 모든 앱(프록시 설정이 없는 앱 포함)을 잡는 가상 랜카드입니다. Router에 이으면 프로그램 규칙(game.exe, chrome.exe)이 모든 앱에 적용됩니다. ProxyDock이 이미 관리자 권한이 아니면 켤 때 관리자 권한(UAC)을 묻습니다 (sing-box 엔진)
-- **VLESS / Trojan / TUIC**: TLS 또는 REALITY(Vision flow)를 쓰는 VLESS, Trojan, TUIC v5를 TCP·WebSocket·gRPC로 씁니다. 업체의 `vless://`, `trojan://`, `tuic://`, `ss://`, `hysteria2://` 링크를 복사한 뒤 **내보내는 쪽 추가 → 공유 링크로**(또는 편집기의 **공유 링크 붙여넣기**)를 누르면 됩니다. Cloudflare WARP는 WARP WireGuard 프로필(예: wgcf로 만든 것)을 WireGuard 블록으로 가져오세요 (sing-box 엔진)
+- **VLESS / VMess / Trojan / TUIC**: TLS 또는 REALITY(Vision flow)를 쓰는 VLESS, Trojan, TUIC v5를 TCP·WebSocket·gRPC로 씁니다. 업체의 `vless://`, `vmess://`, `trojan://`, `tuic://`, `ss://`, `hysteria2://` 링크를 복사한 뒤 **내보내는 쪽 추가 → 공유 링크로**(또는 편집기의 **공유 링크 붙여넣기**)를 누르면 됩니다. Cloudflare WARP는 WARP WireGuard 프로필(예: wgcf로 만든 것)을 WireGuard 블록으로 가져오세요 (sing-box 엔진)
 - **구독**: 업체의 구독 URL을 서버 전부를 담은 블록 하나로 씁니다. 서버를 고르거나 가장 빠른 서버를 쓰게 할 수 있습니다(몇 분마다 재 보고 멈춘 서버는 피함). 정해 둔 간격으로 갱신하고, 목록을 암호화해 저장해 두므로 인터넷이 끊겨도 시작됩니다 (sing-box 엔진)
 - **그룹**: 그룹 블록은 여러 출구 블록을 하나처럼 씁니다. 가장 빠른 것, 또는 정해 둔 순서에서 동작하는 첫 번째 것(자동 전환)을 씁니다. 멤버는 '멤버' 출력으로 잇고, 멈춘 서버는 자동으로 건너뜁니다 (sing-box 엔진)
 - **DNS**: ProxyDock이 직접 이름을 찾는 곳(Direct, IP 규칙, TUN)에서 쓸 DNS 서버를 고릅니다. PC의 DNS, 또는 UDP/TCP, DoT(tls://), DoH(https://), DoQ(quic://), HTTP/3(h3://). 전체 또는 카드마다 정할 수 있고, 카드의 터널을 거쳐 보낼 수도 있습니다. TUN 카드는 Fake-IP를 쓰면 이름을 로컬 네트워크가 아니라 출구에서 찾습니다 (sing-box 엔진)
@@ -111,7 +111,7 @@ macOS 빌드는 아직 실제 Mac 에서 확인하지 않았습니다.
 - sing-box 엔진: 다른 PC에 연 Hysteria2 서버는 공식 Hysteria2 코어로 실행되며, 코어가 접속마다 ProxyDock에 인증을 묻습니다
   (sing-box는 비밀번호 오류를 알려주지 않아 IP 차단이 안 됨). 받은 트래픽은 sing-box를 거쳐 나갑니다. 인증서 고정 카드는 계속
   Python 엔진으로 실행됩니다(sing-box 1.15 필요). IP당 연결 제한은 넘친 연결을 나중에 끊는 방식이고,
-  유휴 시간 제한은 UDP에만 적용되며, '연결 종료 상세 기록'은 지원하지 않습니다.
+  TCP 유휴 시간 제한과 '연결 종료 상세 기록'은 1초마다 확인하므로, 아주 짧은 연결은 종료 기록이 남지 않습니다.
 - Python 엔진: Hysteria2 는 다른 내보내는 쪽을 *거쳐* 나갈 수 없고, 체인으로 이은 내보내는 쪽으로는 UDP 를 보내지 않으며,
   Hysteria2(aioquic)는 약 100 Mbps 수준입니다. Hysteria2 대역폭 지정(Brutal), Salamander, 포트 호핑은 sing-box 엔진이 필요합니다. 포트 범위로 받는 서버는 그 서버에서 포트 전달 설정이 필요합니다(ProxyDock이 설정하지 않음).
 - 공식 Hysteria2 서버(이름을 확인하는 다른 서버도)는 인증서와 다른 SNI를 거부합니다. 내보내는 쪽이 IP를 쓴다면 SNI 칸 옆의 **서버에서 감지**를 눌러 인증서의 이름을 넣으세요.

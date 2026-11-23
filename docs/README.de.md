@@ -21,8 +21,8 @@ Shadowsocks-Server" eine einzige Karte.
 | | Unterstützt |
 |---|---|
 | Eingang | SOCKS5 · SOCKS4/4a · HTTP · HTTPS (TLS) · Shadowsocks-Server · Hysteria2-Server · TUN (alle Apps) |
-| Ausgang | Direct · Upstream-HTTP / HTTPS / SOCKS4 / SOCKS5-Proxy · Shadowsocks-Tunnel · Hysteria2-Tunnel (QUIC) · WireGuard · VLESS (TLS / REALITY) · Trojan · TUIC · Abonnement · Gruppe |
-| UDP | Eingang SOCKS5 · Shadowsocks · Hysteria2, Ausgang Direct · Shadowsocks · Hysteria2 · WireGuard · VLESS · Trojan · TUIC |
+| Ausgang | Direct · Upstream-HTTP / HTTPS / SOCKS4 / SOCKS5-Proxy · Shadowsocks-Tunnel · Hysteria2-Tunnel (QUIC) · WireGuard · VLESS (TLS / REALITY) · VMess · Trojan · TUIC · Abonnement · Gruppe |
+| UDP | Eingang SOCKS5 · Shadowsocks · Hysteria2, Ausgang Direct · Shadowsocks · Hysteria2 · WireGuard · VLESS · VMess · Trojan · TUIC |
 
 - **Fläche**: Editor im Blueprint-Stil - Linien von Eingangsblöcken zu Ausgangsblöcken ziehen; mehrere Eingänge können einen Ausgang teilen, ein mit einem anderen Eingang verbundener Eingang leitet über diesen weiter, und Direct kann eine gewählte Quell-IP nutzen
 - **PC-Block**: einen HTTP-Eingang verbinden, um ihn als Windows-Systemproxy zu nutzen, solange er läuft; die vorherigen Einstellungen werden gesichert und beim Stoppen oder Beenden wiederhergestellt (Knöpfe Vorherige wiederherstellen / Aus)
@@ -33,7 +33,7 @@ Shadowsocks-Server" eine einzige Karte.
 - **Netzwerkschnittstelle**: Jeder Ausgang kann über eine gewählte Netzwerkkarte hinausgehen - Tailscale, WireGuard, eine VPN-App, WLAN - ohne die Routen des PCs zu ändern; nur der dorthin verbundene Verkehr nutzt sie (sing-box-Engine)
 - **WireGuard**: ein WireGuard-Tunnelblock, der in ProxyDock läuft - keine VPN-App, daher können mehrere Länder gleichzeitig für verschiedene Apps laufen; `.conf` eines Anbieters importieren; ein WireGuard-Block 'über' einen anderen ergibt ein Doppel-VPN (sing-box-Engine)
 - **TUN**: eine virtuelle Netzwerkkarte, die alle Apps auf diesem PC erfasst, auch ohne Proxy-Einstellung - mit einem Router verbunden gelten Programmregeln (game.exe, chrome.exe) für alle Apps. Fragt beim Start nach Administratorrechten (UAC), außer ProxyDock läuft schon als Administrator (sing-box-Engine)
-- **VLESS / Trojan / TUIC**: VLESS mit TLS oder REALITY (Vision-Flow), Trojan, TUIC v5, über TCP, WebSocket oder gRPC. Den `vless://`-, `trojan://`-, `tuic://`-, `ss://`- oder `hysteria2://`-Link eines Anbieters kopieren und **Ausgang hinzufügen → Aus einem Freigabelink** wählen (oder **Freigabelink einfügen** im Editor). Cloudflare WARP: ein WARP-WireGuard-Profil (z. B. mit wgcf erstellt) in einen WireGuard-Block importieren (sing-box-Engine)
+- **VLESS / VMess / Trojan / TUIC**: VLESS mit TLS oder REALITY (Vision-Flow), Trojan, TUIC v5, über TCP, WebSocket oder gRPC. Den `vless://`-, `vmess://`-, `trojan://`-, `tuic://`-, `ss://`- oder `hysteria2://`-Link eines Anbieters kopieren und **Ausgang hinzufügen → Aus einem Freigabelink** wählen (oder **Freigabelink einfügen** im Editor). Cloudflare WARP: ein WARP-WireGuard-Profil (z. B. mit wgcf erstellt) in einen WireGuard-Block importieren (sing-box-Engine)
 - **Abonnements**: Die Abo-URL eines Anbieters wird zu einem Block mit allen Servern - einen wählen oder automatisch den schnellsten nehmen (misst alle paar Minuten und meidet ausgefallene Server). Aktualisiert sich nach Zeitplan; die Liste wird verschlüsselt gespeichert und startet auch offline (sing-box-Engine)
 - **Gruppen**: Ein Gruppenblock nutzt mehrere Ausgangsblöcke wie einen - den schnellsten oder den ersten funktionierenden in der festgelegten Reihenfolge (Failover). Die Mitglieder über den Ausgang „Mitglieder“ verbinden; ausgefallene Server werden automatisch übersprungen (sing-box-Engine)
 - **DNS**: den DNS-Server wählen, den ProxyDock nutzt, wo es Namen selbst auflöst (Direct, IP-Regeln, TUN) - DNS des PCs oder UDP/TCP, DoT (tls://), DoH (https://), DoQ (quic://), HTTP/3 (h3://). Global oder pro Karte; auf Wunsch durch den Tunnel der Karte. TUN-Karten können Fake-IP nutzen, sodass Namen am Ausgang statt im lokalen Netz aufgelöst werden (sing-box-Engine)
@@ -113,7 +113,7 @@ Der macOS-Build wurde noch nicht auf einem echten Mac getestet.
 - sing-box-Engine: Ein für andere PCs offener Hysteria2-Server läuft mit dem offiziellen Hysteria2-Kern, der ProxyDock bei jeder
   Anmeldung fragt (sing-box meldet falsche Passwörter nicht, IP-Sperren würden also nicht greifen); der Verkehr läuft dann über
   sing-box. Zertifikat-Pinning läuft weiter mit der Python-Engine (braucht sing-box 1.15). Das Limit pro IP trennt überzählige
-  Verbindungen nachträglich; die Leerlaufzeit gilt nur für UDP; 'Details zum Verbindungsende' gibt es nicht.
+  Verbindungen nachträglich; TCP-Leerlaufzeit und 'Details zum Verbindungsende' werden einmal pro Sekunde geprüft, sehr kurze Verbindungen bekommen daher keine Endzeile.
 - Python-Engine: Hysteria2 kann nicht *über* andere Ausgänge laufen, UDP wird über verkettete Ausgänge nicht weitergeleitet, und
   Hysteria2 (aioquic) schafft etwa 100 Mbit/s. Hysteria2-Bandbreite (Brutal), Salamander und Port-Hopping brauchen die sing-box-Engine; ein Server auf einem Portbereich braucht dort eine Portweiterleitung (richtet ProxyDock nicht ein).
 - Der offizielle Hysteria2-Server (und andere Server, die den Namen prüfen) lehnt eine SNI ab, die nicht zum Zertifikat passt. Nutzt der Ausgang eine IP, neben dem SNI-Feld auf **Vom Server erkennen** klicken, um den Namen aus dem Zertifikat zu lesen.

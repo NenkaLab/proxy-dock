@@ -268,6 +268,13 @@ def users(graph, nid):
     return [n for n in graph["inbounds"] if n["target"] == nid]
 
 
+def used_by(graph, nid):
+    """Names of the blocks that send traffic to block nid: inbounds, groups (members) and routers (rule targets)."""
+    names = [n["name"] for n in users(graph, nid)] + [n["name"] for n in groups_of(graph, nid)]
+    names += [r["name"] for r in graph.get("routers", []) if any(t == nid for _, t in router_targets(r))]
+    return names
+
+
 def groups_of(graph, nid):
     """Group blocks that have outbound nid as a member."""
     return [n for n in graph["outbounds"] if nid in n.get("members", ())]

@@ -144,6 +144,15 @@ def outbound(ob, tag):
         if tr:
             d["transport"] = tr
         return d
+    if t == "vmess":
+        d = {"type": "vmess", **srv, "uuid": ob["uuid"].strip(), "security": ob.get("vmess_cipher") or "auto",
+             "alter_id": ob.get("vmess_alter_id", 0), "packet_encoding": "xudp"}
+        if ob.get("security", "none") == "tls":
+            d["tls"] = _tls_full(ob)
+        tr = _transport(ob)
+        if tr:
+            d["transport"] = tr
+        return d
     if t == "trojan":
         d = {"type": "trojan", **srv, "password": ob["password"], "tls": _tls_full(ob)}
         tr = _transport(ob)

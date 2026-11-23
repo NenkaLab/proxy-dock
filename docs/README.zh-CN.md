@@ -20,8 +20,8 @@
 | | 支持 |
 |---|---|
 | 入站 | SOCKS5 · SOCKS4/4a · HTTP · HTTPS (TLS) · Shadowsocks 服务器 · Hysteria2 服务器 · TUN (所有应用) |
-| 出站 | Direct · 上游 HTTP / HTTPS / SOCKS4 / SOCKS5 代理 · Shadowsocks 隧道 · Hysteria2 (QUIC) 隧道 · WireGuard · VLESS (TLS / REALITY) · Trojan · TUIC · 订阅 · 分组 |
-| UDP | 入站 SOCKS5 · Shadowsocks · Hysteria2，出站 Direct · Shadowsocks · Hysteria2 · WireGuard · VLESS · Trojan · TUIC |
+| 出站 | Direct · 上游 HTTP / HTTPS / SOCKS4 / SOCKS5 代理 · Shadowsocks 隧道 · Hysteria2 (QUIC) 隧道 · WireGuard · VLESS (TLS / REALITY) · VMess · Trojan · TUIC · 订阅 · 分组 |
+| UDP | 入站 SOCKS5 · Shadowsocks · Hysteria2，出站 Direct · Shadowsocks · Hysteria2 · WireGuard · VLESS · VMess · Trojan · TUIC |
 
 - **画布**：蓝图式编辑器 - 从入站块拖线到出站块；多个入站可共用一个出站，把入站连到另一个入站会经由它中继，Direct 可以指定源 IP
 - **PC 块**：连接一个 HTTP 入站，在其运行期间用作 Windows 系统代理；之前的设置会被保存，停止或退出应用时恢复 (恢复之前的设置 / 关闭 按钮)
@@ -31,7 +31,7 @@
 - **网络接口**: 任何出站都可以从选定的网卡 (Tailscale、WireGuard、VPN 应用、Wi-Fi) 发出，不改变电脑的路由，只有连到那里的流量才使用它 (sing-box 引擎)
 - **WireGuard**: 在 ProxyDock 内运行的 WireGuard 隧道块 - 不需要 VPN 应用，可同时开启多个国家的隧道并按应用分配；可导入服务商的 `.conf`；把一个 WireGuard 块经由另一个即为双重 VPN (sing-box 引擎)
 - **TUN**: 捕获本机所有应用 (包括没有代理设置的应用) 的虚拟网卡——连到路由后，程序规则 (game.exe、chrome.exe) 对所有应用生效。若 ProxyDock 不是以管理员身份运行，启动时会请求管理员权限 (UAC) (sing-box 引擎)
-- **VLESS / Trojan / TUIC**: 支持 TLS 或 REALITY (Vision flow) 的 VLESS、Trojan、TUIC v5，可走 TCP、WebSocket 或 gRPC。复制服务商的 `vless://`、`trojan://`、`tuic://`、`ss://` 或 `hysteria2://` 链接，然后点 **添加出站 → 从分享链接** (或编辑器里的 **粘贴分享链接**)。Cloudflare WARP：把 WARP 的 WireGuard 配置 (例如用 wgcf 生成) 导入 WireGuard 块 (sing-box 引擎)
+- **VLESS / VMess / Trojan / TUIC**: 支持 TLS 或 REALITY (Vision flow) 的 VLESS、Trojan、TUIC v5，可走 TCP、WebSocket 或 gRPC。复制服务商的 `vless://`、`vmess://`、`trojan://`、`tuic://`、`ss://` 或 `hysteria2://` 链接，然后点 **添加出站 → 从分享链接** (或编辑器里的 **粘贴分享链接**)。Cloudflare WARP：把 WARP 的 WireGuard 配置 (例如用 wgcf 生成) 导入 WireGuard 块 (sing-box 引擎)
 - **订阅**: 把服务商的订阅 URL 作为包含所有服务器的一个块。可手动选择或自动使用最快的服务器 (每隔几分钟测量并避开失效服务器)。按设定间隔更新，列表加密保存，离线也能启动 (sing-box 引擎)
 - **分组**: 分组块把多个出站块当作一个使用: 最快的，或按你设定的顺序第一个可用的 (故障转移)。从它的“成员”输出连接成员; 自动跳过失效服务器 (sing-box 引擎)
 - **DNS**: 选择 ProxyDock 自己解析名称时 (Direct、IP 规则、TUN) 使用的 DNS 服务器: PC 的 DNS，或 UDP/TCP、DoT (tls://)、DoH (https://)、DoQ (quic://)、HTTP/3 (h3://)。可全局或按卡片设置，也可以经由卡片的隧道发送。TUN 卡片可使用 Fake-IP，让名称在出口而不是本地网络解析 (sing-box 引擎)
@@ -108,7 +108,7 @@ macOS 构建尚未在真实的 Mac 上验证。
   程序规则只对来自本机的连接有效。
 - sing-box 引擎: 对其他电脑开放的 Hysteria2 服务器使用官方 Hysteria2 核心运行，核心每次连接都向 ProxyDock 询问认证
   (sing-box 不报告密码错误，无法封禁 IP)；收到的流量再经 sing-box 发出。证书固定的卡片仍使用 Python 引擎 (需要 sing-box 1.15)。
-  单 IP 连接上限是事后断开多出的连接；空闲超时只作用于 UDP；不支持“记录连接关闭详情”。
+  单 IP 连接上限是事后断开多出的连接；TCP 空闲超时和“记录连接关闭详情”每秒检查一次，所以很短的连接不会留下关闭记录。
 - Python 引擎: Hysteria2 不能*经由*其他出站，串联的出站不转发 UDP，Hysteria2 (aioquic) 约 100 Mbps。
   Hysteria2 带宽设置 (Brutal)、Salamander 和端口跳跃需要 sing-box 引擎；监听端口范围的服务器需要在该服务器上做端口转发 (ProxyDock 不会设置)。
 - 官方 Hysteria2 服务器 (以及其他检查名称的服务器) 会拒绝与证书不符的 SNI。出站使用 IP 时，点 SNI 栏旁的 **从服务器检测** 读取证书中的名称。

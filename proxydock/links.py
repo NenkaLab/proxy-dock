@@ -1,4 +1,4 @@
-"""Share links -> outbound settings: vless://, trojan://, tuic://, ss://, hysteria2:// (hy2://).
+"""Share links -> outbound settings: vless://, vmess://, trojan://, tuic://, ss://, hysteria2:// (hy2://).
 
 These are the links VPN/proxy providers hand out (the formats v2rayN, Clash and sing-box clients use).
 parse(link) -> (outbound fields for config.OUTBOUND_DEFAULTS, name). Raises ValueError for anything else.
@@ -7,7 +7,7 @@ from .i18n import _t
 import base64
 import urllib.parse
 
-SCHEMES = ("vless", "trojan", "tuic", "ss", "hysteria2", "hy2")
+SCHEMES = ("vless", "vmess", "trojan", "tuic", "ss", "hysteria2", "hy2")
 
 
 def _b64(text):
@@ -59,7 +59,9 @@ def parse(link):
     link = link.strip()
     scheme = link.split("://", 1)[0].lower() if "://" in link else ""
     if scheme not in SCHEMES:
-        raise ValueError(_t("Not a share link (vless://, trojan://, tuic://, ss:// or hysteria2://)"))
+        raise ValueError(_t("Not a share link (vless://, vmess://, trojan://, tuic://, ss:// or hysteria2://)"))
+    if scheme == "vmess":
+        return _vmess(link)
     u = urllib.parse.urlsplit(link)
     q = {k: v[0] for k, v in urllib.parse.parse_qs(u.query, keep_blank_values=True).items()}
     name = urllib.parse.unquote(u.fragment).strip()
@@ -126,3 +128,32 @@ def parse(link):
     if q.get("udp_relay_mode"):
         ob["tuic_udp_relay"] = q["udp_relay_mode"]
     return ob, name or "TUIC"
+
+
+def _vmess(link):
+    """vmess://base64(JSON) as v2rayN writes it: add, port, id, aid, scy, net, type, host, path, tls, sni, alpn, fp, ps."""
+    import json
+    try:
+        d = json.loads(_b64(link.split("://", 1)[1].split("#", 1)[0]))
+        if not isinstance(d, dict):
+            raise ValueError
+    except (ValueError, UnicodeDecodeError):
+        raise ValueError(_t("The vmess:// link is not readable (expected base64 JSON)")) from None
+
+    def get(k):
+        v = d.get(k)
+        return "" if v is None else str(v).strip()
+
+    host, port = get("add"), get("port")
+    if not host or not port.isdigit() or not 0 < int(port) < 65536:
+        raise ValueError(_t("The link has no valid server address and port"))
+    net = (get("net") or "tcp").lower()
+    if net == "tcp" and get("type").lower() not in ("", "none"):
+        raise ValueError(_t("Transport '{value}' is not supported (TCP, WebSocket and gRPC are)").format(value="tcp/" + get("type")))
+    q = {"type": net, "path": get("path") or ("/" if net == "ws" else ""), "host": get("host"), "serviceName": get("path")}
+    ob = {"type": "vmess", "host": host.strip("[]"), "port": int(port), "uuid": get("id"),
+          "vmess_cipher": get("scy").lower() or "auto", "vmess_alter_id": int(get("aid")) if get("aid").isdigit() else 0,
+          "security": "tls" if get("tls").lower() == "tls" else "none", **_transport_fields(q)}
+    if ob["security"] == "tls":
+        ob.update(_tls_fields({"sni": get("sni") or get("host"), "alpn": get("alpn"), **({"fp": get("fp")} if get("fp") else {})}))
+    return ob, get("ps") or "VMess"

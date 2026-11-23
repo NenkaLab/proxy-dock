@@ -21,8 +21,8 @@ es una sola tarjeta.
 | | Compatible |
 |---|---|
 | Entrada | SOCKS5 · SOCKS4/4a · HTTP · HTTPS (TLS) · servidor Shadowsocks · servidor Hysteria2 · TUN (todas las apps) |
-| Salida | Direct · proxy superior HTTP / HTTPS / SOCKS4 / SOCKS5 · túnel Shadowsocks · túnel Hysteria2 (QUIC) · WireGuard · VLESS (TLS / REALITY) · Trojan · TUIC · suscripción · grupo |
-| UDP | entrada SOCKS5 · Shadowsocks · Hysteria2, salida Direct · Shadowsocks · Hysteria2 · WireGuard · VLESS · Trojan · TUIC |
+| Salida | Direct · proxy superior HTTP / HTTPS / SOCKS4 / SOCKS5 · túnel Shadowsocks · túnel Hysteria2 (QUIC) · WireGuard · VLESS (TLS / REALITY) · VMess · Trojan · TUIC · suscripción · grupo |
+| UDP | entrada SOCKS5 · Shadowsocks · Hysteria2, salida Direct · Shadowsocks · Hysteria2 · WireGuard · VLESS · VMess · Trojan · TUIC |
 
 - **Lienzo**: editor estilo blueprint - arrastra líneas de los bloques de entrada a los de salida; varias entradas pueden compartir una salida, una entrada conectada a otra entrada pasa por ella, y Direct puede salir desde una IP de origen elegida
 - **Bloque PC**: conecta una entrada HTTP para usarla como proxy del sistema de Windows mientras se ejecuta; la configuración anterior se guarda y se restaura al detenerla o cerrar la aplicación (botones Restaurar anterior / Desactivado)
@@ -33,7 +33,7 @@ es una sola tarjeta.
 - **Interfaz de red**: cualquier salida puede salir por una tarjeta de red elegida (Tailscale, WireGuard, una app de VPN, Wi-Fi) sin cambiar las rutas del PC; solo el tráfico conectado a ella la usa (motor sing-box)
 - **WireGuard**: un bloque de túnel WireGuard que funciona dentro de ProxyDock: sin app de VPN, así que varios países pueden estar activos a la vez para apps distintas; importa el `.conf` de un proveedor; un bloque WireGuard «por» otro da una VPN doble (motor sing-box)
 - **TUN**: una tarjeta de red virtual que captura todas las apps de este PC, incluso sin ajustes de proxy; conectada a un enrutador, las reglas de programa (game.exe, chrome.exe) se aplican a todas. Pide permisos de administrador (UAC) al iniciarse, salvo que ProxyDock ya se ejecute como administrador (motor sing-box)
-- **VLESS / Trojan / TUIC**: VLESS con TLS o REALITY (flow Vision), Trojan y TUIC v5, sobre TCP, WebSocket o gRPC. Copia el enlace `vless://`, `trojan://`, `tuic://`, `ss://` o `hysteria2://` de un proveedor y usa **Añadir salida → Desde un enlace compartido** (o **Pegar enlace compartido** en el editor). Cloudflare WARP: importa un perfil WireGuard de WARP (p. ej. hecho con wgcf) en un bloque WireGuard (motor sing-box)
+- **VLESS / VMess / Trojan / TUIC**: VLESS con TLS o REALITY (flow Vision), Trojan y TUIC v5, sobre TCP, WebSocket o gRPC. Copia el enlace `vless://`, `vmess://`, `trojan://`, `tuic://`, `ss://` o `hysteria2://` de un proveedor y usa **Añadir salida → Desde un enlace compartido** (o **Pegar enlace compartido** en el editor). Cloudflare WARP: importa un perfil WireGuard de WARP (p. ej. hecho con wgcf) en un bloque WireGuard (motor sing-box)
 - **Suscripciones**: la URL de suscripción de un proveedor se convierte en un bloque con todos sus servidores; elige uno o deja que use el más rápido (mide cada pocos minutos y evita los caídos). Se actualiza según un horario y la lista se guarda cifrada, así que también arranca sin conexión (motor sing-box)
 - **Grupos**: un bloque de grupo usa varios bloques de salida como uno: el más rápido, o el primero que funcione en el orden que elijas (conmutación por error). Conecta los miembros desde su salida «miembros»; los servidores caídos se saltan automáticamente (motor sing-box)
 - **DNS**: elige el servidor DNS que usa ProxyDock donde resuelve nombres por sí mismo (Direct, reglas de IP, TUN): el DNS del PC, o UDP/TCP, DoT (tls://), DoH (https://), DoQ (quic://), HTTP/3 (h3://). Global o por tarjeta; opcionalmente por el túnel de la tarjeta. Las tarjetas TUN pueden usar Fake-IP para que los nombres se resuelvan en la salida y no en la red local (motor sing-box)
@@ -113,7 +113,7 @@ La compilación para macOS aún no se ha probado en un Mac real.
 - Motor sing-box: un servidor Hysteria2 abierto a otros PC funciona con el núcleo oficial de Hysteria2, que consulta a ProxyDock en
   cada inicio de sesión (sing-box no informa de contraseñas incorrectas, así que el bloqueo de IP no funcionaría); el tráfico sale
   luego por sing-box. La fijación de certificado sigue con el motor Python (requiere sing-box 1.15). El límite por IP cierra las
-  conexiones de más a posteriori; el tiempo de inactividad solo se aplica al UDP; no hay «detalles del cierre».
+  conexiones de más a posteriori; el tiempo de inactividad TCP y los «detalles del cierre» se comprueban una vez por segundo, así que las conexiones muy cortas no tienen línea de cierre.
 - Motor Python: Hysteria2 no puede pasar *por* otras salidas, el UDP no se retransmite por salidas encadenadas y Hysteria2
   (aioquic) llega a unos 100 Mbps. El ancho de banda de Hysteria2 (Brutal), Salamander y el salto de puertos requieren el motor sing-box; un servidor en un rango de puertos necesita una redirección de puertos en ese servidor (ProxyDock no la configura).
 - El servidor oficial de Hysteria2 (y otros que comprueban el nombre) rechaza un SNI que no coincide con su certificado. Si la salida usa una IP, pulsa **Detectar desde el servidor** junto al campo SNI para leer el nombre del certificado.
