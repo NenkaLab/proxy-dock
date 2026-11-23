@@ -243,25 +243,50 @@ def info(parent, kind, title, content, duration=2500):
     return bar
 
 
-NO_DIALOG_FADE = sys.platform == "darwin"       # tests switch it on to run the macOS path elsewhere
+DIALOG_NO_EFFECTS = sys.platform == "darwin"       # no fade/shadow on dialogs; tests switch it on to run the macOS path elsewhere
 
 
-class NoFadeOnMac:
-    """Mix in before a qfluentwidgets MessageBoxBase/MessageBox: on macOS skip its fade in/out. The fade paints
-    through a QGraphicsOpacityEffect, which crashes in Qt's paint path there (seen in CI when a dialog closed),
-    like the InfoBar in info() and the page transitions."""
+class MacSafeDialog:
+    """Mix in before a qfluentwidgets dialog (MessageBoxBase, MessageBox, ColorDialog): on macOS paint it without
+    graphics effects. Its fade in/out (QGraphicsOpacityEffect) and drop shadow (QGraphicsDropShadowEffect) both
+    crashed in Qt's paint path there (seen in CI while a dialog was open or closing), like the InfoBar in info()
+    and the page transitions."""
+
+    def setShadowEffect(self, *args, **kwargs):
+        if DIALOG_NO_EFFECTS:
+            self.widget.setGraphicsEffect(None)
+        else:
+            super().setShadowEffect(*args, **kwargs)
 
     def showEvent(self, e):
-        if NO_DIALOG_FADE:
+        if DIALOG_NO_EFFECTS:
             from PySide6.QtWidgets import QDialog
             QDialog.showEvent(self, e)
         else:
             super().showEvent(e)
 
     def done(self, code):
-        if NO_DIALOG_FADE:
+        if DIALOG_NO_EFFECTS:
             from PySide6.QtWidgets import QDialog
             self.setGraphicsEffect(None)
             QDialog.done(self, code)
         else:
             super().done(code)
+
+
+def ConfirmBox(title, content, parent):
+    """qfluentwidgets MessageBox (yes/cancel) without graphics effects on macOS (see MacSafeDialog)."""
+    from qfluentwidgets import MessageBox
+
+    class _Box(MacSafeDialog, MessageBox):
+        pass
+    return _Box(title, content, parent)
+
+
+def ColorPicker(color, title, parent):
+    """qfluentwidgets ColorDialog without graphics effects on macOS (see MacSafeDialog)."""
+    from qfluentwidgets import ColorDialog
+
+    class _Picker(MacSafeDialog, ColorDialog):
+        pass
+    return _Picker(color, title, parent)

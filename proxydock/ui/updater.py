@@ -13,12 +13,12 @@ from PySide6.QtCore import QObject, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QSystemTrayIcon
 from qfluentwidgets import (
-    BodyLabel, CaptionLabel, MessageBox, MessageBoxBase, ProgressBar, PushButton, SubtitleLabel, TextBrowser,
+    BodyLabel, CaptionLabel, MessageBoxBase, ProgressBar, PushButton, SubtitleLabel, TextBrowser,
 )
 
 from .. import __version__, update
 from ..common import APP_NAME, LOG_ERROR, LOG_INFO, LOG_WARN, RELEASES_URL, log
-from .common import NoFadeOnMac, info
+from .common import ConfirmBox, MacSafeDialog, info
 
 
 def fmt_size(n):
@@ -29,7 +29,7 @@ def open_url(url):
     QDesktopServices.openUrl(QUrl(url))
 
 
-class ReleaseDialog(NoFadeOnMac, MessageBoxBase):
+class ReleaseDialog(MacSafeDialog, MessageBoxBase):
     """New version: release notes (Markdown) + download / later."""
 
     def __init__(self, release, action_text, parent):
@@ -45,7 +45,7 @@ class ReleaseDialog(NoFadeOnMac, MessageBoxBase):
         self.cancelButton.setText(_t("Later"))
 
 
-class DownloadDialog(NoFadeOnMac, MessageBoxBase):
+class DownloadDialog(MacSafeDialog, MessageBoxBase):
     """Download progress; Cancel stops the download."""
 
     def __init__(self, name, parent):
@@ -67,10 +67,6 @@ class DownloadDialog(NoFadeOnMac, MessageBoxBase):
             self.label.setText(f"{fmt_size(done)} / {fmt_size(total)}")
         else:
             self.label.setText(fmt_size(done))
-
-
-class ConfirmBox(NoFadeOnMac, MessageBox):
-    pass
 
 
 class Updater(QObject):

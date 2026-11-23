@@ -813,20 +813,31 @@ def ui_update(ctl, w, wait):
         until(lambda: not updater._downloading)
         check("ui: a file with a wrong SHA-256 is not offered for install", asked == ["appimage"], asked)
         from proxydock.ui import common as uic
-        mac = uic.NO_DIALOG_FADE
-        for no_fade in sorted({mac, True}):         # the macOS path (no fade) runs everywhere
-            uic.NO_DIALOG_FADE = no_fade
+        mac = uic.DIALOG_NO_EFFECTS
+        for no_fade in sorted({mac, True}):         # the macOS path (no effects) runs everywhere
+            uic.DIALOG_NO_EFFECTS = no_fade
             dlg = ReleaseDialog(updater.release, "Install", w)
             QTimer.singleShot(300, dlg.reject)
-            check(f"ui: release notes dialog opens and closes (fade {'off' if no_fade else 'on'})",
-                  not dlg.exec() and "Something" in dlg.notes.toPlainText() and dlg.graphicsEffect() is None)
+            check(f"ui: release notes dialog opens and closes (effects {'off' if no_fade else 'on'})",
+                  not dlg.exec() and "Something" in dlg.notes.toPlainText() and dlg.graphicsEffect() is None
+                  and (not no_fade or dlg.widget.graphicsEffect() is None))
             update_mod.open_stream = lambda url: io.BytesIO(payload)
             updater.start_download(updater.release, name, kind)
             until(lambda: not updater._downloading)
             wait(300)
-            check(f"ui: download dialog closes after the download (fade {'off' if no_fade else 'on'})",
+            check(f"ui: download dialog closes after the download (effects {'off' if no_fade else 'on'})",
                   asked[-1] == "appimage" and updater._dialog is None)
-        uic.NO_DIALOG_FADE = mac
+            from PySide6.QtGui import QColor
+            from proxydock.ui.router import ProgramPicker
+            closed = []
+            for make in (lambda: uic.ConfirmBox("Delete proxy", "Delete?", w), lambda: ProgramPicker(w, []),
+                         lambda: uic.ColorPicker(QColor("#3080ff"), "Link colour", w)):
+                box = make()
+                QTimer.singleShot(300, box.reject)
+                closed.append(not box.exec() and box.graphicsEffect() is None
+                              and (not no_fade or box.widget.graphicsEffect() is None))
+            check(f"ui: confirm, program and colour dialogs open and close (effects {'off' if no_fade else 'on'})", all(closed), closed)
+        uic.DIALOG_NO_EFFECTS = mac
     finally:
         update_mod.http_get, update_mod.open_stream = old_get, old_stream
         for attr in ("show_dialog", "ask_install"):

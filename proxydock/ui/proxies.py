@@ -14,7 +14,6 @@ from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import QApplication, QFileDialog, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 from qfluentwidgets import (
     Action, BodyLabel, CaptionLabel, CardWidget, CheckBox, ComboBox, DropDownPushButton, FluentIcon as FIF, LineEdit,
-    MessageBox,
     EditableComboBox, ListWidget, PasswordLineEdit, PrimaryDropDownPushButton, PrimaryPushButton, PushButton, RoundMenu, ScrollArea,
     SimpleCardWidget, SpinBox, StrongBodyLabel, SubtitleLabel, SwitchButton, TitleLabel, TransparentToolButton,
     isDarkTheme,
@@ -23,7 +22,7 @@ from qfluentwidgets import (
 from .. import config
 from ..common import INBOUND_TYPES, IS_WIN, OUTBOUND_TYPES, host_port, is_loopback_host
 from ..platform_utils import check_port, default_route_ifaces, local_lan_ip
-from .common import STATE_COLORS, STATE_TEXT, info
+from .common import STATE_COLORS, STATE_TEXT, ConfirmBox, info
 
 
 # --- shared ---
@@ -546,7 +545,7 @@ def confirm_delete(ctl, ids, parent):
     names = [n["name"] for n in (graph_mod.find(ctl.graph, i)[1] for i in ids) if n is not None]
     if not names:
         return
-    box = MessageBox(_t("Delete proxy"), _t("Delete '{name}'? It will be stopped if it is running.").format(name=", ".join(names)), parent)
+    box = ConfirmBox(_t("Delete proxy"), _t("Delete '{name}'? It will be stopped if it is running.").format(name=", ".join(names)), parent)
     box.yesButton.setText(_t("Delete"))
     box.cancelButton.setText(_t("Cancel"))
     if box.exec():
