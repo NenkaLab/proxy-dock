@@ -645,8 +645,9 @@ class Controller:
         if kind != "inbound" or n["target"] == tid:
             return True
         tkind, t = graph_mod.find(self.graph, tid) if tid else (None, None)
-        if tkind == "inbound" and t["inbound"]["type"] == "tun":
-            info(self.window, "error", _t("Cannot connect"), _t("A TUN card takes traffic from apps; another inbound cannot relay into it"), 5000)
+        if tkind == "inbound" and t["inbound"]["type"] in ("tun", "wireguard"):
+            info(self.window, "error", _t("Cannot connect"), _t("A TUN card takes traffic from apps; another inbound cannot relay into it")
+                 if t["inbound"]["type"] == "tun" else _t("A WireGuard server takes traffic from devices; another inbound cannot relay into it"), 5000)
             self.refresh_lists()
             return False
         old = n["target"]

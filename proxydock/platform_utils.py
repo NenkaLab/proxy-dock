@@ -25,6 +25,27 @@ def local_lan_ip():
         s.close()
 
 
+def running_programs():
+    """Sorted names of the programs running now (e.g. chrome.exe), for router program rules."""
+    names = set()
+    try:
+        if IS_WIN:
+            out = subprocess.run(["tasklist", "/fo", "csv", "/nh"], capture_output=True, text=True, timeout=10,
+                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+            for line in out.splitlines():
+                name = line.split('","', 1)[0].strip('"')
+                if name.lower().endswith(".exe"):
+                    names.add(name)
+        else:
+            out = subprocess.run(["ps", "-A", "-o", "comm="], capture_output=True, text=True, timeout=10).stdout
+            names = {os.path.basename(x.strip()) for x in out.splitlines() if x.strip()}
+    except (OSError, subprocess.SubprocessError):
+        pass
+    skip = {"system idle process", "system", "registry", "smss.exe", "csrss.exe", "wininit.exe", "services.exe",
+            "lsass.exe", "svchost.exe", "fontdrvhost.exe", "dwm.exe", "memory compression", "conhost.exe", "tasklist.exe"}
+    return sorted((n for n in names if n.lower() not in skip), key=str.lower)
+
+
 def check_port(host, port, udp=False):
     """(available, description)."""
     bind_host = "127.0.0.1" if host == "localhost" else host

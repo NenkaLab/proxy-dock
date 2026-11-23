@@ -11,10 +11,10 @@
 
 ## 機能
 
-- **受信側**: SOCKS5、SOCKS4、HTTP、HTTPS、Shadowsocks サーバー、Hysteria2 サーバー、TUN (この PC のすべてのアプリ)
+- **受信側**: SOCKS5、SOCKS4、HTTP、HTTPS、Shadowsocks サーバー、Hysteria2 サーバー、WireGuard サーバー (スマホや PC が WireGuard アプリで接続)、TUN (この PC のすべてのアプリ)
 - **送信側**: Direct、HTTP / HTTPS / SOCKS プロキシ、Shadowsocks、Hysteria2、WireGuard、VLESS (REALITY)、VMess、
   Trojan、TUIC、サブスクリプション (共有リンクまたは Clash YAML)
-- **ブロック**: チェーン (送信側を別の送信側経由に)、ルーター (ドメイン・IP・ポート・プログラム・GeoIP/Geosite のルール)、
+- **ブロック**: チェーン (送信側を別の送信側経由に)、ルーター (ドメイン・IP・ポート・プログラム (実行中の一覧から選択)・GeoIP/Geosite のルール、かんたん・詳細表示)、
   グループ (最速または自動切り替え)、ブロック
 - **ネットワークインターフェース**: PC のルーティングを変えずに、送信側を Tailscale、VPN アプリ、Wi-Fi から出す
 - **DNS**: PC の DNS、DoH / DoT / DoQ、カードごとの設定、トンネル経由、TUN 用の Fake-IP

@@ -11,10 +11,10 @@
 
 ## 功能
 
-- **入站**: SOCKS5、SOCKS4、HTTP、HTTPS、Shadowsocks 服务器、Hysteria2 服务器、TUN (本机所有应用)
+- **入站**: SOCKS5、SOCKS4、HTTP、HTTPS、Shadowsocks 服务器、Hysteria2 服务器、WireGuard 服务器 (手机和电脑用 WireGuard 应用连接)、TUN (本机所有应用)
 - **出站**: Direct、HTTP / HTTPS / SOCKS 代理、Shadowsocks、Hysteria2、WireGuard、VLESS (REALITY)、VMess、
   Trojan、TUIC、订阅 (分享链接或 Clash YAML)
-- **块**: 链式 (出站经由另一个出站)、路由器 (按域名、IP、端口、程序、GeoIP/Geosite 分流)、分组 (最快或故障转移)、阻止
+- **块**: 链式 (出站经由另一个出站)、路由器 (按域名、IP、端口、程序 (可从运行中的程序选择)、GeoIP/Geosite 分流，简单和高级视图)、分组 (最快或故障转移)、阻止
 - **网络接口**: 不改动本机路由，让出站经 Tailscale、VPN 应用或 Wi-Fi 出去
 - **DNS**: 本机 DNS、DoH / DoT / DoQ，可按卡片设置，可经由隧道发送; TUN 可用 Fake-IP
 - **PC 块**: HTTP 入站运行期间用作 Windows 系统代理

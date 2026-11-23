@@ -295,6 +295,30 @@ def test_ui():
     wait(300)
     check("ui: router editor opens", w.stackedWidget.currentWidget() is w.editor and w.editor.s_router.isVisible()
           and len(w.editor.s_router.cards) == 1)
+    sr = w.editor.s_router
+    check("ui: router editor starts in the simple view", not sr.cards[0].advanced and sr.cards[0].simple.isVisible())
+    c0 = sr.add_rule(pick=False)
+    c0.rows[0].ed.setText("example.com")
+    pr = c0.add_row("process_name")
+    pr.add_programs(["game.exe", "GAME.EXE", "chrome.exe"])
+    sr.set_mode(True)
+    check("ui: router simple -> advanced keeps the conditions", c0.edits["domain_suffix"].text() == "example.com"
+          and c0.edits["process_name"].text() == "game.exe, chrome.exe", c0.edits["process_name"].text())
+    c0.edits["port"].setText("443")
+    sr.set_mode(False)
+    check("ui: router advanced -> simple shows a row per condition", sorted(r.key() for r in c0.rows)
+          == ["domain_suffix", "port", "process_name"], [r.key() for r in c0.rows])
+    ads = sr.add_rule(*[t[1:] for t in __import__("proxydock.ui.router", fromlist=["templates"]).templates()
+                        if t[3] == "block"][0], pick=False)
+    check("ui: 'Ads' template goes to the Block outbound", ads.collect()["target"] == blk["id"]
+          and ads.collect()["match"] == {"geosite": ["category-ads-all"]})
+    from proxydock.platform_utils import running_programs
+    progs = running_programs()
+    check("ui: running programs listed for the picker", (not sys.platform.startswith("win")) or any(x.lower().endswith(".exe") for x in progs),
+          progs[:5])
+    sr.remove(ads)
+    sr.remove(c0)
+    sr.set_mode(True)
     w.editor.s_router.add_rule()
     w.editor.s_router.cards[1].edits["port"].setText("70000")
     check("ui: router editor reports a bad port", any("70000" in e for e in w.editor._errors(w.editor.collect())))
@@ -382,6 +406,25 @@ def test_ui():
     ctl.delete_node(gd["id"])
     check("ui: deleting a member updates the group", gm.find(ctl.graph, gp["id"])[1]["members"] == [])
     ctl.delete_node(gp["id"])
+    wgs = ctl.new_inbound("wg server ui", {"type": "wireguard", "host": "0.0.0.0", "port": 51829}, None, None, edit=False)
+    ctl.edit_node(wgs["id"])
+    wait(300)
+    ed = w.editor
+    check("ui: WireGuard server editor", ed.r_wgi_peers.isVisible() and ed.r_wgi_key.isVisible() and bool(ed.ed_wgi_key.text()))
+    ed.ed_wgi_name.setText("Phone")
+    ed._wgi_add()
+    ed._wgi_add()
+    got = ed.collect()["inbound"]
+    peers = config.wg_peers(got)
+    check("ui: WireGuard devices get keys and addresses", [x["address"] for x in peers] == ["10.66.0.2/32", "10.66.0.3/32"]
+          and peers[0]["name"] == "Phone" and not config.wg_server_errors(got), (peers, config.wg_server_errors(got)))
+    ed.lst_wgi.setCurrentRow(0)
+    ed._wgi_copy()
+    check("ui: WireGuard device config copied", "[Peer]" in QApplication.clipboard().text()
+          and peers[0]["private_key"] in QApplication.clipboard().text())
+    ed.cancel()
+    wait(300)
+    ctl.delete_node(wgs["id"])
     tn = ctl.new_inbound("tun ui", {"type": "tun", "port": 30301}, None, None, edit=False)
     ctl.edit_node(tn["id"])
     wait(300)
@@ -1483,13 +1526,13 @@ class _DnsServer:
 
     def __init__(self):
         self.queries = []
-        for _ in range(20):         # the same port number free for both UDP and TCP
+        for _ in range(50):         # the same port number free for both TCP and UDP (TCP first: Windows reserves
+            self.t = socket.socket()    # blocks of TCP ports that a random UDP port can fall into)
+            self.t.bind(("127.0.0.1", 0))
+            self.port = self.t.getsockname()[1]
             self.u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.u.bind(("127.0.0.1", 0))
-            self.port = self.u.getsockname()[1]
-            self.t = socket.socket()
             try:
-                self.t.bind(("127.0.0.1", self.port))
+                self.u.bind(("127.0.0.1", self.port))
                 break
             except OSError:
                 self.u.close()
@@ -1742,15 +1785,76 @@ def test_clash():
     check("clash: YAML aliases work, duplicate names made unique", [x["name"] for x in srv] == ["x", "x (2)"], srv)
 
 
+def test_wg_server():
+    from proxydock import wgconf
+    from proxydock.singbox import compile as sbc, engine_for
+    priv, _ = wgconf.keypair()
+    c1 = wgconf.keypair()
+    ib = dict(config.INBOUND_DEFAULTS, type="wireguard", host="0.0.0.0", port=51820, wg_private_key=priv,
+              wg_peers=json.dumps([{"name": "Phone", "private_key": c1[0], "public_key": c1[1], "address": "10.66.0.2/32"}]))
+    check("wg server: valid settings", not config.wg_server_errors(ib), config.wg_server_errors(ib))
+    check("wg server: next device address", wgconf.next_peer_address("10.66.0.1/24", ["10.66.0.2/32"]) == "10.66.0.3/32")
+    bad = dict(ib, wg_peers=json.dumps([{"name": "X", "public_key": c1[1], "address": "10.9.0.2/32"}]))
+    check("wg server: device outside the network reported", any("X" in e for e in config.wg_server_errors(bad)))
+    conf_text = wgconf.client_conf(ib, config.wg_peers(ib)[0], "192.0.2.10")
+    ob, _ = wgconf.parse_conf(conf_text)
+    check("wg server: device config reads back", ob["host"] == "192.0.2.10" and ob["port"] == 51820
+          and ob["wg_peer_public_key"] == wgconf.public_of(priv) and ob["wg_address"] == "10.66.0.2/32", ob)
+    p = config.new_proxy("wgs", ib)
+    c = sbc.build(p, config.resolve(p, config.validate_global({})), bans_path="b.json", api_port=1, api_secret="s")[0]
+    ep = (c.get("endpoints") or [{}])[0]
+    check("wg server: sing-box endpoint, no plain inbound", c["inbounds"] == [] and ep.get("listen_port") == 51820
+          and ep["peers"][0]["allowed_ips"] == ["10.66.0.2/32"], c.get("endpoints"))
+    check("wg server: needs sing-box", engine_for(p, config.validate_global({"engine": "python"}))[0] == "none")
+
+
+def test_wg_server_e2e():
+    """A WireGuard server card; a WireGuard client card using the device config it hands out reaches the origin."""
+    from proxydock import wgconf
+    from proxydock.platform_utils import local_lan_ip
+    from proxydock.runtime import ProxyManager
+    lan = local_lan_ip()
+    if not lan or lan.startswith("127."):
+        print("SKIP wg server e2e: no LAN address")
+        return
+    origin = ThreadingHTTPServer(("0.0.0.0", 0), Origin)
+    threading.Thread(target=origin.serve_forever, daemon=True).start()
+    oport = origin.server_address[1]
+    glob = config.validate_global({"engine": "sing-box"})
+    mgr = ProxyManager()
+    try:
+        u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        u.bind(("127.0.0.1", 0))
+        wport = u.getsockname()[1]
+        u.close()
+        priv, _ = wgconf.keypair()
+        dev = wgconf.keypair()
+        srv = config.new_proxy("wg server", {"type": "wireguard", "host": "0.0.0.0", "port": wport, "wg_private_key": priv,
+                                             "wg_peers": json.dumps([{"name": "PC", "private_key": dev[0], "public_key": dev[1],
+                                                                      "address": "10.66.0.2/32"}])})
+        mgr.start(srv, glob).result(20)
+        ob, _ = wgconf.parse_conf(wgconf.client_conf(srv["inbound"], config.wg_peers(srv["inbound"])[0], "127.0.0.1"))
+        cli = config.new_proxy("wg device", {"type": "socks5", "port": free_port()})
+        cli["outbound"] = dict(config.OUTBOUND_DEFAULTS, **ob, via=None)
+        mgr.start(cli, glob).result(20)
+        time.sleep(1)
+        r = socks5_get(cli["inbound"]["port"], lan, oport)
+        check("[sing-box] wg server: device -> server card -> origin", r == "200" and mgr.stats_for(srv["id"]).total > 0,
+              (r, mgr.state(srv["id"])))
+    finally:
+        mgr.stop_all()
+        origin.shutdown()
+
+
 def main():
     t0 = time.time()
     tests = [test_translations, test_graph, test_engine, test_singbox_compile, test_router_graph, test_router_singbox, test_interface,
              test_wireguard, test_tun, test_run_as_admin, test_protocols,
-             test_subscription, test_detect_sni, test_hy2_advanced, test_group, test_dns, test_review_fixes, test_clash]
+             test_subscription, test_detect_sni, test_hy2_advanced, test_group, test_dns, test_review_fixes, test_clash, test_wg_server]
     from proxydock.singbox import find_binary
     if find_binary():
         tests += [lambda: test_engine("sing-box"), test_singbox_guard, test_router_e2e, test_interface_e2e, test_wireguard_e2e, test_helper,
-                  test_protocols_e2e, test_subscription_e2e, test_hy2_advanced_e2e, test_group_e2e, test_dns_e2e, test_close_log_e2e]
+                  test_protocols_e2e, test_subscription_e2e, test_hy2_advanced_e2e, test_group_e2e, test_dns_e2e, test_close_log_e2e, test_wg_server_e2e]
         from proxydock.singbox import find_hysteria
         if find_hysteria():
             tests.append(test_hysteria)

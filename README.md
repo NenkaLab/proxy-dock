@@ -12,10 +12,10 @@ turn each card on or off.
 
 ## Features
 
-- **Inbound**: SOCKS5, SOCKS4, HTTP, HTTPS, Shadowsocks server, Hysteria2 server, TUN (all apps on this PC)
+- **Inbound**: SOCKS5, SOCKS4, HTTP, HTTPS, Shadowsocks server, Hysteria2 server, WireGuard server (phones and PCs connect with the WireGuard app), TUN (all apps on this PC)
 - **Outbound**: Direct, HTTP / HTTPS / SOCKS proxy, Shadowsocks, Hysteria2, WireGuard, VLESS (REALITY), VMess,
   Trojan, TUIC, subscriptions (share links or Clash YAML)
-- **Blocks**: chains (one outbound through another), routers (rules by domain, IP, port, program, GeoIP/Geosite),
+- **Blocks**: chains (one outbound through another), routers (rules by domain, IP, port, program - pick from running programs -, GeoIP/Geosite; simple and advanced views),
   groups (fastest or failover), Block
 - **Network interface**: send an outbound through Tailscale, a VPN app or Wi-Fi without changing the PC's routes
 - **DNS**: the PC's DNS, DoH / DoT / DoQ, per card, optionally through the tunnel; Fake-IP for TUN
@@ -51,7 +51,7 @@ Tests: `python tests/run_tests.py`. Releases: `tools\release.bat <version>` tags
 
 ## Limitations
 
-- Routers, groups, WireGuard, VLESS / VMess / Trojan / TUIC, TUN, interfaces and custom DNS need the sing-box engine.
+- Routers, groups, WireGuard (both sides), VLESS / VMess / Trojan / TUIC, TUN, interfaces and custom DNS need the sing-box engine.
 - No load balancing across servers; Hysteria2 servers cannot listen on a port range by themselves.
 - Certificate pinning runs on the Python engine until sing-box 1.15.
 - TUN and Fake-IP have not been tried on real setups yet. macOS has not been tried on a real Mac.

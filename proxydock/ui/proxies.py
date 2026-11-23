@@ -4,6 +4,7 @@ A proxy = inbound (how it accepts connections on a port of this PC) + outbound (
 """
 from ..i18n import _t, on_language_change
 import copy
+import json
 import os
 import threading
 import time
@@ -38,6 +39,10 @@ def client_url(p):
     t = ib["type"]
     if t == "tun":
         return ""
+    if t == "wireguard":
+        from ..wgconf import client_conf
+        peers = config.wg_peers(ib)
+        return client_conf(ib, peers[0], ib.get("wg_endpoint") or local_lan_ip()) if peers else ""
     if t == "shadowsocks":
         return ss_link(host, ib["port"], ib["ss_method"], ib["ss_password"], p["name"])
     if t == "hysteria2":
@@ -461,9 +466,15 @@ class ProxiesInterface(ScrollArea):
         url = client_url(p)
         if not url:
             info(self.window(), "info", _t("Nothing to copy"),
-                 _t("A TUN card captures apps on this PC directly; there is no address for clients"), 3500)
+                 _t("A TUN card captures apps on this PC directly; there is no address for clients")
+                 if p["inbound"]["type"] == "tun" else _t("Add a device to the WireGuard server first"), 3500)
             return
         QApplication.clipboard().setText(url)
+        if p["inbound"]["type"] == "wireguard":
+            info(self.window(), "success", _t("Copied"),
+                 _t("WireGuard config of '{name}'. Other devices: copy theirs in the editor.").format(
+                     name=config.wg_peers(p["inbound"])[0].get("name", "")), 4000)
+            return
         shown = url if len(url) < 70 else url[:67] + "…"
         info(self.window(), "success", _t("Copied"), shown, 2500)
 
@@ -600,6 +611,44 @@ class EditorInterface(ScrollArea):
         self.r_tun_strict = s_in.add(Row(_t("Strict route"), _t("Also stops traffic that tries to go around the TUN. Can break IPv6 on Windows; leave off unless needed"), v)
                                      .right(self.sw_tun_strict))
         self.sw_tun_fakeip = _switch(v)
+        # WireGuard server
+        self.ed_wgi_key = PasswordLineEdit(v)
+        self.ed_wgi_key.setFixedWidth(330)
+        g4 = PushButton(_t("Generate"), v, FIF.SYNC)
+        g4.clicked.connect(lambda: self.ed_wgi_key.setText(__import__("proxydock.wgconf", fromlist=["keypair"]).keypair()[0]))
+        self.r_wgi_key = s_in.add(Row(_t("Server private key"), _t("Generated automatically. Keep it secret"), v).right(self.ed_wgi_key, g4))
+        self.ed_wgi_addr = LineEdit(v)
+        self.ed_wgi_addr.setFixedWidth(170)
+        self.ed_wgi_end = LineEdit(v)
+        self.ed_wgi_end.setFixedWidth(220)
+        self.r_wgi_addr = s_in.add(Row(_t("Tunnel network · address for devices"), _t("Devices get addresses from this network. The second box is the address devices use to reach this PC (empty = this PC's LAN IP; for the internet use your public IP or DDNS name and forward the UDP port on the router)"), v)
+                                   .right(self.ed_wgi_addr, self.ed_wgi_end))
+        self.lst_wgi = ListWidget(v)
+        self.lst_wgi.setFixedSize(300, 130)
+        self.ed_wgi_name = LineEdit(v)
+        self.ed_wgi_name.setPlaceholderText(_t("Device name (e.g. Phone)"))
+        self.ed_wgi_name.setFixedWidth(180)
+        b_add = PushButton(_t("Add device"), v, FIF.ADD)
+        b_add.clicked.connect(self._wgi_add)
+        b_copy = PushButton(_t("Copy config"), v, FIF.COPY)
+        b_copy.clicked.connect(self._wgi_copy)
+        b_save = PushButton(_t("Save .conf"), v, FIF.SAVE)
+        b_save.clicked.connect(self._wgi_save)
+        b_rm = PushButton(_t("Remove"), v, FIF.DELETE)
+        b_rm.clicked.connect(self._wgi_remove)
+        col = QWidget(v)
+        cl = QVBoxLayout(col)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(4)
+        add_row = QHBoxLayout()
+        add_row.addWidget(self.ed_wgi_name)
+        add_row.addWidget(b_add)
+        cl.addLayout(add_row)
+        for b in (b_copy, b_save, b_rm):
+            cl.addWidget(b)
+        self.r_wgi_peers = s_in.add(Row(_t("Devices"), _t("Each phone or PC gets its own key. Copy or save its config and import it in the WireGuard app on that device"), v)
+                                    .right(self.lst_wgi, col))
+        self.wgi_peers = []
         self.r_tun_fakeip = s_in.add(Row(_t("Fake-IP DNS"), _t("Apps get placeholder addresses (198.18.x.x) at once and the real name is looked up where the traffic leaves (e.g. at the VPN server), so names do not leak to the local network. Needs the sing-box engine"), v)
                                      .right(self.sw_tun_fakeip))
         self.sw_in_auth = _switch(v)
@@ -1037,6 +1086,12 @@ class EditorInterface(ScrollArea):
         self.cb_tun_stack.setCurrentIndex(self.tun_stacks.index(ib["tun_stack"]))
         self.sw_tun_strict.setChecked(ib["tun_strict_route"])
         self.sw_tun_fakeip.setChecked(ib["tun_fakeip"])
+        self.ed_wgi_key.setText(ib["wg_private_key"])
+        self.ed_wgi_addr.setText(ib["wg_address"])
+        self.ed_wgi_end.setText(ib["wg_endpoint"])
+        self.ed_wgi_end.setPlaceholderText(local_lan_ip())
+        self.wgi_peers = config.wg_peers(ib)
+        self._wgi_fill()
         self._fill_outbound(ob)
         glob = self.ctl.glob
         for key, (follow, w) in self.ov.items():
@@ -1213,6 +1268,9 @@ class EditorInterface(ScrollArea):
                 self._gen_ss(self.cb_in_ss, self.ed_in_ss_pw)
             if ib["type"] == "hysteria2" and not ib["hy2_password"]:
                 self.ed_in_hy.setText(_token())
+            if ib["type"] == "wireguard" and not ib["wg_private_key"]:
+                from ..wgconf import keypair
+                self.ed_wgi_key.setText(keypair()[0])
         self._probe_token += 1      # opening another block discards a check that is still running
         self._set_probe_text(CHECK_DESC if inbound else CHECK_DESC_OUT, None)
         self._sync()
@@ -1253,6 +1311,68 @@ class EditorInterface(ScrollArea):
         if 0 <= i < len(self.grp_members):
             del self.grp_members[i]
             self._grp_fill()
+
+    # --- WireGuard server devices ---
+    def _wgi_fill(self):
+        self.lst_wgi.clear()
+        for x in self.wgi_peers:
+            self.lst_wgi.addItem(f"{x.get('name', '?')} · {x.get('address', '')}")
+
+    def _wgi_add(self):
+        from ..wgconf import keypair, next_peer_address
+        try:
+            addr = next_peer_address(self.ed_wgi_addr.text(), [x["address"] for x in self.wgi_peers])
+        except ValueError:
+            addr = None
+        if addr is None:
+            info(self.window(), "error", _t("Devices"), _t("WireGuard server: the tunnel address must be like 10.66.0.1/24"), 4000)
+            return
+        priv, pub = keypair()
+        name = self.ed_wgi_name.text().strip()[:40] or _t("Device {n}").format(n=len(self.wgi_peers) + 1)
+        self.wgi_peers.append({"name": name, "private_key": priv, "public_key": pub, "address": addr})
+        self.ed_wgi_name.clear()
+        self._wgi_fill()
+        self.lst_wgi.setCurrentRow(len(self.wgi_peers) - 1)
+
+    def _wgi_selected(self):
+        i = self.lst_wgi.currentRow()
+        if not 0 <= i < len(self.wgi_peers):
+            info(self.window(), "info", _t("Devices"), _t("Select a device in the list first"), 2500)
+            return None
+        return self.wgi_peers[i]
+
+    def _wgi_conf(self, peer):
+        from ..wgconf import client_conf, valid_key
+        if not valid_key(self.ed_wgi_key.text()):
+            info(self.window(), "error", _t("Devices"), _t("WireGuard server: generate the server key"), 3500)
+            return None
+        ib = {"wg_private_key": self.ed_wgi_key.text().strip(), "port": self.sp_in_port.value(), "wg_mtu": 1408}
+        return client_conf(ib, peer, self.ed_wgi_end.text().strip() or local_lan_ip())
+
+    def _wgi_copy(self):
+        peer = self._wgi_selected()
+        text = self._wgi_conf(peer) if peer else None
+        if text:
+            QApplication.clipboard().setText(text)
+            info(self.window(), "success", _t("Copied"), _t("WireGuard config of '{name}'. Save the proxy so the device can connect.").format(name=peer["name"]), 3500)
+
+    def _wgi_save(self):
+        peer = self._wgi_selected()
+        text = self._wgi_conf(peer) if peer else None
+        if not text:
+            return
+        safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in peer["name"]) or "device"
+        path, _ = QFileDialog.getSaveFileName(self, _t("Save .conf"), f"{safe}.conf", "WireGuard (*.conf)")
+        if path:
+            with open(path, "w", encoding="utf-8", newline="\n") as f:
+                f.write(text)
+            info(self.window(), "success", _t("Saved"), path, 3000)
+
+    def _wgi_remove(self):
+        peer = self._wgi_selected()
+        if peer:
+            self.wgi_peers.remove(peer)
+            self._wgi_fill()
 
     def _wg_generate(self):
         from ..wgconf import keypair
@@ -1342,6 +1462,9 @@ class EditorInterface(ScrollArea):
         self.r_tun_stack.setVisible(it == "tun")
         self.r_tun_strict.setVisible(it == "tun")
         self.r_tun_fakeip.setVisible(it == "tun")
+        for r in (self.r_wgi_key, self.r_wgi_addr, self.r_wgi_peers):
+            r.setVisible(it == "wireguard")
+        self.ed_in_host.setVisible(it != "wireguard")     # (a WireGuard server listens on every address)
         self.r_in_auth.setVisible(can_auth)
         self.r_in_cred.setVisible(can_auth and self.sw_in_auth.isChecked())
         self.r_cert.setVisible(it in ("https", "hysteria2"))
@@ -1358,6 +1481,7 @@ class EditorInterface(ScrollArea):
             "https": _t("Wraps the HTTP proxy in TLS. Set it as an 'HTTPS proxy' in the client (e.g. curl -x https://…)."),
             "shadowsocks": _t("Encrypted tunnel server for Shadowsocks apps on other devices. TCP+UDP. Copy the ss:// link with the button on the card."),
             "hysteria2": _t("Encrypted tunnel server over QUIC (UDP). TCP+UDP. Copy the hysteria2:// link with the button on the card."),
+            "wireguard": _t("A WireGuard server: phones and other PCs connect with the official WireGuard app and their traffic goes out through this card's outbound (UDP). Add a device, then import its config on that device. Needs the sing-box engine."),
             "tun": _t("A virtual network card that captures the traffic of every app on this PC, including apps without proxy settings, so router rules on programs work for all of them. Starting it asks for administrator permission (UAC) unless ProxyDock runs as administrator. One TUN card at a time. Needs the sing-box engine."),
         }
         self.in_note.setText(notes[it])
@@ -1535,7 +1659,10 @@ class EditorInterface(ScrollArea):
                       hy2_password=self.ed_in_hy.text(), hy2_obfs_password=self.ed_in_obfs.text(),
                       hy2_up_mbps=self.sp_in_up.value(), hy2_down_mbps=self.sp_in_down.value(),
                       tun_stack=self.tun_stacks[max(self.cb_tun_stack.currentIndex(), 0)],
-                      tun_strict_route=self.sw_tun_strict.isChecked(), tun_fakeip=self.sw_tun_fakeip.isChecked())
+                      tun_strict_route=self.sw_tun_strict.isChecked(), tun_fakeip=self.sw_tun_fakeip.isChecked(),
+                      wg_private_key=self.ed_wgi_key.text().strip(), wg_address=self.ed_wgi_addr.text().strip(),
+                      wg_endpoint=self.ed_wgi_end.text().strip(),
+                      wg_peers=json.dumps(self.wgi_peers, ensure_ascii=False) if self.wgi_peers else "")
             if ib["type"] not in ("socks5", "http", "https"):
                 ib["auth_enabled"] = False
             for key, (follow, _w) in self.ov.items():

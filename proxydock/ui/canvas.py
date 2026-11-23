@@ -43,6 +43,7 @@ def _tr_new_inbound():
 
 
 DEFAULT_PORTS = {"socks5": 1080, "socks4": 1084, "http": 8080, "https": 8443, "shadowsocks": 8388, "hysteria2": 8443,
+                 "wireguard": 51820,
                  "tun": 30300}       # (a TUN card has no port; any free number keeps the port checks quiet)
 
 
@@ -254,7 +255,7 @@ class CanvasInterface(QWidget):
         self.ctl.edit_node(n["id"])
 
     def add_inbound(self, t, pos=None):
-        host = "0.0.0.0" if t in ("shadowsocks", "hysteria2") else "127.0.0.1"
+        host = "0.0.0.0" if t in ("shadowsocks", "hysteria2", "wireguard") else "127.0.0.1"
         self.ctl.new_inbound(INBOUND_TYPES[t], {"type": t, "host": host, "port": DEFAULT_PORTS[t]}, None, pos, edit=False)
 
     def context_menu(self, pos, global_pos):

@@ -35,6 +35,35 @@ def valid_key(text):
         return False
 
 
+def next_peer_address(server_address, used):
+    """Next free client address (/32 or /128) in the server's subnet, or None."""
+    import ipaddress
+    net = ipaddress.ip_interface(server_address.strip())
+    taken = {ipaddress.ip_interface(x).ip for x in used} | {net.ip}
+    for host in net.network.hosts():
+        if host not in taken:
+            return f"{host}/{net.max_prefixlen}"
+    return None
+
+
+def client_conf(ib, peer, endpoint_host, dns="1.1.1.1"):
+    """WireGuard config text for one device of a ProxyDock WireGuard server (paste or import into its app)."""
+    from .common import host_port
+    return "\n".join([
+        "[Interface]",
+        f"PrivateKey = {peer['private_key']}",
+        f"Address = {peer['address']}",
+        f"DNS = {dns}",
+        f"MTU = {ib.get('wg_mtu') or 1408}",
+        "",
+        "[Peer]",
+        f"PublicKey = {public_of(ib['wg_private_key'])}",
+        f"Endpoint = {host_port(endpoint_host, ib['port'])}",
+        "AllowedIPs = 0.0.0.0/0",
+        "PersistentKeepalive = 25",
+        ""])
+
+
 def split(text):
     return [x.strip() for x in text.replace(";", ",").split(",") if x.strip()]
 

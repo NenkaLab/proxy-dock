@@ -132,8 +132,14 @@ INBOUND_DEFAULTS = {
     "hy2_up_mbps": 0,           # Hysteria2 server bandwidth limits (Brutal, 0 = no limit)
     "hy2_down_mbps": 0,
     "tun_stack": "mixed",       # TUN: sing-box network stack (mixed / system / gvisor)
-    "tun_strict_route": False,
-    "tun_fakeip": False,        # TUN: answer apps' DNS with fake IPs (198.18.0.0/15); the real lookup happens at the exit  # TUN: block traffic that would bypass the TUN (can break IPv6 on Windows)
+    "tun_strict_route": False,  # TUN: block traffic that would bypass the TUN (can break IPv6 on Windows)
+    "tun_fakeip": False,        # TUN: answer apps' DNS with fake IPs (198.18.0.0/15); the real lookup happens at the exit
+    # WireGuard server: other devices connect with a WireGuard app (port = UDP listen port)
+    "wg_private_key": "",
+    "wg_address": "10.66.0.1/24",   # this server's tunnel address; clients get the next addresses of the subnet
+    "wg_peers": "",             # JSON [{"name", "private_key", "public_key", "address"}] (client keys kept for their config)
+    "wg_endpoint": "",          # address clients use to reach this PC ("" = this PC's LAN IP)
+    "wg_mtu": 1408,
 }
 OUTBOUND_DEFAULTS = {
     "type": "direct",
@@ -191,7 +197,7 @@ OUTBOUND_DEFAULTS = {
     "group_interval": 180,      # seconds between measurements
     "group_tolerance": 50,      # auto: switch only when another member is this many ms faster
 }
-SECRET_FIELDS = ("password", "ss_password", "hy2_password", "hy2_obfs_password", "wg_private_key", "wg_preshared_key",
+SECRET_FIELDS = ("password", "ss_password", "hy2_password", "hy2_obfs_password", "wg_private_key", "wg_preshared_key", "wg_peers",
                  "sub_url", "sub_servers")      # (subscription URLs carry tokens, the server list has passwords)
 
 
@@ -369,7 +375,51 @@ def find_cycle(p, proxies):
 
 
 def _transports(t):
-    return {"socks5": {"tcp", "udp"}, "shadowsocks": {"tcp", "udp"}, "hysteria2": {"udp"}}.get(t, {"tcp"})
+    return {"socks5": {"tcp", "udp"}, "shadowsocks": {"tcp", "udp"}, "hysteria2": {"udp"}, "wireguard": {"udp"}}.get(t, {"tcp"})
+
+
+def wg_peers(ib):
+    """The clients of a WireGuard server inbound: [{"name", "private_key", "public_key", "address"}]."""
+    import json
+    try:
+        v = json.loads(ib.get("wg_peers") or "[]")
+    except ValueError:
+        return []
+    return [x for x in v if isinstance(x, dict) and isinstance(x.get("public_key"), str)]
+
+
+def wg_server_errors(ib):
+    from .wgconf import valid_key
+    errs = []
+    if not valid_key(ib["wg_private_key"]):
+        errs.append(_t("WireGuard server: generate the server key"))
+    try:
+        net = ipaddress.ip_interface(ib["wg_address"].strip())
+        if net.network.prefixlen >= net.max_prefixlen - 1:
+            raise ValueError
+    except ValueError:
+        errs.append(_t("WireGuard server: the tunnel address must be like 10.66.0.1/24"))
+        net = None
+    peers = wg_peers(ib)
+    if not peers:
+        errs.append(_t("WireGuard server: add at least one device"))
+    seen = set()
+    for x in peers:
+        if not valid_key(x.get("public_key", "")):
+            errs.append(_t("WireGuard server: '{name}' has no valid public key").format(name=x.get("name", "?")))
+        try:
+            a = ipaddress.ip_interface(x.get("address", "")).ip
+            if net is not None and (a not in net.network or a == net.ip):
+                raise ValueError
+            if a in seen:
+                raise ValueError
+            seen.add(a)
+        except ValueError:
+            errs.append(_t("WireGuard server: '{name}' needs its own address inside {net}").format(
+                name=x.get("name", "?"), net=ib["wg_address"]))
+    if not 576 <= ib["wg_mtu"] <= 9000:
+        errs.append(_t("WireGuard: MTU must be 576 to 9000"))
+    return errs
 
 
 def check_proxy(p, proxies):
@@ -398,6 +448,8 @@ def check_proxy(p, proxies):
             ss_make_key(ib["ss_method"], ib["ss_password"])
         except ValueError as e:
             errs.append(_t("Inbound: {e}").format(e=e))
+    if ib["type"] == "wireguard":
+        errs += wg_server_errors(ib)
     if ib["type"] == "hysteria2" and len(ib["hy2_password"]) < 8:
         errs.append(_t("The Hysteria2 password must be at least 8 characters"))
     if ib["type"] in ("https", "hysteria2") and bool(ib["tls_cert"]) != bool(ib["tls_key"]):

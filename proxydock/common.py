@@ -55,6 +55,7 @@ INBOUND_TYPES = {           # inbound
     "https": "HTTPS",
     "shadowsocks": "Shadowsocks",
     "hysteria2": "Hysteria2",
+    "wireguard": "WireGuard",
     "tun": "TUN",
 }
 OUTBOUND_TYPES = {}
@@ -65,6 +66,8 @@ def inbound_where(ib):
     """Where an inbound accepts traffic: "127.0.0.1:1080", or "all apps (TUN)" for the virtual network card."""
     if ib["type"] == "tun":
         return _t("all apps") + f" · {ib.get('tun_stack', 'mixed')}"
+    if ib["type"] == "wireguard":
+        return f"UDP {ib['port']}"
     return host_port(ib["host"], ib["port"])
 
 
@@ -101,7 +104,7 @@ def _tr_outbound_types():
     })
 
 
-UDP_INBOUNDS = ("socks5", "shadowsocks", "hysteria2")     # inbound types that can receive UDP
+UDP_INBOUNDS = ("socks5", "shadowsocks", "hysteria2", "wireguard")     # inbound types that can receive UDP
 UDP_OUTBOUNDS = ("direct", "shadowsocks", "hysteria2", "wireguard", "vless", "vmess", "trojan", "tuic", "subscription", "group")
 NEEDS_UDP_VIA = ("wireguard", "tuic")       # UDP-based tunnels: may only go through blocks that carry UDP
 UDP_VIA_OK = ("shadowsocks", "hysteria2", "wireguard", "socks5", "vless", "vmess", "trojan", "tuic", "subscription")

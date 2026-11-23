@@ -12,10 +12,10 @@ z. B. ein Shadowsocks-Server) verbunden; jede Karte lässt sich ein- und ausscha
 
 ## Funktionen
 
-- **Eingang**: SOCKS5, SOCKS4, HTTP, HTTPS, Shadowsocks-Server, Hysteria2-Server, TUN (alle Apps dieses PCs)
+- **Eingang**: SOCKS5, SOCKS4, HTTP, HTTPS, Shadowsocks-Server, Hysteria2-Server, WireGuard-Server (Handys und PCs verbinden sich mit der WireGuard-App), TUN (alle Apps dieses PCs)
 - **Ausgang**: Direct, HTTP- / HTTPS- / SOCKS-Proxy, Shadowsocks, Hysteria2, WireGuard, VLESS (REALITY), VMess,
   Trojan, TUIC, Abonnements (Freigabelinks oder Clash-YAML)
-- **Blöcke**: Ketten (ein Ausgang über einen anderen), Router (Regeln nach Domain, IP, Port, Programm, GeoIP/Geosite),
+- **Blöcke**: Ketten (ein Ausgang über einen anderen), Router (Regeln nach Domain, IP, Port, Programm - aus laufenden Programmen wählbar -, GeoIP/Geosite; einfache und erweiterte Ansicht),
   Gruppen (schnellster oder Failover), Block
 - **Netzwerkschnittstelle**: einen Ausgang über Tailscale, eine VPN-App oder WLAN senden, ohne die Routen des PCs zu ändern
 - **DNS**: DNS des PCs, DoH / DoT / DoQ, pro Karte, auf Wunsch durch den Tunnel; Fake-IP für TUN

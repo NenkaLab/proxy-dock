@@ -28,6 +28,11 @@ TUN_DIRECT = "tun-direct"           # a TUN card's own Direct: ProxyDock's engin
 def inbound(ib, cert=None):
     """cert: (cert_path, key_path) for https / hysteria2."""
     t = ib["type"]
+    if t == "wireguard":       # a sing-box endpoint that other devices connect to (goes into "endpoints")
+        from ..config import wg_peers
+        return {"type": "wireguard", "tag": IN_TAG, "listen_port": ib["port"], "address": [ib["wg_address"].strip()],
+                "private_key": ib["wg_private_key"].strip(), "mtu": ib.get("wg_mtu") or 1408,
+                "peers": [{"public_key": x["public_key"].strip(), "allowed_ips": [x["address"]]} for x in wg_peers(ib)]}
     if t == "tun":
         return {"type": "tun", "tag": IN_TAG, "address": TUN_ADDRESS, "mtu": 9000, "auto_route": True,
                 "strict_route": bool(ib.get("tun_strict_route")), "stack": ib.get("tun_stack", "mixed")}
@@ -371,7 +376,7 @@ def route(proxy, cfg, bans_path, rulesets=None, route_tags=None, exclude_paths=N
             add({"process_path": list(exclude_paths), "action": "route", "outbound": TUN_DIRECT})
     add({"action": "route-options", "udp_timeout": f"{cfg['timeout']}s"})
     add({"rule_set": BANS_TAG, "action": "reject"}, R_BANNED)
-    if not tun:     # never connect to this proxy's own port (would loop forever)
+    if not tun and ib["type"] != "wireguard":     # never connect to this proxy's own port (would loop forever)
         add({"domain": ["localhost"], "ip_cidr": ["127.0.0.0/8", "::1/128"] + (
             [f"{ib['host']}/32"] if is_ip_literal(ib["host"]) and ":" not in ib["host"] and ib["host"] != "0.0.0.0" else []),
              "port": [ib["port"]], "action": "reject"}, R_SELF)
@@ -422,9 +427,12 @@ def build(proxy, cfg, *, bans_path, api_port, api_secret, cert=None, rulesets=No
         obs.append({"type": "direct", "tag": TUN_DIRECT})
     r, reasons = route(proxy, cfg, bans_path, rulesets, route_tags, exclude_paths)
     endpoints = [o for o in obs if o["type"] == "wireguard"]
+    ib_conf = inbound(proxy["inbound"], cert)
+    if ib_conf["type"] == "wireguard":
+        endpoints.insert(0, ib_conf)
     conf = {
         "log": {"level": "debug", "timestamp": False},      # colors are turned off with --disable-color
-        "inbounds": [inbound(proxy["inbound"], cert)],
+        "inbounds": [ib_conf] if ib_conf["type"] != "wireguard" else [],
         "outbounds": [o for o in obs if o["type"] != "wireguard"] or [{"type": "direct", "tag": "direct"}],
         "route": r,
         "experimental": {"clash_api": {"external_controller": f"127.0.0.1:{api_port}", "secret": api_secret}},

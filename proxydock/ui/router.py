@@ -1,21 +1,27 @@
 """Router block editor: ordered rules (conditions -> target block) plus a default target.
 
 Shown inside the editor page (ui/proxies.py EditorInterface) when a router block is edited.
+Two views of the same rules: Simple (one row per condition, program picker, rule templates) and Advanced (every
+condition field at once).
 """
 from ..i18n import _t
 import copy
 import ipaddress
+import os
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QAbstractItemView, QFileDialog, QGridLayout, QHBoxLayout, QListWidgetItem, QVBoxLayout, QWidget
 from qfluentwidgets import (
-    BodyLabel, CaptionLabel, ComboBox, FluentIcon as FIF, LineEdit, PushButton, SimpleCardWidget, StrongBodyLabel,
+    Action, BodyLabel, CaptionLabel, ComboBox, DropDownPushButton, FluentIcon as FIF, LineEdit, ListWidget, MessageBoxBase,
+    PushButton, RoundMenu, SearchLineEdit, SegmentedWidget, SimpleCardWidget, StrongBodyLabel, SubtitleLabel,
     TransparentToolButton,
 )
 
 from .. import graph as graph_mod
 
 FIELDS = []         # (match key, label, placeholder)
+PRIVATE = "ip_private"
+MODE = {"advanced": False}      # view shared by all rule cards (Simple / Advanced), kept while the app runs
 
 
 def _tr_fields():
@@ -28,6 +34,17 @@ def _tr_fields():
         ("geosite", _t("Geosite category"), "google, netflix, category-ads-all"),
         ("port", _t("Destination port"), "443, 8000-9000"),
         ("process_name", _t("Program"), "chrome.exe, game.exe"),
+    ]
+
+
+def templates():
+    """(menu label, rule name, conditions, target block type or None) for 'Add rule'."""
+    return [
+        (_t("Empty rule"), None, {}, None),
+        (_t("Programs..."), _t("Programs"), {"process_name": []}, None),
+        (_t("Ads and trackers (Geosite)"), _t("Ads"), {"geosite": ["category-ads-all"]}, "block"),
+        (_t("Local network (LAN, private IPs)"), _t("Local network"), {PRIVATE: True}, "direct"),
+        (_t("Sites of one country (GeoIP + Geosite)"), _t("Country"), {"geoip": ["kr"], "geosite": ["kr"]}, None),
     ]
 
 
@@ -61,8 +78,111 @@ def match_errors(name, m):
     return errs
 
 
+class ProgramPicker(MessageBoxBase):
+    """Pick programs for a rule: the ones running now, or an executable file."""
+
+    def __init__(self, parent, current):
+        super().__init__(parent)
+        from ..platform_utils import running_programs
+        self.viewLayout.addWidget(SubtitleLabel(_t("Choose programs"), self))
+        self.search = SearchLineEdit(self)
+        self.search.setPlaceholderText(_t("Search running programs"))
+        self.search.textChanged.connect(self._filter)
+        self.viewLayout.addWidget(self.search)
+        self.list = ListWidget(self)
+        self.list.setSelectionMode(QAbstractItemView.MultiSelection)
+        self.list.setMinimumSize(420, 320)
+        have = {x.lower() for x in current}
+        for name in running_programs():
+            item = QListWidgetItem(name)
+            self.list.addItem(item)
+            item.setSelected(name.lower() in have)
+        self.viewLayout.addWidget(self.list)
+        b = PushButton(_t("Choose a program file..."), self, FIF.FOLDER)
+        b.clicked.connect(self._browse)
+        self.viewLayout.addWidget(b)
+        note = CaptionLabel(_t("Rules match the program's file name, so it does not need to be running now."), self)
+        note.setWordWrap(True)
+        self.viewLayout.addWidget(note)
+        self.extra = []
+        self.yesButton.setText(_t("Add"))
+        self.cancelButton.setText(_t("Cancel"))
+
+    def _filter(self, text):
+        t = text.strip().lower()
+        for i in range(self.list.count()):
+            item = self.list.item(i)
+            item.setHidden(bool(t) and t not in item.text().lower())
+
+    def _browse(self):
+        path, _ = QFileDialog.getOpenFileName(self, _t("Choose a program file..."), "",
+                                              _t("Programs (*.exe);;All files (*)") if os.name == "nt" else "")
+        if path:
+            self.extra.append(os.path.basename(path))
+            self.accept()
+
+    def chosen(self):
+        return [self.list.item(i).text() for i in range(self.list.count()) if self.list.item(i).isSelected()] + self.extra
+
+
+class CondRow(QWidget):
+    """Simple view: one condition = type + values (+ program picker)."""
+
+    def __init__(self, card, key, values, parent=None):
+        super().__init__(parent)
+        self.card = card
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        self.keys = [k for k, _, _ in FIELDS] + [PRIVATE]
+        self.cb = ComboBox(self)
+        self.cb.addItems([label for _, label, _ in FIELDS] + [_t("Private network addresses")])
+        self.cb.setFixedWidth(220)
+        self.ed = LineEdit(self)
+        self.ed.setClearButtonEnabled(True)
+        self.on = CaptionLabel(_t("LAN, loopback and other private IPs"), self)
+        self.pick = PushButton(_t("Choose..."), self, FIF.APPLICATION)
+        self.pick.clicked.connect(self.pick_programs)
+        rm = TransparentToolButton(FIF.CLOSE, self)
+        rm.setToolTip(_t("Remove condition"))
+        rm.clicked.connect(lambda: card.remove_row(self))
+        lay.addWidget(self.cb)
+        lay.addWidget(self.ed, 1)
+        lay.addWidget(self.on, 1)
+        lay.addWidget(self.pick)
+        lay.addWidget(rm)
+        self.cb.setCurrentIndex(self.keys.index(key) if key in self.keys else 0)
+        self.ed.setText(", ".join(values))
+        self.cb.currentIndexChanged.connect(lambda *_: self._sync())
+        self._sync()
+
+    def key(self):
+        return self.keys[max(self.cb.currentIndex(), 0)]
+
+    def _sync(self):
+        k = self.key()
+        self.ed.setVisible(k != PRIVATE)
+        self.on.setVisible(k == PRIVATE)
+        self.pick.setVisible(k == "process_name")
+        self.ed.setPlaceholderText(next((ph for key, _, ph in FIELDS if key == k), ""))
+
+    def add_programs(self, names):
+        cur = split_list(self.ed.text())
+        low = {c.lower() for c in cur}
+        for x in names:
+            if x.lower() not in low:
+                low.add(x.lower())
+                cur.append(x)
+        self.ed.setText(", ".join(cur))
+
+    def pick_programs(self):
+        dlg = ProgramPicker(self.window(), split_list(self.ed.text()))
+        if dlg.exec():
+            self.add_programs(dlg.chosen())
+
+
 class RuleCard(SimpleCardWidget):
-    """One rule: name, conditions, target and move/delete buttons."""
+    """One rule: name, target, conditions (Simple: a row per condition, Advanced: every field) and move/delete."""
 
     def __init__(self, section, rule, parent=None):
         super().__init__(parent)
@@ -95,28 +215,103 @@ class RuleCard(SimpleCardWidget):
         for b in (b_up, b_down, b_del):
             top.addWidget(b)
         lay.addLayout(top)
-        grid = QGridLayout()
+        # simple view
+        self.simple = QWidget(self)
+        sl = QVBoxLayout(self.simple)
+        sl.setContentsMargins(0, 0, 0, 0)
+        sl.setSpacing(4)
+        self.rows_box = QVBoxLayout()
+        self.rows_box.setSpacing(4)
+        sl.addLayout(self.rows_box)
+        ah = QHBoxLayout()
+        add = PushButton(_t("Add condition"), self.simple, FIF.ADD)
+        add.clicked.connect(lambda: self.add_row())
+        ah.addWidget(add)
+        hint = CaptionLabel(_t("One matching website / IP / country condition is enough; ports and programs must also match."), self.simple)
+        hint.setWordWrap(True)
+        ah.addWidget(hint, 1)
+        sl.addLayout(ah)
+        self.rows = []
+        lay.addWidget(self.simple)
+        # advanced view
+        self.adv = QWidget(self)
+        grid = QGridLayout(self.adv)
+        grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(10)
         grid.setVerticalSpacing(4)
         self.edits = {}
-        m = rule["match"]
         for i, (key, label, ph) in enumerate(FIELDS):
-            ed = LineEdit(self)
+            ed = LineEdit(self.adv)
             ed.setPlaceholderText(ph)
-            ed.setText(", ".join(m.get(key, [])))
             ed.setClearButtonEnabled(True)
             self.edits[key] = ed
-            grid.addWidget(CaptionLabel(label, self), i // 2, (i % 2) * 2)
+            grid.addWidget(CaptionLabel(label, self.adv), i // 2, (i % 2) * 2)
             grid.addWidget(ed, i // 2, (i % 2) * 2 + 1)
         from .proxies import _switch
-        self.sw_private = _switch(self)
-        self.sw_private.setChecked(bool(m.get("ip_private")))
+        self.sw_private = _switch(self.adv)
         row = len(FIELDS) // 2
-        grid.addWidget(CaptionLabel(_t("Private network addresses"), self), row, 0)
+        grid.addWidget(CaptionLabel(_t("Private network addresses"), self.adv), row, 0)
         grid.addWidget(self.sw_private, row, 1, Qt.AlignLeft)
         grid.setColumnStretch(1, 1)
         grid.setColumnStretch(3, 1)
-        lay.addLayout(grid)
+        lay.addWidget(self.adv)
+        self.m = copy.deepcopy(rule["match"])
+        self.advanced = None
+        self.set_mode(MODE["advanced"])
+
+    # --- views ---
+    def read(self):
+        """Conditions from the view that is shown."""
+        if self.advanced:
+            m = {k: split_list(ed.text()) for k, ed in self.edits.items()}
+            m[PRIVATE] = self.sw_private.isChecked()
+            return m
+        m = {}
+        for r in self.rows:
+            k = r.key()
+            if k == PRIVATE:
+                m[PRIVATE] = True
+            else:
+                vals = m.setdefault(k, [])
+                vals += [x for x in split_list(r.ed.text()) if x not in vals]
+        return m
+
+    def set_mode(self, advanced):
+        if self.advanced is not None:
+            self.m = self.read()
+        self.advanced = advanced
+        if advanced:
+            for k, ed in self.edits.items():
+                ed.setText(", ".join(self.m.get(k, [])))
+            self.sw_private.setChecked(bool(self.m.get(PRIVATE)))
+        else:
+            for r in self.rows:
+                r.setParent(None)
+                r.deleteLater()
+            self.rows = []
+            for k, _, _ in FIELDS:
+                if self.m.get(k):
+                    self.add_row(k, self.m[k])
+            if self.m.get(PRIVATE):
+                self.add_row(PRIVATE)
+            if not self.rows:
+                self.add_row("domain_suffix")
+        self.simple.setVisible(not advanced)
+        self.adv.setVisible(advanced)
+
+    def add_row(self, key=None, values=()):
+        if key is None:
+            used = {r.key() for r in self.rows}
+            key = next((k for k, _, _ in FIELDS if k not in used), "domain_suffix")
+        r = CondRow(self, key, list(values), self.simple)
+        self.rows.append(r)
+        self.rows_box.addWidget(r)
+        return r
+
+    def remove_row(self, row):
+        self.rows.remove(row)
+        row.setParent(None)
+        row.deleteLater()
 
     def set_index(self, i):
         self.idx.setText(f"{i + 1}.")
@@ -131,9 +326,7 @@ class RuleCard(SimpleCardWidget):
     def collect(self):
         r = copy.deepcopy(self.rule)
         r["name"] = self.ed_name.text().strip()
-        m = {k: split_list(ed.text()) for k, ed in self.edits.items()}
-        m["ip_private"] = self.sw_private.isChecked()
-        r["match"] = graph_mod.validate_match(m)
+        r["match"] = graph_mod.validate_match(self.read())
         i = self.cb_target.currentIndex()
         r["target"] = self.target_ids[i] if 0 <= i < len(self.target_ids) else None
         return r
@@ -151,20 +344,33 @@ class RouterSection(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(8)
-        from qfluentwidgets import SubtitleLabel
-        lay.addWidget(SubtitleLabel(_t("Rules (checked from the top; the first match wins)"), self))
+        head = QHBoxLayout()
+        head.addWidget(SubtitleLabel(_t("Rules (checked from the top; the first match wins)"), self))
+        head.addStretch(1)
+        self.mode = SegmentedWidget(self)
+        self.mode.addItem("simple", _t("Simple"), lambda: self.set_mode(False))
+        self.mode.addItem("advanced", _t("Advanced"), lambda: self.set_mode(True))
+        self.mode.setCurrentItem("simple")
+        head.addWidget(self.mode)
+        lay.addLayout(head)
         note = CaptionLabel(_t("Inside one rule, any one of the address conditions (domains, IPs, GeoIP, Geosite, private "
                                "network) is enough; port and program must also match. Separate several values with commas. "
                                "Program rules work for connections from this PC. GeoIP and Geosite data is downloaded once a day."), self)
         note.setWordWrap(True)
         lay.addWidget(note)
+        self.note = note
         self.list = QVBoxLayout()
         self.list.setSpacing(8)
         lay.addLayout(self.list)
         btns = QHBoxLayout()
-        b_add = PushButton(_t("Add rule"), self, FIF.ADD)
-        b_add.clicked.connect(self.add_rule)
-        btns.addWidget(b_add)
+        self.b_add = DropDownPushButton(FIF.ADD, _t("Add rule"), self)
+        menu = RoundMenu(parent=self.b_add)
+        for label, name, match, target in templates():
+            act = Action(label, menu)
+            act.triggered.connect(lambda _=False, n=name, m=match, t=target: self.add_rule(n, m, t))
+            menu.addAction(act)
+        self.b_add.setMenu(menu)
+        btns.addWidget(self.b_add)
         btns.addStretch(1)
         lay.addLayout(btns)
         default_row = SimpleCardWidget(self)
@@ -190,6 +396,8 @@ class RouterSection(QWidget):
 
     def load(self, router):
         self.router = copy.deepcopy(router)
+        self.mode.setCurrentItem("advanced" if MODE["advanced"] else "simple")
+        self.note.setVisible(MODE["advanced"])
         for c in self.cards:
             c.setParent(None)
             c.deleteLater()
@@ -204,6 +412,12 @@ class RouterSection(QWidget):
         self.cb_default.setCurrentIndex(ids.index(d) if d in ids else 0)
         self._renumber()
 
+    def set_mode(self, advanced):
+        MODE["advanced"] = advanced
+        self.note.setVisible(advanced)      # (the simple view shows a short hint in each rule)
+        for c in self.cards:
+            c.set_mode(advanced)
+
     def _add_card(self, rule):
         card = RuleCard(self, rule, self)
         card.set_targets(*self._targets())
@@ -217,11 +431,24 @@ class RouterSection(QWidget):
             self.list.insertWidget(i, c)
             c.set_index(i)
 
-    def add_rule(self):
-        rule = {"id": graph_mod.new_id(), "name": _t("Rule {n}").format(n=len(self.cards) + 1), "match": {}, "target": None}
+    def add_rule(self, name=None, match=None, target_type=None, pick=True):
+        """New rule, optionally from a template; target_type picks the first outbound block of that type."""
+        rule = {"id": graph_mod.new_id(), "name": name or _t("Rule {n}").format(n=len(self.cards) + 1),
+                "match": copy.deepcopy(match or {}), "target": None}
+        if target_type:
+            rule["target"] = next((x["id"] for x in self.ctl.graph["outbounds"] if x["outbound"]["type"] == target_type), None)
         card = self._add_card(rule)
         self._renumber()
-        card.ed_name.setFocus()
+        if pick and match is not None and "process_name" in match and not match["process_name"]:
+            if card.advanced:
+                card.set_mode(False)
+                self.set_mode(False)
+                self.mode.setCurrentItem("simple")
+            row = next((r for r in card.rows if r.key() == "process_name"), None) or card.add_row("process_name")
+            row.pick_programs()
+        else:
+            card.ed_name.setFocus()
+        return card
 
     def move(self, card, step):
         i = self.cards.index(card)

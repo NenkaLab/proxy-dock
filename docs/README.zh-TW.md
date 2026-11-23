@@ -11,10 +11,10 @@
 
 ## 功能
 
-- **傳入端**: SOCKS5、SOCKS4、HTTP、HTTPS、Shadowsocks 伺服器、Hysteria2 伺服器、TUN (本機所有程式)
+- **傳入端**: SOCKS5、SOCKS4、HTTP、HTTPS、Shadowsocks 伺服器、Hysteria2 伺服器、WireGuard 伺服器 (手機和電腦用 WireGuard 程式連線)、TUN (本機所有程式)
 - **傳出端**: Direct、HTTP / HTTPS / SOCKS 代理、Shadowsocks、Hysteria2、WireGuard、VLESS (REALITY)、VMess、
   Trojan、TUIC、訂閱 (分享連結或 Clash YAML)
-- **區塊**: 串接 (傳出端經由另一個傳出端)、路由器 (依網域、IP、連接埠、程式、GeoIP/Geosite 分流)、群組 (最快或容錯移轉)、封鎖
+- **區塊**: 串接 (傳出端經由另一個傳出端)、路由器 (依網域、IP、連接埠、程式 (可從執行中的程式選擇)、GeoIP/Geosite 分流，簡易與進階檢視)、群組 (最快或容錯移轉)、封鎖
 - **網路介面**: 不改動本機路由，讓傳出端經 Tailscale、VPN 程式或 Wi-Fi 出去
 - **DNS**: 本機 DNS、DoH / DoT / DoQ，可依卡片設定，可經由通道送出; TUN 可用 Fake-IP
 - **PC 區塊**: HTTP 傳入端執行期間當作 Windows 系統代理

@@ -24,9 +24,9 @@ POLL_SECONDS = 1
 
 # "LEVEL[0001] [1234567 5ms] message" (the bracket with the connection id is only on connection lines)
 _LINE = re.compile(r"^([A-Z]+)\[\d+\]\s+(?:\[(\d+)\s[^\]]*\]\s+)?(.*)$")
-_FROM = re.compile(r"^inbound/[\w-]+\[[^\]]*\]: (?:inbound )?(?:packet )?connection from (\S+)$")
-_TO = re.compile(r"^inbound/[\w-]+\[[^\]]*\]: (?:\[[^\]]*\] )?inbound (packet )?connection to (\S+)$")
-_PROC_ERR = re.compile(r"^inbound/[\w-]+\[[^\]]*\]: process connection from (\S+): (.*)$")
+_FROM = re.compile(r"^(?:inbound|endpoint)/[\w-]+\[[^\]]*\]: (?:inbound )?(?:packet )?connection from (\S+)$")
+_TO = re.compile(r"^(?:inbound|endpoint)/[\w-]+\[[^\]]*\]: (?:\[[^\]]*\] )?inbound (packet )?connection to (\S+)$")
+_PROC_ERR = re.compile(r"^(?:inbound|endpoint)/[\w-]+\[[^\]]*\]: process connection from (\S+): (.*)$")
 _AUTH_USER = re.compile(r"authentication failed, username=(.*?), password=")
 _OPEN_FAIL = re.compile(r"^connection: open (?:packet )?connection to (\S+) using outbound/[\w-]+\[[^\]]*\]: (.*)$")
 _REJECT = re.compile(r"^router: match\[(\d+)\].*=> reject$")
@@ -296,6 +296,8 @@ class SingBoxInstance:
             self.log(LOG_ERROR, _t("sing-box exited (code {code})").format(code=self.proc.returncode))
 
     def _handle(self, level, cid, msg):
+        if cid is None and msg.startswith("endpoint/") and (_FROM.match(msg) or _TO.match(msg)):
+            cid = "endpoint"        # a WireGuard server's lines have no connection id ("from" is followed by "to")
         if cid is None:
             if level in ("WARN", "ERROR", "FATAL", "PANIC"):
                 self.log(LOG_WARN if level == "WARN" else LOG_ERROR, "sing-box: " + _SECRET.sub(r"\1=***", msg))

@@ -11,10 +11,10 @@
 
 ## 기능
 
-- **받는 쪽**: SOCKS5, SOCKS4, HTTP, HTTPS, Shadowsocks 서버, Hysteria2 서버, TUN(이 PC의 모든 앱)
+- **받는 쪽**: SOCKS5, SOCKS4, HTTP, HTTPS, Shadowsocks 서버, Hysteria2 서버, WireGuard 서버(휴대폰·PC가 WireGuard 앱으로 접속), TUN(이 PC의 모든 앱)
 - **내보내는 쪽**: Direct, HTTP / HTTPS / SOCKS 프록시, Shadowsocks, Hysteria2, WireGuard, VLESS(REALITY), VMess,
   Trojan, TUIC, 구독(공유 링크 또는 Clash YAML)
-- **블록**: 체인(출구를 다른 출구로 거치기), Router(도메인·IP·포트·프로그램·GeoIP/Geosite 규칙), 그룹(가장 빠른 것 또는 자동 전환), 차단
+- **블록**: 체인(출구를 다른 출구로 거치기), Router(도메인·IP·포트·프로그램(실행 중인 목록에서 선택)·GeoIP/Geosite 규칙, 간편·고급 화면), 그룹(가장 빠른 것 또는 자동 전환), 차단
 - **네트워크 인터페이스**: PC의 라우팅을 바꾸지 않고 출구를 Tailscale, VPN 앱, Wi-Fi로 내보냄
 - **DNS**: PC의 DNS, DoH / DoT / DoQ, 카드별 설정, 터널을 거쳐 보내기, TUN용 Fake-IP
 - **PC 블록**: HTTP 받는 쪽을 켜져 있는 동안 Windows 시스템 프록시로 사용

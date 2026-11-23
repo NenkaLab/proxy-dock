@@ -365,7 +365,7 @@ def compile(graph):
                 t = None            # no default exit: cannot start
         elif kind == "outbound":
             ob = resolve_outbound(graph, t["id"])
-        elif kind == "inbound" and t["inbound"]["type"] != "tun":
+        elif kind == "inbound" and t["inbound"]["type"] not in ("tun", "wireguard"):
             ob = chain_outbound(t["inbound"])
         else:
             ob = {"type": "direct"}
