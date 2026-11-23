@@ -74,7 +74,7 @@ def needs_singbox(proxy):
                                           or (ob.get("hy2_ports") or "").strip())
            for c in chains for ob in _chain(c)):
         return True
-    return (bool(proxy.get("routes")) or proxy["outbound"]["type"] == "block" or proxy["inbound"]["type"] in ("tun", "wireguard")
+    return (bool(proxy.get("routes")) or proxy["outbound"]["type"] == "block" or proxy["inbound"]["type"] in ("tun", "wireguard", "forward")
             or any(ob.get("interface") or ob["type"] in SINGBOX_ONLY_OUTBOUNDS for c in chains for ob in _chain(c)))
 
 

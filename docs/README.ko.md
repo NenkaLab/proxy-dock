@@ -6,15 +6,28 @@
 **내보내는 쪽** 블록(나가는 방법, 예: Shadowsocks 서버)에 잇고, 카드마다 켜고 끕니다.
 
 <p align="center">
-  <img src="images/canvas.png" width="98%" alt="캔버스">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="images/canvas-dark.png">
+    <img src="images/canvas-light.png" width="98%" alt="캔버스">
+  </picture>
+</p>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="images/proxies-dark.png">
+    <img src="images/proxies-light.png" width="49%" alt="Proxies">
+  </picture>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="images/router-dark.png">
+    <img src="images/router-light.png" width="49%" alt="Router">
+  </picture>
 </p>
 
 ## 기능
 
-- **받는 쪽**: SOCKS5, SOCKS4, HTTP, HTTPS, Shadowsocks 서버, Hysteria2 서버, WireGuard 서버(휴대폰·PC가 WireGuard 앱으로 접속), TUN(이 PC의 모든 앱)
+- **받는 쪽**: SOCKS5, SOCKS4, HTTP, HTTPS, Shadowsocks 서버, Hysteria2 서버, WireGuard 서버(휴대폰·PC가 WireGuard 앱으로 접속), 포트 포워딩, TUN(이 PC의 모든 앱)
 - **내보내는 쪽**: Direct, HTTP / HTTPS / SOCKS 프록시, Shadowsocks, Hysteria2, WireGuard, VLESS(REALITY), VMess,
   Trojan, TUIC, 구독(공유 링크 또는 Clash YAML)
-- **블록**: 체인(출구를 다른 출구로 거치기), Router(도메인·IP·포트·프로그램(실행 중인 목록에서 선택)·GeoIP/Geosite 규칙, 간편·고급 화면), 그룹(가장 빠른 것 또는 자동 전환), 차단
+- **블록**: 체인(출구를 다른 출구로 거치기), Router(도메인·IP·포트·프로그램(실행 중인 목록에서 선택)·GeoIP/Geosite 규칙, 간편·고급 화면), IF(조건 하나: 맞으면 / 아니면), 그룹(가장 빠른 것, 자동 전환, 직접 선택), 차단
 - **네트워크 인터페이스**: PC의 라우팅을 바꾸지 않고 출구를 Tailscale, VPN 앱, Wi-Fi로 내보냄
 - **DNS**: PC의 DNS, DoH / DoT / DoQ, 카드별 설정, 터널을 거쳐 보내기, TUN용 Fake-IP
 - **PC 블록**: HTTP 받는 쪽을 켜져 있는 동안 Windows 시스템 프록시로 사용

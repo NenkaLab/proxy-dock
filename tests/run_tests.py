@@ -378,6 +378,20 @@ def test_ui():
     w.editor.cancel()
     wait(300)
     ctl.delete_node(h2["id"])
+    ifb = ctl.new_router(edit=False, style="if")
+    wait(300)
+    node = w.canvas_page.node_of.get(ifb["id"])
+    check("ui: IF block drawn with then / else", node is not None and list(node.outputs()) == ["then", "else"],
+          list(node.outputs()) if node else None)
+    ctl.edit_node(ifb["id"])
+    wait(300)
+    sr = w.editor.s_router
+    check("ui: IF editor shows one condition, no 'Add rule'", sr.is_if and len(sr.cards) == 1 and not sr.b_add.isVisible()
+          and w.editor.title.text() == "Edit IF")
+    check("ui: IF needs a condition and a 'then' target", any("IF" in e for e in w.editor._errors(w.editor.collect())))
+    w.editor.cancel()
+    wait(200)
+    ctl.delete_node(ifb["id"])
     rt = ctl.new_router(edit=False)
     wait(300)
     check("ui: router listed on the proxies page", rt["id"] in w.proxies_page.router_cards
@@ -403,6 +417,14 @@ def test_ui():
     w.editor.save()
     wait(300)
     check("ui: group saved", gm.find(ctl.graph, gp["id"])[1]["outbound"]["group_mode"] == "failover")
+    gd2 = ctl.new_outbound({"type": "direct"}, edit=False)
+    ctl.add_member(gp["id"], gd2["id"])
+    gm.find(ctl.graph, gp["id"])[1]["outbound"]["group_mode"] = "select"
+    ctl.select_member(gp["id"], gd2["id"])
+    check("ui: manual group switches member", gm.find(ctl.graph, gp["id"])[1]["outbound"]["group_selected"] == gd2["id"])
+    from proxydock.ui.proxies import member_menu
+    check("ui: 'Use member' menu for a manual group", member_menu(ctl, gp["id"], w) is not None)
+    ctl.delete_node(gd2["id"])
     ctl.delete_node(gd["id"])
     check("ui: deleting a member updates the group", gm.find(ctl.graph, gp["id"])[1]["members"] == [])
     ctl.delete_node(gp["id"])
@@ -1526,12 +1548,12 @@ class _DnsServer:
 
     def __init__(self):
         self.queries = []
-        for _ in range(50):         # the same port number free for both TCP and UDP (TCP first: Windows reserves
-            self.t = socket.socket()    # blocks of TCP ports that a random UDP port can fall into)
-            self.t.bind(("127.0.0.1", 0))
-            self.port = self.t.getsockname()[1]
-            self.u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        import random
+        for _ in range(300):        # one port number free for both TCP and UDP (Windows reserves port blocks per
+            self.port = random.randint(20000, 60000)    # protocol, so ask for a number, not an ephemeral port)
+            self.t, self.u = socket.socket(), socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             try:
+                self.t.bind(("127.0.0.1", self.port))
                 self.u.bind(("127.0.0.1", self.port))
                 break
             except OSError:
@@ -1846,15 +1868,79 @@ def test_wg_server_e2e():
         origin.shutdown()
 
 
+def test_if_forward_select():
+    from proxydock.singbox import compile as sbc, engine_for
+    g = gm.empty()
+    d = gm.add_outbound(g, {"type": "direct"}, "D")
+    vpn = gm.add_outbound(g, {"type": "socks5", "host": "vpn.example", "port": 1080}, "VPN")
+    f = gm.add_router(g, "Games?", style="if")
+    check("if: one rule, style kept", f["style"] == "if" and len(f["rules"]) == 1)
+    raw = json.loads(json.dumps(g))
+    raw["routers"][0]["rules"].append({"name": "extra", "match": {"port": ["1"]}})
+    g = gm.validate(raw)
+    f = g["routers"][0]
+    check("if: extra rules dropped on load", len(f["rules"]) == 1 and f["style"] == "if")
+    f["rules"][0].update(match={"process_name": ["game.exe"]}, target=vpn["id"])
+    f["default"] = d["id"]
+    gm.add_inbound(g, "In", {"type": "socks5", "port": 1080}, target=f["id"])
+    p = gm.compile(g)[0]
+    check("if: then -> rule, else -> default", p["routes"][0]["match"] == [{"process_name": ["game.exe"]}]
+          and p["outbound"]["type"] == "direct" and p["target_name"] == "IF Games?", (p["routes"], p["target_name"]))
+    fw = config.new_proxy("fw", {"type": "forward", "port": 2222, "fwd_host": "10.0.0.5", "fwd_port": 22, "fwd_network": "tcp"})
+    c = sbc.build(fw, config.resolve(fw, config.validate_global({})), bans_path="b.json", api_port=1, api_secret="s")[0]
+    ib = c["inbounds"][0]
+    check("forward: sing-box direct inbound", ib["type"] == "direct" and ib["override_address"] == "10.0.0.5"
+          and ib["override_port"] == 22 and ib["network"] == "tcp", ib)
+    check("forward: missing destination reported",
+          any("Port forward" in e for e in config.check_proxy(config.new_proxy("x", {"type": "forward", "port": 2223}), [])))
+    check("forward: needs sing-box", engine_for(fw, config.validate_global({"engine": "python"}))[0] == "none")
+    a = config.new_proxy("a", {"type": "forward", "port": 2300, "fwd_host": "h", "fwd_port": 1, "fwd_network": "udp"})
+    b = config.new_proxy("b", {"type": "socks4", "port": 2300})
+    check("forward: UDP forward and a TCP card share a port", not any("conflicts" in e for e in config.check_proxy(a, [b])))
+    grp = dict(config.OUTBOUND_DEFAULTS, type="group", group_mode="select", group_selected="m2", via=None, members=[
+        {"id": "m1", "name": "A", "outbound": dict(config.OUTBOUND_DEFAULTS, type="direct", via=None)},
+        {"id": "m2", "name": "B", "outbound": dict(config.OUTBOUND_DEFAULTS, type="socks5", host="b", port=1, via=None)}])
+    out = sbc.outbounds(grp)
+    sel = next(o for o in out if o["tag"] == "out0")
+    check("group manual: selector with the chosen member", sel["type"] == "selector" and sel["default"] == "out0_m1_0"
+          and sel["outbounds"] == ["out0_m0_0", "out0_m1_0"], sel)
+
+
+def test_forward_e2e():
+    """Port forward card: a plain TCP client on the local port reaches the fixed destination (the origin)."""
+    from proxydock.runtime import ProxyManager
+    origin = ThreadingHTTPServer(("127.0.0.1", 0), Origin)
+    threading.Thread(target=origin.serve_forever, daemon=True).start()
+    glob = config.validate_global({"engine": "sing-box"})
+    mgr = ProxyManager()
+    try:
+        fw = config.new_proxy("fwd", {"type": "forward", "port": free_port(), "fwd_host": "127.0.0.1",
+                                      "fwd_port": origin.server_address[1], "fwd_network": "tcp"})
+        mgr.start(fw, glob).result(20)
+        c = socket.create_connection(("127.0.0.1", fw["inbound"]["port"]), timeout=10)
+        c.sendall(b"GET / HTTP/1.0\r\nHost: x\r\n\r\n")
+        data = b""
+        while True:
+            chunk = c.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+        c.close()
+        check("[sing-box] port forward -> fixed destination", data.endswith(b"origin-ok"), data[:60])
+    finally:
+        mgr.stop_all()
+        origin.shutdown()
+
+
 def main():
     t0 = time.time()
     tests = [test_translations, test_graph, test_engine, test_singbox_compile, test_router_graph, test_router_singbox, test_interface,
              test_wireguard, test_tun, test_run_as_admin, test_protocols,
-             test_subscription, test_detect_sni, test_hy2_advanced, test_group, test_dns, test_review_fixes, test_clash, test_wg_server]
+             test_subscription, test_detect_sni, test_hy2_advanced, test_group, test_dns, test_review_fixes, test_clash, test_wg_server, test_if_forward_select]
     from proxydock.singbox import find_binary
     if find_binary():
         tests += [lambda: test_engine("sing-box"), test_singbox_guard, test_router_e2e, test_interface_e2e, test_wireguard_e2e, test_helper,
-                  test_protocols_e2e, test_subscription_e2e, test_hy2_advanced_e2e, test_group_e2e, test_dns_e2e, test_close_log_e2e, test_wg_server_e2e]
+                  test_protocols_e2e, test_subscription_e2e, test_hy2_advanced_e2e, test_group_e2e, test_dns_e2e, test_close_log_e2e, test_wg_server_e2e, test_forward_e2e]
         from proxydock.singbox import find_hysteria
         if find_hysteria():
             tests.append(test_hysteria)

@@ -48,6 +48,17 @@ def templates():
     ]
 
 
+def match_summary(m, limit=48):
+    """Short text of a rule's conditions, e.g. "Program: game.exe, steam.exe + GeoIP country: kr"."""
+    if not FIELDS:
+        _tr_fields()
+    parts = [f"{label}: {', '.join(m[k])}" for k, label, _ in FIELDS if m.get(k)]
+    if m.get(PRIVATE):
+        parts.append(_t("Private network addresses"))
+    text = " + ".join(parts)
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
 def split_list(text):
     return [x.strip() for x in text.replace(";", ",").split(",") if x.strip()]
 
@@ -207,13 +218,21 @@ class RuleCard(SimpleCardWidget):
         b_up.clicked.connect(lambda: section.move(self, -1))
         b_down.clicked.connect(lambda: section.move(self, 1))
         b_del.clicked.connect(lambda: section.remove(self))
+        self.is_if = section.is_if
+        self.then = BodyLabel(_t("then →"), self)
         top.addWidget(self.idx)
         top.addWidget(self.ed_name)
         top.addWidget(BodyLabel("→", self))
+        top.addWidget(self.then)
         top.addWidget(self.cb_target)
         top.addStretch(1)
         for b in (b_up, b_down, b_del):
             top.addWidget(b)
+            b.setVisible(not self.is_if)
+        self.idx.setVisible(not self.is_if)
+        self.ed_name.setVisible(not self.is_if)
+        self.then.setVisible(self.is_if)
+        top.itemAt(2).widget().setVisible(not self.is_if)       # the plain arrow
         lay.addLayout(top)
         # simple view
         self.simple = QWidget(self)
@@ -341,11 +360,13 @@ class RouterSection(QWidget):
         self.ctl = ctl
         self.cards = []
         self.router = None
+        self.is_if = False
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(8)
         head = QHBoxLayout()
-        head.addWidget(SubtitleLabel(_t("Rules (checked from the top; the first match wins)"), self))
+        self.head_title = SubtitleLabel(_t("Rules (checked from the top; the first match wins)"), self)
+        head.addWidget(self.head_title)
         head.addStretch(1)
         self.mode = SegmentedWidget(self)
         self.mode.addItem("simple", _t("Simple"), lambda: self.set_mode(False))
@@ -377,9 +398,10 @@ class RouterSection(QWidget):
         dl = QHBoxLayout(default_row)
         dl.setContentsMargins(16, 10, 16, 10)
         col = QVBoxLayout()
-        col.addWidget(BodyLabel(_t("Default"), default_row))
-        d = CaptionLabel(_t("Where traffic goes when no rule matches. Required."), default_row)
-        col.addWidget(d)
+        self.default_title = BodyLabel(_t("Default"), default_row)
+        col.addWidget(self.default_title)
+        self.default_desc = CaptionLabel(_t("Where traffic goes when no rule matches. Required."), default_row)
+        col.addWidget(self.default_desc)
         dl.addLayout(col, 1)
         self.cb_default = ComboBox(default_row)
         self.cb_default.setFixedWidth(260)
@@ -396,6 +418,12 @@ class RouterSection(QWidget):
 
     def load(self, router):
         self.router = copy.deepcopy(router)
+        self.is_if = router.get("style") == "if"
+        self.head_title.setText(_t("Condition") if self.is_if else _t("Rules (checked from the top; the first match wins)"))
+        self.b_add.setVisible(not self.is_if)
+        self.default_title.setText(_t("else") if self.is_if else _t("Default"))
+        self.default_desc.setText(_t("Where traffic goes when the condition does not match. Required.") if self.is_if
+                                  else _t("Where traffic goes when no rule matches. Required."))
         self.mode.setCurrentItem("advanced" if MODE["advanced"] else "simple")
         self.note.setVisible(MODE["advanced"])
         for c in self.cards:
@@ -476,9 +504,13 @@ class RouterSection(QWidget):
             errs.append(_t("Choose the default target (where traffic goes when no rule matches)"))
         for i, r in enumerate(n["rules"]):
             name = r["name"] or str(i + 1)
-            if not r["name"]:
+            if not r["name"] and not self.is_if:
                 errs.append(_t("Rule {n}: enter a name").format(n=i + 1))
-            if r["target"] and not r["match"]:
+            if self.is_if and not r["match"]:
+                errs.append(_t("IF: add at least one condition"))
+            elif self.is_if and not r["target"]:
+                errs.append(_t("IF: choose where 'then' goes"))
+            elif r["target"] and not r["match"]:
                 errs.append(_t("Rule '{name}': add at least one condition").format(name=name))
             errs += match_errors(name, r["match"])
         g = copy.deepcopy(self.ctl.graph)

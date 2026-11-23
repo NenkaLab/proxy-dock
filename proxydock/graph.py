@@ -3,8 +3,8 @@
 graph = {
   "inbounds":  [{"id", "name", "autostart", "inbound": {...}, "overrides": {...}, "target": id|None, "pos": [x, y]}],
   "outbounds": [{"id", "name", "outbound": {...}, "via": id|None, "members": [id, ...], "pos": [x, y]}],
-  "routers":   [{"id", "name", "rules": [{"id", "name", "match": {...}, "target": id|None}], "default": id|None,
-                 "pos": [x, y]}],
+  "routers":   [{"id", "name", "style": "router"|"if", "rules": [{"id", "name", "match": {...}, "target": id|None}],
+                 "default": id|None, "pos": [x, y]}],
   "pc":        {"inbound": id|None, "pos": [x, y], "backup": {...}|None, "applied": bool, "server": str},
 }
 
@@ -16,7 +16,8 @@ A group outbound ("group") uses its member blocks (node["members"], in order) as
 first one that works (failover). Members are outbound blocks other than groups and Block; nothing goes "via" a group.
 An inbound can also target a router block: its rules (checked top to bottom) send matching traffic to an outbound
 block, the Block outbound or another router; everything else goes to the router's default. Routers need the
-sing-box engine (they become sing-box route rules).
+sing-box engine (they become sing-box route rules). An IF block is a router with exactly one rule: its "then"
+output is the rule's target, its "else" output the default.
 The runtime still works with one "proxy" per inbound (inbound + resolved outbound + overrides, plus "routes" for a
 router: [{"match": [match, ...], "outbound": resolved chain, "name": rule name}]); compile() builds them.
 """
@@ -119,8 +120,11 @@ def validate_router_node(raw):
         rules.append({"id": rid, "name": _name(r.get("name"), _t("Rule {n}").format(n=i + 1)),
                       "match": validate_match(r.get("match")), "target": t if isinstance(t, str) and t else None})
     d = raw.get("default")
+    style = "if" if raw.get("style") == "if" else "router"
+    if style == "if":           # exactly one condition set
+        rules = rules[:1] or [{"id": new_id(), "name": "IF", "match": {}, "target": None}]
     return {"id": raw.get("id") if isinstance(raw.get("id"), str) and raw.get("id") else new_id(),
-            "name": _name(raw.get("name"), "Router"), "rules": rules,
+            "name": _name(raw.get("name"), "IF" if style == "if" else "Router"), "style": style, "rules": rules,
             "default": d if isinstance(d, str) and d else None, "pos": _pos(raw.get("pos"))}
 
 
@@ -301,7 +305,7 @@ def target_label(graph, n):
     if kind == "outbound":
         return " ⇢ ".join(chain_names(graph, t["id"]))
     if kind == "router":
-        return _t("Router {name}").format(name=t["name"])
+        return (_t("IF {name}") if t.get("style") == "if" else _t("Router {name}")).format(name=t["name"])
     return _t("relay → {name}").format(name=t["name"])
 
 
@@ -401,9 +405,9 @@ def add_outbound(graph, outbound=None, name=None, pos=None):
     return n
 
 
-def add_router(graph, name=None, pos=None):
-    n = validate_router_node({"id": new_id(), "name": name, "pos": pos or [230, 0],
-                              "rules": [{"name": _t("Rule {n}").format(n=1), "match": {}}]})
+def add_router(graph, name=None, pos=None, style="router"):
+    n = validate_router_node({"id": new_id(), "name": name, "pos": pos or [230, 0], "style": style,
+                              "rules": [{"name": "IF" if style == "if" else _t("Rule {n}").format(n=1), "match": {}}]})
     graph.setdefault("routers", []).append(n)
     return n
 

@@ -39,6 +39,8 @@ def client_url(p):
     t = ib["type"]
     if t == "tun":
         return ""
+    if t == "forward":
+        return host_port(host, ib["port"])
     if t == "wireguard":
         from ..wgconf import client_conf
         peers = config.wg_peers(ib)
@@ -72,7 +74,7 @@ def outbound_summary(ob, members=None):
     if ob["type"] == "block":
         return _t("Refuses every connection (use it as a router target)")
     if ob["type"] == "group":
-        mode = _t("Fastest") if ob.get("group_mode") != "failover" else _t("Failover in order")
+        mode = {"failover": _t("Failover in order"), "select": _t("Manual")}.get(ob.get("group_mode"), _t("Fastest"))
         return f"{OUTBOUND_TYPES['group']} · {mode} · " + (" / ".join(members) if members else _t("no members"))
     iface = f" · ⇢ {ob['interface']}" if ob.get("interface") else ""
     if ob["type"] == "direct":
@@ -88,6 +90,24 @@ def dns_combo(parent):
     cb.setFixedWidth(300)
     cb.setText("")
     return cb
+
+
+def member_menu(ctl, nid, parent):
+    """'Use member' submenu for a manual group block (None for anything else)."""
+    from .. import graph as graph_mod
+    kind, n = graph_mod.find(ctl.graph, nid)
+    if kind != "outbound" or n["outbound"]["type"] != "group" or n["outbound"]["group_mode"] != "select" or not n["members"]:
+        return None
+    sub = RoundMenu(_t("Use member"), parent)
+    cur = n["outbound"]["group_selected"] if n["outbound"]["group_selected"] in n["members"] else n["members"][0]
+    for mid in n["members"]:
+        _, m = graph_mod.find(ctl.graph, mid)
+        if m is None:
+            continue
+        act = Action(FIF.ACCEPT if mid == cur else FIF.SEND, m["name"], sub)
+        act.triggered.connect(lambda _=False, x=mid: ctl.select_member(nid, x))
+        sub.addAction(act)
+    return sub
 
 
 def network_interfaces():
@@ -319,6 +339,10 @@ class OutboundCard(CardWidget):
 
     def _menu(self):
         m = RoundMenu(parent=self)
+        sub = member_menu(self.page.ctl, self.nid, m)
+        if sub is not None:
+            m.addMenu(sub)
+            m.addSeparator()
         a1 = Action(FIF.COPY, _t("Duplicate"), m)
         a1.triggered.connect(lambda: self.page.ctl.duplicate_node(self.nid))
         a2 = Action(FIF.DELETE, _t("Delete"), m)
@@ -337,8 +361,16 @@ class RouterCard(OutboundCard):
     def update_from(self, node, user_names):
         from .. import graph as graph_mod
         self.name.setText(node["name"])
-        _, d = graph_mod.find(self.page.ctl.graph, node["default"]) if node["default"] else (None, None)
-        text = _t("{count} rules").format(count=len(node["rules"])) + " · " + _t("default: {name}").format(name=d["name"] if d else "-")
+        g = self.page.ctl.graph
+        _, d = graph_mod.find(g, node["default"]) if node["default"] else (None, None)
+        if node.get("style") == "if":
+            from .router import match_summary
+            rule = node["rules"][0]
+            _, t = graph_mod.find(g, rule["target"]) if rule["target"] else (None, None)
+            text = "IF " + (match_summary(rule["match"]) or _t("(no condition)")) + "  →  " + (t["name"] if t else "-") \
+                + "  ·  " + _t("else") + " → " + (d["name"] if d else "-")
+        else:
+            text = _t("{count} rules").format(count=len(node["rules"])) + " · " + _t("default: {name}").format(name=d["name"] if d else "-")
         self.desc.setText(text if d else text + "  ⚠ " + _t("no default target"))
         self.used.setText(_t("used by: {names}").format(names=", ".join(user_names)) if user_names else _t("not used"))
 
@@ -370,8 +402,13 @@ class ProxiesInterface(ScrollArea):
             act.triggered.connect(lambda _=False, t=t: ctl.new_outbound({"type": t}))
             omenu.addAction(act)
         self.btn_new_out.setMenu(omenu)
-        self.btn_new_router = PushButton(_t("Add router"), self.view, FIF.SHARE)
-        self.btn_new_router.clicked.connect(lambda: ctl.new_router())
+        self.btn_new_router = DropDownPushButton(FIF.SHARE, _t("Add router"), self.view)
+        rmenu = RoundMenu(parent=self.btn_new_router)
+        for label, style in ((_t("Router (several rules)"), "router"), (_t("IF (one condition: then / else)"), "if")):
+            act = Action(label, rmenu)
+            act.triggered.connect(lambda _=False, st=style: ctl.new_router(style=st))
+            rmenu.addAction(act)
+        self.btn_new_router.setMenu(rmenu)
         self.out_cards = {}
         self.router_cards = {}
         self.pc_bar = PcBar(ctl, self.view)
@@ -611,6 +648,19 @@ class EditorInterface(ScrollArea):
         self.r_tun_strict = s_in.add(Row(_t("Strict route"), _t("Also stops traffic that tries to go around the TUN. Can break IPv6 on Windows; leave off unless needed"), v)
                                      .right(self.sw_tun_strict))
         self.sw_tun_fakeip = _switch(v)
+        # port forward
+        self.ed_fwd_host = LineEdit(v)
+        self.ed_fwd_host.setPlaceholderText(_t("Destination address"))
+        self.ed_fwd_host.setFixedWidth(220)
+        self.sp_fwd_port = SpinBox(v)
+        self.sp_fwd_port.setRange(0, 65535)
+        self.sp_fwd_port.setFixedWidth(150)
+        self.fwd_nets = ["tcp", "udp", "both"]
+        self.cb_fwd_net = ComboBox(v)
+        self.cb_fwd_net.addItems(["TCP", "UDP", "TCP + UDP"])
+        self.cb_fwd_net.setFixedWidth(130)
+        self.r_fwd = s_in.add(Row(_t("Forward to"), _t("Every connection to this port goes to this address, through the outbound below (e.g. a remote desktop or SSH server behind the VPN)"), v)
+                              .right(self.ed_fwd_host, self.sp_fwd_port, self.cb_fwd_net))
         # WireGuard server
         self.ed_wgi_key = PasswordLineEdit(v)
         self.ed_wgi_key.setFixedWidth(330)
@@ -771,11 +821,14 @@ class EditorInterface(ScrollArea):
         self.r_sub_hours = s_out.add(Row(_t("Update every (hours)"), _t("0 = only when you click 'Update now'"), v).right(self.sp_sub_hours))
         self.sub_done.connect(self._on_sub_done)
         # group
-        self.grp_modes = ["auto", "failover"]
+        self.grp_modes = ["auto", "failover", "select"]
         self.cb_grp_mode = ComboBox(v)
-        self.cb_grp_mode.addItems([_t("Fastest automatically"), _t("Failover in order")])
+        self.cb_grp_mode.addItems([_t("Fastest automatically"), _t("Failover in order"), _t("Manual (choose one)")])
         self.cb_grp_mode.setFixedWidth(220)
-        self.r_grp_mode = s_out.add(Row(_t("Choose"), "", v).right(self.cb_grp_mode))
+        self.cb_grp_sel = ComboBox(v)
+        self.cb_grp_sel.setFixedWidth(220)
+        self.cb_grp_sel.currentIndexChanged.connect(lambda *_: setattr(self, "_grp_selected", self._grp_sel_value()))
+        self.r_grp_mode = s_out.add(Row(_t("Choose"), "", v).right(self.cb_grp_mode, self.cb_grp_sel))
         self.lst_grp = ListWidget(v)
         self.lst_grp.setFixedSize(330, 150)
         b_up = TransparentToolButton(FIF.UP, v)
@@ -1054,7 +1107,7 @@ class EditorInterface(ScrollArea):
             for key, sec in self.sections.items():
                 sec.setVisible(key in ("basic", "router"))
             self.r_auto.setVisible(False)
-            self.title.setText(_t("Edit router"))
+            self.title.setText(_t("Edit IF") if n.get("style") == "if" else _t("Edit router"))
             self.ed_name.setText(n["name"])
             self.s_router.load(n)
             self.verticalScrollBar().setValue(0)
@@ -1086,6 +1139,9 @@ class EditorInterface(ScrollArea):
         self.cb_tun_stack.setCurrentIndex(self.tun_stacks.index(ib["tun_stack"]))
         self.sw_tun_strict.setChecked(ib["tun_strict_route"])
         self.sw_tun_fakeip.setChecked(ib["tun_fakeip"])
+        self.ed_fwd_host.setText(ib["fwd_host"])
+        self.sp_fwd_port.setValue(ib["fwd_port"])
+        self.cb_fwd_net.setCurrentIndex(self.fwd_nets.index(ib["fwd_network"]) if ib["fwd_network"] in self.fwd_nets else 0)
         self.ed_wgi_key.setText(ib["wg_private_key"])
         self.ed_wgi_addr.setText(ib["wg_address"])
         self.ed_wgi_end.setText(ib["wg_endpoint"])
@@ -1152,6 +1208,7 @@ class EditorInterface(ScrollArea):
         self.ed_grp_url.setText(ob["group_test_url"])
         self.sp_grp_interval.setValue(ob["group_interval"])
         self.sp_grp_tol.setValue(ob["group_tolerance"])
+        self._grp_selected = ob.get("group_selected", "")
 
     def _detect_sni(self):
         n = self.collect()
@@ -1292,6 +1349,17 @@ class EditorInterface(ScrollArea):
         self.cb_grp_add.addItems([_t("(choose an outbound block)")] + [graph_mod.find(g, x)[1]["name"] for x in self.grp_choices[1:]])
         self.cb_grp_add.setCurrentIndex(0)
         self.cb_grp_add.blockSignals(False)
+        cur = getattr(self, "_grp_selected", "")
+        self.cb_grp_sel.blockSignals(True)
+        self.cb_grp_sel.clear()
+        self.cb_grp_sel.addItems([graph_mod.find(g, m)[1]["name"] for m in self.grp_members])
+        if cur in self.grp_members:
+            self.cb_grp_sel.setCurrentIndex(self.grp_members.index(cur))
+        self.cb_grp_sel.blockSignals(False)
+
+    def _grp_sel_value(self):
+        i = self.cb_grp_sel.currentIndex()
+        return self.grp_members[i] if 0 <= i < len(self.grp_members) else ""
 
     def _grp_add(self, idx):
         if 0 < idx < len(self.grp_choices):
@@ -1464,6 +1532,7 @@ class EditorInterface(ScrollArea):
         self.r_tun_fakeip.setVisible(it == "tun")
         for r in (self.r_wgi_key, self.r_wgi_addr, self.r_wgi_peers):
             r.setVisible(it == "wireguard")
+        self.r_fwd.setVisible(it == "forward")
         self.ed_in_host.setVisible(it != "wireguard")     # (a WireGuard server listens on every address)
         self.r_in_auth.setVisible(can_auth)
         self.r_in_cred.setVisible(can_auth and self.sw_in_auth.isChecked())
@@ -1481,6 +1550,7 @@ class EditorInterface(ScrollArea):
             "https": _t("Wraps the HTTP proxy in TLS. Set it as an 'HTTPS proxy' in the client (e.g. curl -x https://…)."),
             "shadowsocks": _t("Encrypted tunnel server for Shadowsocks apps on other devices. TCP+UDP. Copy the ss:// link with the button on the card."),
             "hysteria2": _t("Encrypted tunnel server over QUIC (UDP). TCP+UDP. Copy the hysteria2:// link with the button on the card."),
+            "forward": _t("Port forwarding: a program connects to this port as if it were the destination, and the connection goes there through the outbound - for programs without proxy settings (SSH, remote desktop, game servers, databases). Needs the sing-box engine."),
             "wireguard": _t("A WireGuard server: phones and other PCs connect with the official WireGuard app and their traffic goes out through this card's outbound (UDP). Add a device, then import its config on that device. Needs the sing-box engine."),
             "tun": _t("A virtual network card that captures the traffic of every app on this PC, including apps without proxy settings, so router rules on programs work for all of them. Starting it asks for administrator permission (UAC) unless ProxyDock runs as administrator. One TUN card at a time. Needs the sing-box engine."),
         }
@@ -1488,10 +1558,15 @@ class EditorInterface(ScrollArea):
         remote = ot not in ("direct", "block", "subscription", "group")
         for r in (self.r_grp_mode, self.r_grp_members, self.r_grp_add, self.r_grp_test):
             r.setVisible(ot == "group")
-        self.r_grp_tol.setVisible(ot == "group" and self.grp_modes[max(self.cb_grp_mode.currentIndex(), 0)] == "auto")
-        self.r_grp_mode.desc.setText(_t("Uses the member that answers fastest, and moves away from members that stop working")
-                                     if self.grp_modes[max(self.cb_grp_mode.currentIndex(), 0)] == "auto" else
-                                     _t("Uses the first member that works; when it stops working, the next one. It stays there until that one fails too"))
+        gm_ = self.grp_modes[max(self.cb_grp_mode.currentIndex(), 0)]
+        self.r_grp_tol.setVisible(ot == "group" and gm_ == "auto")
+        self.r_grp_test.setVisible(ot == "group" and gm_ != "select")
+        self.cb_grp_sel.setVisible(gm_ == "select")
+        self.r_grp_mode.desc.setText({
+            "auto": _t("Uses the member that answers fastest, and moves away from members that stop working"),
+            "failover": _t("Uses the first member that works; when it stops working, the next one. It stays there until that one fails too"),
+            "select": _t("Uses the member you choose. Switch it here or from the block's right-click menu (running cards restart)"),
+        }[gm_])
         self.r_grp_mode.desc.setVisible(True)
         self.r_out_sec.desc.setText(_t("Use what the server is set up with (REALITY usually with xtls-rprx-vision)") if ot == "vless"
                                     else _t("Use what the server is set up with"))
@@ -1660,6 +1735,8 @@ class EditorInterface(ScrollArea):
                       hy2_up_mbps=self.sp_in_up.value(), hy2_down_mbps=self.sp_in_down.value(),
                       tun_stack=self.tun_stacks[max(self.cb_tun_stack.currentIndex(), 0)],
                       tun_strict_route=self.sw_tun_strict.isChecked(), tun_fakeip=self.sw_tun_fakeip.isChecked(),
+                      fwd_host=self.ed_fwd_host.text().strip(), fwd_port=self.sp_fwd_port.value(),
+                      fwd_network=self.fwd_nets[max(self.cb_fwd_net.currentIndex(), 0)],
                       wg_private_key=self.ed_wgi_key.text().strip(), wg_address=self.ed_wgi_addr.text().strip(),
                       wg_endpoint=self.ed_wgi_end.text().strip(),
                       wg_peers=json.dumps(self.wgi_peers, ensure_ascii=False) if self.wgi_peers else "")
@@ -1685,7 +1762,7 @@ class EditorInterface(ScrollArea):
                              interface=self._iface_value() if ot not in ("block", "group") else "",
                              group_mode=self.grp_modes[max(self.cb_grp_mode.currentIndex(), 0)],
                              group_test_url=self.ed_grp_url.text().strip(), group_interval=self.sp_grp_interval.value(),
-                             group_tolerance=self.sp_grp_tol.value(),
+                             group_tolerance=self.sp_grp_tol.value(), group_selected=self._grp_sel_value(),
                              wg_private_key=self.ed_wg_key.text().strip(), wg_address=self.ed_wg_addr.text().strip(),
                              wg_peer_public_key=self.ed_wg_peer.text().strip(), wg_preshared_key=self.ed_wg_psk.text().strip(),
                              wg_allowed_ips=self.ed_wg_allowed.text().strip(), wg_mtu=self.sp_wg_mtu.value(),

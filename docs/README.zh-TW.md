@@ -6,15 +6,28 @@
 **傳出端**區塊 (流量離開的方式，例如 Shadowsocks 伺服器)，每張卡片可個別開關。
 
 <p align="center">
-  <img src="images/canvas.png" width="98%" alt="畫布">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="images/canvas-dark.png">
+    <img src="images/canvas-light.png" width="98%" alt="畫布">
+  </picture>
+</p>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="images/proxies-dark.png">
+    <img src="images/proxies-light.png" width="49%" alt="Proxies">
+  </picture>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="images/router-dark.png">
+    <img src="images/router-light.png" width="49%" alt="Router">
+  </picture>
 </p>
 
 ## 功能
 
-- **傳入端**: SOCKS5、SOCKS4、HTTP、HTTPS、Shadowsocks 伺服器、Hysteria2 伺服器、WireGuard 伺服器 (手機和電腦用 WireGuard 程式連線)、TUN (本機所有程式)
+- **傳入端**: SOCKS5、SOCKS4、HTTP、HTTPS、Shadowsocks 伺服器、Hysteria2 伺服器、WireGuard 伺服器 (手機和電腦用 WireGuard 程式連線)、連接埠轉送、TUN (本機所有程式)
 - **傳出端**: Direct、HTTP / HTTPS / SOCKS 代理、Shadowsocks、Hysteria2、WireGuard、VLESS (REALITY)、VMess、
   Trojan、TUIC、訂閱 (分享連結或 Clash YAML)
-- **區塊**: 串接 (傳出端經由另一個傳出端)、路由器 (依網域、IP、連接埠、程式 (可從執行中的程式選擇)、GeoIP/Geosite 分流，簡易與進階檢視)、群組 (最快或容錯移轉)、封鎖
+- **區塊**: 串接 (傳出端經由另一個傳出端)、路由器 (依網域、IP、連接埠、程式 (可從執行中的程式選擇)、GeoIP/Geosite 分流，簡易與進階檢視)、IF (一個條件: 符合 / 否則)、群組 (最快、容錯移轉或手動)、封鎖
 - **網路介面**: 不改動本機路由，讓傳出端經 Tailscale、VPN 程式或 Wi-Fi 出去
 - **DNS**: 本機 DNS、DoH / DoT / DoQ，可依卡片設定，可經由通道送出; TUN 可用 Fake-IP
 - **PC 區塊**: HTTP 傳入端執行期間當作 Windows 系統代理

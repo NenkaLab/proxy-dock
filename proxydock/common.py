@@ -56,6 +56,7 @@ INBOUND_TYPES = {           # inbound
     "shadowsocks": "Shadowsocks",
     "hysteria2": "Hysteria2",
     "wireguard": "WireGuard",
+    "forward": "Port forward",
     "tun": "TUN",
 }
 OUTBOUND_TYPES = {}
@@ -84,6 +85,7 @@ def is_admin():
 
 @on_language_change
 def _tr_outbound_types():
+    INBOUND_TYPES["forward"] = _t("Port forward")
     OUTBOUND_TYPES.clear()
     OUTBOUND_TYPES.update({          # outbound
         "direct": "Direct",
@@ -104,7 +106,7 @@ def _tr_outbound_types():
     })
 
 
-UDP_INBOUNDS = ("socks5", "shadowsocks", "hysteria2", "wireguard")     # inbound types that can receive UDP
+UDP_INBOUNDS = ("socks5", "shadowsocks", "hysteria2", "wireguard", "forward")     # inbound types that can receive UDP
 UDP_OUTBOUNDS = ("direct", "shadowsocks", "hysteria2", "wireguard", "vless", "vmess", "trojan", "tuic", "subscription", "group")
 NEEDS_UDP_VIA = ("wireguard", "tuic")       # UDP-based tunnels: may only go through blocks that carry UDP
 UDP_VIA_OK = ("shadowsocks", "hysteria2", "wireguard", "socks5", "vless", "vmess", "trojan", "tuic", "subscription")

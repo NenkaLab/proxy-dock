@@ -140,6 +140,10 @@ INBOUND_DEFAULTS = {
     "wg_peers": "",             # JSON [{"name", "private_key", "public_key", "address"}] (client keys kept for their config)
     "wg_endpoint": "",          # address clients use to reach this PC ("" = this PC's LAN IP)
     "wg_mtu": 1408,
+    # port forward: everything arriving on the port goes to this fixed destination through the card's outbound
+    "fwd_host": "",
+    "fwd_port": 0,
+    "fwd_network": "tcp",       # "tcp", "udp" or "both"
 }
 OUTBOUND_DEFAULTS = {
     "type": "direct",
@@ -192,10 +196,11 @@ OUTBOUND_DEFAULTS = {
     "sub_updated": 0,           # time of the last update (epoch seconds)
     "sub_test_url": "https://www.gstatic.com/generate_204",     # what "auto" measures
     # group (several outbound blocks used as one; the members are graph links, node["members"])
-    "group_mode": "auto",       # "auto" = the fastest member, "failover" = the first member that works (in order)
+    "group_mode": "auto",       # "auto" = fastest, "failover" = first member that works (in order), "select" = chosen one
     "group_test_url": "https://www.gstatic.com/generate_204",
     "group_interval": 180,      # seconds between measurements
     "group_tolerance": 50,      # auto: switch only when another member is this many ms faster
+    "group_selected": "",       # select: id of the member in use
 }
 SECRET_FIELDS = ("password", "ss_password", "hy2_password", "hy2_obfs_password", "wg_private_key", "wg_preshared_key", "wg_peers",
                  "sub_url", "sub_servers")      # (subscription URLs carry tokens, the server list has passwords)
@@ -374,7 +379,10 @@ def find_cycle(p, proxies):
         cur = nxt
 
 
-def _transports(t):
+def _transports(t, ib=None):
+    if t == "forward":
+        net = (ib or {}).get("fwd_network", "tcp")
+        return {"tcp", "udp"} if net == "both" else {net}
     return {"socks5": {"tcp", "udp"}, "shadowsocks": {"tcp", "udp"}, "hysteria2": {"udp"}, "wireguard": {"udp"}}.get(t, {"tcp"})
 
 
@@ -450,6 +458,11 @@ def check_proxy(p, proxies):
             errs.append(_t("Inbound: {e}").format(e=e))
     if ib["type"] == "wireguard":
         errs += wg_server_errors(ib)
+    if ib["type"] == "forward":
+        if not ib["fwd_host"].strip() or not 1 <= ib["fwd_port"] <= 65535:
+            errs.append(_t("Port forward: enter the destination address and port"))
+        if ib["fwd_network"] not in ("tcp", "udp", "both"):
+            errs.append(_t("Port forward: choose TCP, UDP or both"))
     if ib["type"] == "hysteria2" and len(ib["hy2_password"]) < 8:
         errs.append(_t("The Hysteria2 password must be at least 8 characters"))
     if ib["type"] in ("https", "hysteria2") and bool(ib["tls_cert"]) != bool(ib["tls_key"]):
@@ -458,14 +471,14 @@ def check_proxy(p, proxies):
         if ib["type"] in ("https", "hysteria2") and ib[f] and not os.path.isfile(ib[f]):
             errs.append(_t("File not found: {ib}").format(ib=ib[f]))
     errs += outbound_errors(ob)
-    mine = _transports(ib["type"])
+    mine = _transports(ib["type"], ib)
     for other in proxies:
         if other["id"] == p["id"]:
             continue
         oi = other["inbound"]
         if tun or oi["type"] == "tun":     # a TUN card has no port
             continue
-        shared = mine & _transports(oi["type"])
+        shared = mine & _transports(oi["type"], oi)
         if oi["port"] != ib["port"] or not shared:
             continue
         if any(_binds_overlap(ib["host"], oi["host"], udp=t == "udp") for t in shared):

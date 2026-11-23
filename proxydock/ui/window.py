@@ -531,9 +531,9 @@ class Controller:
             self.edit_node(n["id"])
         return n
 
-    def new_router(self, pos=None, edit=True):
+    def new_router(self, pos=None, edit=True, style="router"):
         pos = pos or [230, (max([r["pos"][1] for r in self.graph["routers"]], default=-170) + 170)]
-        n = graph_mod.add_router(self.graph, self._unique_name("Router"), pos)
+        n = graph_mod.add_router(self.graph, self._unique_name("IF" if style == "if" else "Router"), pos, style)
         log(LOG_SETTING, _t("Created block '{name}'").format(name=n['name']))
         self._recompile()
         if edit:
@@ -679,6 +679,15 @@ class Controller:
             log(LOG_SETTING, _t("Saved proxy '{name}'").format(name=g['name']))
             self._recompile()
         return True
+
+    def select_member(self, gid, mid):
+        """Manual group: use member mid (running cards that use the group restart with it)."""
+        kind, g = graph_mod.find(self.graph, gid)
+        if kind == "outbound" and mid in g.get("members", ()) and g["outbound"]["group_selected"] != mid:
+            g["outbound"]["group_selected"] = mid
+            _, m = graph_mod.find(self.graph, mid)
+            log(LOG_SETTING, _t("Group '{group}' now uses '{name}'").format(group=g["name"], name=m["name"] if m else "?"))
+            self._recompile()
 
     def remove_member(self, gid, mid):
         kind, g = graph_mod.find(self.graph, gid)

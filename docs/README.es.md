@@ -7,16 +7,29 @@ Una aplicación de escritorio que ejecuta varios proxies y túneles a la vez. En
 p. ej. un servidor Shadowsocks), y cada tarjeta se enciende o se apaga.
 
 <p align="center">
-  <img src="images/canvas.png" width="98%" alt="Lienzo">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="images/canvas-dark.png">
+    <img src="images/canvas-light.png" width="98%" alt="Lienzo">
+  </picture>
+</p>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="images/proxies-dark.png">
+    <img src="images/proxies-light.png" width="49%" alt="Proxies">
+  </picture>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="images/router-dark.png">
+    <img src="images/router-light.png" width="49%" alt="Router">
+  </picture>
 </p>
 
 ## Funciones
 
-- **Entrada**: SOCKS5, SOCKS4, HTTP, HTTPS, servidor Shadowsocks, servidor Hysteria2, servidor WireGuard (teléfonos y PC se conectan con la aplicación WireGuard), TUN (todas las aplicaciones del PC)
+- **Entrada**: SOCKS5, SOCKS4, HTTP, HTTPS, servidor Shadowsocks, servidor Hysteria2, servidor WireGuard (teléfonos y PC se conectan con la aplicación WireGuard), reenvío de puertos, TUN (todas las aplicaciones del PC)
 - **Salida**: Direct, proxy HTTP / HTTPS / SOCKS, Shadowsocks, Hysteria2, WireGuard, VLESS (REALITY), VMess,
   Trojan, TUIC, suscripciones (enlaces compartidos o YAML de Clash)
 - **Bloques**: cadenas (una salida a través de otra), routers (reglas por dominio, IP, puerto, programa - elegible entre los que están en ejecución -, GeoIP/Geosite; vistas sencilla y avanzada),
-  grupos (el más rápido o conmutación por error), Bloquear
+  IF (una condición: entonces / si no), grupos (el más rápido, conmutación por error o manual), Bloquear
 - **Interfaz de red**: enviar una salida por Tailscale, una aplicación VPN o Wi-Fi sin cambiar las rutas del PC
 - **DNS**: el DNS del PC, DoH / DoT / DoQ, por tarjeta, opcionalmente por el túnel; Fake-IP para TUN
 - **Bloque PC**: usar una entrada HTTP como proxy del sistema de Windows mientras funciona

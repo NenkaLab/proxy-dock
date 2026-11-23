@@ -37,6 +37,12 @@ def inbound(ib, cert=None):
         return {"type": "tun", "tag": IN_TAG, "address": TUN_ADDRESS, "mtu": 9000, "auto_route": True,
                 "strict_route": bool(ib.get("tun_strict_route")), "stack": ib.get("tun_stack", "mixed")}
     base = {"tag": IN_TAG, "listen": _listen(ib["host"]), "listen_port": ib["port"]}
+    if t == "forward":          # sing-box direct inbound: every connection goes to the fixed destination
+        d = {"type": "direct", **base, "override_address": ib["fwd_host"].strip().strip("[]"),
+             "override_port": ib["fwd_port"]}
+        if ib.get("fwd_network", "tcp") in ("tcp", "udp"):
+            d["network"] = ib["fwd_network"]
+        return d
     if t in ("socks5", "socks4"):
         d = {"type": "socks", **base}
         if t == "socks5" and ib["auth_enabled"]:
@@ -247,6 +253,11 @@ def group_outbounds(ob, tag):
             heads.append(f"{tag}_m{k}_0")
     if not heads:
         raise ValueError("group without members")
+    if ob.get("group_mode") == "select":
+        ids = [m.get("id") for m in ob.get("members") or [] if outbounds(m["outbound"], "x")]
+        chosen = heads[ids.index(ob["group_selected"])] if ob.get("group_selected") in ids else heads[0]
+        return out + [{"type": "selector", "tag": tag, "outbounds": heads, "default": chosen,
+                       "interrupt_exist_connections": True}]
     failover = ob.get("group_mode") == "failover"
     group = {"type": "urltest", "tag": tag, "outbounds": heads,
              "url": ob.get("group_test_url") or "https://www.gstatic.com/generate_204",

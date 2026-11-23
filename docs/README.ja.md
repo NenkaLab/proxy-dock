@@ -6,16 +6,29 @@
 **送信側**ブロック (出口、例: Shadowsocks サーバー) につなぎ、カードごとにオン・オフします。
 
 <p align="center">
-  <img src="images/canvas.png" width="98%" alt="キャンバス">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="images/canvas-dark.png">
+    <img src="images/canvas-light.png" width="98%" alt="キャンバス">
+  </picture>
+</p>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="images/proxies-dark.png">
+    <img src="images/proxies-light.png" width="49%" alt="Proxies">
+  </picture>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="images/router-dark.png">
+    <img src="images/router-light.png" width="49%" alt="Router">
+  </picture>
 </p>
 
 ## 機能
 
-- **受信側**: SOCKS5、SOCKS4、HTTP、HTTPS、Shadowsocks サーバー、Hysteria2 サーバー、WireGuard サーバー (スマホや PC が WireGuard アプリで接続)、TUN (この PC のすべてのアプリ)
+- **受信側**: SOCKS5、SOCKS4、HTTP、HTTPS、Shadowsocks サーバー、Hysteria2 サーバー、WireGuard サーバー (スマホや PC が WireGuard アプリで接続)、ポート転送、TUN (この PC のすべてのアプリ)
 - **送信側**: Direct、HTTP / HTTPS / SOCKS プロキシ、Shadowsocks、Hysteria2、WireGuard、VLESS (REALITY)、VMess、
   Trojan、TUIC、サブスクリプション (共有リンクまたは Clash YAML)
 - **ブロック**: チェーン (送信側を別の送信側経由に)、ルーター (ドメイン・IP・ポート・プログラム (実行中の一覧から選択)・GeoIP/Geosite のルール、かんたん・詳細表示)、
-  グループ (最速または自動切り替え)、ブロック
+  IF (条件 1 つ: 一致 / それ以外)、グループ (最速、自動切り替え、手動)、ブロック
 - **ネットワークインターフェース**: PC のルーティングを変えずに、送信側を Tailscale、VPN アプリ、Wi-Fi から出す
 - **DNS**: PC の DNS、DoH / DoT / DoQ、カードごとの設定、トンネル経由、TUN 用の Fake-IP
 - **PC ブロック**: HTTP 受信側を動作中だけ Windows のシステムプロキシとして使う

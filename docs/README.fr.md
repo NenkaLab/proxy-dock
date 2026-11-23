@@ -7,16 +7,29 @@ Une application de bureau qui fait tourner plusieurs proxys et tunnels côte à 
 p. ex. un serveur Shadowsocks), et chaque carte s'allume ou s'éteint.
 
 <p align="center">
-  <img src="images/canvas.png" width="98%" alt="Canevas">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="images/canvas-dark.png">
+    <img src="images/canvas-light.png" width="98%" alt="Canevas">
+  </picture>
+</p>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="images/proxies-dark.png">
+    <img src="images/proxies-light.png" width="49%" alt="Proxies">
+  </picture>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="images/router-dark.png">
+    <img src="images/router-light.png" width="49%" alt="Router">
+  </picture>
 </p>
 
 ## Fonctions
 
-- **Entrée** : SOCKS5, SOCKS4, HTTP, HTTPS, serveur Shadowsocks, serveur Hysteria2, serveur WireGuard (téléphones et PC se connectent avec l'application WireGuard), TUN (toutes les applications du PC)
+- **Entrée** : SOCKS5, SOCKS4, HTTP, HTTPS, serveur Shadowsocks, serveur Hysteria2, serveur WireGuard (téléphones et PC se connectent avec l'application WireGuard), redirection de port, TUN (toutes les applications du PC)
 - **Sortie** : Direct, proxy HTTP / HTTPS / SOCKS, Shadowsocks, Hysteria2, WireGuard, VLESS (REALITY), VMess,
   Trojan, TUIC, abonnements (liens de partage ou YAML Clash)
 - **Blocs** : chaînes (une sortie à travers une autre), routeurs (règles par domaine, IP, port, programme - à choisir parmi ceux en cours -, GeoIP/Geosite ; vues simple et avancée),
-  groupes (le plus rapide ou basculement), Bloquer
+  IF (une condition : alors / sinon), groupes (le plus rapide, basculement ou manuel), Bloquer
 - **Interface réseau** : faire sortir une sortie par Tailscale, une application VPN ou le Wi-Fi sans modifier les routes du PC
 - **DNS** : DNS du PC, DoH / DoT / DoQ, par carte, au besoin par le tunnel ; Fake-IP pour le TUN
 - **Bloc PC** : utiliser une entrée HTTP comme proxy système Windows pendant qu'elle tourne

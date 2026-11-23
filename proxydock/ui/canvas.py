@@ -31,6 +31,9 @@ PC_COLOR = (92, 58, 132)
 PORT_COLOR = (120, 170, 235)
 VIA_COLOR = (235, 190, 110)
 ROUTER_COLOR = (128, 86, 30)
+IF_COLOR = (112, 60, 96)
+THEN_COLOR = (120, 210, 120)
+ELSE_COLOR = (230, 120, 120)
 GROUP_COLOR = (24, 96, 112)
 MEMBER_COLOR = (110, 210, 200)
 RULE_COLOR = (240, 170, 90)
@@ -43,7 +46,7 @@ def _tr_new_inbound():
 
 
 DEFAULT_PORTS = {"socks5": 1080, "socks4": 1084, "http": 8080, "https": 8443, "shadowsocks": 8388, "hysteria2": 8443,
-                 "wireguard": 51820,
+                 "wireguard": 51820, "forward": 2222,
                  "tun": 30300}       # (a TUN card has no port; any free number keeps the port checks quiet)
 
 
@@ -187,8 +190,8 @@ class CanvasInterface(QWidget):
         self.btn_in.setMenu(self._inbound_menu())
         self.btn_out = DropDownPushButton(FIF.SEND, _t("Add outbound"), self)
         self.btn_out.setMenu(self._outbound_menu())
-        self.btn_router = PushButton(_t("Add router"), self, FIF.SHARE)
-        self.btn_router.clicked.connect(lambda: self.ctl.new_router())
+        self.btn_router = DropDownPushButton(FIF.SHARE, _t("Add router"), self)
+        self.btn_router.setMenu(self._router_menu())
         self.btn_fit = PushButton(_t("Fit"), self, FIF.ZOOM)
         self.btn_fit.clicked.connect(self.fit)
         self.btn_stop = PushButton(_t("Stop all"), self, FIF.PAUSE)
@@ -227,6 +230,15 @@ class CanvasInterface(QWidget):
             act = Action(label, menu)
             act.triggered.connect(lambda _=False, t=t: self.add_inbound(t, pos))
             menu.addAction(act)
+        return menu
+
+    def _router_menu(self, pos=None, parent=None):
+        menu = RoundMenu(_t("Add router"), parent or self)
+        a = Action(FIF.SHARE, _t("Router (several rules)"), menu)
+        a.triggered.connect(lambda: self.ctl.new_router(pos))
+        b = Action(FIF.QUESTION, _t("IF (one condition: then / else)"), menu)
+        b.triggered.connect(lambda: self.ctl.new_router(pos, style="if"))
+        menu.addActions([a, b])
         return menu
 
     def _outbound_menu(self, pos=None, parent=None):
@@ -273,9 +285,7 @@ class CanvasInterface(QWidget):
         if node is None:
             menu.addMenu(self._inbound_menu(p, menu))
             menu.addMenu(self._outbound_menu(p, menu))
-            add_router = Action(FIF.SHARE, _t("Add router"), menu)
-            add_router.triggered.connect(lambda: self.ctl.new_router(p))
-            menu.addAction(add_router)
+            menu.addMenu(self._router_menu(p, menu))
             menu.addSeparator()
             fit = Action(FIF.ZOOM, _t("Fit"), menu)
             fit.triggered.connect(self.fit)
@@ -312,6 +322,10 @@ class CanvasInterface(QWidget):
                     cut = Action(FIF.REMOVE, _t("Disconnect"), menu)
                     cut.triggered.connect(lambda: self.ctl.set_via(mid, None))
                     menu.addAction(cut)
+                from .proxies import member_menu
+                sub = member_menu(self.ctl, mid, menu)
+                if sub is not None:
+                    menu.addMenu(sub)
                 dup = Action(FIF.COPY, _t("Duplicate"), menu)
                 dup.triggered.connect(lambda: self.ctl.duplicate_node(mid))
                 delete = Action(FIF.DELETE, _t("Delete"), menu)
@@ -386,13 +400,14 @@ class CanvasInterface(QWidget):
             for n in graph["inbounds"]:
                 make("InNode", n["id"], n["name"], n["pos"], IN_COLOR)
             for r in graph.get("routers", []):
-                node = make("RouterNode", r["id"], r["name"], r["pos"], ROUTER_COLOR)
+                is_if = r.get("style") == "if"
+                node = make("RouterNode", r["id"], r["name"], r["pos"], IF_COLOR if is_if else ROUTER_COLOR)
                 for i, rule in enumerate(r["rules"]):
-                    name = f"{i + 1}. {rule['name']}"
-                    node.add_output(name, multi_output=False, color=RULE_COLOR)
+                    name = _t("then") if is_if else f"{i + 1}. {rule['name']}"
+                    node.add_output(name, multi_output=False, color=THEN_COLOR if is_if else RULE_COLOR)
                     self.rule_of[(node.id, name)] = rule["id"]
-                default = _t("default")
-                node.add_output(default, multi_output=False, color=PORT_COLOR)
+                default = _t("else") if is_if else _t("default")
+                node.add_output(default, multi_output=False, color=ELSE_COLOR if is_if else PORT_COLOR)
                 self.rule_of[(node.id, default)] = "default"
             make("PcNode", PC_ID, _t("PC (system proxy)"), graph["pc"]["pos"], PC_COLOR)
             for n in graph["inbounds"]:
@@ -452,7 +467,10 @@ class CanvasInterface(QWidget):
             users = graph_mod.used_by(cg, n["id"])
             members = [graph_mod.find(cg, m)[1]["name"] for m in n.get("members", []) if graph_mod.find(cg, m)[1]]
             if n["outbound"]["type"] == "group":
-                mode = _t("Fastest") if n["outbound"]["group_mode"] != "failover" else _t("Failover in order")
+                mode = {"failover": _t("Failover in order"), "select": _t("Manual")}.get(n["outbound"]["group_mode"], _t("Fastest"))
+                if n["outbound"]["group_mode"] == "select" and n.get("members"):
+                    sel = n["outbound"]["group_selected"] if n["outbound"]["group_selected"] in n["members"] else n["members"][0]
+                    mode += " · " + graph_mod.find(cg, sel)[1]["name"]
                 lines = [_line("#DADADA", f"{mode} · " + _t("{count} members").format(count=len(members)))]
                 if not members:
                     lines.append(_line("#E8B339", "⚠ " + _t("no members")))
@@ -469,8 +487,12 @@ class CanvasInterface(QWidget):
                 continue
             users = graph_mod.users(cg, r["id"])
             _, d = graph_mod.find(cg, r["default"]) if r["default"] else (None, None)
-            lines = [_line("#DADADA", _t("{count} rules").format(count=len(r["rules"])) + " · "
-                           + _t("default: {name}").format(name=d["name"] if d else "-"))]
+            if r.get("style") == "if":
+                from .router import match_summary
+                lines = [_line("#DADADA", "IF " + (match_summary(r["rules"][0]["match"]) or _t("(no condition)")))]
+            else:
+                lines = [_line("#DADADA", _t("{count} rules").format(count=len(r["rules"])) + " · "
+                               + _t("default: {name}").format(name=d["name"] if d else "-"))]
             if not d:
                 lines.append(_line("#E8B339", "⚠ " + _t("no default target")))
             lines.append(_line("#9A9A9A", _t("used by: {names}").format(names=", ".join(u["name"] for u in users))

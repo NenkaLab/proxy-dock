@@ -7,16 +7,29 @@ Eine Desktop-App, die mehrere Proxys und Tunnel nebeneinander betreibt. Auf eine
 z. B. ein Shadowsocks-Server) verbunden; jede Karte lässt sich ein- und ausschalten.
 
 <p align="center">
-  <img src="images/canvas.png" width="98%" alt="Arbeitsfläche">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="images/canvas-dark.png">
+    <img src="images/canvas-light.png" width="98%" alt="Arbeitsfläche">
+  </picture>
+</p>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="images/proxies-dark.png">
+    <img src="images/proxies-light.png" width="49%" alt="Proxies">
+  </picture>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="images/router-dark.png">
+    <img src="images/router-light.png" width="49%" alt="Router">
+  </picture>
 </p>
 
 ## Funktionen
 
-- **Eingang**: SOCKS5, SOCKS4, HTTP, HTTPS, Shadowsocks-Server, Hysteria2-Server, WireGuard-Server (Handys und PCs verbinden sich mit der WireGuard-App), TUN (alle Apps dieses PCs)
+- **Eingang**: SOCKS5, SOCKS4, HTTP, HTTPS, Shadowsocks-Server, Hysteria2-Server, WireGuard-Server (Handys und PCs verbinden sich mit der WireGuard-App), Portweiterleitung, TUN (alle Apps dieses PCs)
 - **Ausgang**: Direct, HTTP- / HTTPS- / SOCKS-Proxy, Shadowsocks, Hysteria2, WireGuard, VLESS (REALITY), VMess,
   Trojan, TUIC, Abonnements (Freigabelinks oder Clash-YAML)
 - **Blöcke**: Ketten (ein Ausgang über einen anderen), Router (Regeln nach Domain, IP, Port, Programm - aus laufenden Programmen wählbar -, GeoIP/Geosite; einfache und erweiterte Ansicht),
-  Gruppen (schnellster oder Failover), Block
+  IF (eine Bedingung: dann / sonst), Gruppen (schnellster, Failover oder manuell), Block
 - **Netzwerkschnittstelle**: einen Ausgang über Tailscale, eine VPN-App oder WLAN senden, ohne die Routen des PCs zu ändern
 - **DNS**: DNS des PCs, DoH / DoT / DoQ, pro Karte, auf Wunsch durch den Tunnel; Fake-IP für TUN
 - **PC-Block**: einen HTTP-Eingang, solange er läuft, als Windows-Systemproxy nutzen

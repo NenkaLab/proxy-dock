@@ -7,16 +7,29 @@ e.g. a local SOCKS5 port) to **outbound** blocks (how it leaves, e.g. a Shadowso
 turn each card on or off.
 
 <p align="center">
-  <img src="docs/images/canvas.png" width="98%" alt="Canvas">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/canvas-dark.png">
+    <img src="docs/images/canvas-light.png" width="98%" alt="Canvas">
+  </picture>
+</p>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/proxies-dark.png">
+    <img src="docs/images/proxies-light.png" width="49%" alt="Proxies">
+  </picture>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/router-dark.png">
+    <img src="docs/images/router-light.png" width="49%" alt="Router">
+  </picture>
 </p>
 
 ## Features
 
-- **Inbound**: SOCKS5, SOCKS4, HTTP, HTTPS, Shadowsocks server, Hysteria2 server, WireGuard server (phones and PCs connect with the WireGuard app), TUN (all apps on this PC)
+- **Inbound**: SOCKS5, SOCKS4, HTTP, HTTPS, Shadowsocks server, Hysteria2 server, WireGuard server (phones and PCs connect with the WireGuard app), port forward, TUN (all apps on this PC)
 - **Outbound**: Direct, HTTP / HTTPS / SOCKS proxy, Shadowsocks, Hysteria2, WireGuard, VLESS (REALITY), VMess,
   Trojan, TUIC, subscriptions (share links or Clash YAML)
 - **Blocks**: chains (one outbound through another), routers (rules by domain, IP, port, program - pick from running programs -, GeoIP/Geosite; simple and advanced views),
-  groups (fastest or failover), Block
+  IF (one condition: then / else), groups (fastest, failover or manual), Block
 - **Network interface**: send an outbound through Tailscale, a VPN app or Wi-Fi without changing the PC's routes
 - **DNS**: the PC's DNS, DoH / DoT / DoQ, per card, optionally through the tunnel; Fake-IP for TUN
 - **PC block**: use an HTTP inbound as the Windows system proxy while it runs
