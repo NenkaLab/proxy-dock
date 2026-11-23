@@ -41,6 +41,8 @@
 
 ## 実行
 
+Windows では `ProxyDock-<バージョン>-windows-x64-setup.exe` が現在のユーザーにインストールします (管理者権限は不要)。`.zip` は同じアプリをフォルダーにしたものです。
+
 [Releases](https://github.com/NenkaLab/proxy-dock/releases) からビルドを入手するか、ソースから実行します (Python 3.14):
 
 ```bash
@@ -56,9 +58,10 @@ python proxydock.py
 
 ## ビルド
 
-`tools\build_win.bat` → `dist/win/ProxyDock.exe` (Linux: `tools/build_linux.sh`、macOS: `tools/build_mac.sh`)。
+`tools\build_win.bat` → `dist/win/ProxyDock/ProxyDock.exe` (Linux: `tools/build_linux.sh`、macOS: `tools/build_mac.sh`)。
 ビルド時に sing-box と Hysteria をダウンロードし (SHA-256 確認)、アプリに同梱します。
 テスト: `python tests/run_tests.py`。リリース: `tools\release.bat <バージョン>` がタグを付けて push し、GitHub Actions がビルドします。
+インストーラー: `python tools/build.py installer` (Inno Setup 6)。
 
 ## 制限
 

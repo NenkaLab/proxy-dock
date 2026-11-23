@@ -43,6 +43,8 @@ A built-in Python engine is the fallback.
 
 ## Running
 
+On Windows, `ProxyDock-<version>-windows-x64-setup.exe` installs it for your user (no administrator needed); the `.zip` is the same app as a folder.
+
 Download a build from [Releases](https://github.com/NenkaLab/proxy-dock/releases), or run from source
 (Python 3.14):
 
@@ -59,9 +61,10 @@ Linux: `~/.config/ProxyDock`). The **How to use** page in the app explains the r
 
 ## Building
 
-`tools\build_win.bat` → `dist/win/ProxyDock.exe` (Linux: `tools/build_linux.sh`, macOS: `tools/build_mac.sh`).
+`tools\build_win.bat` → `dist/win/ProxyDock/ProxyDock.exe` (Linux: `tools/build_linux.sh`, macOS: `tools/build_mac.sh`).
 The build downloads sing-box and Hysteria (SHA-256 checked) and puts them inside the app.
 Tests: `python tests/run_tests.py`. Releases: `tools\release.bat <version>` tags and pushes; GitHub Actions builds them.
+Installer: `python tools/build.py installer` (Inno Setup 6).
 
 ## Limitations
 

@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 # tools/build.py builds with this spec (options live only here).
-#  - Windows, Linux : single executable (dist/<os>/ProxyDock[.exe])
+#  - Windows, Linux : folder (dist/<os>/ProxyDock/ProxyDock[.exe] + _internal/). Not onefile: onefile unpacks
+#                     ~280 MB to the temp folder on every start and leaves it there when the app is killed.
 #  - macOS          : app bundle (dist/mac/ProxyDock.app)
 # build.py sets the output folder with --distpath.
 import os
@@ -107,14 +108,13 @@ if IS_MAC:
     )
 else:
     exe = EXE(
-        pyz, a.scripts, a.binaries, a.datas, [],
+        pyz, a.scripts, [],
+        exclude_binaries=True,
         name='ProxyDock',
         debug=False,
         bootloader_ignore_signals=False,
         strip=False,
         upx=False,
-        upx_exclude=[],
-        runtime_tmpdir=None,
         console=False,
         disable_windowed_traceback=False,
         argv_emulation=False,
@@ -123,3 +123,4 @@ else:
         entitlements_file=None,
         version=windows_version_info() if sys.platform == 'win32' else None,
     )
+    coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, upx_exclude=[], name='ProxyDock')

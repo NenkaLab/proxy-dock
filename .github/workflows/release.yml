@@ -1,7 +1,7 @@
 name: Release
 
 # Pushing a tag v<version> (tools/release.py does it) builds Windows / Linux / macOS and publishes a
-# GitHub Release with the archives and SHA-256 checksums. "Run workflow" builds without releasing.
+# GitHub Release with the archives, the Windows installer and SHA-256 checksums. "Run workflow" builds without releasing.
 on:
   push:
     tags: ["v*"]
@@ -76,6 +76,13 @@ jobs:
       - name: Package
         run: python tools/build.py package ${{ matrix.target }}
 
+      - name: Installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+          python tools/build.py installer
+
       - uses: actions/upload-artifact@v4
         with:
           name: proxydock-${{ matrix.target }}
@@ -108,5 +115,7 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           prerelease=""
           case "$version" in *-*) prerelease="--prerelease" ;; esac
-          gh release create "$GITHUB_REF_NAME" release/*.zip release/*.tar.gz release/SHA256SUMS.txt \
+          files=(release/*.zip release/*.tar.gz release/SHA256SUMS.txt)
+          ls release/*-setup.exe >/dev/null 2>&1 && files+=(release/*-setup.exe)
+          gh release create "$GITHUB_REF_NAME" "${files[@]}" \
             --title "ProxyDock $version" --generate-notes $prerelease

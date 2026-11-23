@@ -2,13 +2,16 @@
 
     python tools/build.py win|linux|mac|all
     python tools/build.py package win|linux|mac
+    python tools/build.py installer
 
-  win    Windows executable   -> dist/win/ProxyDock.exe   (on Windows only)
-  linux  Linux executable     -> dist/linux/ProxyDock     (natively on Linux, with Docker on Windows/macOS)
-  mac    macOS app bundle     -> dist/mac/ProxyDock.app   (on macOS only)
+  win    Windows app folder   -> dist/win/ProxyDock/ProxyDock.exe   (on Windows only)
+  linux  Linux app folder     -> dist/linux/ProxyDock/ProxyDock     (natively on Linux, with Docker on Windows/macOS)
+  mac    macOS app bundle     -> dist/mac/ProxyDock.app             (on macOS only)
   all    build everything this computer can and print a summary
   package <target>  archive an existing build for a release -> dist/release/ProxyDock-<version>-<os>-<arch>.zip/.tar.gz
                     (+ .sha256), used by the release workflow (.github/workflows/release.yml)
+  installer         Windows installer from an existing win build (Inno Setup 6, tools/ProxyDock.iss)
+                    -> dist/release/ProxyDock-<version>-windows-<arch>-setup.exe (+ .sha256)
 
 Creates a virtual environment per OS (.venv / .venv-linux / .venv-mac), installs only the packages that are
 missing or differ from requirements.txt, then builds with tools/ProxyDock.spec.
@@ -30,7 +33,12 @@ SPEC = "tools/ProxyDock.spec"
 DOCKER_IMAGE = "proxydock-linux-build"
 PLATFORM = "win" if sys.platform == "win32" else "mac" if sys.platform == "darwin" else "linux"
 NAMES = {"win": "Windows", "linux": "Linux", "mac": "macOS"}
-OUTPUTS = {"win": "dist/win/ProxyDock.exe", "linux": "dist/linux/ProxyDock", "mac": "dist/mac/ProxyDock.app"}
+OUTPUTS = {"win": "dist/win/ProxyDock/ProxyDock.exe", "linux": "dist/linux/ProxyDock/ProxyDock", "mac": "dist/mac/ProxyDock.app"}
+
+
+def app_folder(target):
+    """What gets shipped: the app folder (win/linux) or dist/mac (holds ProxyDock.app + licenses)."""
+    return os.path.join(ROOT, "dist", target) if target == "mac" else os.path.join(ROOT, "dist", target, "ProxyDock")
 
 
 class Skip(Exception):
@@ -104,6 +112,15 @@ def engines(target, py):
 
 def pyinstaller(target, py):
     say(target, "4/5", "building...")
+    for old in ("ProxyDock.exe", "licenses"):      # left over from the old single-file build
+        path = os.path.join(ROOT, "dist", target, old)
+        try:
+            if target != "mac" and os.path.isfile(path):
+                os.remove(path)
+            elif target != "mac" and os.path.isdir(path):
+                shutil.rmtree(path)
+        except OSError as e:
+            print(f"          note: could not remove the old dist/{target}/{old} ({e.strerror}); delete it later")
     r = run([py, "-m", "PyInstaller", "--noconfirm", "--clean", "--log-level", "WARN",
              "--distpath", f"dist/{target}", "--workpath", f"build/{target}", SPEC])
     if r.returncode != 0:
@@ -114,7 +131,7 @@ def pyinstaller(target, py):
 
 def copy_licenses(target):
     say(target, "5/5", "copying licenses...")
-    dst = os.path.join(ROOT, "dist", target, "licenses")
+    dst = os.path.join(app_folder(target), "licenses")
     os.makedirs(dst, exist_ok=True)
     src = os.path.join(ROOT, "licenses")
     for name in os.listdir(src):
@@ -164,7 +181,7 @@ def arch():
 
 def package(target):
     """Archive dist/<target> for a release. Returns the archive path."""
-    src = os.path.join(ROOT, "dist", target)
+    src = app_folder(target)
     main = os.path.join(ROOT, OUTPUTS[target])
     if not os.path.exists(main):
         raise RuntimeError(f"{OUTPUTS[target]} not found - build it first")
@@ -194,11 +211,46 @@ def package(target):
                 for fn in sorted(files):
                     full = os.path.join(base, fn)
                     z.write(full, f"{name}/{os.path.relpath(full, src)}".replace(os.sep, "/"))
+    return checksum(path, "packaged")
+
+
+def checksum(path, what):
     digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
     with open(path + ".sha256", "w", encoding="ascii") as f:
         f.write(f"{digest}  {os.path.basename(path)}\n")
-    print(f"packaged: {os.path.relpath(path, ROOT)}  sha256={digest[:16]}...")
+    print(f"{what}: {os.path.relpath(path, ROOT)}  sha256={digest[:16]}...")
     return path
+
+
+def find_iscc():
+    """Inno Setup 6 compiler: PATH, then the usual install folders (machine or per-user install)."""
+    found = shutil.which("ISCC") or shutil.which("iscc")
+    if found:
+        return found
+    for base in (os.environ.get("ProgramFiles(x86)"), os.environ.get("ProgramFiles"),
+                 os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs")):
+        if base and os.path.isfile(os.path.join(base, "Inno Setup 6", "ISCC.exe")):
+            return os.path.join(base, "Inno Setup 6", "ISCC.exe")
+    return None
+
+
+def installer():
+    """Windows installer (per-user, no administrator needed) from dist/win/ProxyDock. Returns its path."""
+    if PLATFORM != "win":
+        raise Skip("the Windows installer can only be built on Windows")
+    if not os.path.exists(os.path.join(ROOT, OUTPUTS["win"])):
+        raise RuntimeError(f"{OUTPUTS['win']} not found - build it first (python tools/build.py win)")
+    iscc = find_iscc()
+    if not iscc:
+        raise Skip("Inno Setup 6 is not installed (winget install JRSoftware.InnoSetup)")
+    out_dir = os.path.join(ROOT, "dist", "release")
+    os.makedirs(out_dir, exist_ok=True)
+    name = f"ProxyDock-{version()}-windows-{arch()}-setup"
+    r = run([iscc, "/Q", f"/DAppVersion={version()}", f"/DSourceDir={app_folder('win')}",
+             f"/DOutputDir={out_dir}", f"/DOutputName={name}", "tools/ProxyDock.iss"])
+    if r.returncode != 0:
+        raise RuntimeError("Inno Setup failed (tools/ProxyDock.iss)")
+    return checksum(os.path.join(out_dir, name + ".exe"), "installer")
 
 
 def build(target):
@@ -217,6 +269,16 @@ def main(argv):
         try:
             package(argv[2])
             return 0
+        except RuntimeError as e:
+            print(f"failed: {e}")
+            return 1
+    if argv[1:] == ["installer"]:
+        try:
+            installer()
+            return 0
+        except Skip as e:
+            print(f"skipped: {e}")
+            return 2
         except RuntimeError as e:
             print(f"failed: {e}")
             return 1

@@ -1,5 +1,5 @@
 @echo off
-rem Windows build -> dist\win\ProxyDock.exe
+rem Windows build -> dist\win\ProxyDock\ProxyDock.exe
 rem Build logic lives in tools\build.py (this file is ASCII-only on purpose).
 rem Set NOPAUSE=1 to skip the final pause.
 setlocal

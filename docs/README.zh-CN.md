@@ -40,6 +40,8 @@
 
 ## 运行
 
+在 Windows 上，`ProxyDock-<版本>-windows-x64-setup.exe` 为当前用户安装 (不需要管理员权限)；`.zip` 是同一个应用的文件夹版本。
+
 从 [Releases](https://github.com/NenkaLab/proxy-dock/releases) 下载构建，或从源码运行 (Python 3.14):
 
 ```bash
@@ -55,9 +57,10 @@ python proxydock.py
 
 ## 构建
 
-`tools\build_win.bat` → `dist/win/ProxyDock.exe` (Linux: `tools/build_linux.sh`，macOS: `tools/build_mac.sh`)。
+`tools\build_win.bat` → `dist/win/ProxyDock/ProxyDock.exe` (Linux: `tools/build_linux.sh`，macOS: `tools/build_mac.sh`)。
 构建时会下载 sing-box 和 Hysteria (校验 SHA-256) 并放进应用。
 测试: `python tests/run_tests.py`。发布: `tools\release.bat <版本>` 打标签并推送，由 GitHub Actions 构建。
+安装程序: `python tools/build.py installer` (Inno Setup 6)。
 
 ## 限制
 
