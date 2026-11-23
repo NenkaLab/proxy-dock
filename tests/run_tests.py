@@ -389,6 +389,55 @@ def test_ui():
         uip.info = real_info
     w.editor.cancel()
     wait(300)
+    # pass-through block: canvas lanes, editor, inside wiring
+    relay = ctl.new_relay(None, edit=False, lanes=2)
+    check("ui: pass-through created", gm.find(ctl.graph, relay["id"])[0] == "relay" and len(relay["inputs"]) == 2)
+    ui_in = graph["inbounds"][0]
+    check("ui: inbound links into a lane", ctl.set_target(ui_in["id"], relay["inputs"][0]["id"]))
+    check("ui: lane links on to an outbound", ctl.set_lane_target(relay["id"], relay["outputs"][0]["id"], d["id"]))
+    wait(200)
+    cv = w.canvas_page
+    rnode = cv.node_of.get(relay["id"])
+    check("ui: canvas draws the lanes", rnode is not None and len(rnode.inputs()) == 2 and len(rnode.outputs()) == 2
+          and relay["inputs"][0]["id"] in cv.lane_port and rnode.view.links == [(0, 0), (1, 1)])
+    port = cv.lane_port.get(relay["inputs"][0]["id"])
+    check("ui: canvas link goes into the lane port", port is not None
+          and any(cv.mid_of.get(x.node().id) == ui_in["id"] for x in port.connected_ports()))
+    check("ui: card leaves through the lane", ctl.proxy_by_id(ui_in["id"])["outbound"]["type"] == "direct"
+          and not ctl.proxy_by_id(ui_in["id"])["unlinked"])
+    ctl.add_lane(relay["id"])
+    wait(200)
+    check("ui: footer adds a lane", len(gm.find(ctl.graph, relay["id"])[1]["inputs"]) == 3
+          and len(cv.node_of[relay["id"]].inputs()) == 3)
+    check("ui: a lane cannot loop into itself",
+          not ctl.set_lane_target(relay["id"], relay["outputs"][0]["id"], relay["inputs"][0]["id"]))
+    ctl.edit_node(relay["id"])
+    wait(300)
+    ed = w.editor
+    check("ui: pass-through editor opens", w.stackedWidget.currentWidget() is ed and ed.s_relay.isVisible()
+          and not ed.sections["in"].isVisible() and len(ed.s_relay.in_rows) == 3)
+    ed.s_relay.cb_mode.setCurrentIndex(1)                   # routed
+    ed.s_relay.sp_out.setValue(2)
+    wait(100)
+    check("ui: routed shows the inside wiring", ed.s_relay.in_rows[0].combo.isVisible() and len(ed.s_relay.out_rows) == 2)
+    ed.s_relay.in_rows[2].combo.setCurrentIndex(1)          # input 3 -> output 1
+    ed.s_relay.in_rows[1].gap.setValue(2)
+    ed.save()
+    wait(300)
+    rn = gm.find(ctl.graph, relay["id"])[1]
+    check("ui: pass-through editor saves", rn["routed"] and len(rn["outputs"]) == 2 and rn["inputs"][1]["gap"] == 2
+          and rn["inputs"][2]["out"] == rn["outputs"][0]["id"], rn)
+    check("ui: canvas follows the saved wiring", cv.node_of[relay["id"]].view.routed
+          and (2, 0) in cv.node_of[relay["id"]].view.links)
+    check("ui: inside wiring can be changed", ctl.set_lane_map(relay["id"], rn["inputs"][0]["id"], rn["outputs"][1]["id"])
+          and gm.find(ctl.graph, relay["id"])[1]["inputs"][0]["out"] == rn["outputs"][1]["id"])
+    check("ui: lane 1 now leads nowhere", ctl.proxy_by_id(ui_in["id"])["unlinked"])
+    ctl.delete_node(relay["id"])
+    wait(200)
+    check("ui: deleting the pass-through hands its links on", ui_in["target"] is None and relay["id"] not in cv.node_of)
+    ctl.set_target(ui_in["id"], d["id"])
+    w.editor.cancel()
+    wait(300)
     t = ctl.new_inbound("TUN", {"type": "tun"}, None, None, edit=False)
     ctl.edit_node(t["id"])
     wait(300)
@@ -793,6 +842,90 @@ def test_router_graph():
     check("router: validate round trip", gm.validate(json.loads(json.dumps(g)))["routers"] == g["routers"])
     gm.remove(g, blk["id"])
     check("router: removing a block clears rule links", r1["rules"][0]["target"] is None and r2["default"] is None)
+
+
+def test_relay_graph():
+    """Pass-through blocks: only wiring, compiled away."""
+    g = gm.empty()
+    d = gm.add_outbound(g, {"type": "direct"}, "Direct")
+    blk = gm.add_outbound(g, {"type": "block"}, "Block")
+    up = gm.add_outbound(g, {"type": "socks5", "host": "127.0.0.1", "port": 1081}, "Up")
+    bus = gm.add_relay(g, "Bus", lanes=2)
+    check("relay: new block is straight with matching lanes", not bus["routed"] and len(bus["outputs"]) == 2
+          and [x["out"] for x in bus["inputs"]] == [x["id"] for x in bus["outputs"]])
+    bus["outputs"][0]["target"] = d["id"]
+    bus["outputs"][1]["target"] = blk["id"]
+    a = gm.add_inbound(g, "A", {"type": "socks5", "port": 1080}, target=bus["inputs"][0]["id"])
+    b = gm.add_inbound(g, "B", {"type": "http", "port": 8080}, target=bus["inputs"][1]["id"])
+    ps = {p["name"]: p for p in gm.compile(g)}
+    check("relay: straight lanes lead to their outputs", ps["A"]["outbound"]["type"] == "direct"
+          and ps["B"]["outbound"]["type"] == "block" and not ps["A"]["unlinked"], ps)
+    check("relay: target label shows the real block", ps["A"]["target_name"] == "Direct", ps["A"]["target_name"])
+    check("relay: used by looks through lanes", gm.used_by(g, d["id"]) == ["A"] and gm.users(g, blk["id"]) == [b])
+    check("relay: lane sources", gm.lane_sources(g, bus["inputs"][0]["id"]) == ["A"])
+    check("relay: compile does not change the saved graph", a["target"] == bus["inputs"][0]["id"] and g["relays"])
+    # routed: cross and merge
+    bus["routed"] = True
+    bus["inputs"][1]["out"] = bus["outputs"][0]["id"]
+    ps = {p["name"]: p for p in gm.compile(g)}
+    check("relay: routed lanes can merge", ps["B"]["outbound"]["type"] == "direct" and sorted(gm.used_by(g, d["id"])) == ["A", "B"])
+    bus["inputs"][1]["out"] = None
+    check("relay: an unwired input is not connected", {p["name"]: p for p in gm.compile(g)}["B"]["unlinked"])
+    # router -> lane -> outbound, lane -> router
+    r = gm.add_router(g, "R")
+    r["rules"][0].update(match={"domain_suffix": ["example.com"]}, target=bus["inputs"][0]["id"])
+    r["default"] = up["id"]
+    bus["inputs"][1]["out"] = bus["outputs"][1]["id"]
+    bus["outputs"][1]["target"] = r["id"]
+    p = {p["name"]: p for p in gm.compile(g)}["B"]
+    check("relay: lanes around a router", [x["outbound"]["type"] for x in p["routes"]] == ["direct"]
+          and p["outbound"]["type"] == "socks5" and not p["unlinked"], p["routes"])
+    check("relay: no router loop yet", not gm.router_loop(g, r["id"]))
+    r["default"] = bus["inputs"][1]["id"]               # R -> lane 2 -> R
+    check("relay: router loop through a lane", gm.router_loop(g, r["id"]))
+    r["default"] = up["id"]
+    # validate: round trip, bad values, loops
+    v = gm.validate(json.loads(json.dumps(g)))
+    check("relay: validate round trip", v["relays"] == g["relays"] and v["inbounds"][0]["target"] == a["target"], v["relays"])
+    raw = json.loads(json.dumps(g))
+    raw["relays"][0]["outputs"][0]["target"] = raw["relays"][0]["inputs"][0]["id"]     # lane 1 -> itself
+    raw["relays"][0]["inputs"][0]["gap"] = 99
+    raw["relays"][0]["outputs"][1]["target"] = "missing"
+    v = gm.validate(raw)
+    check("relay: validate cuts a lane loop", v["relays"][0]["outputs"][0]["target"] is None)
+    check("relay: validate drops bad gaps and links", v["relays"][0]["inputs"][0]["gap"] == 0
+          and v["relays"][0]["outputs"][1]["target"] is None)
+    raw = json.loads(json.dumps(g))
+    raw["relays"][0]["routed"] = False
+    raw["relays"][0]["inputs"].append({"id": "extra", "gap": 2})
+    v = gm.validate(raw)["relays"][0]
+    check("relay: straight keeps both sides in step", len(v["outputs"]) == 3 and v["outputs"][2]["gap"] == 2
+          and [x["out"] for x in v["inputs"]] == [x["id"] for x in v["outputs"]])
+    # lane count, copy, dead links
+    c = gm.copy_relay(bus)
+    old_ids = {x["id"] for x in bus["inputs"] + bus["outputs"]} | {bus["id"]}
+    check("relay: copy has new ids and keeps the wiring", not old_ids & ({x["id"] for x in c["inputs"] + c["outputs"]} | {c["id"]})
+          and c["inputs"][1]["out"] == c["outputs"][1]["id"])
+    gm.set_lane_count(bus, "inputs", 1)
+    gm.drop_dead_lane_links(g)
+    check("relay: fewer lanes cut links into the removed ones", b["target"] is None and a["target"] == bus["inputs"][0]["id"])
+    gm.set_lane_count(bus, "outputs", gm.MAX_LANES + 5)
+    check("relay: lane count is capped", len(bus["outputs"]) == gm.MAX_LANES)
+    gm.set_lane_count(bus, "outputs", 2)
+    # deleting a pass-through splices its links
+    b["target"] = None
+    gm.remove(g, bus["id"])
+    check("relay: deleting splices the links", a["target"] == d["id"] and r["rules"][0]["target"] == d["id"]
+          and not g["relays"], (a["target"], r["rules"][0]["target"]))
+    # chained pass-throughs
+    x1, x2 = gm.add_relay(g, "X1", lanes=1), gm.add_relay(g, "X2", lanes=1)
+    x1["outputs"][0]["target"] = x2["inputs"][0]["id"]
+    x2["outputs"][0]["target"] = up["id"]
+    a["target"] = x1["inputs"][0]["id"]
+    check("relay: chained pass-throughs", {p["name"]: p for p in gm.compile(g)}["A"]["outbound"]["type"] == "socks5")
+    x2["outputs"][0]["target"] = x1["inputs"][0]["id"]
+    check("relay: chained loop is found", gm.lane_loop(g, x1["inputs"][0]["id"])
+          and {p["name"]: p for p in gm.compile(g)}["A"]["unlinked"])
 
 
 def test_router_singbox():
@@ -2095,7 +2228,7 @@ def test_engine_died_e2e():
 
 def main():
     t0 = time.time()
-    tests = [test_translations, test_graph, test_engine, test_singbox_compile, test_router_graph, test_router_singbox, test_interface,
+    tests = [test_translations, test_graph, test_engine, test_singbox_compile, test_router_graph, test_relay_graph, test_router_singbox, test_interface,
              test_wireguard, test_tun, test_run_as_admin, test_protocols,
              test_subscription, test_detect_sni, test_hy2_advanced, test_group, test_dns, test_review_fixes, test_clash, test_wg_server, test_if_forward_select]
     from proxydock.singbox import find_binary

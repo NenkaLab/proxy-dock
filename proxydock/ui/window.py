@@ -489,7 +489,7 @@ class Controller:
             self.refresh_lists()
 
     def _unique_name(self, base):
-        names = {n["name"] for n in self.graph["inbounds"] + self.graph["outbounds"] + self.graph.get("routers", [])}
+        names = {n["name"] for kind in ("inbounds", "outbounds", "routers", "relays") for n in self.graph.get(kind, [])}
         if base not in names:
             return base
         i = 2
@@ -541,14 +541,82 @@ class Controller:
             self.edit_node(n["id"])
         return n
 
+    def new_relay(self, pos=None, edit=False, lanes=3):
+        pos = pos or [230, (max([r["pos"][1] for r in self.graph.get("relays", [])], default=-170) + 170)]
+        n = graph_mod.add_relay(self.graph, self._unique_name(_t("Pass-through")), pos, lanes)
+        log(LOG_SETTING, _t("Created block '{name}'").format(name=n['name']))
+        self._recompile()
+        if edit:
+            self.edit_node(n["id"])
+        return n
+
+    def _relay(self, rid):
+        kind, r = graph_mod.find(self.graph, rid)
+        return r if kind == "relay" else None
+
+    def set_lane_target(self, rid, lane_id, tid):
+        """Pass-through rid's output lane sends traffic on to tid (outbound block, router or another lane; None = nothing)."""
+        r = self._relay(rid)
+        lane = next((x for x in r["outputs"] if x["id"] == lane_id), None) if r else None
+        if lane is None or lane["target"] == tid:
+            return True
+        tkind, _ = graph_mod.find(self.graph, tid) if tid else (None, None)
+        if tid and tkind not in ("outbound", "router") and not graph_mod.is_lane(self.graph, tid):
+            info(self.window, "error", _t("Cannot connect"),
+                 _t("A pass-through lane can only go to an outbound block, a router or another pass-through"), 5000)
+            self.refresh_lists()
+            return False
+        old = lane["target"]
+        lane["target"] = tid
+        if tid and graph_mod.lane_loop(self.graph, tid) or any(
+                graph_mod.router_loop(self.graph, x["id"]) for x in self.graph.get("routers", [])):
+            lane["target"] = old
+            info(self.window, "error", _t("Cannot connect"), _t("The links would go round in a circle"), 5000)
+            self.refresh_lists()
+            return False
+        log(LOG_SETTING, _t("Saved proxy '{name}'").format(name=r['name']))
+        self._recompile()
+        return True
+
+    def set_lane_map(self, rid, in_id, out_id):
+        """Routed pass-through: input lane in_id is wired inside the block to output lane out_id (None = to nothing)."""
+        r = self._relay(rid)
+        if r is None or not r["routed"]:
+            return True
+        lane = next((x for x in r["inputs"] if x["id"] == in_id), None)
+        if lane is None or lane["out"] == out_id or (out_id and out_id not in [x["id"] for x in r["outputs"]]):
+            return True
+        old = lane["out"]
+        lane["out"] = out_id
+        if graph_mod.lane_loop(self.graph, in_id) or any(
+                graph_mod.router_loop(self.graph, x["id"]) for x in self.graph.get("routers", [])):
+            lane["out"] = old
+            info(self.window, "error", _t("Cannot connect"), _t("The links would go round in a circle"), 5000)
+            self.refresh_lists()
+            return False
+        log(LOG_SETTING, _t("Saved proxy '{name}'").format(name=r['name']))
+        self._recompile()
+        return True
+
+    def add_lane(self, rid, side="inputs"):
+        """One more lane on pass-through rid (straight: on both sides)."""
+        r = self._relay(rid)
+        if r is None:
+            return
+        if len(r[side]) >= graph_mod.MAX_LANES:
+            info(self.window, "warning", _t("Cannot add"), _t("A pass-through has at most {n} lanes").format(n=graph_mod.MAX_LANES), 4000)
+            return
+        graph_mod.set_lane_count(r, side, len(r[side]) + 1)
+        self._recompile()
+
     def set_rule_target(self, rid, key, tid):
         """Router rid's rule key (rule id or "default") sends traffic to tid (outbound block or router, None = nothing)."""
         kind, r = graph_mod.find(self.graph, rid)
         if kind != "router":
             return True
         tkind, _ = graph_mod.find(self.graph, tid) if tid else (None, None)
-        if tid and tkind not in ("outbound", "router"):
-            info(self.window, "error", _t("Cannot connect"), _t("A router rule can only go to an outbound block or another router"), 5000)
+        if tid and tkind not in ("outbound", "router") and not graph_mod.is_lane(self.graph, tid):
+            info(self.window, "error", _t("Cannot connect"), _t("A router rule can only go to an outbound block, another router or a pass-through"), 5000)
             self.refresh_lists()
             return False
         rule = None if key == "default" else next((x for x in r["rules"] if x["id"] == key), None)
@@ -638,6 +706,8 @@ class Controller:
     def save_node(self, kind, node):
         key = kind + "s"
         self.graph[key] = [node if x["id"] == node["id"] else x for x in self.graph[key]]
+        if kind == "relay":
+            graph_mod.drop_dead_lane_links(self.graph)
         log(LOG_SETTING, _t("Saved proxy '{name}'").format(name=node['name']))
         self._recompile()
 
@@ -646,6 +716,9 @@ class Controller:
         if kind != "inbound" or n["target"] == tid:
             return True
         tkind, t = graph_mod.find(self.graph, tid) if tid else (None, None)
+        if tid == iid or tkind in ("relay", "pc"):
+            self.refresh_lists()
+            return False
         if tkind == "inbound" and t["inbound"]["type"] in ("tun", "wireguard"):
             info(self.window, "error", _t("Cannot connect"), _t("A TUN card takes traffic from apps; another inbound cannot relay into it")
                  if t["inbound"]["type"] == "tun" else _t("A WireGuard server takes traffic from devices; another inbound cannot relay into it"), 5000)
@@ -735,7 +808,7 @@ class Controller:
         return True
 
     def move_nodes(self, positions):
-        for kind in ("inbounds", "outbounds", "routers"):
+        for kind in ("inbounds", "outbounds", "routers", "relays"):
             for n in self.graph.get(kind, []):
                 if n["id"] in positions:
                     n["pos"] = positions[n["id"]]
@@ -747,7 +820,7 @@ class Controller:
         kind, src = graph_mod.find(self.graph, nid)
         if src is None:
             return
-        n = copy.deepcopy(src)
+        n = graph_mod.copy_relay(src) if kind == "relay" else copy.deepcopy(src)
         n["id"] = graph_mod.new_id()
         n["name"] = self._unique_name(src["name"] + _t(" copy"))
         n["pos"] = [src["pos"][0] + 40, src["pos"][1] + 40]

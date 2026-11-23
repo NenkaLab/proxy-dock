@@ -428,9 +428,12 @@ class RouterSection(QWidget):
     # --- targets: outbound blocks (Block included) and other routers ---
     def _targets(self):
         g = self.ctl.graph
-        ids = [None] + [x["id"] for x in g["outbounds"]] + [x["id"] for x in g.get("routers", []) if x["id"] != self.router["id"]]
+        lanes = graph_mod.lane_choices(g)
+        ids = [None] + [x["id"] for x in g["outbounds"]] + [x["id"] for x in g.get("routers", []) if x["id"] != self.router["id"]] + \
+            [i for i, _ in lanes]
         labels = [_t("(not connected)")] + [x["name"] for x in g["outbounds"]] + \
-            [_t("Router {name}").format(name=x["name"]) for x in g.get("routers", []) if x["id"] != self.router["id"]]
+            [_t("Router {name}").format(name=x["name"]) for x in g.get("routers", []) if x["id"] != self.router["id"]] + \
+            [label for _, label in lanes]
         return ids, labels
 
     def load(self, router):
