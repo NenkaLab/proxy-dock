@@ -263,6 +263,7 @@
  "Domain keyword": "도메인 키워드",
  "Download": "다운로드",
  "Drag from an inbound's output to an outbound block, to another inbound (relay) or to the PC. Double-click a block to edit it, right-click for more, Delete removes the selection.": "받는 쪽의 출력에서 내보내는 쪽 블록, 다른 받는 쪽(중계) 또는 PC 로 선을 끌어 잇습니다. 블록을 더블클릭하면 편집, 우클릭하면 메뉴, Delete 키로 선택 항목을 삭제합니다.",
+ "Drag from an inner dot to a dot on the other side to wire the lanes; drag a wire off to unwire it.": "안쪽 점에서 반대편 점으로 끌어 레인을 연결하고, 선을 바깥으로 끌어내면 연결이 해제됩니다.",
  "Duplicate": "복제",
  "Each member is measured by loading this address through it": "각 멤버를 거쳐 이 주소를 불러와 측정합니다",
  "Each phone or PC gets its own key. Copy or save its config and import it in the WireGuard app on that device": "휴대폰이나 PC마다 키가 따로 생깁니다. 설정을 복사하거나 저장해서 그 기기의 WireGuard 앱으로 가져오세요",

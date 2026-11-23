@@ -202,7 +202,9 @@ class RelayItem(NodeItem):
     between them, and a footer to click for one more lane."""
     FOOT = 22.0
     MIN_W = 150.0
-    INSET = 16.0            # inner lane dots: this far inside the block from the side ports
+    # inner lane dots: this far inside the block from the side ports - past a port's click area (half of
+    # PortEnum.SIZE + CLICK_FALLOFF), so pressing a dot starts an inside wire, not a link out of the port
+    INSET = (PortEnum.SIZE.value + PortEnum.CLICK_FALLOFF.value) / 2 + 12
 
     def __init__(self, name="node", parent=None):
         super().__init__(name, parent)
@@ -210,7 +212,10 @@ class RelayItem(NodeItem):
         self.links = []         # [(input index, output index)] wired inside
         self.routed = False
         self.on_add = None      # callback: footer clicked
+        self.on_wire = None     # callback(input index, output index or None): wired inside by dragging (routed)
         self.footer_text = ""
+        self.drag = None        # (side "in"/"out", lane index, current point) while dragging a wire inside
+        self.setAcceptHoverEvents(True)
 
     @staticmethod
     def _step():
@@ -285,14 +290,86 @@ class RelayItem(NodeItem):
         painter.restore()
 
     def _paint_extra(self, painter, ins, outs):
-        """(Overridden for dragging inside the block.)"""
+        """The wire being dragged inside the block, and the dot it would land on."""
+        if not self.drag:
+            return
+        side, k, pt = self.drag
+        start = (ins if side == "in" else outs)[k]
+        hit = self.dot_at(pt, "out" if side == "in" else "in")
+        end = (outs if side == "in" else ins)[hit] if hit is not None else pt
+        painter.setPen(QPen(QColor(108, 203, 95), 2.0, Qt.DashLine if hit is None else Qt.SolidLine))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawLine(start, end)
+        if hit is not None:
+            painter.setBrush(QColor(108, 203, 95))
+            painter.drawEllipse(end, 5.0, 5.0)
+
+    DOT_HIT = 8.0
+
+    def dot_at(self, pos, side=None):
+        """Index of the inner lane dot at pos (on side "in"/"out", or either: returns (side, index)), else None."""
+        if not self.routed:
+            return None
+        ins, outs = self.lane_points()
+        for s, pts in (("in", ins), ("out", outs)):
+            if side not in (None, s):
+                continue
+            for k, pt in enumerate(pts):
+                if (pt - pos).manhattanLength() <= self.DOT_HIT * 1.4:
+                    return (s, k) if side is None else k
+        return None
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton and self.on_add and self.footer_rect().contains(event.pos()):
             event.accept()
             QTimer.singleShot(0, self.on_add)
             return
+        if event.button() == Qt.LeftButton and self.on_wire:
+            hit = self.dot_at(event.pos())
+            if hit is not None:             # start a wire from an inner dot (instead of moving the block)
+                self.drag = (hit[0], hit[1], event.pos())
+                event.accept()
+                self.update()
+                return
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self.drag:
+            self.drag = (self.drag[0], self.drag[1], event.pos())
+            event.accept()
+            self.update()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self.drag:
+            side, k, start_pt = self.drag
+            self.drag = None
+            event.accept()
+            self.update()
+            hit = self.dot_at(event.pos(), "out" if side == "in" else "in")
+            ins, outs = self.lane_points()
+            origin = (ins if side == "in" else outs)[k]
+            if hit is None and (event.pos() - origin).manhattanLength() < self.DOT_HIT * 2:
+                return                      # a click on a dot without dragging: nothing changes
+            if side == "in":
+                wire = (k, hit)             # dropped on nothing: input k is unwired
+            elif hit is None:
+                return                      # from an output to nowhere: nothing to change
+            else:
+                wire = (hit, k)
+            cb = self.on_wire
+            QTimer.singleShot(0, lambda: cb(*wire))     # (the canvas is rebuilt: leave this event first)
+            return
+        super().mouseReleaseEvent(event)
+
+    def hoverMoveEvent(self, event):
+        self.setCursor(Qt.CrossCursor if self.dot_at(event.pos()) is not None else Qt.ArrowCursor)
+        super().hoverMoveEvent(event)
+
+    def hoverLeaveEvent(self, event):
+        self.unsetCursor()
+        super().hoverLeaveEvent(event)
 
 
 class RelayNode(BaseNode):
@@ -662,6 +739,9 @@ class CanvasInterface(QWidget):
         item.routed = r["routed"]
         item.footer_text = "+ " + _t("Click to add a lane")
         item.on_add = lambda rid=r["id"]: self.ctl.add_lane(rid)
+        if r["routed"]:
+            ins, outs = [x["id"] for x in r["inputs"]], [x["id"] for x in r["outputs"]]
+            item.on_wire = lambda i, o, rid=r["id"]: self._apply_wire(rid, ins[i], outs[o] if o is not None else None)
         for i, x in enumerate(r["inputs"]):
             name = f"in {i + 1}"
             port = node.add_input(name, multi_input=True, display_name=False, color=LANE_COLOR)
@@ -745,7 +825,8 @@ class CanvasInterface(QWidget):
             node = self.node_of.get(r["id"])
             if node is None:
                 continue
-            tips = []
+            tips = [_t("Drag from an inner dot to a dot on the other side to wire the lanes; drag a wire off to unwire it."), ""] \
+                if r["routed"] else []
             for i, x in enumerate(r["inputs"]):
                 src = graph_mod.lane_sources(cg, x["id"])
                 _, t = graph_mod.find(cg, graph_mod.follow(cg, x["id"]))
@@ -830,6 +911,11 @@ class CanvasInterface(QWidget):
 
     def _apply_member(self, src, dst):
         if not self.ctl.add_member(src, dst):
+            self.sig = None
+            self.ctl.refresh_lists()
+
+    def _apply_wire(self, rid, in_id, out_id):
+        if not self.ctl.set_lane_map(rid, in_id, out_id):
             self.sig = None
             self.ctl.refresh_lists()
 

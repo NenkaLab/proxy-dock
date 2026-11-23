@@ -263,6 +263,7 @@
  "Domain keyword": "Palabra clave del dominio",
  "Download": "Descarga",
  "Drag from an inbound's output to an outbound block, to another inbound (relay) or to the PC. Double-click a block to edit it, right-click for more, Delete removes the selection.": "Arrastra desde la salida de una entrada hasta un bloque de salida, otra entrada (relé) o el PC. Doble clic para editar un bloque, clic derecho para más opciones, Supr elimina la selección.",
+ "Drag from an inner dot to a dot on the other side to wire the lanes; drag a wire off to unwire it.": "Arrastra desde un punto interior a un punto del otro lado para cablear los carriles; arrastra un cable al vacío para quitarlo.",
  "Duplicate": "Duplicar",
  "Each member is measured by loading this address through it": "Cada miembro se mide cargando esta dirección a través de él",
  "Each phone or PC gets its own key. Copy or save its config and import it in the WireGuard app on that device": "Cada teléfono o PC tiene su propia clave. Copia o guarda su configuración e impórtala en la aplicación WireGuard de ese dispositivo",

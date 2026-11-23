@@ -263,6 +263,7 @@
  "Domain keyword": "網域關鍵字",
  "Download": "下載",
  "Drag from an inbound's output to an outbound block, to another inbound (relay) or to the PC. Double-click a block to edit it, right-click for more, Delete removes the selection.": "從接收端的輸出拖線到傳出端區塊、另一個接收端 (中繼) 或 PC。按兩下區塊編輯，按右鍵查看更多，按 Delete 刪除所選項目。",
+ "Drag from an inner dot to a dot on the other side to wire the lanes; drag a wire off to unwire it.": "從內側圓點拖到另一側的圓點即可連接通道；把連線拖到空白處即可斷開。",
  "Duplicate": "再製",
  "Each member is measured by loading this address through it": "透過每個成員載入這個位址來測量",
  "Each phone or PC gets its own key. Copy or save its config and import it in the WireGuard app on that device": "每支手機或每台電腦都有自己的金鑰。複製或儲存其設定，再到該裝置的 WireGuard 程式匯入",

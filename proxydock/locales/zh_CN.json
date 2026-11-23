@@ -263,6 +263,7 @@
  "Domain keyword": "域名关键字",
  "Download": "下载",
  "Drag from an inbound's output to an outbound block, to another inbound (relay) or to the PC. Double-click a block to edit it, right-click for more, Delete removes the selection.": "从入站的输出拖线到出站块、另一个入站 (中继) 或 PC。双击块进行编辑，右键查看更多，Delete 键删除所选项。",
+ "Drag from an inner dot to a dot on the other side to wire the lanes; drag a wire off to unwire it.": "从内侧圆点拖到另一侧的圆点即可连接通道；把连线拖到空白处即可断开。",
  "Duplicate": "复制一份",
  "Each member is measured by loading this address through it": "通过每个成员加载此地址来测量",
  "Each phone or PC gets its own key. Copy or save its config and import it in the WireGuard app on that device": "每部手机或电脑都有自己的密钥。复制或保存其配置，然后在该设备的 WireGuard 应用中导入",

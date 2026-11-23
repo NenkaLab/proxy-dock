@@ -432,6 +432,54 @@ def test_ui():
     check("ui: inside wiring can be changed", ctl.set_lane_map(relay["id"], rn["inputs"][0]["id"], rn["outputs"][1]["id"])
           and gm.find(ctl.graph, relay["id"])[1]["inputs"][0]["out"] == rn["outputs"][1]["id"])
     check("ui: lane 1 now leads nowhere", ctl.proxy_by_id(ui_in["id"])["unlinked"])
+    # dragging inside a routed block (real mouse events through the canvas view)
+    from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    cv.fit()
+    wait(300)
+    viewer = cv.graph.viewer()
+
+    def mouse(kind, pt, buttons):
+        vp = viewer.viewport()
+        ev = QMouseEvent({"press": QEvent.MouseButtonPress, "move": QEvent.MouseMove,
+                          "release": QEvent.MouseButtonRelease}[kind], QPointF(pt), vp.mapToGlobal(QPointF(pt)),
+                         Qt.NoButton if kind == "move" else Qt.LeftButton, buttons, Qt.NoModifier)
+        QApplication.sendEvent(vp, ev)
+
+    def drag(a, b):
+        mouse("press", a, Qt.LeftButton)
+        for k in range(1, 6):
+            mouse("move", a + (b - a) * k / 5, Qt.LeftButton)
+        mouse("release", b, Qt.NoButton)
+        wait(300)
+
+    def dots():
+        item = cv.node_of[relay["id"]].view
+        ins, outs = item.lane_points()
+        return ([viewer.mapFromScene(item.mapToScene(x)) for x in ins],
+                [viewer.mapFromScene(item.mapToScene(x)) for x in outs])
+
+    def wiring():
+        n = gm.find(ctl.graph, relay["id"])[1]
+        outs = [x["id"] for x in n["outputs"]]
+        return [outs.index(x["out"]) if x["out"] in outs else None for x in n["inputs"]]
+    ins, outs = dots()
+    under = [type(x).__name__ for x in viewer.items(ins[0])]
+    check("ui: an inner dot is not covered by the port", "RelayItem" in under and "PortItem" not in under, under)
+    before = wiring()
+    drag(ins[1], outs[0])
+    check("ui: drag an input dot onto an output dot wires them", before[1] != 0 and wiring() == [before[0], 0, before[2]],
+          (before, wiring()))
+    ins, outs = dots()
+    drag(outs[0], ins[0])
+    check("ui: drag from an output dot works too", wiring()[0] == 0, wiring())
+    ins, outs = dots()
+    drag(ins[0], ins[0] + QPoint(0, 400))
+    check("ui: dragging a wire off unwires it", wiring()[0] is None, wiring())
+    ins, outs = dots()
+    pos = list(gm.find(ctl.graph, relay["id"])[1]["pos"])
+    drag(ins[1], ins[1] + QPoint(1, 0))
+    check("ui: a click on a dot changes nothing", wiring()[1] == 0 and gm.find(ctl.graph, relay["id"])[1]["pos"] == pos)
     ctl.delete_node(relay["id"])
     wait(200)
     check("ui: deleting the pass-through hands its links on", ui_in["target"] is None and relay["id"] not in cv.node_of)
