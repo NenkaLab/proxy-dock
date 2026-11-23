@@ -11,6 +11,13 @@ import time
 from collections import deque
 from datetime import datetime
 
+def self_exe():
+    """Program that starts ProxyDock again (restart, start at login, TUN helper). In an AppImage sys.executable is
+    inside a temporary mount that disappears when this process exits (and root cannot read it), so use the
+    AppImage file itself."""
+    return os.environ.get("APPIMAGE") or sys.executable
+
+
 APP_NAME = "ProxyDock"
 APP_ID = "ProxyDock"                    # settings folder, autostart name, etc.
 OLD_APP_ID = "ProxyLocal"               # settings folder name of the previous version (SOCKS5 Proxy)
@@ -55,12 +62,37 @@ INBOUND_TYPES = {           # inbound
     "https": "HTTPS",
     "shadowsocks": "Shadowsocks",
     "hysteria2": "Hysteria2",
+    "wireguard": "WireGuard",
+    "forward": "Port forward",
+    "tun": "TUN",
 }
 OUTBOUND_TYPES = {}
+TUN_STACKS = ("mixed", "system", "gvisor")
+
+
+def inbound_where(ib):
+    """Where an inbound accepts traffic: "127.0.0.1:1080", or "all apps (TUN)" for the virtual network card."""
+    if ib["type"] == "tun":
+        return _t("all apps") + f" · {ib.get('tun_stack', 'mixed')}"
+    if ib["type"] == "wireguard":
+        return f"UDP {ib['port']}"
+    return host_port(ib["host"], ib["port"])
+
+
+def is_admin():
+    """True if this process may create a TUN device (Windows: elevated, elsewhere: root)."""
+    if IS_WIN:
+        import ctypes
+        try:
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except OSError:
+            return False
+    return os.geteuid() == 0
 
 
 @on_language_change
 def _tr_outbound_types():
+    INBOUND_TYPES["forward"] = _t("Port forward")
     OUTBOUND_TYPES.clear()
     OUTBOUND_TYPES.update({          # outbound
         "direct": "Direct",
@@ -70,11 +102,22 @@ def _tr_outbound_types():
         "socks5": _t("SOCKS5 proxy"),
         "shadowsocks": _t("Shadowsocks tunnel"),
         "hysteria2": _t("Hysteria2 tunnel"),
+        "wireguard": _t("WireGuard tunnel"),
+        "vless": _t("VLESS tunnel"),
+        "vmess": _t("VMess tunnel"),
+        "trojan": _t("Trojan tunnel"),
+        "tuic": _t("TUIC tunnel"),
+        "subscription": _t("Subscription"),
+        "group": _t("Group"),
+        "block": _t("Block"),
     })
 
 
-UDP_INBOUNDS = ("socks5", "shadowsocks", "hysteria2")     # inbound types that can receive UDP
-UDP_OUTBOUNDS = ("direct", "shadowsocks", "hysteria2")    # outbound types that can send UDP
+UDP_INBOUNDS = ("socks5", "shadowsocks", "hysteria2", "wireguard", "forward")     # inbound types that can receive UDP
+UDP_OUTBOUNDS = ("direct", "shadowsocks", "hysteria2", "wireguard", "vless", "vmess", "trojan", "tuic", "subscription", "group")
+NEEDS_UDP_VIA = ("wireguard", "tuic")       # UDP-based tunnels: may only go through blocks that carry UDP
+UDP_VIA_OK = ("shadowsocks", "hysteria2", "wireguard", "socks5", "vless", "vmess", "trojan", "tuic", "subscription")
+SINGBOX_ONLY_OUTBOUNDS = ("block", "wireguard", "vless", "vmess", "trojan", "tuic", "subscription", "group")
 
 
 # --- logging ---

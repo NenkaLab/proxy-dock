@@ -342,6 +342,7 @@ class _MouseNavFilter(QObject):
 
 class _Bridge(QObject):
     status = Signal(str, str, str)      # proxy id, state, message (loop thread -> UI)
+    sub_updated = Signal(str, object, str)      # outbound id, new fields (None = failed), note
     notify = Signal(str)
     firewall = Signal(object, str)
 
@@ -356,8 +357,15 @@ class Controller:
         self.sig.status.connect(self._on_status)
         self.sig.notify.connect(self.on_notify)
         self.sig.firewall.connect(self._on_firewall)
+        self.sig.sub_updated.connect(self._on_sub_updated)
         common.notify_hook = self.sig.notify.emit
+        self._sub_busy = set()
+        self.sub_timer = QTimer()
+        self.sub_timer.timeout.connect(self.update_due_subscriptions)
+        self.sub_timer.start(15 * 60 * 1000)
+        QTimer.singleShot(20 * 1000, self.update_due_subscriptions)
         self.manager = ProxyManager(status_hook=lambda pid, st, msg: self.sig.status.emit(pid, st, msg))
+        self._restart_timers, self._restart_count, self._running_since = {}, {}, {}
         server.newConnection.connect(self._on_second_instance)
 
         self.file_logger = logging.getLogger("proxydock")
@@ -466,7 +474,7 @@ class Controller:
             if self.manager.state(p["id"])[0] not in ("running", "starting"):
                 continue
             before = old.get(p["id"])
-            if before is not None and all(before[k] == p[k] for k in ("name", "inbound", "outbound", "overrides")):
+            if before is not None and all(before.get(k) == p.get(k) for k in ("name", "inbound", "outbound", "overrides", "routes")):
                 continue
             if p["unlinked"]:
                 self.manager.stop(p["id"])
@@ -481,7 +489,7 @@ class Controller:
             self.refresh_lists()
 
     def _unique_name(self, base):
-        names = {n["name"] for n in self.graph["inbounds"] + self.graph["outbounds"]}
+        names = {n["name"] for n in self.graph["inbounds"] + self.graph["outbounds"] + self.graph.get("routers", [])}
         if base not in names:
             return base
         i = 2
@@ -524,6 +532,91 @@ class Controller:
             self.edit_node(n["id"])
         return n
 
+    def new_router(self, pos=None, edit=True, style="router"):
+        pos = pos or [230, (max([r["pos"][1] for r in self.graph["routers"]], default=-170) + 170)]
+        n = graph_mod.add_router(self.graph, self._unique_name("IF" if style == "if" else "Router"), pos, style)
+        log(LOG_SETTING, _t("Created block '{name}'").format(name=n['name']))
+        self._recompile()
+        if edit:
+            self.edit_node(n["id"])
+        return n
+
+    def set_rule_target(self, rid, key, tid):
+        """Router rid's rule key (rule id or "default") sends traffic to tid (outbound block or router, None = nothing)."""
+        kind, r = graph_mod.find(self.graph, rid)
+        if kind != "router":
+            return True
+        tkind, _ = graph_mod.find(self.graph, tid) if tid else (None, None)
+        if tid and tkind not in ("outbound", "router"):
+            info(self.window, "error", _t("Cannot connect"), _t("A router rule can only go to an outbound block or another router"), 5000)
+            self.refresh_lists()
+            return False
+        rule = None if key == "default" else next((x for x in r["rules"] if x["id"] == key), None)
+        if key != "default" and rule is None:
+            return True
+        old = r["default"] if rule is None else rule["target"]
+        if old == tid:
+            return True
+        if rule is None:
+            r["default"] = tid
+        else:
+            rule["target"] = tid
+        if graph_mod.router_loop(self.graph, rid):
+            if rule is None:
+                r["default"] = old
+            else:
+                rule["target"] = old
+            info(self.window, "error", _t("Cannot connect"), _t("The routers point at each other in a loop"), 5000)
+            self.refresh_lists()
+            return False
+        log(LOG_SETTING, _t("Saved proxy '{name}'").format(name=r['name']))
+        self._recompile()
+        return True
+
+    # --- subscriptions ---
+    def update_due_subscriptions(self, force_id=None):
+        """Refresh subscription blocks whose interval has passed (or force_id now), off the UI thread."""
+        now = time.time()
+        for n in self.graph["outbounds"]:
+            ob = n["outbound"]
+            if ob["type"] != "subscription" or n["id"] in self._sub_busy:
+                continue
+            due = ob["sub_interval"] > 0 and now - ob["sub_updated"] >= ob["sub_interval"] * 3600
+            if n["id"] != force_id and not due:
+                continue
+            self._sub_busy.add(n["id"])
+
+            def work(nid=n["id"], ob=dict(ob)):
+                from ..subscription import update
+                try:
+                    fields, note = update(ob)
+                    self.sig.sub_updated.emit(nid, fields, note)
+                except ValueError as e:
+                    self.sig.sub_updated.emit(nid, None, str(e))
+            threading.Thread(target=work, daemon=True).start()
+
+    def _on_sub_updated(self, nid, fields, note):
+        self._sub_busy.discard(nid)
+        kind, n = graph_mod.find(self.graph, nid)
+        if kind != "outbound":
+            return
+        if fields is None:
+            log(LOG_WARN, _t("Subscription '{name}' could not be updated: {note}").format(name=n["name"], note=note))
+            return
+        if fields["sub_servers"] == n["outbound"]["sub_servers"]:
+            n["outbound"]["sub_updated"] = fields["sub_updated"]
+            self._persist()
+            return
+        n["outbound"].update(fields)
+        log(LOG_SETTING, _t("Subscription '{name}' updated: {note}").format(name=n["name"], note=note))
+        self._recompile()
+
+    def rename_node(self, nid, name):
+        kind, n = graph_mod.find(self.graph, nid)
+        if n is not None and name.strip():
+            n["name"] = self._unique_name(name.strip()[:60])
+            self._recompile()
+
     def new_proxy(self, name, inbound, outbound):
         """List page templates: inbound + outbound (shared Direct or a new outbound block)."""
         self.new_inbound(name, inbound, outbound)
@@ -552,6 +645,12 @@ class Controller:
         kind, n = graph_mod.find(self.graph, iid)
         if kind != "inbound" or n["target"] == tid:
             return True
+        tkind, t = graph_mod.find(self.graph, tid) if tid else (None, None)
+        if tkind == "inbound" and t["inbound"]["type"] in ("tun", "wireguard"):
+            info(self.window, "error", _t("Cannot connect"), _t("A TUN card takes traffic from apps; another inbound cannot relay into it")
+                 if t["inbound"]["type"] == "tun" else _t("A WireGuard server takes traffic from devices; another inbound cannot relay into it"), 5000)
+            self.refresh_lists()
+            return False
         old = n["target"]
         n["target"] = tid
         p = next(x for x in graph_mod.compile(self.graph) if x["id"] == iid)
@@ -565,17 +664,64 @@ class Controller:
         self._recompile()
         return True
 
+    def add_member(self, gid, mid):
+        """Outbound block mid becomes the last member of group gid."""
+        kind, g = graph_mod.find(self.graph, gid)
+        mkind, m = graph_mod.find(self.graph, mid)
+        if kind != "outbound" or g["outbound"]["type"] != "group":
+            return True
+        if mkind != "outbound" or mid == gid or m["outbound"]["type"] in graph_mod.NO_MEMBER:
+            info(self.window, "error", _t("Cannot connect"),
+                 _t("A group's members can only be outbound blocks (not another group or Block)"), 5000)
+            self.refresh_lists()
+            return False
+        if mid not in g["members"]:
+            g["members"].append(mid)
+            log(LOG_SETTING, _t("Saved proxy '{name}'").format(name=g['name']))
+            self._recompile()
+        return True
+
+    def select_member(self, gid, mid):
+        """Manual group: use member mid (running cards that use the group restart with it)."""
+        kind, g = graph_mod.find(self.graph, gid)
+        if kind == "outbound" and mid in g.get("members", ()) and g["outbound"]["group_selected"] != mid:
+            g["outbound"]["group_selected"] = mid
+            _, m = graph_mod.find(self.graph, mid)
+            log(LOG_SETTING, _t("Group '{group}' now uses '{name}'").format(group=g["name"], name=m["name"] if m else "?"))
+            self._recompile()
+
+    def remove_member(self, gid, mid):
+        kind, g = graph_mod.find(self.graph, gid)
+        if kind == "outbound" and mid in g.get("members", ()):
+            g["members"].remove(mid)
+            log(LOG_SETTING, _t("Saved proxy '{name}'").format(name=g['name']))
+            self._recompile()
+
     def set_via(self, oid, vid):
         """Outbound oid connects to its server through outbound vid (None = directly)."""
         kind, n = graph_mod.find(self.graph, oid)
         if kind != "outbound" or n["via"] == vid:
             return True
+        _, v = graph_mod.find(self.graph, vid) if vid else (None, None)
+        if v is not None and v["outbound"]["type"] == "group":
+            info(self.window, "error", _t("Cannot connect"),
+                 _t("Nothing can go through a group; make the block a member of the group instead"), 5000)
+            self.refresh_lists()
+            return False
         if vid and n["outbound"]["type"] in graph_mod.NO_VIA:
             info(self.window, "error", _t("Cannot connect"),
                  _t("Hysteria2 uses QUIC (UDP), so it cannot go through another outbound")
                  if n["outbound"]["type"] == "hysteria2" else _t("Direct is the end of a chain"), 5000)
             self.refresh_lists()
             return False
+        from ..common import NEEDS_UDP_VIA, OUTBOUND_TYPES, UDP_VIA_OK
+        if vid and n["outbound"]["type"] in NEEDS_UDP_VIA:
+            _, v = graph_mod.find(self.graph, vid)
+            if v is not None and v["outbound"]["type"] not in UDP_VIA_OK:
+                info(self.window, "error", _t("Cannot connect"),
+                     _t("{type} needs UDP, so it cannot go through an HTTP or SOCKS4 proxy").format(type=OUTBOUND_TYPES[n["outbound"]["type"]]), 5000)
+                self.refresh_lists()
+                return False
         old = n["via"]
         n["via"] = vid
         if graph_mod.via_loop(self.graph, oid):
@@ -589,8 +735,8 @@ class Controller:
         return True
 
     def move_nodes(self, positions):
-        for kind in ("inbounds", "outbounds"):
-            for n in self.graph[kind]:
+        for kind in ("inbounds", "outbounds", "routers"):
+            for n in self.graph.get(kind, []):
                 if n["id"] in positions:
                     n["pos"] = positions[n["id"]]
         if "__pc__" in positions:
@@ -625,10 +771,64 @@ class Controller:
     def delete_proxy(self, pid):
         self.delete_node(pid)
 
+    RESTART_DELAYS = (3, 6, 12, 30, 60)    # seconds before restart attempt 1, 2, 3, ... (then every 60 s)
+
+    def _cancel_restart(self, pid):
+        t = self._restart_timers.pop(pid, None)
+        if t is not None:
+            t.stop()
+
+    def _schedule_restart(self, p):
+        pid = p["id"]
+        if pid in self._restart_timers:
+            return
+        now = time.monotonic()
+        if now - self._running_since.get(pid, 0) > 120:      # it ran a while: start counting again
+            self._restart_count[pid] = 0
+        n = self._restart_count.get(pid, 0)
+        delay = self.RESTART_DELAYS[min(n, len(self.RESTART_DELAYS) - 1)]
+        self._restart_count[pid] = n + 1
+        log(LOG_WARN, _t("'{name}' stopped; restarting in {sec} s (attempt {n})").format(name=p["name"], sec=delay, n=n + 1))
+        t = QTimer()            # (kept in _restart_timers; the controller is not a QObject)
+        t.setSingleShot(True)
+        t.timeout.connect(lambda: self._do_restart(pid))
+        self._restart_timers[pid] = t
+        t.start(delay * 1000)
+
+    def _do_restart(self, pid):
+        self._restart_timers.pop(pid, None)
+        p = self.proxy_by_id(pid)
+        if p is None or not p.get("auto_restart") or self.manager.state(pid)[0] in ("running", "starting"):
+            return
+        if config.check_proxy(p, [x for x in self.proxies if x["id"] != pid]):
+            return
+        self.manager.start(p, self.glob)
+
+    def set_switch(self, rid, on):
+        """IF block in switch mode: on = everything to 'then', off = to 'else' (cards using it restart)."""
+        kind, r = graph_mod.find(self.graph, rid)
+        if kind != "router" or not r.get("switch") or r.get("switch_on") == on:
+            return
+        r["switch_on"] = on
+        log(LOG_SETTING, _t("Switch '{name}' turned {state}").format(name=r["name"], state=_t("on") if on else _t("off")))
+        self._recompile()
+
+    def set_flag(self, nid, key, value):
+        """Inbound card options that need no restart: autostart, auto_restart."""
+        kind, n = graph_mod.find(self.graph, nid)
+        if kind != "inbound" or key not in ("autostart", "auto_restart") or n.get(key) == value:
+            return
+        n[key] = value
+        if key == "auto_restart" and not value:
+            self._cancel_restart(nid)
+        self._recompile()
+
     def toggle_proxy(self, pid, on):
         p = self.proxy_by_id(pid)
         if p is None:
             return
+        self._cancel_restart(pid)
+        self._restart_count[pid] = 0
         if on:
             errs = config.check_proxy(p, [x for x in self.proxies if x["id"] != pid])
             if errs:
@@ -640,6 +840,8 @@ class Controller:
             self.manager.stop(pid)
 
     def stop_all(self):
+        for pid in list(self._restart_timers):
+            self._cancel_restart(pid)
         for p in self.proxies:
             if self.manager.state(p["id"])[0] in ("running", "starting"):
                 self.manager.stop(p["id"])
@@ -654,8 +856,13 @@ class Controller:
         self.window.canvas_page.update_states(self.proxies, st, self.pc_status())
         self.window.test_page.set_proxies(self.proxies, self.running_ids())
         self._rebuild_tray_proxies()
+        if state == "running":
+            self._running_since[pid] = time.monotonic()
         if state == "error" and p is not None:
-            self.on_notify(_t("'{name}' failed to start: {msg}").format(name=p['name'], msg=msg))
+            if p.get("auto_restart"):
+                self._schedule_restart(p)
+            else:
+                self.on_notify(_t("'{name}' failed to start: {msg}").format(name=p['name'], msg=msg))
 
     # --- PC block: system proxy while the connected inbound runs ---
     def set_pc(self, iid):
@@ -1002,7 +1209,8 @@ class Controller:
         self.window.show_window()
 
     def restart(self):
-        cmd = [sys.executable] if getattr(sys, "frozen", False) else [sys.executable, sys.argv[0]]
+        from ..common import self_exe
+        cmd = [self_exe()] if getattr(sys, "frozen", False) else [sys.executable, sys.argv[0]]
         cmd += [a for a in sys.argv[1:] if a != "--restart"] + ["--restart"]
         try:
             if IS_WIN:
@@ -1057,16 +1265,33 @@ def become_primary(wait=False):
         time.sleep(0.25)
 
 
+def relaunch_elevated(glob, args):
+    """Settings 'Run as administrator': start an elevated copy (UAC) and exit this one.
+    Returns a note to log when it stays unelevated (prompt cancelled), else None."""
+    from ..common import is_admin
+    if not IS_WIN or not glob.get("run_as_admin") or args.elevated or is_admin():
+        return None
+    from ..singbox.helper import app_command, runas
+    extra = ["--elevated"] + (["--hidden"] if args.hidden else []) + (["--restart"] if args.restart else [])
+    try:
+        runas(app_command(*extra), show=True)
+    except RuntimeError as e:
+        return _t("Not running as administrator: {e}").format(e=e)
+    sys.exit(0)
+
+
 def main():
     parser = argparse.ArgumentParser(prog="ProxyDock")
     parser.add_argument("--hidden", action="store_true", help=_t("Start in the tray without a notification"))
     parser.add_argument("--restart", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--elevated", action="store_true", help=argparse.SUPPRESS)     # started by run_as_admin
     from .. import __version__
     parser.add_argument("--version", action="version", version=f"ProxyDock {__version__}")
     args = parser.parse_args()
 
     glob, graph = config.load()
     migrate_autostart()
+    elevation_note = relaunch_elevated(glob, args)
 
     if IS_WIN:
         try:
@@ -1098,6 +1323,8 @@ def main():
     if single is None:
         sys.exit(0)
     log(LOG_INFO, _t("{APP_NAME} started - {len} proxies").format(APP_NAME=APP_NAME, len=len(graph["inbounds"])))
+    if elevation_note:
+        log(LOG_WARN, elevation_note)
     controller = Controller(single, show_start_notice=not args.hidden, glob=glob, graph=graph)
     _ = controller
     sys.exit(app.exec())

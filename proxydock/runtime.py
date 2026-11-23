@@ -14,6 +14,8 @@ from .common import (
 
 
 class ProxyInstance:
+    engine = "python"
+
     def __init__(self, proxy, glob, stats):
         self.stats = stats
         self.conns = set()
@@ -60,14 +62,19 @@ class ProxyInstance:
     def outbound_label(self):
         parts, ob = [], self.outbound
         while ob:
-            parts.append("Direct" if ob["type"] == "direct" else f"{OUTBOUND_TYPES[ob['type']]} {host_port(ob['host'], ob['port'])}")
+            if ob["type"] == "group":
+                parts.append(f"{OUTBOUND_TYPES['group']} ({', '.join(m['name'] for m in ob.get('members') or [])})")
+                break
+            parts.append("Direct" if ob["type"] == "direct" else OUTBOUND_TYPES["block"] if ob["type"] == "block"
+                         else f"{OUTBOUND_TYPES[ob['type']]} {host_port(ob['host'], ob['port'])}")
             ob = ob.get("via")
         return " ⇢ ".join(parts)
 
     @property
     def summary(self):
         ib = self.inbound
-        return f"{INBOUND_TYPES[ib['type']]} {host_port(ib['host'], ib['port'])} → {self.outbound_label}"
+        from .common import inbound_where
+        return f"{INBOUND_TYPES[ib['type']]} {inbound_where(ib)} → {self.outbound_label}"
 
     def log(self, level, message):
         log(level, message, self)
@@ -137,7 +144,30 @@ class ProxyInstance:
 
 
 def _net_key(p):
-    return (p["inbound"], p["outbound"])
+    return (p["inbound"], p["outbound"], p.get("routes"))
+
+
+def _make_instance(proxy, glob, stats):
+    """A native engine for the card when one can run it, otherwise the Python engine (with the reason logged)."""
+    from .singbox import engine_for
+    engine, reason = engine_for(proxy, glob)
+    if engine == "sing-box":
+        from .singbox.process import SingBoxInstance
+        return SingBoxInstance(proxy, glob, stats)
+    if engine == "hysteria":
+        from .singbox.hysteria import HysteriaInstance
+        return HysteriaInstance(proxy, glob, stats)
+    if engine == "none":
+        raise RuntimeError(_t("This card uses settings that need the sing-box engine: {reason}").format(reason=reason))
+    inst = ProxyInstance(proxy, glob, stats)
+    if glob.get("engine") == "sing-box" and reason != "internal":
+        inst.log(LOG_INFO, _t("Running on the Python engine: {reason}").format(reason=reason))
+    return inst
+
+
+def _engine_changed(inst, proxy, glob):
+    from .singbox import engine_for
+    return getattr(inst, "engine", "python") != engine_for(proxy, glob)[0]
 
 
 class ProxyManager:
@@ -191,8 +221,13 @@ class ProxyManager:
 
         def run():
             for pid, inst in list(self.instances.items()):
-                if pid in by_id:
-                    inst.update(by_id[pid], glob)
+                if pid not in by_id:
+                    continue
+                p = by_id[pid]
+                if _engine_changed(inst, p, glob) or getattr(inst, "needs_restart", lambda *a: False)(p, glob):
+                    self.loop.create_task(self._start(p, glob))
+                else:
+                    inst.update(p, glob)
         self.loop.call_soon_threadsafe(run)
 
     # --- loop thread ---
@@ -203,7 +238,7 @@ class ProxyManager:
         self._set(pid, "starting")
         inst = None
         try:
-            inst = ProxyInstance(proxy, glob, self.stats_for(pid))
+            inst = _make_instance(proxy, glob, self.stats_for(pid))
             await inst.start()
         except Exception as e:
             msg = describe_error(e) if isinstance(e, OSError) else str(e) or type(e).__name__
@@ -224,10 +259,12 @@ class ProxyManager:
                     pass
             return False
         self.instances[pid] = inst
+        inst.on_died = lambda text, inst=inst: self.loop.call_soon_threadsafe(
+            lambda: self.loop.create_task(self._died(pid, inst, text)))
         self._set(pid, "running")
         inst.log(LOG_INFO, _t("Started: {summary}").format(summary=inst.summary))
         ib = inst.inbound
-        if not is_loopback_host(ib["host"]):
+        if ib["type"] != "tun" and not is_loopback_host(ib["host"]):
             if ib["type"] == "socks4":
                 inst.log(LOG_WARN, _t("SOCKS4 has no password authentication; anyone can use it if it is exposed"))
             elif ib["type"] in ("socks5", "http", "https") and not ib["auth_enabled"]:
@@ -243,6 +280,17 @@ class ProxyManager:
         if not quiet:
             self._set(pid, "stopped")
 
+    async def _died(self, pid, inst, text):
+        """The engine process of a running card exited on its own: the card is in error (it may be restarted)."""
+        if self.instances.get(pid) is not inst:
+            return
+        self.instances.pop(pid, None)
+        try:
+            await inst.stop()
+        except Exception:
+            pass
+        self._set(pid, "error", text)
+
     async def _stop_all(self):
         for pid in list(self.instances):
             await self._stop(pid)
@@ -251,7 +299,7 @@ class ProxyManager:
         inst = self.instances.get(proxy["id"])
         if inst is None:
             return
-        if _net_key(inst.proxy) != _net_key(proxy):
+        if _net_key(inst.proxy) != _net_key(proxy) or _engine_changed(inst, proxy, glob)                 or getattr(inst, "needs_restart", lambda *a: False)(proxy, glob):
             await self._start(proxy, glob)
         else:
             inst.update(proxy, glob)

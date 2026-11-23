@@ -15,6 +15,12 @@ from ..common import (
 )
 
 FONT_FILE = os.path.join("fonts", "PretendardVariable.ttf")
+# Built-in UI fonts for languages whose kanji/hanzi Pretendard draws in the Korean style; only the current one is loaded.
+LANG_FONT_FILES = {
+    "ja": os.path.join("fonts", "PretendardJPVariable.ttf"),
+    "zh_CN": os.path.join("fonts", "NotoSansSC.ttf"),
+    "zh_TW": os.path.join("fonts", "NotoSansTC.ttf"),
+}
 MONO_FONT_FILE = os.path.join("fonts", "JetBrainsMono.ttf")
 LICENSE_DIR = "licenses"
 
@@ -56,9 +62,13 @@ def load_fonts(app, glob):
     if chosen and chosen not in QFontDatabase.families():
         log(LOG_WARN, _t("UI font '{chosen}' not found, using the built-in font").format(chosen=chosen))
         chosen = ""
-    # Pretendard only has Korean-style Hanja, so Japanese/Chinese use the system font of that language
-    # (when the built-in font is selected); otherwise kanji/hanzi would mix two glyph styles.
-    cjk = _CJK_UI_FONTS.get(i18n.current(), [])
+    # Pretendard only has Korean-style Hanja, so Japanese/Chinese use their own built-in font (Pretendard JP,
+    # Noto Sans SC/TC), or the system font of that language when it is missing; otherwise kanji/hanzi would mix
+    # two glyph styles.
+    lang = i18n.current()
+    lang_file = LANG_FONT_FILES.get(lang)
+    lang_font = _register_font(lang_file) if lang_file and os.path.exists(resource_path(lang_file)) else None
+    cjk = ([lang_font] if lang_font else []) + _CJK_UI_FONTS.get(lang, [])
     native = next((f for f in cjk if f in QFontDatabase.families()), "")
     Fonts.ui_choice = chosen
     Fonts.ui = chosen or native or Fonts.builtin_ui
@@ -220,5 +230,14 @@ class ProxyCombo(ComboBox):
 
 
 def info(parent, kind, title, content, duration=2500):
-    return getattr(InfoBar, kind)(title, content, duration=duration,
-                                  position=InfoBarPosition.TOP_RIGHT, parent=parent)
+    if sys.platform != "darwin":
+        return getattr(InfoBar, kind)(title, content, duration=duration,
+                                      position=InfoBarPosition.TOP_RIGHT, parent=parent)
+    # macOS: an InfoBar paints through a QGraphicsOpacityEffect and deletes itself after fading out, which crashes
+    # in Qt's paint path there (seen in CI, like the page transitions). Drop the effect and close without the fade.
+    from PySide6.QtCore import QTimer
+    bar = getattr(InfoBar, kind)(title, content, duration=-1, position=InfoBarPosition.TOP_RIGHT, parent=parent)
+    bar.setGraphicsEffect(None)
+    if duration >= 0:
+        QTimer.singleShot(duration, bar, bar.close)
+    return bar

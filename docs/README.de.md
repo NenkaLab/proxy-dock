@@ -2,153 +2,81 @@
 
 [English](../README.md) · [한국어](README.ko.md) · [日本語](README.ja.md) · [简体中文](README.zh-CN.md) · [繁體中文](README.zh-TW.md) · **Deutsch** · [Français](README.fr.md) · [Español](README.es.md)
 
-Ein Desktop-„Dock" für Proxys: mehrere Proxys anlegen und jeden einzeln ein- oder ausschalten. Für den persönlichen Gebrauch entstanden.
-
-Jeder Proxy kombiniert einen **Eingang** (wie er Verbindungen an einem Port dieses PCs annimmt) und einen **Ausgang**
-(wie er das Ziel erreicht). So ist z. B. „Annahme über lokales SOCKS5 → verschlüsselter Tunnel zu einem entfernten
-Shadowsocks-Server" eine einzige Karte.
+Eine Desktop-App, die mehrere Proxys und Tunnel nebeneinander betreibt. Auf einer Arbeitsfläche werden
+**Eingangs**blöcke (wie Verkehr hereinkommt, z. B. ein lokaler SOCKS5-Port) mit **Ausgangs**blöcken (wie er hinausgeht,
+z. B. ein Shadowsocks-Server) verbunden; jede Karte lässt sich ein- und ausschalten.
 
 <p align="center">
-  <img src="images/canvas.png" width="98%" alt="Fläche">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="images/canvas-dark.png">
+    <img src="images/canvas-light.png" width="98%" alt="Arbeitsfläche">
+  </picture>
 </p>
 <p align="center">
-  <img src="images/proxies.png" width="49%" alt="Proxy-Liste">
-  <img src="images/editor.png" width="49%" alt="Eingang bearbeiten">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="images/proxies-dark.png">
+    <img src="images/proxies-light.png" width="49%" alt="Proxies">
+  </picture>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="images/router-dark.png">
+    <img src="images/router-light.png" width="49%" alt="Router">
+  </picture>
 </p>
 
 ## Funktionen
 
-| | Unterstützt |
-|---|---|
-| Eingang | SOCKS5 · SOCKS4/4a · HTTP · HTTPS (TLS) · Shadowsocks-Server · Hysteria2-Server |
-| Ausgang | Direct · Upstream-HTTP / HTTPS / SOCKS4 / SOCKS5-Proxy · Shadowsocks-Tunnel · Hysteria2-Tunnel (QUIC) |
-| UDP | Eingang SOCKS5 · Shadowsocks · Hysteria2, Ausgang Direct · Shadowsocks · Hysteria2 |
+- **Eingang**: SOCKS5, SOCKS4, HTTP, HTTPS, Shadowsocks-Server, Hysteria2-Server, WireGuard-Server (Handys und PCs verbinden sich mit der WireGuard-App), Portweiterleitung, TUN (alle Apps dieses PCs)
+- **Ausgang**: Direct, HTTP- / HTTPS- / SOCKS-Proxy, Shadowsocks, Hysteria2, WireGuard, VLESS (REALITY), VMess,
+  Trojan, TUIC, Abonnements (Freigabelinks oder Clash-YAML)
+- **Blöcke**: Ketten (ein Ausgang über einen anderen), Router (Regeln nach Domain, IP, Port, Programm - aus laufenden Programmen wählbar -, GeoIP/Geosite; einfache und erweiterte Ansicht),
+  IF (eine Bedingung oder ein manueller Ein/Aus-Schalter, z. B. ein Kill-Switch), Gruppen (schnellster, Failover oder manuell), Block
+- **Netzwerkschnittstelle**: einen Ausgang über Tailscale, eine VPN-App oder WLAN senden, ohne die Routen des PCs zu ändern
+- **DNS**: DNS des PCs, DoH / DoT / DoQ, pro Karte, auf Wunsch durch den Tunnel; Fake-IP für TUN
+- **Karten**: Starten, Start mit der App und automatischer Neustart (wenn sie stoppt oder nicht startet) direkt am Block
+- **PC-Block**: einen HTTP-Eingang, solange er läuft, als Windows-Systemproxy nutzen
+- Freigabelinks (`ss://`, `vless://`, `vmess://`, `trojan://`, `tuic://`, `hysteria2://`), Verbindungsprüfung und -test,
+  Protokolle und Live-Statistik, 8 Sprachen, Infobereich, Start bei der Anmeldung
 
-- **Fläche**: Editor im Blueprint-Stil - Linien von Eingangsblöcken zu Ausgangsblöcken ziehen; mehrere Eingänge können einen Ausgang teilen, ein mit einem anderen Eingang verbundener Eingang leitet über diesen weiter, und Direct kann eine gewählte Quell-IP nutzen
-- **PC-Block**: einen HTTP-Eingang verbinden, um ihn als Windows-Systemproxy zu nutzen, solange er läuft; die vorherigen Einstellungen werden gesichert und beim Stoppen oder Beenden wiederhergestellt (Knöpfe Vorherige wiederherstellen / Aus)
-- **Verkettung**: der 'via'-Ausgang eines Ausgangsblocks führt dessen eigene Serververbindung über einen anderen Ausgang (z. B. Shadowsocks durch den Firmen-HTTP-Proxy, HTTPS-Upstream durch einen Hysteria2-Tunnel), beliebig viele Stufen
-- **Shadowsocks**: AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) und 2022 (SIP022, blake3), TCP+UDP, `ss://`-Links kopieren
-- **Hysteria2**: in beide Richtungen mit der offiziellen Implementierung kompatibel (TCP und UDP), Zertifikats-Pinning, `hysteria2://`-Links kopieren
-- **Einstellungen**: globale Standardwerte + lokale Einstellungen pro Proxy (lokal hat Vorrang) - zugelassene Domains, Blockieren privater Netze, Leerlauf-Timeout, Protokoll
-- **Verbindung prüfen** im Editor: testet vor dem Speichern den Ausgang (Upstream/Tunnel, Passwörter) und den Eingangsport
-- **Verbindungstest**: verbindet sich über einen laufenden Proxy per HTTPS mit 21 Websites in vielen Ländern und misst die Antwortzeiten
-- **Protokoll / Statistik** pro Proxy, Live-Durchsatzgraph, optionale Protokolldatei
-- **Sicherheit**: Passwörter per Windows DPAPI gespeichert (auf anderen Systemen 0600-Dateien), Verbindungslimit pro IP,
-  vorübergehende Sperre nach wiederholten Anmeldefehlern, Erkennung von Schleifen in Proxy-Ketten, Windows-Firewall-Sperre per Knopfdruck
-- **Sprachen**: English (Standard), 한국어, 日本語, 简体中文, 繁體中文, Deutsch, Français, Español (Einstellungen → Anzeige → Sprache)
-- Infobereich, Start bei Anmeldung, helles/dunkles Design, integrierte Schriften (Pretendard / JetBrains Mono)
+Die Proxys laufen auf [sing-box](https://github.com/SagerNet/sing-box) (ein Prozess pro Karte, im Release enthalten).
+Ein Hysteria2-Server für andere PCs läuft auf dem offiziellen [Hysteria](https://github.com/apernet/hysteria)-Kern;
+die eingebaute Python-Engine dient als Ersatz.
 
-## Ausführen
+## Starten
 
-Nutzen Sie einen Build aus den [Releases](https://github.com/NenkaLab/proxy-dock/releases), falls vorhanden, oder starten Sie aus dem Quellcode:
+Unter Windows installiert `ProxyDock-<Version>-windows-x64-setup.exe` für Ihr Benutzerkonto (keine Administratorrechte nötig); die `.zip` ist dieselbe App als Ordner. Unter macOS die `.dmg` öffnen und ProxyDock in „Programme“ ziehen. Unter Linux die `.AppImage` ausführbar machen und starten.
+
+Einen Build von [Releases](https://github.com/NenkaLab/proxy-dock/releases) laden oder aus dem Quellcode starten
+(Python 3.14):
 
 ```bash
 python -m venv .venv
-# Windows: .venv\Scripts\activate   /   macOS, Linux: source .venv/bin/activate
+.venv\Scripts\activate            # macOS / Linux: source .venv/bin/activate
 pip install -r requirements.txt
-python proxydock.py            # --hidden : ohne Fenster im Infobereich starten
+python tools/fetch_singbox.py     # sing-box und Hysteria für diesen PC
+python proxydock.py
 ```
 
-Entwickelt und getestet mit Python 3.14.
-
-Beim ersten Start gibt es keine Proxys. Wählen Sie unter **Neuer Proxy** eine Vorlage (Lokaler SOCKS5, Lokaler HTTP,
-Shadowsocks-Server, Lokal → Shadowsocks-Tunnel, ...) und starten Sie sie mit dem Schalter auf der Karte.
-Details stehen auf der Seite **Anleitung** in der App. Die Oberfläche ist standardmäßig englisch; die Sprache lässt sich
-unter Einstellungen → Anzeige → Sprache ändern (nach Neustart wirksam).
-
-Speicherort der Einstellungen
-
-| System | Pfad |
-|---|---|
-| Windows | `%APPDATA%\ProxyDock` |
-| macOS | `~/Library/Application Support/ProxyDock` |
-| Linux | `$XDG_CONFIG_HOME/ProxyDock` (Standard `~/.config/ProxyDock`) |
+Die Einstellungen liegen in `%APPDATA%\ProxyDock` (macOS: `~/Library/Application Support/ProxyDock`,
+Linux: `~/.config/ProxyDock`). Den Rest erklärt die Seite **Anleitung** in der App.
 
 ## Bauen
 
-Alles zum Bauen liegt in [`tools/`](../tools/). PyInstaller erzeugt eine einzelne ausführbare Datei (unter macOS eine `.app`).
-Die Skripte legen pro System eine virtuelle Umgebung an, installieren nur die Pakete, die von `requirements.txt` abweichen,
-und bauen mit `tools/ProxyDock.spec`. Sie lassen sich aus jedem Ordner starten.
+`tools\build_win.bat` → `dist/win/ProxyDock/ProxyDock.exe` (Linux: `tools/build_linux.sh`, macOS: `tools/build_mac.sh`).
+Der Build lädt sing-box und Hysteria herunter (SHA-256 geprüft) und packt sie in die App.
+Tests: `python tests/run_tests.py`. Releases: `tools\release.bat <Version>` setzt ein Tag und pusht; GitHub Actions baut.
+Installer: `python tools/build.py installer` (Inno Setup 6). macOS: `python tools/build.py dmg`, Linux: `python tools/build.py appimage`.
 
-| Befehl | Ergebnis |
-|---|---|
-| `tools\build_win.bat` | `dist/win/ProxyDock.exe` (unter Windows) |
-| `tools\build_linux.bat` / `tools/build_linux.sh` | `dist/linux/ProxyDock` (nativ unter Linux, per Docker unter Windows/macOS) |
-| `tools/build_mac.sh` | `dist/mac/ProxyDock.app` (nur unter macOS) |
-| `tools\build.bat` / `tools/build.sh` | alles, was dieser Computer bauen kann, mit Zusammenfassung |
+## Einschränkungen
 
-Der macOS-Build wurde noch nicht auf einem echten Mac getestet.
-
-## Releases und CI
-
-- Jeder Push und Pull Request führt die Tests unter Windows, Linux und macOS aus ([CI](../.github/workflows/ci.yml),
-  lokal `python tests/run_tests.py` - ohne Internet).
-- `tools\release.bat 2.1.0` (oder `python tools/release.py 2.1.0`) prüft den Arbeitsstand, führt die Tests aus, erhöht
-  `__version__`, committet, setzt das Tag `v2.1.0` und pusht. Das Tag startet den [Release-Workflow](../.github/workflows/release.yml),
-  der Windows / Linux / macOS baut und ein GitHub-Release mit den Archiven und `SHA256SUMS.txt` veröffentlicht.
-  Mit `--dry-run` wird nur geprobt.
-- `python tools/build.py package win|linux|mac` erzeugt dieselben Archive lokal in `dist/release/`.
-
-## Bekannte Einschränkungen
-
-- Hysteria2 (QUIC/UDP) kann nicht *über* andere Ausgänge laufen (andere können über Hysteria2 laufen), und UDP wird über verkettete Ausgänge nicht weitergeleitet.
-- Hysteria2 läuft auf einer QUIC-Implementierung in Python (aioquic) und schafft etwa 100 Mbit/s. Bandbreiteneinstellungen (Brutal),
-  Salamander-Verschleierung und Port-Hopping werden nicht unterstützt.
-- Der offizielle Hysteria2-Server lehnt Verbindungen ab, deren SNI nicht zum Zertifikat passt - tragen Sie die Domain des
-  Serverzertifikats im SNI-Feld des Ausgangs ein.
-- Der HTTP-Eingang bearbeitet pro Verbindung nur eine normale (Nicht-CONNECT-)Anfrage.
-- SOCKS4 hat keine Passwort-Anmeldung, nutzen Sie es daher nur auf diesem PC.
-- Japanisch und Chinesisch verwenden die UI-Schrift des Systems (das integrierte Pretendard deckt Koreanisch und Latein ab).
-
-## Aufbau
-
-```
-proxydock.py            Einstiegspunkt
-proxydock/
-  common.py             gemeinsame Konstanten, Protokoll, Adressbehandlung, Sperren
-  config.py             Einstellungsformat (v2), Prüfung, Zusammenführung global/lokal, Passwortspeicher, Migration
-  graph.py              Blockgraph (Eingangs- / Ausgangs- / PC-Blöcke) -> Laufzeit-Proxys
-  runtime.py            ProxyInstance / ProxyManager (viele Proxys in einem asyncio-Thread)
-  relay.py              TCP/UDP-Relay-Kern
-  inbound.py            Eingangsprotokolle
-  outbound.py           Ausgangsprotokolle
-  ss.py                 Shadowsocks-2018/2022-Verschlüsselung
-  hysteria2.py          Hysteria2-Server und -Client (aioquic)
-  tls.py                selbstsignierte Zertifikate, TLS-Kontexte
-  probe.py              Verbindungstest / Verbindungsprüfung
-  platform_utils.py     Start bei Anmeldung, Firewall, Portprüfung
-  i18n.py, locales/     Übersetzungen (englische Ausgangstexte -> <Sprache>.json)
-  ui/                   Oberfläche mit PySide6 + Fluent Widgets
-    canvas.py           Seite Fläche (NodeGraphQt)
-tools/                  Build-Skripte, PyInstaller-Spec, Dockerfile für den Linux-Build
-licenses/               Lizenzen der enthaltenen Drittkomponenten
-docs/                   übersetzte READMEs, Screenshots
-```
-
-### Übersetzungen
-
-Die Texte der Oberfläche stehen englisch im Code (`_t("...")`) und werden über `proxydock/locales/<Sprache>.json` übersetzt.
-Fehlende Einträge erscheinen auf Englisch.
+- Router, Gruppen, WireGuard, VLESS / VMess / Trojan / TUIC, TUN, Schnittstellenwahl und eigener DNS brauchen die sing-box-Engine.
+- Keine Lastverteilung über mehrere Server; Hysteria2-Server können nicht allein auf einem Portbereich lauschen.
+- Zertifikat-Pinning läuft bis sing-box 1.15 auf der Python-Engine.
+- TUN und Fake-IP wurden noch nicht in echten Umgebungen getestet, macOS nicht auf einem echten Mac.
+- SOCKS4 hat kein Passwort, daher nur auf diesem PC nutzen.
 
 ## Lizenz
 
-[GPL-3.0](../LICENSE). Die UI-Bibliothek [PySide6-Fluent-Widgets](https://github.com/zhiyiYo/PyQt-Fluent-Widgets) steht unter
-GPL v3, daher wird auch dieses Programm unter GPL v3 verteilt; wer gebaute Programmdateien weitergibt, muss die Bedingungen der
-GPL v3 einhalten (Quellcode bereitstellen usw.).
-
-Die Lizenzen der enthaltenen Schriften und Bibliotheken liegen im Ordner [`licenses/`](../licenses/).
-
-| Komponente | Lizenz |
-|---|---|
-| Pretendard, JetBrains Mono (integrierte Schriften) | SIL OFL 1.1 |
-| PySide6-Fluent-Widgets | GPL v3 |
-| Qt 6 / PySide6 / Shiboken6, PySideSix-Frameless-Window | LGPL v3 |
-| aioquic, pylsqpack, darkdetect | BSD 3-Clause |
-| cryptography | Apache 2.0 / BSD 3-Clause |
-| pyOpenSSL | Apache 2.0 |
-| service-identity, attrs, NodeGraphQt, Qt.py | MIT |
-| certifi | MPL 2.0 |
-| Python-Laufzeit | PSF License |
-| PyInstaller-Bootloader | GPL v2+ (Bootloader-Ausnahme) |
+[GPL-3.0](../LICENSE). Enthaltene Komponenten (sing-box GPL-3.0, Hysteria MIT, Qt / PySide6 LGPL-3.0, Schriften OFL-1.1, ...)
+und ihre Lizenzen stehen in [`licenses/`](../licenses/).
 
 Copyright (C) 2026 NenkaLab

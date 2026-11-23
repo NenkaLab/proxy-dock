@@ -15,14 +15,20 @@ This program (ProxyDock) includes the components below.
 The full license texts are in the files in this folder.
 
 [Fonts]
-- Pretendard : SIL Open Font License 1.1
+- Pretendard, Pretendard JP : SIL Open Font License 1.1
   -> Pretendard-OFL-1.1.txt
+- Noto Sans SC, Noto Sans TC : SIL Open Font License 1.1
+  -> NotoSans-OFL-1.1.txt
 - JetBrains Mono : SIL Open Font License 1.1
   -> JetBrainsMono-OFL-1.1.txt
 
 [Libraries]
 - PySide6-Fluent-Widgets : GPL v3
   -> PySide6-Fluent-Widgets-GPL-3.0.txt
+- sing-box : GPL v3 (separate program the app starts)
+  -> sing-box-GPL-3.0.txt
+- Hysteria2 (official core) : MIT (separate program the app starts)
+  -> Hysteria-MIT.txt
 - Qt 6 / PySide6 / Shiboken6 : LGPL v3
   -> LGPL-3.0.txt
 - PySideSix-Frameless-Window : LGPL v3
@@ -43,6 +49,8 @@ The full license texts are in the files in this folder.
   -> service-identity-MIT.txt
 - attrs : MIT
   -> attrs-MIT.txt
+- PyYAML (Clash subscriptions) : MIT
+  -> PyYAML-MIT.txt
 - certifi : MPL 2.0
   -> certifi-MPL-2.0.txt
 - darkdetect : BSD 3-Clause

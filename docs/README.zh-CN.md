@@ -2,148 +2,77 @@
 
 [English](../README.md) · [한국어](README.ko.md) · [日本語](README.ja.md) · **简体中文** · [繁體中文](README.zh-TW.md) · [Deutsch](README.de.md) · [Français](README.fr.md) · [Español](README.es.md)
 
-一个桌面代理"坞站"：可以创建多个代理，并分别开启或关闭。为个人使用而做。
-
-每个代理由 **入站** (在本机端口上接收连接的方式) 和 **出站** (到达目标的方式) 组合而成。
-例如"用本地 SOCKS5 接收 → 通过加密隧道发往远程 Shadowsocks 服务器"只需一张卡片。
+同时运行多个代理和隧道的桌面应用。在画布上把**入站**块 (流量进入的方式，例如本地 SOCKS5 端口) 连到
+**出站**块 (流量离开的方式，例如 Shadowsocks 服务器)，每张卡片可单独开关。
 
 <p align="center">
-  <img src="images/canvas.png" width="98%" alt="画布">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="images/canvas-dark.png">
+    <img src="images/canvas-light.png" width="98%" alt="画布">
+  </picture>
 </p>
 <p align="center">
-  <img src="images/proxies.png" width="49%" alt="代理列表">
-  <img src="images/editor.png" width="49%" alt="编辑入站">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="images/proxies-dark.png">
+    <img src="images/proxies-light.png" width="49%" alt="Proxies">
+  </picture>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="images/router-dark.png">
+    <img src="images/router-light.png" width="49%" alt="Router">
+  </picture>
 </p>
 
 ## 功能
 
-| | 支持 |
-|---|---|
-| 入站 | SOCKS5 · SOCKS4/4a · HTTP · HTTPS (TLS) · Shadowsocks 服务器 · Hysteria2 服务器 |
-| 出站 | Direct · 上游 HTTP / HTTPS / SOCKS4 / SOCKS5 代理 · Shadowsocks 隧道 · Hysteria2 (QUIC) 隧道 |
-| UDP | 入站 SOCKS5 · Shadowsocks · Hysteria2，出站 Direct · Shadowsocks · Hysteria2 |
+- **入站**: SOCKS5、SOCKS4、HTTP、HTTPS、Shadowsocks 服务器、Hysteria2 服务器、WireGuard 服务器 (手机和电脑用 WireGuard 应用连接)、端口转发、TUN (本机所有应用)
+- **出站**: Direct、HTTP / HTTPS / SOCKS 代理、Shadowsocks、Hysteria2、WireGuard、VLESS (REALITY)、VMess、
+  Trojan、TUIC、订阅 (分享链接或 Clash YAML)
+- **块**: 链式 (出站经由另一个出站)、路由器 (按域名、IP、端口、程序 (可从运行中的程序选择)、GeoIP/Geosite 分流，简单和高级视图)、IF (一个条件，或手动开关，例如断网开关)、分组 (最快、故障转移或手动)、阻止
+- **网络接口**: 不改动本机路由，让出站经 Tailscale、VPN 应用或 Wi-Fi 出去
+- **DNS**: 本机 DNS、DoH / DoT / DoQ，可按卡片设置，可经由隧道发送; TUN 可用 Fake-IP
+- **卡片**: 在块上直接运行、随应用启动、自动重启 (停止或启动失败时)
+- **PC 块**: HTTP 入站运行期间用作 Windows 系统代理
+- 分享链接 (`ss://`、`vless://`、`vmess://`、`trojan://`、`tuic://`、`hysteria2://`)、连接检查与测试、日志和实时统计、
+  8 种语言、托盘、登录时启动
 
-- **画布**：蓝图式编辑器 - 从入站块拖线到出站块；多个入站可共用一个出站，把入站连到另一个入站会经由它中继，Direct 可以指定源 IP
-- **PC 块**：连接一个 HTTP 入站，在其运行期间用作 Windows 系统代理；之前的设置会被保存，停止或退出应用时恢复 (恢复之前的设置 / 关闭 按钮)
-- **链式连接**：连接出站块的'经由'输出后，它到服务器的连接会经由另一个出站 (例如穿过公司 HTTP 代理的 Shadowsocks、Hysteria2 隧道中的 HTTPS 上游代理)，可以串联任意多级
-- **Shadowsocks**：AEAD 2018 (aes-128/256-gcm、chacha20-ietf-poly1305) 和 2022 (SIP022、blake3)，TCP+UDP，复制 `ss://` 链接
-- **Hysteria2**：已确认与官方实现双向互通 (TCP、UDP)，证书指纹固定，复制 `hysteria2://` 链接
-- **设置**：全局默认值 + 每个代理的本地设置 (本地优先) - 允许的域名、阻止内网、空闲超时、日志
-- **编辑页面的检查连接**：保存前测试出站 (上游代理/隧道、密码) 和入站端口
-- **连接测试**：通过运行中的代理以 HTTPS 连接多个国家的 21 个网站并测量响应时间
-- **日志 / 统计**：按代理查看，实时速度图，可选写入文件
-- **安全**：密码用 Windows DPAPI 保存 (其他系统为 0600 权限文件)，按 IP 限制连接数，
-  多次认证失败后临时封禁，防止代理链循环，Windows 防火墙外部阻止按钮
-- **语言**：English (默认)、한국어、日本語、简体中文、繁體中文、Deutsch、Français、Español (设置 → 显示 → 语言)
-- 托盘常驻、开机启动、浅色/深色主题、内置字体 (Pretendard / JetBrains Mono)
+代理由 [sing-box](https://github.com/SagerNet/sing-box) 运行 (每张卡片一个进程，发布版已内置)。
+对其他电脑开放的 Hysteria2 服务器使用官方 [Hysteria](https://github.com/apernet/hysteria) 核心，内置 Python 引擎作为备用。
 
 ## 运行
 
-如果 [Releases](https://github.com/NenkaLab/proxy-dock/releases) 中有构建好的文件可直接使用，也可以从源码运行：
+在 Windows 上，`ProxyDock-<版本>-windows-x64-setup.exe` 为当前用户安装 (不需要管理员权限)；`.zip` 是同一个应用的文件夹版本。macOS 上打开 `.dmg`，把 ProxyDock 拖到“应用程序”。Linux 上给 `.AppImage` 加上执行权限后运行。
+
+从 [Releases](https://github.com/NenkaLab/proxy-dock/releases) 下载构建，或从源码运行 (Python 3.14):
 
 ```bash
 python -m venv .venv
-# Windows: .venv\Scripts\activate   /   macOS、Linux: source .venv/bin/activate
+.venv\Scripts\activate            # macOS / Linux: source .venv/bin/activate
 pip install -r requirements.txt
-python proxydock.py            # --hidden : 不显示窗口，直接启动到托盘
+python tools/fetch_singbox.py     # 本机用的 sing-box 和 Hysteria
+python proxydock.py
 ```
 
-基于 Python 3.14 开发和测试。
-
-首次启动时没有代理。在 **新建代理** 中选择模板 (本地 SOCKS5、本地 HTTP、Shadowsocks 服务器、
-本地 → Shadowsocks 隧道等) 创建，然后用卡片上的开关运行。详细用法见应用中的 **使用方法** 页面。
-界面语言默认为英语，可在 设置 → 显示 → 语言 中更改 (重启后生效)。
-
-设置保存位置
-
-| 系统 | 路径 |
-|---|---|
-| Windows | `%APPDATA%\ProxyDock` |
-| macOS | `~/Library/Application Support/ProxyDock` |
-| Linux | `$XDG_CONFIG_HOME/ProxyDock` (默认 `~/.config/ProxyDock`) |
+设置保存在 `%APPDATA%\ProxyDock` (macOS: `~/Library/Application Support/ProxyDock`，Linux: `~/.config/ProxyDock`)。
+其余内容见应用内的**使用方法**页面。
 
 ## 构建
 
-构建相关的文件都在 [`tools/`](../tools/) 中。用 PyInstaller 生成单个可执行文件 (macOS 为 `.app`)。
-脚本会为每个系统创建虚拟环境，只安装与 `requirements.txt` 不一致的包，然后用 `tools/ProxyDock.spec` 构建。
-可以在任意文件夹中运行。
+`tools\build_win.bat` → `dist/win/ProxyDock/ProxyDock.exe` (Linux: `tools/build_linux.sh`，macOS: `tools/build_mac.sh`)。
+构建时会下载 sing-box 和 Hysteria (校验 SHA-256) 并放进应用。
+测试: `python tests/run_tests.py`。发布: `tools\release.bat <版本>` 打标签并推送，由 GitHub Actions 构建。
+安装程序: `python tools/build.py installer` (Inno Setup 6)。macOS: `python tools/build.py dmg`，Linux: `python tools/build.py appimage`。
 
-| 命令 | 输出 |
-|---|---|
-| `tools\build_win.bat` | `dist/win/ProxyDock.exe` (在 Windows 上) |
-| `tools\build_linux.bat` / `tools/build_linux.sh` | `dist/linux/ProxyDock` (Linux 上直接构建，Windows/macOS 上通过 Docker) |
-| `tools/build_mac.sh` | `dist/mac/ProxyDock.app` (仅 macOS) |
-| `tools\build.bat` / `tools/build.sh` | 构建本机能构建的全部目标并汇总结果 |
+## 限制
 
-macOS 构建尚未在真实的 Mac 上验证。
-
-## 发布与 CI
-
-- 每次推送和 PR 都会在 Windows、Linux、macOS 上运行测试 ([CI](../.github/workflows/ci.yml)，
-  本地运行 `python tests/run_tests.py` - 无需联网)。
-- `tools\release.bat 2.1.0` (或 `python tools/release.py 2.1.0`) 会检查工作区、运行测试、提升 `__version__`、
-  提交、创建 `v2.1.0` 标签并推送。标签会触发[发布工作流](../.github/workflows/release.yml)，构建 Windows / Linux / macOS
-  并把压缩包和 `SHA256SUMS.txt` 发布到 GitHub Release。加上 `--dry-run` 只做预演。
-- `python tools/build.py package win|linux|mac` 可在本地 `dist/release/` 生成相同的压缩包。
-
-## 已知限制
-
-- Hysteria2 (QUIC/UDP) 不能*经由*其他出站 (其他块可以经由 Hysteria2)；串联的出站不转发 UDP。
-- Hysteria2 运行在 Python 的 QUIC 实现 (aioquic) 上，速度约 100 Mbps。不支持带宽设置 (Brutal)、
-  Salamander 混淆和端口跳跃。
-- 官方 Hysteria2 服务器会拒绝 SNI 与证书不符的连接 - 请在出站的 SNI 中填写服务器证书的域名。
-- HTTP 入站的普通 (非 CONNECT) 请求每个连接只处理一个。
-- SOCKS4 协议没有密码认证，请仅在本机使用。
-- 日文和中文使用系统界面字体 (内置的 Pretendard 用于韩文和拉丁字母)。
-
-## 结构
-
-```
-proxydock.py            入口
-proxydock/
-  common.py             公共常量、日志、地址处理、封禁列表
-  config.py             设置格式 (v2)、校验、全局/本地合并、密码保存、旧版本迁移
-  graph.py              块图 (入站 / 出站 / PC 块) -> 运行时代理
-  runtime.py            ProxyInstance / ProxyManager (在一个 asyncio 线程中运行多个代理)
-  relay.py              TCP/UDP 中继核心
-  inbound.py            入站协议
-  outbound.py           出站协议
-  ss.py                 Shadowsocks 2018/2022 加密
-  hysteria2.py          Hysteria2 服务器和客户端 (aioquic)
-  tls.py                自签名证书、TLS 上下文
-  probe.py              连接测试 / 检查连接
-  platform_utils.py     开机启动、防火墙、端口检查
-  i18n.py, locales/     翻译 (代码中的英文原文 -> <语言>.json)
-  ui/                   PySide6 + Fluent Widgets 界面
-    canvas.py           画布页面 (NodeGraphQt)
-tools/                  构建脚本、PyInstaller spec、Linux 构建用 Dockerfile
-licenses/               附带的第三方组件许可证
-docs/                   翻译的 README、截图
-```
-
-### 翻译
-
-界面文字在代码中以英文书写 (`_t("...")`)，通过 `proxydock/locales/<语言>.json` 翻译。
-没有翻译的文字会以英文显示。
+- 路由器、分组、WireGuard、VLESS / VMess / Trojan / TUIC、TUN、网络接口和自定义 DNS 需要 sing-box 引擎。
+- 不支持多服务器负载均衡; Hysteria2 服务器无法单独监听端口范围。
+- 在 sing-box 1.15 之前，证书固定由 Python 引擎运行。
+- TUN 和 Fake-IP 尚未在真实环境中测试，macOS 也未在真机上测试。
+- SOCKS4 没有密码，请只在本机使用。
 
 ## 许可证
 
-[GPL-3.0](../LICENSE)。界面库 [PySide6-Fluent-Widgets](https://github.com/zhiyiYo/PyQt-Fluent-Widgets) 使用
-GPL v3，因此本程序也以 GPL v3 发布；分发构建好的可执行文件时同样需要遵守 GPL v3 条款 (提供源码等)。
-
-附带的字体和库的许可证位于 [`licenses/`](../licenses/) 文件夹。
-
-| 组件 | 许可证 |
-|---|---|
-| Pretendard, JetBrains Mono (内置字体) | SIL OFL 1.1 |
-| PySide6-Fluent-Widgets | GPL v3 |
-| Qt 6 / PySide6 / Shiboken6, PySideSix-Frameless-Window | LGPL v3 |
-| aioquic, pylsqpack, darkdetect | BSD 3-Clause |
-| cryptography | Apache 2.0 / BSD 3-Clause |
-| pyOpenSSL | Apache 2.0 |
-| service-identity, attrs, NodeGraphQt, Qt.py | MIT |
-| certifi | MPL 2.0 |
-| Python 运行时 | PSF License |
-| PyInstaller 引导程序 | GPL v2+ (引导程序例外) |
+[GPL-3.0](../LICENSE)。内置组件 (sing-box GPL-3.0、Hysteria MIT、Qt / PySide6 LGPL-3.0、字体 OFL-1.1 等) 及其许可证
+见 [`licenses/`](../licenses/)。
 
 Copyright (C) 2026 NenkaLab

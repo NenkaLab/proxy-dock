@@ -46,6 +46,21 @@ class SettingsInterface(ScrollArea):
         s_def.add(Row(_t("Log connections"), _t("When off, successful connections are not logged (errors always are)"), v).right(self.sw_logconn))
         self.sw_logclose = _switch(v)
         s_def.add(Row(_t("Log connection close details"), _t("Upload/download amount, duration and reason when a connection ends"), v).right(self.sw_logclose))
+        from .proxies import dns_combo
+        self.cb_dns = dns_combo(v)
+        s_def.add(Row(_t("DNS server"), _t("Empty = the PC's DNS. Otherwise 1.1.1.1 (UDP), tcp://, tls:// (DoT), https://…/dns-query (DoH), quic:// or h3://. Used where ProxyDock looks names up itself (Direct, IP rules, TUN). Needs the sing-box engine"), v).right(self.cb_dns))
+        self.sw_dns_via = _switch(v)
+        s_def.add(Row(_t("DNS through the outbound"), _t("The card's own lookups go through its tunnel or upstream instead of leaving this PC directly (needs a DNS server above)"), v).right(self.sw_dns_via))
+
+        # engine
+        s_eng = Section(_t("Proxy engine"), v)
+        self.cb_engine = ComboBox(v)
+        self.cb_engine.addItems([_t("sing-box (recommended)"), _t("Python (built-in)")])
+        self.cb_engine.setFixedWidth(200)
+        from ..singbox import find_binary
+        exe = find_binary(ctl.glob)
+        s_eng.add(Row(_t("Engine"), _t("sing-box runs each proxy in its own process: faster, uses every CPU core, UDP works through chains. Running proxies restart when this changes.")
+                      + "\n" + (exe or _t("sing-box was not found - proxies use the Python engine")), v).right(self.cb_engine))
 
         # logs
         s_log = Section(_t("Logs"), v)
@@ -101,8 +116,12 @@ class SettingsInterface(ScrollArea):
         s_start.add(Row(_t("Hide startup notification"), _t("Do not show the 'running' notification when started automatically"), v).right(self.sw_hidden))
         self.sw_startup.checkedChanged.connect(ctl.set_startup)
         self.sw_hidden.checkedChanged.connect(ctl.set_hidden)
+        self.sw_admin = _switch(v)
+        self.r_admin = s_start.add(Row(_t("Run as administrator"), _t("ProxyDock restarts itself with administrator rights (UAC prompt) when it starts, so TUN cards start without asking. Applies from the next start."), v)
+                                  .right(self.sw_admin))
+        self.r_admin.setVisible(IS_WIN)
 
-        sections = [s_def, s_log, s_view, s_font, s_start]
+        sections = [s_def, s_eng, s_log, s_view, s_font, s_start]
         if IS_WIN:
             s_fw = Section(_t("Windows Firewall"), v)
             self.fw_label = BodyLabel(_t("Checking…"), v)
@@ -133,6 +152,8 @@ class SettingsInterface(ScrollArea):
         self.sp_timeout.setValue(g["timeout"])
         self.sw_logconn.setChecked(g["log_connections"])
         self.sw_logclose.setChecked(g["log_close"])
+        self.cb_dns.setText(g["dns_server"])
+        self.sw_dns_via.setChecked(g["dns_via_outbound"])
         self.sw_logfile.setChecked(g["log_to_file"])
         self.cb_lang.setCurrentIndex(LANGUAGE_CODES.index(g["language"]))
         self.cb_theme.setCurrentIndex([k for k, _ in config.THEMES].index(g["theme"]))
@@ -142,16 +163,23 @@ class SettingsInterface(ScrollArea):
         self.cb_uifont.setCurrentIndex(self.ui_fonts.index(g["ui_font"]) if g["ui_font"] in self.ui_fonts else 0)
         self.cb_monofont.setCurrentIndex(self.mono_fonts.index(g["mono_font"]) if g["mono_font"] in self.mono_fonts else 0)
         self.sw_liga.setChecked(g["disable_ligatures"])
+        self.cb_engine.setCurrentIndex(config.ENGINES.index(g["engine"]))
+        self.sw_admin.setChecked(g["run_as_admin"])
 
     def apply(self):
         domains = [d.strip() for d in self.ed_allow.text().replace(";", ",").split(",") if d.strip()]
         if not domains:
             info(self.window(), "error", _t("Allowed domains"), _t("Enter at least one (* allows all)"))
             return
+        if config.dns_server_spec(self.cb_dns.text()) is None:
+            info(self.window(), "error", _t("DNS server"),
+                 _t("DNS server: use an address like 1.1.1.1, tls://dns.google or https://cloudflare-dns.com/dns-query"))
+            return
         g = dict(self.ctl.glob)
         g.update(
             allowed_domains=domains, block_private=self.sw_private.isChecked(), timeout=self.sp_timeout.value(),
             log_connections=self.sw_logconn.isChecked(), log_close=self.sw_logclose.isChecked(),
+            dns_server=self.cb_dns.text().strip(), dns_via_outbound=self.sw_dns_via.isChecked(),
             log_to_file=self.sw_logfile.isChecked(),
             language=LANGUAGE_CODES[max(self.cb_lang.currentIndex(), 0)],
             theme=config.THEMES[max(self.cb_theme.currentIndex(), 0)][0],
@@ -160,6 +188,8 @@ class SettingsInterface(ScrollArea):
             ui_font=self.ui_fonts[max(self.cb_uifont.currentIndex(), 0)],
             mono_font=self.mono_fonts[max(self.cb_monofont.currentIndex(), 0)],
             disable_ligatures=self.sw_liga.isChecked(),
+            engine=config.ENGINES[max(self.cb_engine.currentIndex(), 0)],
+            run_as_admin=self.sw_admin.isChecked(),
         )
         self.ctl.apply_global(config.validate_global(g))
 

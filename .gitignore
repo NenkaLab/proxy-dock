@@ -36,3 +36,6 @@ logs/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# sing-box binaries (tools/fetch_singbox.py; the installer ships them)
+bin/
