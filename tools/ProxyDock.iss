@@ -64,34 +64,42 @@ en.DirProgramFiles=Program Files (all users)
 en.StartMenuIcon=Create a Start menu shortcut
 en.DirUser=AppData (this user only)
 en.NeedAdmin=Installing to Program Files needs administrator rights.%n%nRestart setup as administrator?
+en.RelaunchFailed=Could not restart setup as administrator. Right-click the setup file and choose 'Run as administrator'.
 ko.DirProgramFiles=Program Files (모든 사용자)
 ko.StartMenuIcon=시작 메뉴에 바로 가기 만들기
 ko.DirUser=AppData (현재 사용자만)
 ko.NeedAdmin=Program Files에 설치하려면 관리자 권한이 필요합니다.%n%n관리자 권한으로 설치를 다시 시작할까요?
+ko.RelaunchFailed=관리자 권한으로 설치를 다시 시작하지 못했습니다. 설치 파일을 마우스 오른쪽 버튼으로 클릭하고 '관리자 권한으로 실행'을 선택하세요.
 ja.DirProgramFiles=Program Files (すべてのユーザー)
 ja.StartMenuIcon=スタート メニューにショートカットを作成する
 ja.DirUser=AppData (現在のユーザーのみ)
 ja.NeedAdmin=Program Files にインストールするには管理者権限が必要です。%n%n管理者としてセットアップを再起動しますか?
+ja.RelaunchFailed=管理者としてセットアップを再起動できませんでした。セットアップ ファイルを右クリックし、「管理者として実行」を選んでください。
 de.DirProgramFiles=Program Files (alle Benutzer)
 de.StartMenuIcon=Verknüpfung im Startmenü erstellen
 de.DirUser=AppData (nur dieser Benutzer)
 de.NeedAdmin=Für die Installation in Program Files sind Administratorrechte nötig.%n%nSetup als Administrator neu starten?
+de.RelaunchFailed=Setup konnte nicht als Administrator neu gestartet werden. Klicken Sie mit der rechten Maustaste auf die Setup-Datei und wählen Sie „Als Administrator ausführen“.
 fr.DirProgramFiles=Program Files (tous les utilisateurs)
 fr.StartMenuIcon=Créer un raccourci dans le menu Démarrer
 fr.DirUser=AppData (cet utilisateur)
 fr.NeedAdmin=L'installation dans Program Files nécessite des droits administrateur.%n%nRelancer l'installation en tant qu'administrateur ?
+fr.RelaunchFailed=Impossible de relancer l'installation en tant qu'administrateur. Faites un clic droit sur le fichier d'installation et choisissez « Exécuter en tant qu'administrateur ».
 es.DirProgramFiles=Program Files (todos los usuarios)
 es.StartMenuIcon=Crear un acceso directo en el menú Inicio
 es.DirUser=AppData (solo este usuario)
 es.NeedAdmin=Instalar en Program Files requiere permisos de administrador.%n%n¿Reiniciar la instalación como administrador?
+es.RelaunchFailed=No se pudo reiniciar la instalación como administrador. Haz clic derecho en el archivo de instalación y elige «Ejecutar como administrador».
 zh_CN.DirProgramFiles=Program Files (所有用户)
 zh_CN.StartMenuIcon=在开始菜单中创建快捷方式
 zh_CN.DirUser=AppData (仅当前用户)
 zh_CN.NeedAdmin=安装到 Program Files 需要管理员权限。%n%n以管理员身份重新启动安装程序?
+zh_CN.RelaunchFailed=无法以管理员身份重新启动安装程序。请右键单击安装文件并选择“以管理员身份运行”。
 zh_TW.DirProgramFiles=Program Files (所有使用者)
 zh_TW.StartMenuIcon=在開始功能表中建立捷徑
 zh_TW.DirUser=AppData (僅目前使用者)
 zh_TW.NeedAdmin=安裝到 Program Files 需要系統管理員權限。%n%n以系統管理員身分重新啟動安裝程式?
+zh_TW.RelaunchFailed=無法以系統管理員身分重新啟動安裝程式。請在安裝檔案上按滑鼠右鍵，然後選擇「以系統管理員身分執行」。
 
 [Tasks]
 Name: "startmenuicon"; Description: "{cm:StartMenuIcon}"; GroupDescription: "{cm:AdditionalIcons}"
@@ -139,19 +147,23 @@ begin
 end;
 
 { start setup again with /ALLUSERS: Inno Setup asks for administrator rights itself (UAC), so the
-  "launch ProxyDock" checkbox at the end still runs the app as the normal user }
+  "launch ProxyDock" checkbox at the end still runs the app as the normal user.
+  Through "cmd /c start": starting the setup file directly from here (ShellExec or Exec) fails with
+  error 5 (access denied) while this setup is running. }
 procedure RelaunchAsAdmin(Dir: String);
 var
   Code: Integer;
 begin
   if MsgBox(CustomMessage('NeedAdmin'), mbConfirmation, MB_YESNO) <> IDYES then
     Exit;
-  if ShellExec('', ExpandConstant('{srcexe}'), '/ALLUSERS /LANG=' + ActiveLanguage + ' /DIR="' + Dir + '"',
-               '', SW_SHOW, ewNoWait, Code) then
+  if Exec(ExpandConstant('{cmd}'), '/c start "" "' + ExpandConstant('{srcexe}') + '" /ALLUSERS /LANG=' + ActiveLanguage +
+          ' /DIR="' + Dir + '"', '', SW_HIDE, ewWaitUntilTerminated, Code) and (Code = 0) then
   begin
     Relaunching := True;
     WizardForm.Close;
-  end;
+  end
+  else
+    MsgBox(CustomMessage('RelaunchFailed') + #13#10#13#10 + SysErrorMessage(Code), mbError, MB_OK);
 end;
 
 procedure ProgramFilesClick(Sender: TObject);
