@@ -59,10 +59,22 @@ DATAS = collect_data_files('qfluentwidgets') + collect_data_files('certifi') + c
     (src('licenses', '*.txt'), 'licenses'), (src('proxydock', 'locales', '*.json'), 'proxydock/locales'),
 ]
 
+def engine_binaries():
+    """sing-box and the official Hysteria2 core for this OS/arch (bin/<os>-<arch>/, fetched by tools/build.py),
+    placed at the same relative path inside the app so proxydock.singbox finds them."""
+    sys.path.insert(0, ROOT)
+    from proxydock.singbox import EXE, HY_EXE, platform_dir
+    rel = os.path.join('bin', platform_dir())
+    found = [(src(rel, name), rel) for name in (EXE, HY_EXE) if os.path.isfile(src(rel, name))]
+    if len(found) != 2:
+        raise SystemExit(f'{rel}: sing-box / hysteria missing - run python tools/fetch_singbox.py')
+    return found
+
+
 a = Analysis(
     [src('proxydock.py')],
     pathex=[ROOT],
-    binaries=[],
+    binaries=engine_binaries(),
     datas=DATAS,
     hiddenimports=collect_submodules('proxydock') + collect_submodules('aioquic') + collect_submodules('NodeGraphQt') + ['Qt'],
     hookspath=[],

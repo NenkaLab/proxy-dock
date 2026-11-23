@@ -2,175 +2,64 @@
 
 **English** · [한국어](docs/README.ko.md) · [日本語](docs/README.ja.md) · [简体中文](docs/README.zh-CN.md) · [繁體中文](docs/README.zh-TW.md) · [Deutsch](docs/README.de.md) · [Français](docs/README.fr.md) · [Español](docs/README.es.md)
 
-A desktop "dock" for proxies: create several proxies and turn each one on or off. Made for personal use.
-
-Each proxy combines an **inbound** (how it accepts connections on a port of this PC) and an **outbound**
-(how it reaches the destination). For example, "accept on a local SOCKS5 port → encrypted tunnel to a remote
-Shadowsocks server" is a single card.
+A desktop app that runs several proxies and tunnels side by side. Link **inbound** blocks (how traffic enters,
+e.g. a local SOCKS5 port) to **outbound** blocks (how it leaves, e.g. a Shadowsocks server) on a canvas, and
+turn each card on or off.
 
 <p align="center">
   <img src="docs/images/canvas.png" width="98%" alt="Canvas">
 </p>
-<p align="center">
-  <img src="docs/images/proxies.png" width="49%" alt="Proxy list">
-  <img src="docs/images/editor.png" width="49%" alt="Inbound editor">
-</p>
 
 ## Features
 
-| | Supported |
-|---|---|
-| Inbound | SOCKS5 · SOCKS4/4a · HTTP · HTTPS (TLS) · Shadowsocks server · Hysteria2 server · TUN (all apps) |
-| Outbound | Direct · upstream HTTP / HTTPS / SOCKS4 / SOCKS5 proxy · Shadowsocks tunnel · Hysteria2 (QUIC) tunnel · WireGuard · VLESS (TLS / REALITY) · VMess · Trojan · TUIC · subscription · group |
-| UDP | inbound SOCKS5 · Shadowsocks · Hysteria2, outbound Direct · Shadowsocks · Hysteria2 · WireGuard · VLESS · VMess · Trojan · TUIC |
+- **Inbound**: SOCKS5, SOCKS4, HTTP, HTTPS, Shadowsocks server, Hysteria2 server, TUN (all apps on this PC)
+- **Outbound**: Direct, HTTP / HTTPS / SOCKS proxy, Shadowsocks, Hysteria2, WireGuard, VLESS (REALITY), VMess,
+  Trojan, TUIC, subscriptions (share links or Clash YAML)
+- **Blocks**: chains (one outbound through another), routers (rules by domain, IP, port, program, GeoIP/Geosite),
+  groups (fastest or failover), Block
+- **Network interface**: send an outbound through Tailscale, a VPN app or Wi-Fi without changing the PC's routes
+- **DNS**: the PC's DNS, DoH / DoT / DoQ, per card, optionally through the tunnel; Fake-IP for TUN
+- **PC block**: use an HTTP inbound as the Windows system proxy while it runs
+- Share links (`ss://`, `vless://`, `vmess://`, `trojan://`, `tuic://`, `hysteria2://`), connection check and test,
+  logs and live statistics, 8 languages, tray, start at login
 
-- **Canvas**: blueprint-style editor - drag lines from inbound blocks to outbound blocks; several inbounds can share one outbound, an inbound linked into another inbound relays through it, and Direct can leave from a chosen source IP
-- **PC block**: link an HTTP inbound to use it as the Windows system proxy while it runs; the previous settings are saved and put back when it stops or the app quits (Restore previous / Off buttons)
-- **Chaining**: an outbound block's 'via' output sends its own server connection through another outbound (e.g. Shadowsocks through the company HTTP proxy, HTTPS upstream through a Hysteria2 tunnel), as many hops as needed
-- **Router**: put a router block between an inbound and its outbounds - rules on domains, IP ranges, ports, programs
-  (chrome.exe, ...), GeoIP countries and Geosite categories each get their own output; unmatched traffic takes the
-  default. Rules can lead to any outbound, to the **Block** outbound (refuse) or to another router
-- **Network interface**: any outbound can leave through a chosen network card - Tailscale, WireGuard, a VPN app, Wi-Fi - without changing the PC's routes, so only the traffic you link there uses it (sing-box engine)
-- **WireGuard**: a WireGuard tunnel block run inside ProxyDock - no VPN app, so several countries can be up at once for different apps; import a provider's `.conf`; put one WireGuard block 'via' another for a double VPN (sing-box engine)
-- **TUN**: a virtual network card that captures every app on this PC, also those without proxy settings - link it to a router and program rules (game.exe, chrome.exe) apply to all apps. Asks for administrator permission (UAC) when it starts, unless ProxyDock already runs as administrator (sing-box engine)
-- **VLESS / VMess / Trojan / TUIC**: VLESS with TLS or REALITY (Vision flow), Trojan, TUIC v5, over TCP, WebSocket or gRPC. Copy a provider's `vless://`, `vmess://`, `trojan://`, `tuic://`, `ss://` or `hysteria2://` link and use **Add outbound → From a share link** (or **Paste share link** in the editor). Cloudflare WARP: import a WARP WireGuard profile (e.g. made with wgcf) into a WireGuard block (sing-box engine)
-- **Subscriptions**: a provider's subscription URL becomes one block holding all its servers - pick one, or let it use the fastest (it measures every few minutes and moves away from dead servers). Updates on a schedule; the list is saved (encrypted) so it also starts offline (sing-box engine)
-- **Groups**: a group block uses several outbound blocks as one - the fastest, or the first that works in the order you set (failover). Link the members from its 'members' output; dead servers are skipped automatically (sing-box engine)
-- **DNS**: choose the DNS server ProxyDock uses where it looks names up itself (Direct, IP rules, TUN) - the PC's DNS, or UDP/TCP, DoT (tls://), DoH (https://), DoQ (quic://), HTTP/3 (h3://). Globally or per card; optionally sent through the card's own tunnel. TUN cards can use Fake-IP so names are looked up at the exit, not on the local network (sing-box engine)
-- **Engine**: sing-box (default) runs each proxy in its own process - multi-core, UDP through chains, Hysteria2 through other outbounds. The built-in Python engine is the fallback (Settings → Proxy engine)
-- **Shadowsocks**: AEAD 2018 (aes-128/256-gcm, chacha20-ietf-poly1305) and 2022 (SIP022, blake3), TCP+UDP, copy `ss://` links
-- **Hysteria2**: interoperates both ways with the official implementation (TCP and UDP), certificate pinning, copy `hysteria2://` links
-- **Settings**: global defaults + per-proxy local settings (local wins) - allowed domains, private network blocking, idle timeout, logging
-- **Check connection** in the editor: tests the outbound (upstream/tunnel, passwords) and the inbound port before saving
-- **Connection test**: connects to 21 sites in many countries over HTTPS through a running proxy and measures response times
-- **Logs / statistics** per proxy, live throughput graph, optional log file
-- **Security**: passwords stored with Windows DPAPI (0600 files on other OSes), per-IP connection limits,
-  temporary bans after repeated authentication failures, proxy chain loop detection, Windows Firewall block button
-- **Languages**: English (default), 한국어, 日本語, 简体中文, 繁體中文, Deutsch, Français, Español (Settings → Display → Language)
-- Tray, start at login, light/dark theme, built-in fonts (Pretendard / Pretendard JP / Noto Sans SC·TC / JetBrains Mono)
+Proxies run on [sing-box](https://github.com/SagerNet/sing-box) (one process per card, bundled in the release).
+A Hysteria2 server open to other PCs runs on the official [Hysteria](https://github.com/apernet/hysteria) core.
+A built-in Python engine is the fallback.
 
 ## Running
 
-Use a build from [Releases](https://github.com/NenkaLab/proxy-dock/releases) if there is one, or run from source:
+Download a build from [Releases](https://github.com/NenkaLab/proxy-dock/releases), or run from source
+(Python 3.14):
 
 ```bash
 python -m venv .venv
-# Windows: .venv\Scripts\activate   /   macOS, Linux: source .venv/bin/activate
+.venv\Scripts\activate            # macOS / Linux: source .venv/bin/activate
 pip install -r requirements.txt
-python tools/fetch_singbox.py   # sing-box engine (without it proxies use the Python engine)
-python proxydock.py            # --hidden : start in the tray without a window
+python tools/fetch_singbox.py     # sing-box and Hysteria for this PC
+python proxydock.py
 ```
 
-Developed and tested with Python 3.14.
-
-There are no proxies on first launch. Pick a template under **New proxy** (Local SOCKS5, Local HTTP,
-Shadowsocks server, Local → Shadowsocks tunnel, ...) and start it with the switch on its card.
-The **How to use** page in the app has the details.
-
-Settings location
-
-| OS | Path |
-|---|---|
-| Windows | `%APPDATA%\ProxyDock` |
-| macOS | `~/Library/Application Support/ProxyDock` |
-| Linux | `$XDG_CONFIG_HOME/ProxyDock` (default `~/.config/ProxyDock`) |
+Settings are saved in `%APPDATA%\ProxyDock` (macOS: `~/Library/Application Support/ProxyDock`,
+Linux: `~/.config/ProxyDock`). The **How to use** page in the app explains the rest.
 
 ## Building
 
-Everything for building lives in [`tools/`](tools/). PyInstaller produces a single executable (an `.app` on macOS).
-The scripts create a virtual environment per OS, install only the packages that differ from `requirements.txt`,
-and build with `tools/ProxyDock.spec`. They can be run from any folder.
+`tools\build_win.bat` → `dist/win/ProxyDock.exe` (Linux: `tools/build_linux.sh`, macOS: `tools/build_mac.sh`).
+The build downloads sing-box and Hysteria (SHA-256 checked) and puts them inside the app.
+Tests: `python tests/run_tests.py`. Releases: `tools\release.bat <version>` tags and pushes; GitHub Actions builds them.
 
-| Command | Output |
-|---|---|
-| `tools\build_win.bat` | `dist/win/ProxyDock.exe` (on Windows) |
-| `tools\build_linux.bat` / `tools/build_linux.sh` | `dist/linux/ProxyDock` (natively on Linux, with Docker on Windows/macOS) |
-| `tools/build_mac.sh` | `dist/mac/ProxyDock.app` (on macOS only) |
-| `tools\build.bat` / `tools/build.sh` | everything this computer can build, with a summary |
+## Limitations
 
-The macOS build has not been tried on a real Mac yet.
-
-## Releases and CI
-
-- Every push and pull request runs the tests on Windows, Linux and macOS ([CI](.github/workflows/ci.yml),
-  `python tests/run_tests.py` locally - no internet needed).
-- `tools\release.bat 2.1.0` (or `python tools/release.py 2.1.0`) checks the working tree, runs the tests, bumps
-  `__version__`, commits, tags `v2.1.0` and pushes. The tag starts the [release workflow](.github/workflows/release.yml),
-  which builds Windows / Linux / macOS and publishes a GitHub Release with the archives and `SHA256SUMS.txt`.
-  Add `--dry-run` to rehearse.
-- `python tools/build.py package win|linux|mac` makes the same archives locally in `dist/release/`.
-
-## Known limitations
-
-- Subscriptions read share-link lists (plain or base64) and Clash / Clash.Meta YAML (only its proxies; ssr, snell and Shadowsocks plugins are skipped, its groups and rules are not used). 'Fastest automatically' checks the servers by fetching a small test page (gstatic.com generate_204) every few minutes.
-- Groups do not spread traffic over several servers (load balancing; sing-box 1.14 has no such outbound). After a failover the group stays on the new member until that one fails too.
-- Tunnels and upstream proxies still resolve domains on their server, as before; the DNS setting covers lookups made on this PC. Fake-IP has not been tried on real setups yet (with TUN). DNS rules per domain (a different server for some names) are not available.
-- TUN has not been tried on real setups yet. One TUN card at a time; DNS of the captured apps is answered by ProxyDock
-  on this PC; strict route can break IPv6 on Windows (off by default). On macOS/Linux ProxyDock itself must run as root.
-- Router and Block blocks need the sing-box engine. IP and GeoIP rules resolve the domain on this PC first, so a tunnel
-  behind them connects to the IP instead of resolving the domain remotely. Program rules only see connections from this PC.
-- sing-box engine: a Hysteria2 server open to other PCs runs on the official Hysteria2 core, which asks ProxyDock about every
-  login (sing-box cannot report wrong passwords, so IP bans would not work); its traffic then goes through sing-box. Certificate
-  pinning still runs on the Python engine (needs sing-box 1.15). The per-IP connection limit closes extra connections after
-  the fact; the TCP idle timeout and 'Log connection close details' are checked once a second, so very short connections get no close line.
-- Python engine: Hysteria2 cannot go *through* other outbounds, UDP is not relayed through chained outbounds, and Hysteria2
-  (aioquic) reaches about 100 Mbps. Hysteria2 bandwidth (Brutal), Salamander and port hopping need the sing-box engine; a server listening on a port range needs a port redirect on that server (not set up by ProxyDock).
-- The official Hysteria2 server (and other servers that check the name) rejects an SNI that does not match its certificate. When the outbound uses an IP, click **Detect from server** next to the SNI field to read the certificate's name.
-- The HTTP inbound handles one plain (non-CONNECT) request per connection.
-- SOCKS4 has no password authentication, so only use it on this PC.
-
-## Layout
-
-```
-proxydock.py            entry point
-proxydock/
-  common.py             shared constants, logging, address handling, bans
-  config.py             settings format (v2), validation, global/local merge, password storage, migration
-  graph.py              block graph (inbound / outbound / PC blocks) -> runtime proxies
-  runtime.py            ProxyInstance / ProxyManager (many proxies on one asyncio thread)
-  relay.py              TCP/UDP relay core
-  inbound.py            inbound protocols
-  outbound.py           outbound protocols
-  ss.py                 Shadowsocks 2018/2022 encryption
-  hysteria2.py          Hysteria2 server and client (aioquic)
-  singbox/              sing-box engine: config compiler, process runner, ban / per-IP limit guard
-  tls.py                self-signed certificates, TLS contexts
-  probe.py              connection test / connection check
-  platform_utils.py     start at login, firewall, port check
-  i18n.py, locales/     translations (English source strings -> <language>.json)
-  ui/                   PySide6 + Fluent Widgets UI
-    canvas.py           canvas page (NodeGraphQt)
-tools/                  build scripts, PyInstaller spec, Linux build Dockerfile
-licenses/               licenses of the bundled third-party components
-docs/                   translated READMEs, screenshots
-```
-
-### Translations
-
-UI strings are written in English in the code (`_t("...")`) and translated through
-`proxydock/locales/<language>.json`. A missing entry falls back to English.
+- Routers, groups, WireGuard, VLESS / VMess / Trojan / TUIC, TUN, interfaces and custom DNS need the sing-box engine.
+- No load balancing across servers; Hysteria2 servers cannot listen on a port range by themselves.
+- Certificate pinning runs on the Python engine until sing-box 1.15.
+- TUN and Fake-IP have not been tried on real setups yet. macOS has not been tried on a real Mac.
+- SOCKS4 has no password, so only use it on this PC.
 
 ## License
 
-[GPL-3.0](LICENSE). The UI library [PySide6-Fluent-Widgets](https://github.com/zhiyiYo/PyQt-Fluent-Widgets) is
-GPL v3, so this program is distributed under GPL v3 as well; distributing built executables must follow the GPL v3
-terms (providing the source, etc.).
-
-Licenses of the bundled fonts and libraries are in [`licenses/`](licenses/).
-
-| Component | License |
-|---|---|
-| Pretendard, Pretendard JP, Noto Sans SC/TC, JetBrains Mono (bundled fonts) | SIL OFL 1.1 |
-| PySide6-Fluent-Widgets | GPL v3 |
-| sing-box | GPL v3 |
-| Hysteria2 | MIT |
-| Qt 6 / PySide6 / Shiboken6, PySideSix-Frameless-Window | LGPL v3 |
-| aioquic, pylsqpack, darkdetect | BSD 3-Clause |
-| cryptography | Apache 2.0 / BSD 3-Clause |
-| pyOpenSSL | Apache 2.0 |
-| service-identity, attrs, NodeGraphQt, Qt.py, PyYAML | MIT |
-| certifi | MPL 2.0 |
-| Python runtime | PSF License |
-| PyInstaller bootloader | GPL v2+ (bootloader exception) |
+[GPL-3.0](LICENSE). Bundled components (sing-box GPL-3.0, Hysteria MIT, Qt / PySide6 LGPL-3.0, fonts OFL-1.1, ...)
+and their licenses are listed in [`licenses/`](licenses/).
 
 Copyright (C) 2026 NenkaLab

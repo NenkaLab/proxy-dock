@@ -2,170 +2,60 @@
 
 [English](../README.md) · [한국어](README.ko.md) · [日本語](README.ja.md) · [简体中文](README.zh-CN.md) · **繁體中文** · [Deutsch](README.de.md) · [Français](README.fr.md) · [Español](README.es.md)
 
-一個桌面代理「船塢」：可以建立多個代理，並分別開啟或關閉。為個人使用而做。
-
-每個代理由 **接收端** (在這台電腦的連接埠上接收連線的方式) 和 **傳出端** (送達目的地的方式) 組合而成。
-例如「以本機 SOCKS5 接收 → 透過加密通道送到遠端 Shadowsocks 伺服器」只需要一張卡片。
+同時執行多個代理與通道的桌面應用程式。在畫布上把**傳入端**區塊 (流量進入的方式，例如本機 SOCKS5 連接埠) 連到
+**傳出端**區塊 (流量離開的方式，例如 Shadowsocks 伺服器)，每張卡片可個別開關。
 
 <p align="center">
   <img src="images/canvas.png" width="98%" alt="畫布">
 </p>
-<p align="center">
-  <img src="images/proxies.png" width="49%" alt="代理清單">
-  <img src="images/editor.png" width="49%" alt="編輯接收端">
-</p>
 
 ## 功能
 
-| | 支援 |
-|---|---|
-| 接收端 | SOCKS5 · SOCKS4/4a · HTTP · HTTPS (TLS) · Shadowsocks 伺服器 · Hysteria2 伺服器 · TUN (所有應用程式) |
-| 傳出端 | Direct · 上游 HTTP / HTTPS / SOCKS4 / SOCKS5 代理 · Shadowsocks 通道 · Hysteria2 (QUIC) 通道 · WireGuard · VLESS (TLS / REALITY) · VMess · Trojan · TUIC · 訂閱 · 群組 |
-| UDP | 接收 SOCKS5 · Shadowsocks · Hysteria2，傳出 Direct · Shadowsocks · Hysteria2 · WireGuard · VLESS · VMess · Trojan · TUIC |
+- **傳入端**: SOCKS5、SOCKS4、HTTP、HTTPS、Shadowsocks 伺服器、Hysteria2 伺服器、TUN (本機所有程式)
+- **傳出端**: Direct、HTTP / HTTPS / SOCKS 代理、Shadowsocks、Hysteria2、WireGuard、VLESS (REALITY)、VMess、
+  Trojan、TUIC、訂閱 (分享連結或 Clash YAML)
+- **區塊**: 串接 (傳出端經由另一個傳出端)、路由器 (依網域、IP、連接埠、程式、GeoIP/Geosite 分流)、群組 (最快或容錯移轉)、封鎖
+- **網路介面**: 不改動本機路由，讓傳出端經 Tailscale、VPN 程式或 Wi-Fi 出去
+- **DNS**: 本機 DNS、DoH / DoT / DoQ，可依卡片設定，可經由通道送出; TUN 可用 Fake-IP
+- **PC 區塊**: HTTP 傳入端執行期間當作 Windows 系統代理
+- 分享連結 (`ss://`、`vless://`、`vmess://`、`trojan://`、`tuic://`、`hysteria2://`)、連線檢查與測試、記錄與即時統計、
+  8 種語言、系統匣、登入時啟動
 
-- **畫布**：藍圖式編輯器 - 從接收端區塊拖線到傳出端區塊；多個接收端可共用一個傳出端，把接收端連到另一個接收端會經由它中繼，Direct 可以指定來源 IP
-- **PC 區塊**：連接一個 HTTP 接收端，在其執行期間用作 Windows 系統代理；先前的設定會被保存，停止或結束應用程式時還原 (還原先前設定 / 關閉 按鈕)
-- **串接**：連接傳出端區塊的「經由」輸出後，它到伺服器的連線會經由另一個傳出端 (例如穿過公司 HTTP 代理的 Shadowsocks、Hysteria2 通道中的 HTTPS 上游代理)，可以串接任意多層
-- **路由**: 在接收端與傳出端之間放一個路由區塊，網域、IP 範圍、連接埠、程式 (chrome.exe 等)、GeoIP 國家、Geosite 分類的
-  每條規則都有自己的輸出；沒有規則符合時走預設出口。規則可以連到任何傳出端、**封鎖**區塊 (拒絕連線) 或另一個路由
-- **網路介面**: 任何傳出端都可以從選定的網路卡 (Tailscale、WireGuard、VPN 應用程式、Wi-Fi) 送出，不變更電腦的路由，只有連到那裡的流量才使用它 (sing-box 引擎)
-- **WireGuard**: 在 ProxyDock 內執行的 WireGuard 通道區塊 - 不需要 VPN 應用程式，可同時開啟多個國家的通道並依應用程式分配；可匯入業者的 `.conf`；把一個 WireGuard 區塊經由另一個即為雙重 VPN (sing-box 引擎)
-- **TUN**: 擷取這台電腦所有應用程式 (包括沒有代理設定的程式) 的虛擬網路卡——連到路由後，程式規則 (game.exe、chrome.exe) 對所有應用程式生效。若 ProxyDock 不是以系統管理員身分執行，啟動時會要求系統管理員權限 (UAC) (sing-box 引擎)
-- **VLESS / VMess / Trojan / TUIC**: 支援 TLS 或 REALITY (Vision flow) 的 VLESS、Trojan、TUIC v5，可走 TCP、WebSocket 或 gRPC。複製業者的 `vless://`、`vmess://`、`trojan://`、`tuic://`、`ss://` 或 `hysteria2://` 連結，再按 **新增傳出端 → 從分享連結** (或編輯器中的 **貼上分享連結**)。Cloudflare WARP：把 WARP 的 WireGuard 設定檔 (例如用 wgcf 產生) 匯入 WireGuard 區塊 (sing-box 引擎)
-- **訂閱**: 把業者的訂閱 URL 當成包含所有伺服器的一個區塊。可手動選擇或自動使用最快的伺服器 (每隔幾分鐘測量並避開失效伺服器)。依設定間隔更新，清單加密儲存，離線也能啟動 (sing-box 引擎)
-- **群組**: 群組區塊把多個出站區塊當作一個使用: 最快的，或依你設定的順序第一個可用的 (容錯移轉)。從它的「成員」輸出連接成員; 自動跳過失效伺服器 (sing-box 引擎)
-- **DNS**: 選擇 ProxyDock 自己解析名稱時 (Direct、IP 規則、TUN) 使用的 DNS 伺服器: PC 的 DNS，或 UDP/TCP、DoT (tls://)、DoH (https://)、DoQ (quic://)、HTTP/3 (h3://)。可全域或依卡片設定，也可以經由卡片的通道送出。TUN 卡片可使用 Fake-IP，讓名稱在出口而不是本機網路解析 (sing-box 引擎)
-- **引擎**: 預設的 sing-box 為每個代理各自執行一個處理程序 - 多核心、經過鏈結的 UDP、經由其他傳出端的 Hysteria2。內建 Python 引擎作為備用 (設定 → 代理引擎)
-- **Shadowsocks**：AEAD 2018 (aes-128/256-gcm、chacha20-ietf-poly1305) 與 2022 (SIP022、blake3)，TCP+UDP，複製 `ss://` 連結
-- **Hysteria2**：已確認與官方實作雙向相容 (TCP、UDP)，憑證指紋固定，複製 `hysteria2://` 連結
-- **設定**：全域預設值 + 每個代理的本機設定 (本機優先) - 允許的網域、封鎖內部網路、閒置逾時、記錄
-- **編輯頁面的檢查連線**：儲存前測試傳出端 (上游代理/通道、密碼) 與接收端連接埠
-- **連線測試**：透過執行中的代理以 HTTPS 連線多個國家的 21 個網站並測量回應時間
-- **記錄 / 統計**：依代理檢視，即時速度圖，可選擇寫入檔案
-- **安全性**：密碼以 Windows DPAPI 儲存 (其他作業系統為 0600 權限檔案)，依 IP 限制連線數，
-  多次驗證失敗後暫時封鎖，防止代理鏈迴圈，Windows 防火牆外部封鎖按鈕
-- **語言**：English (預設)、한국어、日本語、简体中文、繁體中文、Deutsch、Français、Español (設定 → 顯示 → 語言)
-- 常駐系統匣、開機時啟動、淺色/深色佈景主題、內建字型 (Pretendard / Pretendard JP / Noto Sans SC·TC / JetBrains Mono)
+代理由 [sing-box](https://github.com/SagerNet/sing-box) 執行 (每張卡片一個程序，發行版已內建)。
+對其他電腦開放的 Hysteria2 伺服器使用官方 [Hysteria](https://github.com/apernet/hysteria) 核心，內建 Python 引擎作為備用。
 
 ## 執行
 
-如果 [Releases](https://github.com/NenkaLab/proxy-dock/releases) 中有建置好的檔案可以直接使用，也可以從原始碼執行：
+從 [Releases](https://github.com/NenkaLab/proxy-dock/releases) 下載建置，或從原始碼執行 (Python 3.14):
 
 ```bash
 python -m venv .venv
-# Windows: .venv\Scripts\activate   /   macOS、Linux: source .venv/bin/activate
+.venv\Scripts\activate            # macOS / Linux: source .venv/bin/activate
 pip install -r requirements.txt
-python tools/fetch_singbox.py   # sing-box 引擎 (沒有時代理改用 Python 引擎)
-python proxydock.py            # --hidden : 不顯示視窗，直接啟動到系統匣
+python tools/fetch_singbox.py     # 本機用的 sing-box 與 Hysteria
+python proxydock.py
 ```
 
-以 Python 3.14 開發與測試。
-
-第一次啟動時沒有代理。在 **新增代理** 中選擇範本 (本機 SOCKS5、本機 HTTP、Shadowsocks 伺服器、
-本機 → Shadowsocks 通道等) 建立，再用卡片上的開關執行。詳細用法請見應用程式中的 **使用方式** 頁面。
-介面語言預設為英文，可在 設定 → 顯示 → 語言 中變更 (重新啟動後套用)。
-
-設定儲存位置
-
-| 作業系統 | 路徑 |
-|---|---|
-| Windows | `%APPDATA%\ProxyDock` |
-| macOS | `~/Library/Application Support/ProxyDock` |
-| Linux | `$XDG_CONFIG_HOME/ProxyDock` (預設 `~/.config/ProxyDock`) |
+設定儲存在 `%APPDATA%\ProxyDock` (macOS: `~/Library/Application Support/ProxyDock`，Linux: `~/.config/ProxyDock`)。
+其餘內容見程式內的**使用方法**頁面。
 
 ## 建置
 
-建置相關的檔案都在 [`tools/`](../tools/) 中。以 PyInstaller 產生單一執行檔 (macOS 為 `.app`)。
-指令碼會為每個作業系統建立虛擬環境，只安裝與 `requirements.txt` 不一致的套件，再以 `tools/ProxyDock.spec` 建置。
-可以在任何資料夾中執行。
+`tools\build_win.bat` → `dist/win/ProxyDock.exe` (Linux: `tools/build_linux.sh`，macOS: `tools/build_mac.sh`)。
+建置時會下載 sing-box 與 Hysteria (檢查 SHA-256) 並放進程式。
+測試: `python tests/run_tests.py`。發行: `tools\release.bat <版本>` 加上標籤並推送，由 GitHub Actions 建置。
 
-| 指令 | 輸出 |
-|---|---|
-| `tools\build_win.bat` | `dist/win/ProxyDock.exe` (在 Windows 上) |
-| `tools\build_linux.bat` / `tools/build_linux.sh` | `dist/linux/ProxyDock` (Linux 上直接建置，Windows/macOS 上透過 Docker) |
-| `tools/build_mac.sh` | `dist/mac/ProxyDock.app` (僅 macOS) |
-| `tools\build.bat` / `tools/build.sh` | 建置這台電腦能建置的全部目標並彙整結果 |
+## 限制
 
-macOS 建置尚未在實體 Mac 上驗證。
-
-## 發佈與 CI
-
-- 每次推送和 PR 都會在 Windows、Linux、macOS 上執行測試 ([CI](../.github/workflows/ci.yml)，
-  本機執行 `python tests/run_tests.py` - 不需要網路)。
-- `tools\release.bat 2.1.0` (或 `python tools/release.py 2.1.0`) 會檢查工作區、執行測試、提升 `__version__`、
-  提交、建立 `v2.1.0` 標籤並推送。標籤會觸發[發佈工作流程](../.github/workflows/release.yml)，建置 Windows / Linux / macOS
-  並把壓縮檔和 `SHA256SUMS.txt` 發佈到 GitHub Release。加上 `--dry-run` 只做預演。
-- `python tools/build.py package win|linux|mac` 可在本機 `dist/release/` 產生相同的壓縮檔。
-
-## 已知限制
-
-- 訂閱讀取分享連結清單 (純文字或 base64) 和 Clash / Clash.Meta YAML (只讀取代理; 跳過 ssr、snell 和 Shadowsocks 外掛，不使用檔案中的群組和規則)。「自動選擇最快」每隔幾分鐘取得一個小測試頁 (gstatic.com generate_204) 來測量伺服器。
-- 群組不會把流量分散到多個伺服器 (負載平衡; sing-box 1.14 沒有這種出站)。容錯移轉後，群組會一直使用新成員，直到它也失效。
-- 通道和上游代理仍像以前一樣在伺服器端解析網域; DNS 設定作用於在本機進行的查詢。Fake-IP 尚未在實際環境 (TUN) 中測試。沒有依網域的 DNS 規則 (部分名稱使用其他伺服器)。
-- TUN 尚未在實際環境中測試。同一時間只能有一個 TUN 卡片；被擷取程式的 DNS 由這台電腦上的 ProxyDock 回應；
-  嚴格路由在 Windows 上可能破壞 IPv6 (預設關閉)。在 macOS/Linux 上需要以 root 身分執行 ProxyDock。
-- 路由和封鎖區塊需要 sing-box 引擎。IP 和 GeoIP 規則會先在這台電腦解析網域，因此其後的通道直接連到 IP，而不是在遠端解析網域。
-  程式規則只對來自這台電腦的連線有效。
-- sing-box 引擎: 對其他電腦開放的 Hysteria2 伺服器以官方 Hysteria2 核心執行，核心每次連線都向 ProxyDock 詢問驗證
-  (sing-box 不回報密碼錯誤，無法封鎖 IP)；收到的流量再經 sing-box 送出。憑證固定的卡片仍以 Python 引擎執行 (需要 sing-box 1.15)。
-  單一 IP 連線上限是事後中斷多出的連線；TCP 閒置逾時和「記錄連線關閉詳情」每秒檢查一次，所以很短的連線不會留下關閉記錄。
-- Python 引擎: Hysteria2 無法*經由*其他傳出端，串接的傳出端不轉送 UDP，Hysteria2 (aioquic) 約 100 Mbps。
-  Hysteria2 頻寬設定 (Brutal)、Salamander 與連接埠跳躍需要 sing-box 引擎；接聽連接埠範圍的伺服器需要在該伺服器上做連接埠轉送 (ProxyDock 不會設定)。
-- 官方 Hysteria2 伺服器 (以及其他會檢查名稱的伺服器) 會拒絕與憑證不符的 SNI。傳出端使用 IP 時，按 SNI 欄旁的 **從伺服器偵測** 讀取憑證中的名稱。
-- HTTP 接收端的一般 (非 CONNECT) 要求每個連線只處理一個。
-- SOCKS4 通訊協定沒有密碼驗證，請只在這台電腦使用。
-
-## 結構
-
-```
-proxydock.py            進入點
-proxydock/
-  common.py             共用常數、記錄、位址處理、封鎖清單
-  config.py             設定格式 (v2)、驗證、全域/本機合併、密碼儲存、舊版移轉
-  graph.py              區塊圖 (接收端 / 傳出端 / PC 區塊) -> 執行用代理
-  runtime.py            ProxyInstance / ProxyManager (在一個 asyncio 執行緒中執行多個代理)
-  relay.py              TCP/UDP 中繼核心
-  inbound.py            接收端通訊協定
-  outbound.py           傳出端通訊協定
-  ss.py                 Shadowsocks 2018/2022 加密
-  hysteria2.py          Hysteria2 伺服器與用戶端 (aioquic)
-  singbox/              sing-box 引擎: 設定轉換、處理程序執行、封鎖與單一 IP 連線上限
-  tls.py                自我簽署憑證、TLS 內容
-  probe.py              連線測試 / 檢查連線
-  platform_utils.py     開機啟動、防火牆、連接埠檢查
-  i18n.py, locales/     翻譯 (程式碼中的英文原文 -> <語言>.json)
-  ui/                   PySide6 + Fluent Widgets 介面
-    canvas.py           畫布頁面 (NodeGraphQt)
-tools/                  建置指令碼、PyInstaller spec、Linux 建置用 Dockerfile
-licenses/               隨附的第三方元件授權
-docs/                   翻譯的 README、螢幕截圖
-```
-
-### 翻譯
-
-介面文字在程式碼中以英文撰寫 (`_t("...")`)，透過 `proxydock/locales/<語言>.json` 翻譯。
-沒有翻譯的文字會以英文顯示。
+- 路由器、群組、WireGuard、VLESS / VMess / Trojan / TUIC、TUN、網路介面與自訂 DNS 需要 sing-box 引擎。
+- 不支援多伺服器負載平衡; Hysteria2 伺服器無法單獨接聽連接埠範圍。
+- 在 sing-box 1.15 之前，憑證固定由 Python 引擎執行。
+- TUN 與 Fake-IP 尚未在實際環境中測試，macOS 也未在實機上測試。
+- SOCKS4 沒有密碼，請只在本機使用。
 
 ## 授權
 
-[GPL-3.0](../LICENSE)。介面函式庫 [PySide6-Fluent-Widgets](https://github.com/zhiyiYo/PyQt-Fluent-Widgets) 採用
-GPL v3，因此本程式也以 GPL v3 發佈；散布建置好的執行檔時同樣需要遵守 GPL v3 條款 (提供原始碼等)。
-
-隨附字型與函式庫的授權位於 [`licenses/`](../licenses/) 資料夾。
-
-| 元件 | 授權 |
-|---|---|
-| Pretendard, Pretendard JP, Noto Sans SC/TC, JetBrains Mono (內建字型) | SIL OFL 1.1 |
-| PySide6-Fluent-Widgets | GPL v3 |
-| sing-box | GPL v3 |
-| Hysteria2 | MIT |
-| Qt 6 / PySide6 / Shiboken6, PySideSix-Frameless-Window | LGPL v3 |
-| aioquic, pylsqpack, darkdetect | BSD 3-Clause |
-| cryptography | Apache 2.0 / BSD 3-Clause |
-| pyOpenSSL | Apache 2.0 |
-| service-identity, attrs, NodeGraphQt, Qt.py, PyYAML | MIT |
-| certifi | MPL 2.0 |
-| Python 執行環境 | PSF License |
-| PyInstaller 開機載入程式 | GPL v2+ (開機載入程式例外) |
+[GPL-3.0](../LICENSE)。內建元件 (sing-box GPL-3.0、Hysteria MIT、Qt / PySide6 LGPL-3.0、字型 OFL-1.1 等) 與授權
+見 [`licenses/`](../licenses/)。
 
 Copyright (C) 2026 NenkaLab

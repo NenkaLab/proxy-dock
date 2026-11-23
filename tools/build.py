@@ -51,18 +51,18 @@ def venv_python(target):
     venv = os.environ.get("VENV_DIR") or os.path.join(ROOT, default)
     py = os.path.join(venv, "Scripts", "python.exe") if target == "win" else os.path.join(venv, "bin", "python")
     if os.path.exists(py):
-        say(target, "1/4", f"checking virtual environment: {os.path.relpath(venv, ROOT) if venv.startswith(ROOT) else venv}")
+        say(target, "1/5", f"checking virtual environment: {os.path.relpath(venv, ROOT) if venv.startswith(ROOT) else venv}")
     else:
         if sys.version_info[:2] < (3, 14):
             print(f"    note: creating the virtual environment with Python {sys.version.split()[0]} (3.14 recommended)")
-        say(target, "1/4", f"Python {sys.version.split()[0]} creating virtual environment: {venv}")
+        say(target, "1/5", f"Python {sys.version.split()[0]} creating virtual environment: {venv}")
         if run([sys.executable, "-m", "venv", venv]).returncode != 0:
             raise RuntimeError("could not create the virtual environment")
     return py
 
 
 def check_requirements(target, py):
-    say(target, "2/4", "checking requirements.txt...")
+    say(target, "2/5", "checking requirements.txt...")
     if not os.path.exists(os.path.join(ROOT, "requirements.txt")):
         raise RuntimeError("requirements.txt not found")
     r = run([py, "-m", "pip", "install", "--dry-run", "--disable-pip-version-check", "-r", "requirements.txt"],
@@ -85,8 +85,25 @@ def check_requirements(target, py):
         print("warning: installed packages have conflicting versions.\n" + c.stdout)
 
 
+def engines(target, py):
+    """sing-box and the official Hysteria2 core go into the app; download them (SHA-256 checked) if missing."""
+    r = run([py, "-c", "from proxydock.singbox import EXE, HY_EXE, platform_dir, SINGBOX_VERSION, HYSTERIA_VERSION;"
+                       "print(platform_dir(), EXE, HY_EXE, SINGBOX_VERSION, HYSTERIA_VERSION)"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if r.returncode != 0:
+        raise RuntimeError("could not read the engine versions: " + r.stderr.strip()[-300:])
+    pdir, exe, hy, sbv, hyv = r.stdout.split()
+    folder = os.path.join(ROOT, "bin", pdir)
+    if all(os.path.isfile(os.path.join(folder, n)) for n in (exe, hy)):
+        say(target, "3/5", f"engines: sing-box {sbv}, Hysteria {hyv} (bin/{pdir})")
+        return
+    say(target, "3/5", f"downloading engines: sing-box {sbv}, Hysteria {hyv} -> bin/{pdir}")
+    if run([py, "tools/fetch_singbox.py", pdir]).returncode != 0:
+        raise RuntimeError("could not download sing-box / hysteria (tools/fetch_singbox.py)")
+
+
 def pyinstaller(target, py):
-    say(target, "3/4", "building...")
+    say(target, "4/5", "building...")
     r = run([py, "-m", "PyInstaller", "--noconfirm", "--clean", "--log-level", "WARN",
              "--distpath", f"dist/{target}", "--workpath", f"build/{target}", SPEC])
     if r.returncode != 0:
@@ -96,7 +113,7 @@ def pyinstaller(target, py):
 
 
 def copy_licenses(target):
-    say(target, "4/4", "copying licenses...")
+    say(target, "5/5", "copying licenses...")
     dst = os.path.join(ROOT, "dist", target, "licenses")
     os.makedirs(dst, exist_ok=True)
     src = os.path.join(ROOT, "licenses")
@@ -108,6 +125,7 @@ def copy_licenses(target):
 def build_native(target):
     py = venv_python(target)
     check_requirements(target, py)
+    engines(target, py)
     pyinstaller(target, py)
     copy_licenses(target)
     print(f"done: {OUTPUTS[target]}")
@@ -121,7 +139,7 @@ def build_linux_docker():
         raise Skip("Docker is not installed (Docker Desktop required)")
     if run(["docker", "info"], capture_output=True).returncode != 0:
         raise Skip("Docker is not running (start Docker Desktop)")
-    say("linux", "0/4", "preparing the build image (slow the first time only)...")
+    say("linux", "0/5", "preparing the build image (slow the first time only)...")
     if run(["docker", "build", "-q", "-t", DOCKER_IMAGE, "tools/docker/linux"], capture_output=True).returncode:
         raise RuntimeError("could not build the Docker image (docker build tools/docker/linux)")
     r = run(["docker", "run", "--rm",
