@@ -58,6 +58,13 @@ def _tr_palette():
                   ("#9aa0a6", _t("Gray"))]
 
 
+def color_name(color):
+    """Palette name of a colour ('Default' for ''), else its #rrggbb."""
+    if not color:
+        return _t("Default")
+    return next((name for hexc, name in PALETTE if hexc == color), color)
+
+
 def _rgba(color):
     """'#rrggbb' -> (r, g, b, 255); '' -> the default link colour."""
     if not color:
@@ -164,7 +171,9 @@ class BlockItem(NodeItem):
 
     def __init__(self, name="node", parent=None):
         super().__init__(name, parent)
-        self.swatch = ""            # '#rrggbb' or '' (default)
+        self.swatch = ""            # the block's own colour ('#rrggbb') or '' (automatic)
+        self.swatch_fill = ""       # the colour it really uses (own, or followed from incoming links)
+        self.swatch_mixed = False   # swatch_fill is a mix of incoming colours
         self.on_swatch = None
 
     def swatch_rect(self):
@@ -177,10 +186,14 @@ class BlockItem(NodeItem):
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing, True)
         r = self.swatch_rect()
-        painter.setBrush(QColor(*_rgba(self.swatch)))
-        painter.setPen(QPen(QColor(255, 255, 255, 200 if self.swatch else 110), 1.0,
+        painter.setBrush(QColor(*_rgba(self.swatch or self.swatch_fill)))
+        # own colour: solid border; automatic (followed): dotted border
+        painter.setPen(QPen(QColor(255, 255, 255, 200 if self.swatch else 130), 1.0,
                             Qt.SolidLine if self.swatch else Qt.DotLine))
         painter.drawRoundedRect(r, 2.5, 2.5)
+        if self.swatch_mixed and not self.swatch:       # a mix: a small diagonal mark
+            painter.setPen(QPen(QColor(255, 255, 255, 170), 1.0))
+            painter.drawLine(r.bottomLeft() + QPointF(2.5, -2.5), r.topRight() + QPointF(-2.5, 2.5))
         painter.restore()
 
     def mousePressEvent(self, event):
@@ -264,6 +277,7 @@ class RelayItem(BlockItem):
         self.in_gaps, self.out_gaps = [], []
         self.links = []         # [(input index, output index)] wired inside
         self.link_colors = []   # colour per input lane ('' = default) for the inside wiring
+        self.link_mixed = []    # per input lane: True = a mix of merging colours (drawn dashed)
         self.routed = False
         self.on_add = None      # callback: footer clicked
         self.on_wire = None     # callback(input index, output index or None): wired inside by dragging (routed)
@@ -315,7 +329,8 @@ class RelayItem(BlockItem):
             if i < len(ins) and o < len(outs):
                 c = self.link_colors[i] if i < len(self.link_colors) else ""
                 color = QColor(c) if c else lane
-                painter.setPen(QPen(color, 1.6))
+                mixed = i < len(self.link_mixed) and self.link_mixed[i]
+                painter.setPen(QPen(color, 1.6, Qt.DashLine if mixed else Qt.SolidLine))
                 a, b = ins[i], outs[o]
                 path = QPainterPath(a)
                 path.lineTo(b if self.routed else b - QPointF(5, 0))
@@ -794,7 +809,7 @@ class CanvasInterface(QWidget):
     def _paint_wires(self, graph):
         """Links take the colour of the block they leave; pass-through lanes hand on what comes in."""
         from .. import graph as graph_mod
-        out_c, in_c = graph_mod.wire_colors(graph)
+        lanes = graph_mod.wire_colors(graph)
         for mid, node in self.node_of.items():
             if mid == PC_ID:
                 continue
@@ -802,12 +817,22 @@ class CanvasInterface(QWidget):
             if n is None:
                 continue
             if kind == "relay":
-                node.view.link_colors = [in_c.get(x["id"], "") for x in n["inputs"]]
+                node.view.link_colors = [lanes[x["id"]][0] for x in n["inputs"]]
+                node.view.link_mixed = [len(lanes[x["id"]][1]) > 1 for x in n["inputs"]]
+            own_color, own_parts = lanes.get(mid, (n.get("color", ""), ()))
+            node.view.swatch_fill = own_color
+            node.view.swatch_mixed = len(own_parts) > 1
+            if kind != "relay":             # (a pass-through's tooltip lists its lanes, set in update_states)
+                node.view.setToolTip(
+                    _t("Link colour: mix of {colors}").format(colors=" + ".join(color_name(c) for c in own_parts))
+                    if len(own_parts) > 1 and not n.get("color") else "")
+            node.view.update()
             for port in node.output_ports():
                 lane = self.out_lane_of.get((node.id, port.name()))
-                rgba = _rgba(out_c.get(lane, "") if lane else n.get("color", ""))
+                color, parts = lanes[lane] if lane in lanes else (own_color, own_parts)
                 for pipe in port.view.connected_pipes:
-                    pipe.color = rgba
+                    pipe.color = _rgba(color)
+                    pipe.style = PipeEnum.DRAW_TYPE_DASHED.value if len(parts) > 1 else PipeEnum.DRAW_TYPE_DEFAULT.value
                     pipe.reset()
 
     def color_menu(self, mid, at):
@@ -828,7 +853,7 @@ class CanvasInterface(QWidget):
             a.triggered.connect(lambda _=False, c=hexc: self.ctl.set_color(mid, c))
             menu.addAction(a)
         menu.addSeparator()
-        d = Action(icon(""), ("✓ " if not cur else "") + _t("Default"), menu)
+        d = Action(icon(""), ("✓ " if not cur else "") + _t("Automatic (follow the incoming links)"), menu)
         d.triggered.connect(lambda: self.ctl.set_color(mid, ""))
         custom = Action(FIF.PALETTE, _t("Custom colour…"), menu)
         custom.triggered.connect(lambda: self._pick_color(mid, cur))
@@ -943,6 +968,12 @@ class CanvasInterface(QWidget):
                 src = graph_mod.lane_sources(cg, x["id"])
                 _, t = graph_mod.find(cg, graph_mod.follow(cg, x["id"]))
                 tips.append(f"{i + 1}. " + (", ".join(src) or "-") + "  →  " + (t["name"] if t else _t("not connected")))
+            lanes = graph_mod.wire_colors(cg)
+            mixes = [(i, lanes[x["id"]][1]) for i, x in enumerate(r["outputs"]) if len(lanes[x["id"]][1]) > 1]
+            if mixes:
+                tips.append("")
+                for i, parts in mixes:
+                    tips.append(_t("Output {n}: mix of {colors}").format(n=i + 1, colors=" + ".join(color_name(c) for c in parts)))
             node.view.setToolTip("\n".join(tips))
         pc = self.node_of.get(PC_ID)
         if pc is not None:

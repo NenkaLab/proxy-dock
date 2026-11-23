@@ -26,9 +26,9 @@ lane is wired inside the block to an output lane, whose link goes on to an outbo
 pass-through lane. Straight blocks wire lane i to lane i; routed ones ("routed": True) can cross, merge and have
 different input and output counts. "gap" = empty rows above a lane on the canvas. compile() follows the lanes
 (without_relays) so the runtime never sees them.
-Every block can have a "color" ("#rrggbb", "" = default): the canvas draws the links leaving it in that color. A
-pass-through hands on the color coming into a lane (its own color only where differently coloured links merge or
-nothing comes in) - see wire_colors().
+Every block can have a "color" ("#rrggbb", "" = automatic): the canvas draws the links leaving it in that colour.
+A block without one follows the links coming into it (their mix where different colours meet, drawn dashed), and
+a pass-through does the same lane by lane - see wire_colors().
 The runtime still works with one "proxy" per inbound (inbound + resolved outbound + overrides, plus "routes" for a
 router: [{"match": [match, ...], "outbound": resolved chain, "name": rule name}]); compile() builds them.
 """
@@ -251,47 +251,147 @@ def lane_choices(graph):
     return [(x["id"], lane_label(graph, x["id"])) for r in graph.get("relays", ()) for x in r["inputs"]]
 
 
+DEFAULT_LINK = "#af5f1e"         # the canvas's default link colour (NodeGraphQt's pipe colour)
+
+
+def _srgb_to_oklab(hexc):
+    def lin(c):
+        c /= 255
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+    r, g, b = (lin(int(hexc[i:i + 2], 16)) for i in (1, 3, 5))
+    l_ = (0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b) ** (1 / 3)
+    m_ = (0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b) ** (1 / 3)
+    s_ = (0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b) ** (1 / 3)
+    return (0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_,
+            1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_,
+            0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_)
+
+
+def _oklab_to_srgb(lab):
+    L, A, B = lab
+    l_ = (L + 0.3963377774 * A + 0.2158037573 * B) ** 3
+    m_ = (L - 0.1055613458 * A - 0.0638541728 * B) ** 3
+    s_ = (L - 0.0894841775 * A - 1.2914855480 * B) ** 3
+    rgb = (4.0767416621 * l_ - 3.3077115913 * m_ + 0.2309699292 * s_,
+           -1.2684380046 * l_ + 2.6097574011 * m_ - 0.3413193965 * s_,
+           -0.0041960863 * l_ - 0.7034186147 * m_ + 1.7076147010 * s_)
+
+    def enc(c):
+        c = min(max(c, 0.0), 1.0)
+        return round(255 * (12.92 * c if c <= 0.0031308 else 1.055 * c ** (1 / 2.4) - 0.055))
+    return "#%02x%02x%02x" % tuple(enc(c) for c in rgb)
+
+
+def mix_colors(colors):
+    """Even mix of '#rrggbb' colours ('' = the default link colour) in OKLCh: lightness and chroma are averaged
+    and the hue is the circular mean, so red + blue gives a vivid magenta instead of a muddy grey-purple."""
+    import math
+    labs = [_srgb_to_oklab(c or DEFAULT_LINK) for c in colors]
+    if not labs:
+        return ""
+    n = len(labs)
+    L = sum(x[0] for x in labs) / n
+    C = sum(math.hypot(x[1], x[2]) for x in labs) / n
+    ux = sum(x[1] for x in labs)            # hue: mean direction weighted by chroma (a grey hardly pulls it)
+    uy = sum(x[2] for x in labs)
+    if math.hypot(ux, uy) < 1e-3 * n:       # hues cancel out (e.g. opposite colours): plain average
+        return _oklab_to_srgb((L, sum(x[1] for x in labs) / n, sum(x[2] for x in labs) / n))
+    h = math.atan2(uy, ux)
+    return _oklab_to_srgb((L, C * math.cos(h), C * math.sin(h)))
+
+
 def wire_colors(graph):
-    """Colours of the links out of pass-through lanes: ({output lane id: colour}, {input lane id: colour}).
-    A lane hands on the colour of what comes into it; where links of different colours merge, or nothing comes
-    in, the pass-through's own colour is used. '' = default colour."""
+    """Link colours on the canvas: {block id or pass-through lane id: (colour, parts)}.
+    parts = the colours that make it up ('' = the default colour); len(parts) > 1 = a mix (drawn dashed).
+    - A block with its own colour uses it.
+    - A block without one follows the links coming into it: their one colour, or the mix where different
+      colours come in; with nothing coming in, the default colour.
+    - A pass-through lane hands on what comes into it the same way; a lane with nothing coming in uses the
+      pass-through's own colour (parts = ())."""
     ins, outs = lane_index(graph)
-    feeds = {lid: [] for lid in ins}        # input lane -> [("c", colour) | ("o", output lane id)]
+    feeds = {}                  # block id / input lane id -> [("b", source block id) | ("o", output lane id)]
+
+    def feed(target, source):
+        if target:
+            feeds.setdefault(target, []).append(source)
     for n in graph["inbounds"]:
-        if n["target"] in feeds:
-            feeds[n["target"]].append(("c", n.get("color", "")))
+        feed(n["target"], ("b", n["id"]))
     for r in graph.get("routers", []):
         for _, t in router_targets(r):
-            if t in feeds:
-                feeds[t].append(("c", r.get("color", "")))
+            feed(t, ("b", r["id"]))
+    for n in graph["outbounds"]:
+        feed(n.get("via"), ("b", n["id"]))
+        for m in n.get("members", ()):
+            feed(m, ("b", n["id"]))
     for r in graph.get("relays", []):
         for x in r["outputs"]:
-            if x["target"] in feeds:
-                feeds[x["target"]].append(("o", x["id"]))
+            feed(x["target"], ("o", x["id"]))
+        for x in r["inputs"]:               # a pass-through block (its swatch) shows what flows through it
+            feed(r["id"], ("i", x["id"]))
+    blocks = {n["id"]: n for kind in ("inbounds", "outbounds", "routers", "relays") for n in graph.get(kind, [])}
     memo = {}
 
-    def incoming(lid, busy):
-        return {c if kind == "c" else out_color(c, busy) for kind, c in feeds[lid]}
+    def source_parts(src, busy):
+        kind, v = src
+        if kind == "b":
+            return block_parts(v, busy)
+        if kind == "o":
+            return out_parts(v, busy)
+        return in_parts(v, busy)
 
-    def out_color(oid, busy):
+    def incoming(target, busy):
+        got = set()
+        for src in feeds.get(target, ()):
+            got |= set(source_parts(src, busy))
+        return got
+
+    def block_parts(bid, busy):
+        n = blocks.get(bid)
+        if n is None:
+            return ()
+        if n.get("color"):
+            return (n["color"],)
+        if bid in busy:                     # (a loop: cannot be used anyway)
+            return ()
+        got = incoming(bid, busy | {bid})
+        if n in graph.get("relays", ()):    # a pass-through with nothing flowing through: its own (default) colour
+            return tuple(sorted(got))
+        return tuple(sorted(got)) or ("",)
+
+    def in_parts(lid, busy):
+        if lid in busy:
+            return ()
+        return tuple(sorted(incoming(lid, busy | {lid})))
+
+    def out_parts(oid, busy):
         if oid in memo:
             return memo[oid]
-        r, _ = outs[oid]
-        if oid in busy:                     # (a loop: cannot be used anyway)
-            return r.get("color", "")
+        if oid in busy:
+            return ()
         busy = busy | {oid}
+        r, _ = outs[oid]
         got = set()
         for x in r["inputs"]:
             if x["out"] == oid:
-                got |= incoming(x["id"], busy)
-        memo[oid] = next(iter(got)) if len(got) == 1 else r.get("color", "")
+                got |= set(in_parts(x["id"], busy))
+        memo[oid] = tuple(sorted(got))
         return memo[oid]
-    out_c = {oid: out_color(oid, frozenset()) for oid in outs}
-    in_c = {}
+
+    def colour(parts, own=""):
+        if not parts:
+            return own
+        return parts[0] if len(parts) == 1 else mix_colors(parts)
+    out = {}
+    for bid, n in blocks.items():
+        parts = block_parts(bid, frozenset())
+        out[bid] = (colour(parts, n.get("color", "")), parts)
+    for oid, (r, _) in outs.items():
+        parts = out_parts(oid, frozenset())
+        out[oid] = (colour(parts, r.get("color", "")), parts)
     for lid, (r, _) in ins.items():
-        got = incoming(lid, frozenset())
-        in_c[lid] = next(iter(got)) if len(got) == 1 else r.get("color", "")
-    return out_c, in_c
+        parts = in_parts(lid, frozenset())
+        out[lid] = (colour(parts, r.get("color", "")), parts)
+    return out
 
 
 def without_relays(graph):

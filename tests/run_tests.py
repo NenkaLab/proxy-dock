@@ -490,6 +490,27 @@ def test_ui():
           and all(tuple(p.color)[:3] == (229, 83, 75) for p in pipes), [tuple(p.color) for p in pipes])
     ritem = cv.node_of[relay["id"]].view
     lane0 = [i for i, x in enumerate(gm.find(ctl.graph, relay["id"])[1]["inputs"]) if x["id"] == ui_in["target"]]
+    rn = gm.find(ctl.graph, relay["id"])[1]
+    ctl.set_lane_map(relay["id"], rn["inputs"][1]["id"], rn["outputs"][0]["id"])     # merge lane 2 into output 1 ...
+    other = ctl.new_inbound("Mix", {"type": "http", "port": free_port()}, None, None, edit=False)
+    ctl.set_color(other["id"], "#4f8ef7")
+    ctl.set_target(other["id"], rn["inputs"][1]["id"])                                   # ... fed by a blue card
+    ctl.set_lane_map(relay["id"], ui_in["target"], rn["outputs"][0]["id"])
+    ctl.set_lane_target(relay["id"], rn["outputs"][0]["id"], d["id"])
+    wait(200)
+    rnode = cv.node_of[relay["id"]]
+    out_pipes = list(rnode.output_ports()[0].view.connected_pipes)
+    check("ui: merged colours leave as a dashed mix", out_pipes and all(
+        p.style == 1 and tuple(p.color)[:3] == tuple(int(gm.mix_colors(["#4f8ef7", "#e5534b"])[i:i + 2], 16) for i in (1, 3, 5))
+        for p in out_pipes), [(p.style, tuple(p.color)) for p in out_pipes])
+    check("ui: tooltip names the mix", "+" in rnode.view.toolTip(), rnode.view.toolTip())
+    ctl.delete_node(other["id"])
+    wait(200)
+    ctl.set_lane_map(relay["id"], ui_in["target"], None)          # back to leading nowhere
+    wait(200)
+    item = cv.node_of[ui_in["id"]].view
+    ritem = cv.node_of[relay["id"]].view
+    lane0 = [i for i, x in enumerate(gm.find(ctl.graph, relay["id"])[1]["inputs"]) if x["id"] == ui_in["target"]]
     check("ui: a pass-through lane hands the colour on", lane0 and ritem.link_colors[lane0[0]] == "#e5534b", ritem.link_colors)
     opened = []
     cv.color_menu = lambda mid, at: opened.append(mid)
@@ -507,6 +528,14 @@ def test_ui():
     wait(300)
     ui_in = gm.find(ctl.graph, ui_in["id"])[1]          # (saving replaces the block)
     check("ui: saving in the editor keeps the colour", gm.find(ctl.graph, ui_in["id"])[1]["color"] == "#e5534b")
+    lane_t = ui_in["target"]
+    ctl.set_target(ui_in["id"], d["id"])                # the red card straight into the (automatic) Direct block
+    wait(200)
+    dn = cv.node_of[d["id"]].view
+    check("ui: an automatic block's swatch shows what comes in", dn.swatch == "" and dn.swatch_fill == "#e5534b",
+          (dn.swatch, dn.swatch_fill))
+    ctl.set_target(ui_in["id"], lane_t)
+    wait(200)
     ctl.set_color(ui_in["id"], "")
     wait(200)
     pipes = [p for port in cv.node_of[ui_in["id"]].output_ports() for p in port.view.connected_pipes]
@@ -1028,24 +1057,58 @@ def test_block_colors():
     v = gm.validate(json.loads(json.dumps(g)))
     check("color: kept by validate on every block", v["inbounds"][0]["color"] == "#e5534b" and v["outbounds"][0]["color"] == "#57ab5a"
           and v["relays"][0]["color"] == "#9aa0a6" and v["routers"][0]["color"] == "#d9b92f")
-    out_c, in_c = gm.wire_colors(v)
+    lanes = gm.wire_colors(v)
     rv = v["relays"][0]
-    check("color: a lane hands on what comes in", out_c[rv["outputs"][0]["id"]] == "#e5534b"
-          and in_c[rv["inputs"][1]["id"]] == "#4f8ef7" and in_c[rv["inputs"][2]["id"]] == "#d9b92f")
-    check("color: merging colours use the block's own", out_c[rv["outputs"][2]["id"]] == "#9aa0a6")
-    check("color: nothing coming in uses the block's own", out_c[rv["outputs"][1]["id"]] == "#9aa0a6")
+    check("color: a lane hands on what comes in", lanes[rv["outputs"][0]["id"]] == ("#e5534b", ("#e5534b",))
+          and lanes[rv["inputs"][1]["id"]][0] == "#4f8ef7" and lanes[rv["inputs"][2]["id"]][0] == "#d9b92f")
+    merged = lanes[rv["outputs"][2]["id"]]
+    check("color: merging colours mix", merged == (gm.mix_colors(["#4f8ef7", "#d9b92f"]), ("#4f8ef7", "#d9b92f")), merged)
+    check("color: nothing coming in uses the block's own", lanes[rv["outputs"][1]["id"]] == ("#9aa0a6", ()))
+    check("color: mixing keeps colours bright", gm.mix_colors(["#e5534b", "#4f8ef7"]) == "#c561c4"
+          and gm.mix_colors(["#e5534b"]) == "#e5534b" and gm.mix_colors([]) == "")
+    check("color: a grey hardly moves the hue", gm.mix_colors(["#9aa0a6", "#e5534b"]) == "#ca7d78")
     b["color"] = rt["color"] = ""
-    out_c, _ = gm.wire_colors(gm.validate(json.loads(json.dumps(g))))
-    check("color: default colours merge as one", out_c[o[2]] == "", out_c[o[2]])
+    lanes = gm.wire_colors(gm.validate(json.loads(json.dumps(g))))
+    check("color: default colours merge as one", lanes[o[2]] == ("", ("",)), lanes[o[2]])
     x1, x2 = gm.add_relay(g, "X1", lanes=1), gm.add_relay(g, "X2", lanes=1)
     x1["outputs"][0]["target"] = x2["inputs"][0]["id"]
     x2["outputs"][0]["target"] = d["id"]
     a["target"] = x1["inputs"][0]["id"]
-    out_c, _ = gm.wire_colors(g)
-    check("color: carried through chained pass-throughs", out_c[x2["outputs"][0]["id"]] == "#e5534b")
+    lanes = gm.wire_colors(g)
+    check("color: carried through chained pass-throughs", lanes[x2["outputs"][0]["id"]][0] == "#e5534b")
     x2["outputs"][0]["target"] = x1["inputs"][0]["id"]          # loop: must not hang
-    out_c, _ = gm.wire_colors(g)
-    check("color: a lane loop does not hang", x2["outputs"][0]["id"] in out_c)
+    lanes = gm.wire_colors(g)
+    check("color: a lane loop does not hang", x2["outputs"][0]["id"] in lanes)
+    # blocks without their own colour follow what comes in (one colour, or the mix of two or more)
+    g = gm.empty()
+    up = gm.add_outbound(g, {"type": "socks5", "host": "1.2.3.4", "port": 1}, "Up")
+    ss = gm.add_outbound(g, {"type": "shadowsocks", "host": "5.6.7.8", "port": 2}, "SS")
+    ss["via"] = up["id"]
+    dr = gm.add_outbound(g, {"type": "direct"}, "Direct")
+    cards = []
+    for i, c in enumerate(["#e5534b", "#4f8ef7", "#57ab5a"]):
+        cards.append(gm.add_inbound(g, f"C{i}", {"type": "socks5", "port": 2000 + i}, target=ss["id"]))
+        cards[-1]["color"] = c
+    lone = gm.add_inbound(g, "Lone", {"type": "socks5", "port": 2100}, target=dr["id"])
+    w = gm.wire_colors(g)
+    three = gm.mix_colors(["#4f8ef7", "#57ab5a", "#e5534b"])
+    check("color: an automatic block mixes two or more incoming colours", w[ss["id"]] == (three, ("#4f8ef7", "#57ab5a", "#e5534b")), w[ss["id"]])
+    check("color: the mix carries on down a via chain", w[up["id"]] == w[ss["id"]])
+    check("color: nothing coloured coming in -> default", w[dr["id"]] == ("", ("",)) and w[lone["id"]] == ("", ("",)))
+    cards[1]["target"] = cards[2]["target"] = dr["id"]
+    w = gm.wire_colors(g)
+    check("color: one incoming colour is followed as it is", w[ss["id"]] == ("#e5534b", ("#e5534b",)))
+    check("color: an uncoloured link counts as the default colour", w[dr["id"]][1] == ("", "#4f8ef7", "#57ab5a"), w[dr["id"]])
+    ss["color"] = "#9aa0a6"
+    w = gm.wire_colors(g)
+    check("color: an own colour wins and is handed on", w[ss["id"]] == ("#9aa0a6", ("#9aa0a6",)) and w[up["id"]][0] == "#9aa0a6")
+    grp = gm.add_outbound(g, {"type": "group"}, "G")
+    grp["members"] = [up["id"]]
+    grp["color"] = "#b76de0"
+    ss["color"] = ""
+    ss["via"] = None
+    w = gm.wire_colors(g)
+    check("color: group members follow the group", w[up["id"]] == ("#b76de0", ("#b76de0",)))
 
 
 def test_router_singbox():
