@@ -226,7 +226,7 @@ def package(target):
 
 def checksum(path, what):
     digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
-    with open(path + ".sha256", "w", encoding="ascii") as f:
+    with open(path + ".sha256", "w", encoding="ascii", newline="\n") as f:     # LF: sha256sum -c works on any OS
         f.write(f"{digest}  {os.path.basename(path)}\n")
     print(f"{what}: {os.path.relpath(path, ROOT)}  sha256={digest[:16]}...")
     return path

@@ -136,14 +136,44 @@ class Origin(BaseHTTPRequestHandler):
 
 
 def connect_retry(port, timeout=15):
-    """Connect to a freshly started local listener; a refusal is retried briefly (rare race seen on CI runners)."""
+    """Connect to a freshly started local listener; a refusal is retried briefly. A lasting refusal (seen now and
+    then on GitHub's Windows runners, never locally) fails with what the card and its engine looked like."""
     for i in range(6):
         try:
             return socket.create_connection(("127.0.0.1", port), timeout=timeout)
         except ConnectionRefusedError:
             if i == 5:
-                raise
+                raise ConnectionRefusedError(f"127.0.0.1:{port} refused\n" + port_diagnostics(port)) from None
             time.sleep(0.5)
+
+
+def port_diagnostics(port):
+    """Who should be listening on port: card state, engine process, its last output, the OS listener table, logs."""
+    import gc
+    import subprocess
+    from proxydock import common
+    from proxydock.runtime import ProxyManager
+    out = []
+    for mgr in [o for o in gc.get_objects() if isinstance(o, ProxyManager)]:
+        for pid, inst in list(mgr.instances.items()):
+            proxy = getattr(inst, "proxy", {}) or {}
+            if (proxy.get("inbound") or {}).get("port") != port:
+                continue
+            eng = getattr(inst, "inner", None) or inst
+            proc = getattr(eng, "proc", None)
+            out.append(f"card {proxy.get('name')!r}: state={mgr.state(pid)} engine={type(eng).__name__} "
+                       f"pid={getattr(proc, 'pid', None)} returncode={getattr(proc, 'returncode', None)}")
+            out += ["  | " + x for x in list(getattr(eng, "raw_tail", []))[-15:]]
+    if not out:
+        out.append("no running card has this port")
+    try:
+        cmd = ["netstat", "-ano", "-p", "tcp"] if sys.platform == "win32" else ["sh", "-c", "ss -ltnp || netstat -an"]
+        lines = subprocess.run(cmd, capture_output=True, text=True, timeout=10).stdout.splitlines()
+        out += ["listener: " + x.strip() for x in lines if f":{port} " in x + " "] or [f"no TCP listener on :{port}"]
+    except Exception as e:
+        out.append(f"netstat failed: {e}")
+    out += ["log: " + common.format_line(e) for e in list(common.pending_logs)[-12:]]
+    return "\n".join(out)
 
 
 def socks5_get(port, host, dport, auth=None):

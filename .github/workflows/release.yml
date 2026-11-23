@@ -131,5 +131,10 @@ jobs:
           prerelease=""
           case "$version" in *-*) prerelease="--prerelease" ;; esac
           files+=(release/SHA256SUMS.txt)
-          gh release create "$GITHUB_REF_NAME" "${files[@]}" \
-            --title "ProxyDock $version" --generate-notes $prerelease
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            # re-run after a failed build job: add or replace the files on the existing release
+            gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${files[@]}" \
+              --title "ProxyDock $version" --generate-notes $prerelease
+          fi
