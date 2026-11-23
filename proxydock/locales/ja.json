@@ -210,6 +210,7 @@
  "Could not start the administrator helper (error {code})": "管理者ヘルパーを起動できませんでした (エラー {code})",
  "Could not start the test: {err}": "テストを開始できませんでした: {err}",
  "Could not update {kind} '{name}', using the saved copy: {e}": "{kind} '{name}' を更新できなかったため、保存済みのコピーを使います: {e}",
+ "Could not write {path}": "{path} に書き込めません",
  "Country": "国",
  "Created block '{name}'": "ブロック '{name}' を作成しました",
  "Created proxy '{name}'": "プロキシ '{name}' を作成しました",

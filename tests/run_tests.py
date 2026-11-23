@@ -136,14 +136,44 @@ class Origin(BaseHTTPRequestHandler):
 
 
 def connect_retry(port, timeout=15):
-    """Connect to a freshly started local listener; a refusal is retried briefly (rare race seen on CI runners)."""
+    """Connect to a freshly started local listener; a refusal is retried briefly. A lasting refusal (seen now and
+    then on GitHub's Windows runners, never locally) fails with what the card and its engine looked like."""
     for i in range(6):
         try:
             return socket.create_connection(("127.0.0.1", port), timeout=timeout)
         except ConnectionRefusedError:
             if i == 5:
-                raise
+                raise ConnectionRefusedError(f"127.0.0.1:{port} refused\n" + port_diagnostics(port)) from None
             time.sleep(0.5)
+
+
+def port_diagnostics(port):
+    """Who should be listening on port: card state, engine process, its last output, the OS listener table, logs."""
+    import gc
+    import subprocess
+    from proxydock import common
+    from proxydock.runtime import ProxyManager
+    out = []
+    for mgr in [o for o in gc.get_objects() if isinstance(o, ProxyManager)]:
+        for pid, inst in list(mgr.instances.items()):
+            proxy = getattr(inst, "proxy", {}) or {}
+            if (proxy.get("inbound") or {}).get("port") != port:
+                continue
+            eng = getattr(inst, "inner", None) or inst
+            proc = getattr(eng, "proc", None)
+            out.append(f"card {proxy.get('name')!r}: state={mgr.state(pid)} engine={type(eng).__name__} "
+                       f"pid={getattr(proc, 'pid', None)} returncode={getattr(proc, 'returncode', None)}")
+            out += ["  | " + x for x in list(getattr(eng, "raw_tail", []))[-15:]]
+    if not out:
+        out.append("no running card has this port")
+    try:
+        cmd = ["netstat", "-ano", "-p", "tcp"] if sys.platform == "win32" else ["sh", "-c", "ss -ltnp || netstat -an"]
+        lines = subprocess.run(cmd, capture_output=True, text=True, timeout=10).stdout.splitlines()
+        out += ["listener: " + x.strip() for x in lines if f":{port} " in x + " "] or [f"no TCP listener on :{port}"]
+    except Exception as e:
+        out.append(f"netstat failed: {e}")
+    out += ["log: " + common.format_line(e) for e in list(common.pending_logs)[-12:]]
+    return "\n".join(out)
 
 
 def socks5_get(port, host, dport, auth=None):
@@ -594,6 +624,30 @@ def test_singbox_compile():
     pin["outbound"] = dict(config.OUTBOUND_DEFAULTS, type="hysteria2", host="h", port=443, pin_sha256="ab" * 32, via=None)
     check("sing-box: pinned certificate stays on Python", python_reason(pin, g) != "")
     check("sing-box: python engine setting", python_reason(p2, config.validate_global({"engine": "python"})) != "")
+
+
+def test_bans_file_locked():
+    """bans.json is shared by every sing-box card. On Windows a file another process has open cannot be replaced:
+    starting a card used to rewrite it unconditionally and failed with WinError 5 while other cards ran."""
+    from proxydock import common
+    from proxydock.singbox import guard
+    common._banned.clear()
+    guard._written = None
+    check("bans: first write", guard.write_bans(force=True) and os.path.exists(guard.BANS_PATH))
+    before = os.path.getmtime(guard.BANS_PATH)
+    held = open(guard.BANS_PATH, encoding="utf-8")      # like a running sing-box reading it
+    try:
+        check("bans: unchanged set is not rewritten (card start while the file is open)",
+              guard.write_bans(force=True) and os.path.getmtime(guard.BANS_PATH) == before)
+        if sys.platform == "win32":
+            common._banned["203.0.113.9"] = time.monotonic() + 60
+            check("bans: a locked file is reported, not raised", guard.write_bans() is False)
+    finally:
+        held.close()
+    check("bans: the next try writes it", guard.write_bans() and "203.0.113.9" in open(guard.BANS_PATH, encoding="utf-8").read()
+          if sys.platform == "win32" else True)
+    common._banned.clear()
+    guard.write_bans()
 
 
 def test_singbox_guard():
@@ -2022,7 +2076,7 @@ def main():
              test_subscription, test_detect_sni, test_hy2_advanced, test_group, test_dns, test_review_fixes, test_clash, test_wg_server, test_if_forward_select]
     from proxydock.singbox import find_binary
     if find_binary():
-        tests += [lambda: test_engine("sing-box"), test_singbox_guard, test_router_e2e, test_interface_e2e, test_wireguard_e2e, test_helper,
+        tests += [lambda: test_engine("sing-box"), test_bans_file_locked, test_singbox_guard, test_router_e2e, test_interface_e2e, test_wireguard_e2e, test_helper,
                   test_protocols_e2e, test_subscription_e2e, test_hy2_advanced_e2e, test_group_e2e, test_dns_e2e, test_close_log_e2e, test_wg_server_e2e, test_forward_e2e, test_engine_died_e2e]
         from proxydock.singbox import find_hysteria
         if find_hysteria():

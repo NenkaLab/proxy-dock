@@ -16,6 +16,7 @@ from ..common import (
     split_host_port,
 )
 import time
+from collections import deque
 from . import compile as sbc, guard
 from . import find_binary
 
@@ -128,6 +129,7 @@ class SingBoxInstance:
         self.servers = []           # (no Python sockets; kept for ProxyInstance compatibility)
         self.proc = None
         self.on_died = None         # set by the manager: called with a message when sing-box exits on its own
+        self.raw_tail = deque(maxlen=30)    # last lines sing-box printed, including ones that are not log lines (Go panics)
         self.tasks = set()
         self.reasons = []
         self.rulesets = {}
@@ -201,7 +203,8 @@ class SingBoxInstance:
         exe = find_binary(self.glob)
         if exe is None:
             raise RuntimeError(_t("sing-box was not found"))
-        guard.write_bans(force=True)
+        if not guard.write_bans(force=True) and not os.path.exists(guard.BANS_PATH):
+            raise RuntimeError(_t("Could not write {path}").format(path=guard.BANS_PATH))
         from . import rulesets
         need = rulesets.needed(self.proxy)
         self.rulesets = {}
@@ -274,6 +277,7 @@ class SingBoxInstance:
             if not raw:
                 break
             line = _ANSI.sub("", raw.decode("utf-8", errors="replace")).rstrip()
+            self.raw_tail.append(line)
             m = _LINE.match(line)
             if not m:
                 continue
@@ -295,6 +299,9 @@ class SingBoxInstance:
             started.set_exception(_start_error(text, self.proxy))
         elif self.proc is not None:     # exited while running (not via stop())
             text = _t("sing-box exited (code {code})").format(code=self.proc.returncode)
+            panic = next((x for x in self.raw_tail if x.startswith(("panic:", "fatal error:"))), None)
+            if panic:
+                text += ": " + panic
             self.log(LOG_ERROR, text)
             if self.on_died:
                 self.on_died(text)

@@ -24,17 +24,35 @@ def current_bans():
 
 
 def write_bans(force=False):
-    """Write the ban list if it changed (also run periodically so expired bans drop out)."""
+    """Write the ban list if it changed (also run periodically so expired bans drop out).
+    force: check the file even if this process already wrote the same set (a card is starting).
+    Returns False if the file could not be replaced (Windows: a running sing-box has it open); the next tick retries."""
     global _written
     bans = current_bans()
     if bans == _written and not force:
-        return
+        return True
+    data = json.dumps(bans_ruleset(bans))
     os.makedirs(RUN_DIR, exist_ok=True)
+    try:
+        with open(BANS_PATH, encoding="utf-8") as f:
+            if f.read() == data:        # unchanged: do not touch a file other sing-box processes are reading
+                _written = bans
+                return True
+    except OSError:
+        pass
     tmp = BANS_PATH + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(bans_ruleset(bans), f)
-    os.replace(tmp, BANS_PATH)      # replace in one step: sing-box watches the file
+        f.write(data)
+    for i in range(5):
+        try:
+            os.replace(tmp, BANS_PATH)      # replace in one step: sing-box watches the file
+            break
+        except PermissionError:             # Windows: open in another process right now
+            if i == 4:
+                return False
+            time.sleep(0.05 * (i + 1))
     _written = bans
+    return True
 
 
 def auth_failure(ip, inst):
