@@ -54,6 +54,27 @@ def find_hysteria(glob=None):
     return _find(HY_EXE, (glob or {}).get("hysteria_path", ""))
 
 
+def parse_core_version(text):
+    """Version number from `sing-box version` ("sing-box version 1.14.4") or `hysteria version`
+    ("Version:\tv2.14.0"), or None."""
+    import re
+    m = re.search(r"version[:\s]+v?(\d+\.\d+\.\d+[\w.+-]*)", text or "", re.IGNORECASE)
+    return m.group(1) if m else None
+
+
+def core_version(exe, timeout=10):
+    """Run `<exe> version` and return its version number, or None. Blocks: call it off the UI thread."""
+    import subprocess
+    if not exe:
+        return None
+    try:
+        r = subprocess.run([exe, "version"], capture_output=True, text=True, errors="replace", timeout=timeout,
+                           stdin=subprocess.DEVNULL, creationflags=0x08000000 if IS_WIN else 0)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return parse_core_version(r.stdout + "\n" + r.stderr)
+
+
 def _chain(ob):
     """Every outbound of a chain, including the chains of a group's members."""
     while ob:

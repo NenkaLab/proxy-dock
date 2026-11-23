@@ -33,6 +33,7 @@ from ..platform_utils import (
 )
 from ..runtime import ProxyManager
 from .common import Fonts, STATE_TEXT, apply_theme, info, load_fonts, make_icon
+from .about import AboutInterface
 from .conntest import ConnTestInterface
 from .help import HelpInterface
 from .license import LicenseInterface
@@ -71,6 +72,7 @@ class MainWindow(FluentWindow):
         self.test_page = ConnTestInterface(ctl, self)
         self.help_page = HelpInterface(ctl, self)
         self.license_page = LicenseInterface(g, self)
+        self.about_page = AboutInterface(ctl, self)
         self.settings_page = SettingsInterface(ctl, self)
         self.addSubInterface(self.canvas_page, FIF.IOT, _t("Canvas"))
         self.addSubInterface(self.proxies_page, FIF.TILES, _t("Proxy"))
@@ -79,6 +81,7 @@ class MainWindow(FluentWindow):
         self.addSubInterface(self.test_page, FIF.SPEED_HIGH, _t("Connection test"))
         self.addSubInterface(self.help_page, FIF.HELP, _t("How to use"), NavigationItemPosition.BOTTOM)
         self.addSubInterface(self.license_page, FIF.CERTIFICATE, _t("Licenses"), NavigationItemPosition.BOTTOM)
+        self.addSubInterface(self.about_page, FIF.INFO, _t("About"), NavigationItemPosition.BOTTOM)
         self.addSubInterface(self.settings_page, FIF.SETTING, _t("Settings"), NavigationItemPosition.BOTTOM)
         self.stackedWidget.addWidget(self.editor)       # editor page that is not in the navigation menu
         self.editor.closed.connect(lambda: self.switchTo(self.editor_return or self.canvas_page))
@@ -252,7 +255,7 @@ class MainWindow(FluentWindow):
     def _warm_pages(self):
         """Lay out and render each page once while idle, so its first opening does not drop frames."""
         pages = [w for w in (self.canvas_page, self.proxies_page, self.log_page, self.stats_page, self.test_page,
-                             self.help_page, self.license_page, self.settings_page, self.editor)
+                             self.help_page, self.license_page, self.about_page, self.settings_page, self.editor)
                  if w is not self.stackedWidget.currentWidget()]
 
         def step():
@@ -1111,7 +1114,7 @@ class Controller:
         w.log_page.add_entries(entries)
         w.stats_page.history = history
         target = next((p for p in (w.canvas_page, w.proxies_page, w.log_page, w.stats_page, w.test_page,
-                                   w.help_page, w.license_page, w.settings_page) if p.objectName() == page), w.canvas_page)
+                                   w.help_page, w.license_page, w.about_page, w.settings_page) if p.objectName() == page), w.canvas_page)
         w.stackedWidget.setCurrentWidget(target, popOut=False)
         w.navigationInterface.setCurrentItem(target.objectName())
         self.refresh_lists()

@@ -311,7 +311,7 @@ def test_ui():
     w.show()
     wait(800)
     for page in (w.canvas_page, w.proxies_page, w.log_page, w.stats_page, w.test_page, w.help_page,
-                 w.license_page, w.settings_page):
+                 w.license_page, w.about_page, w.settings_page):
         w.switchTo(page)
         wait(150)
     ctl.edit_node(graph["inbounds"][0]["id"])
