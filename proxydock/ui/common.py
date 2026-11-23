@@ -241,3 +241,27 @@ def info(parent, kind, title, content, duration=2500):
     if duration >= 0:
         QTimer.singleShot(duration, bar, bar.close)
     return bar
+
+
+NO_DIALOG_FADE = sys.platform == "darwin"       # tests switch it on to run the macOS path elsewhere
+
+
+class NoFadeOnMac:
+    """Mix in before a qfluentwidgets MessageBoxBase/MessageBox: on macOS skip its fade in/out. The fade paints
+    through a QGraphicsOpacityEffect, which crashes in Qt's paint path there (seen in CI when a dialog closed),
+    like the InfoBar in info() and the page transitions."""
+
+    def showEvent(self, e):
+        if NO_DIALOG_FADE:
+            from PySide6.QtWidgets import QDialog
+            QDialog.showEvent(self, e)
+        else:
+            super().showEvent(e)
+
+    def done(self, code):
+        if NO_DIALOG_FADE:
+            from PySide6.QtWidgets import QDialog
+            self.setGraphicsEffect(None)
+            QDialog.done(self, code)
+        else:
+            super().done(code)

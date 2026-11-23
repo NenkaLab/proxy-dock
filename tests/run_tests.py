@@ -812,9 +812,21 @@ def ui_update(ctl, w, wait):
         updater.start_download(updater.release, name, kind)
         until(lambda: not updater._downloading)
         check("ui: a file with a wrong SHA-256 is not offered for install", asked == ["appimage"], asked)
-        dlg = ReleaseDialog(updater.release, "Install", w)
-        QTimer.singleShot(300, dlg.reject)
-        check("ui: release notes dialog opens", not dlg.exec() and "Something" in dlg.notes.toPlainText())
+        from proxydock.ui import common as uic
+        mac = uic.NO_DIALOG_FADE
+        for no_fade in sorted({mac, True}):         # the macOS path (no fade) runs everywhere
+            uic.NO_DIALOG_FADE = no_fade
+            dlg = ReleaseDialog(updater.release, "Install", w)
+            QTimer.singleShot(300, dlg.reject)
+            check(f"ui: release notes dialog opens and closes (fade {'off' if no_fade else 'on'})",
+                  not dlg.exec() and "Something" in dlg.notes.toPlainText() and dlg.graphicsEffect() is None)
+            update_mod.open_stream = lambda url: io.BytesIO(payload)
+            updater.start_download(updater.release, name, kind)
+            until(lambda: not updater._downloading)
+            wait(300)
+            check(f"ui: download dialog closes after the download (fade {'off' if no_fade else 'on'})",
+                  asked[-1] == "appimage" and updater._dialog is None)
+        uic.NO_DIALOG_FADE = mac
     finally:
         update_mod.http_get, update_mod.open_stream = old_get, old_stream
         for attr in ("show_dialog", "ask_install"):

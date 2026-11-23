@@ -18,7 +18,7 @@ from qfluentwidgets import (
 
 from .. import __version__, update
 from ..common import APP_NAME, LOG_ERROR, LOG_INFO, LOG_WARN, RELEASES_URL, log
-from .common import info
+from .common import NoFadeOnMac, info
 
 
 def fmt_size(n):
@@ -29,7 +29,7 @@ def open_url(url):
     QDesktopServices.openUrl(QUrl(url))
 
 
-class ReleaseDialog(MessageBoxBase):
+class ReleaseDialog(NoFadeOnMac, MessageBoxBase):
     """New version: release notes (Markdown) + download / later."""
 
     def __init__(self, release, action_text, parent):
@@ -45,7 +45,7 @@ class ReleaseDialog(MessageBoxBase):
         self.cancelButton.setText(_t("Later"))
 
 
-class DownloadDialog(MessageBoxBase):
+class DownloadDialog(NoFadeOnMac, MessageBoxBase):
     """Download progress; Cancel stops the download."""
 
     def __init__(self, name, parent):
@@ -67,6 +67,10 @@ class DownloadDialog(MessageBoxBase):
             self.label.setText(f"{fmt_size(done)} / {fmt_size(total)}")
         else:
             self.label.setText(fmt_size(done))
+
+
+class ConfirmBox(NoFadeOnMac, MessageBox):
+    pass
 
 
 class Updater(QObject):
@@ -235,7 +239,7 @@ class Updater(QObject):
             "dmg": _t("The disk image opens. Quit ProxyDock, then drag ProxyDock into Applications to replace the old version."),
             "appimage": _t("The AppImage file is replaced with the new version and ProxyDock restarts. Running proxies stop until then."),
         }.get(kind, "")
-        box = MessageBox(_t("Install the update?"), text, self.ctl.window)
+        box = ConfirmBox(_t("Install the update?"), text, self.ctl.window)
         box.yesButton.setText(_t("Install"))
         box.cancelButton.setText(_t("Later"))
         return bool(box.exec())
