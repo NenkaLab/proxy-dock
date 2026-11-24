@@ -5,6 +5,21 @@ pub fn is_space(c: char) -> bool {
     c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c)
 }
 
+/// `repr(float)`: the shortest round-trip digits like Rust, but the exponent as Python writes it (1e+16, 1e-05)
+pub fn float_repr(f: f64) -> String {
+    let s = format!("{f:?}");
+    match s.split_once('e') {
+        Some((m, e)) => {
+            let (sign, digits) = match e.strip_prefix('-') {
+                Some(d) => ('-', d),
+                None => ('+', e),
+            };
+            format!("{m}e{sign}{digits:0>2}")
+        }
+        None => s,
+    }
+}
+
 /// `str.strip()`
 pub fn strip(s: &str) -> &str {
     s.trim_matches(is_space)

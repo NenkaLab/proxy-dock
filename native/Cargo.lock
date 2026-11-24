@@ -3897,6 +3897,7 @@ dependencies = [
  "flate2",
  "rcgen",
  "regex-lite",
+ "serde",
  "serde_json",
  "sha2",
  "tar",

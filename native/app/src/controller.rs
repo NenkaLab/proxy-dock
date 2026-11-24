@@ -6,7 +6,7 @@ use crate::{canvas, ipc};
 use proxydock_core::i18n::tr;
 use proxydock_core::log::{Entry, Level};
 use proxydock_core::manager::{self, Events, Manager, State};
-use proxydock_core::{config, graph, log};
+use proxydock_core::{config, edit, graph, log};
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, VecDeque};
 use std::net::{TcpListener, TcpStream};
@@ -138,6 +138,8 @@ pub fn spawn(config_path: PathBuf) -> std::io::Result<Handle> {
         cards: cards.clone(),
         config_path,
         view: canvas::View::default(),
+        graph: graph::empty(),
+        can_save: false,
         flow_last: HashMap::new(),
         flow_sent: vec![],
     };
@@ -167,6 +169,10 @@ struct Controller {
     config_path: PathBuf,
     /// the canvas of the loaded graph
     view: canvas::View,
+    /// the block graph (validated; secrets in plain text, sealed when saved)
+    graph: Map<String, Value>,
+    /// false when the settings file could not be read: it is never overwritten then
+    can_save: bool,
     /// per (card, exit block): up + down bytes at the last tick (for the per-link rates)
     flow_last: HashMap<(String, String), f64>,
     /// the per-link rates last sent (bytes/s; all zero = nothing flowing)
@@ -200,22 +206,131 @@ impl Controller {
             Ok(l) => {
                 self.glob = l.global;
                 proxydock_core::i18n::set_language(self.glob["language"].as_str().unwrap_or("en"));
-                let g = graph::validate(&Value::Object(l.graph));
-                self.proxies = graph::compile(&g).into_iter().map(Value::Object).collect();
-                let summaries: HashMap<String, String> =
-                    self.proxies.iter().map(|p| (p["id"].as_str().unwrap_or("").to_string(), manager::summary(p))).collect();
-                self.view = canvas::build(&g, &|id| summaries.get(id).cloned().unwrap_or_default());
+                self.graph = graph::validate(&Value::Object(l.graph));
+                self.can_save = true;
+                for (id, field) in &l.notes.undecryptable {
+                    let msg = format!("{id}: {field:?}");
+                    self.app_log(Level::Warn, &msg);
+                }
+                if l.notes.needs_save {
+                    // plain-text passwords of an older version: saved sealed right away (as the Python app does)
+                    self.save();
+                }
             }
-            Err(config::LoadError::Missing) => {}
+            Err(config::LoadError::Missing) => {
+                self.can_save = true;
+                self.save();
+            }
             Err(e) => {
+                // never overwrite a file this version cannot read (a newer or broken one)
                 let msg = format!("{}: {e:?}", self.config_path.display());
                 self.app_log(Level::Error, &msg);
             }
         }
-        self.publish_cards();
+        self.rebuild();
         let auto: Vec<Value> = self.proxies.iter().filter(|p| p["autostart"] == json!(true)).cloned().collect();
         for p in auto {
             let _ = self.manager.start(&p, &self.glob);
+        }
+    }
+
+    /// cards and canvas from the graph
+    fn rebuild(&mut self) {
+        self.proxies = graph::compile(&self.graph).into_iter().map(Value::Object).collect();
+        let summaries: HashMap<String, String> =
+            self.proxies.iter().map(|p| (p["id"].as_str().unwrap_or("").to_string(), manager::summary(p))).collect();
+        self.view = canvas::build(&self.graph, &|id| summaries.get(id).cloned().unwrap_or_default());
+        self.publish_cards();
+    }
+
+    fn save(&mut self) {
+        if !self.can_save {
+            return;
+        }
+        if let Err(e) = config::save_to(&self.config_path, &self.glob, &self.graph) {
+            let msg = tr("Failed to save settings: {e}").replace("{e}", &format!("{e:?}"));
+            self.app_log(Level::Warn, &msg);
+        }
+    }
+
+    /// The graph changed (Python `_recompile`): rebuild the cards, apply to running ones that changed (a card
+    /// left with nothing to send to stops), stop deleted ones, save, and show the window the new canvas.
+    fn graph_changed(&mut self) {
+        let old: HashMap<String, Value> =
+            self.proxies.iter().map(|p| (p["id"].as_str().unwrap_or("").to_string(), p.clone())).collect();
+        self.rebuild();
+        let mut alive = std::collections::HashSet::new();
+        for p in self.proxies.clone() {
+            let id = p["id"].as_str().unwrap_or("").to_string();
+            alive.insert(id.clone());
+            if !matches!(self.manager.state(&id), State::Running | State::Starting) {
+                continue;
+            }
+            let same = old.get(&id).is_some_and(|b| ["name", "inbound", "outbound", "overrides", "routes"].iter().all(|k| b.get(*k) == p.get(*k)));
+            if same {
+                continue;
+            }
+            if p["unlinked"] == json!(true) {
+                let _ = self.manager.stop(&id);
+            } else {
+                let _ = self.manager.apply(&p, &self.glob);
+            }
+        }
+        for id in old.keys().filter(|id| !alive.contains(*id)) {
+            self.restart_at.remove(id);
+            let _ = self.manager.stop(id);
+        }
+        self.save();
+        self.send_canvas();
+    }
+
+    fn send_canvas(&mut self) {
+        let cards: Vec<Value> = self.proxies.iter().map(|p| self.card_json(p)).collect();
+        let canvas = canvas::to_json(&self.view, &|id| state_name(&self.manager.state(id)));
+        self.broadcast(&json!({"ev": "graph", "cards": cards, "canvas": canvas}));
+    }
+
+    /// a canvas edit from the window
+    fn edit(&mut self, cmd: &str, v: &Value) {
+        let s = |k: &str| v[k].as_str().unwrap_or("").to_string();
+        let n = |k: &str| v[k].as_u64().unwrap_or(0) as usize;
+        let f = |k: &str| v[k].as_f64().unwrap_or(0.0);
+        if !self.can_save {
+            self.broadcast(&json!({"ev": "error", "message": tr("Save failed")}));
+            self.send_canvas();
+            return;
+        }
+        let result = match cmd {
+            "move" => {
+                for m in v["blocks"].as_array().into_iter().flatten() {
+                    let key = m["key"].as_str().unwrap_or("");
+                    edit::move_block(&mut self.graph, key, m["x"].as_f64().unwrap_or(0.0), m["y"].as_f64().unwrap_or(0.0));
+                }
+                // positions only: saved (the window already shows them)
+                self.rebuild();
+                self.save();
+                return;
+            }
+            "connect" => edit::connect(&mut self.graph, &s("from"), n("out"), &s("to"), n("in")),
+            "disconnect" => edit::disconnect(&mut self.graph, &s("from"), n("out"), &s("to"), n("in")),
+            "delete" => {
+                for k in v["keys"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+                    edit::delete(&mut self.graph, k);
+                }
+                Ok(())
+            }
+            "add" => {
+                edit::add(&mut self.graph, v["kind"].as_i64().unwrap_or(2) as i32, f("x"), f("y"));
+                Ok(())
+            }
+            _ => return,
+        };
+        match result {
+            Ok(()) => self.graph_changed(),
+            Err(msg) => {
+                self.broadcast(&json!({"ev": "error", "message": msg}));
+                self.send_canvas(); // the refused link disappears again
+            }
         }
     }
 
@@ -326,6 +441,7 @@ impl Controller {
             }
             "toggle" => self.toggle(id),
             "stop_all" => self.stop_all(),
+            "move" | "connect" | "disconnect" | "delete" | "add" => self.edit(cmd, v),
             _ => {}
         }
     }

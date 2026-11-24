@@ -131,6 +131,8 @@ struct Models {
     links: Rc<VecModel<LinkData>>,
     /// per link (same order as `links`): its colour, and the link's two block ids (for the rate on blocks)
     link_meta: std::cell::RefCell<Vec<(Color, i32, i32)>>,
+    /// canvas key of each block (node id - 1)
+    keys: std::cell::RefCell<Vec<String>>,
 }
 
 impl Models {
@@ -176,9 +178,14 @@ impl Models {
             links.push(LinkData::new(k as i32 + 1, pin_out(*a, out), pin_in(*b, inp), color));
             meta.push((color, *a, *b));
         }
+        let mut keys = vec![String::new(); ids.len()];
+        for (k, id) in &ids {
+            keys[*id as usize - 1] = k.clone();
+        }
         self.nodes.set_vec(nodes);
         self.links.set_vec(links);
         *self.link_meta.borrow_mut() = meta;
+        *self.keys.borrow_mut() = keys;
     }
 
     /// a card's state on its canvas block
@@ -265,6 +272,11 @@ impl Models {
 }
 
 fn labels(app: &App) {
+    app.set_t_add_inbound(tr("Inbound").into());
+    app.set_t_add_router("Router".into());
+    app.set_t_add_relay(tr("Pass-through").into());
+    app.set_t_add_outbound(tr("Outbound").into());
+    app.set_t_delete(tr("Delete").into());
     app.set_t_canvas(tr("Canvas").into());
     app.set_t_no_graph(tr("No proxies yet. Create one with 'New proxy'.").into());
     app.set_t_proxy(tr("Proxy").into());
@@ -297,18 +309,37 @@ fn main() -> Result<(), slint::PlatformError> {
         nodes: Rc::new(VecModel::default()),
         links: Rc::new(VecModel::default()),
         link_meta: Default::default(),
+        keys: Default::default(),
     });
     app.set_cards(ModelRc::from(models.cards.clone()));
     app.set_logs(ModelRc::from(models.logs.clone()));
     app.set_nodes(ModelRc::from(models.nodes.clone()));
+    let send = {
+        let w = writer.clone();
+        move |v: Value| {
+            let _ = ipc::send(&mut w.lock().unwrap(), &v);
+        }
+    };
+    let key_of = {
+        let models = models.clone();
+        move |node: i32| models.keys.borrow().get((node - 1).max(0) as usize).cloned().unwrap_or_default()
+    };
     app.set_links(ModelRc::from(models.links.clone()));
     // canvas: moving and selecting blocks (positions stay in this window until saving settings is ported)
     {
         let nodes = models.nodes.clone();
         let links = models.links.clone();
         let setup = NodeEditorSetup::new({
-            let nodes = nodes.clone();
-            move |dragged, dx, dy| GraphLogic::commit_drag(&nodes, dragged, dx, dy)
+            let (nodes, send, key_of) = (nodes.clone(), send.clone(), key_of.clone());
+            move |dragged, dx, dy| {
+                GraphLogic::commit_drag(&nodes, dragged, dx, dy);
+                let moved: Vec<Value> = nodes
+                    .iter()
+                    .filter(|n| n.id == dragged || n.selected)
+                    .map(|n| json!({"key": key_of(n.id), "x": n.x, "y": n.y}))
+                    .collect();
+                send(json!({"cmd": "move", "blocks": moved}));
+            }
         });
         let controller = setup.controller().clone();
         wire_node_editor!(app, setup);
@@ -323,8 +354,17 @@ fn main() -> Result<(), slint::PlatformError> {
                 controller.cache().borrow().find_bezier_link_at_world(x, y, rows, controller.screen_distance_to_world(8.0), 50.0, 20)
             }
         });
-        // new links come with editing (not ported yet)
-        app.on_link_requested(|_, _| {});
+        // a link dragged between two pins: the core decides (and answers with the new canvas or a reason)
+        {
+            let (send, key_of) = (send.clone(), key_of.clone());
+            app.on_link_requested(move |a, b| {
+                let (out, inp) = if a % 2 == 1 && b % 2 == 0 { (a, b) } else if b % 2 == 1 && a % 2 == 0 { (b, a) } else { return };
+                if out / 64 == inp / 64 {
+                    return;
+                }
+                send(json!({"cmd": "connect", "from": key_of(out / 64), "out": (out % 64) / 2, "to": key_of(inp / 64), "in": (inp % 64) / 2}));
+            });
+        }
     }
     if let Some(p) = std::env::var("PROXYDOCK_PAGE").ok().and_then(|p| p.parse::<i32>().ok()) {
         app.set_page(p);
@@ -335,6 +375,29 @@ fn main() -> Result<(), slint::PlatformError> {
         app.on_toggle(move |id| {
             // the card's own state decides: the core starts a stopped card and stops a running one
             let _ = ipc::send(&mut w.lock().unwrap(), &json!({"cmd": "toggle", "id": id.as_str()}));
+        });
+    }
+    {
+        let (send, models, weak) = (send.clone(), models.clone(), app.as_weak());
+        app.on_add_block(move |kind| {
+            let Some(a) = weak.upgrade() else { return };
+            // centred on the visible part of the canvas, a little staggered
+            let k = models.nodes.row_count() as f32 % 5.0 * 24.0;
+            send(json!({"cmd": "add", "kind": kind, "x": a.get_view_center_x() - 115.0 + k, "y": a.get_view_center_y() - 34.0 + k}));
+        });
+    }
+    {
+        let (send, models, key_of) = (send.clone(), models.clone(), key_of.clone());
+        app.on_delete_selected(move || {
+            // selected links are cut first, then selected blocks deleted
+            for l in models.links.iter().filter(|l| l.selected) {
+                let (a, b) = (l.start_pin_id, l.end_pin_id);
+                send(json!({"cmd": "disconnect", "from": key_of(a / 64), "out": (a % 64) / 2, "to": key_of(b / 64), "in": (b % 64) / 2}));
+            }
+            let keys: Vec<String> = models.nodes.iter().filter(|n| n.selected).map(|n| key_of(n.id)).collect();
+            if !keys.is_empty() {
+                send(json!({"cmd": "delete", "keys": keys}));
+            }
         });
     }
     {
@@ -363,6 +426,19 @@ fn main() -> Result<(), slint::PlatformError> {
                             m.set_canvas(&v["canvas"]);
                         }
                         "flow" => m.set_flow(v["links"].as_array().map(Vec::as_slice).unwrap_or(&[])),
+                        "graph" => {
+                            m.cards.set_vec(v["cards"].as_array().into_iter().flatten().map(card_row).collect::<Vec<_>>());
+                            m.set_canvas(&v["canvas"]);
+                        }
+                        "error" => {
+                            app.set_toast(v["message"].as_str().unwrap_or("").into());
+                            let weak = app.as_weak();
+                            slint::Timer::single_shot(std::time::Duration::from_secs(5), move || {
+                                if let Some(a) = weak.upgrade() {
+                                    a.set_toast(SharedString::new());
+                                }
+                            });
+                        }
                         "card" => m.set_card(&v["card"]),
                         "stats" => m.set_stats(&v["stats"]),
                         "log" => m.add_logs(v["entries"].as_array().map(Vec::as_slice).unwrap_or(&[])),

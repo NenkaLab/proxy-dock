@@ -469,3 +469,94 @@ mod tests {
         assert_eq!(g["dns_server"], json!(""));
     }
 }
+
+/// Python `json.dump(..., ensure_ascii=False, indent=2)`: serde's pretty printer with Python's float repr
+struct PyFormatter(serde_json::ser::PrettyFormatter<'static>);
+
+impl serde_json::ser::Formatter for PyFormatter {
+    fn write_f64<W: ?Sized + std::io::Write>(&mut self, w: &mut W, value: f64) -> std::io::Result<()> {
+        w.write_all(crate::py::float_repr(value).as_bytes())
+    }
+    fn begin_array<W: ?Sized + std::io::Write>(&mut self, w: &mut W) -> std::io::Result<()> {
+        self.0.begin_array(w)
+    }
+    fn end_array<W: ?Sized + std::io::Write>(&mut self, w: &mut W) -> std::io::Result<()> {
+        self.0.end_array(w)
+    }
+    fn begin_array_value<W: ?Sized + std::io::Write>(&mut self, w: &mut W, first: bool) -> std::io::Result<()> {
+        self.0.begin_array_value(w, first)
+    }
+    fn end_array_value<W: ?Sized + std::io::Write>(&mut self, w: &mut W) -> std::io::Result<()> {
+        self.0.end_array_value(w)
+    }
+    fn begin_object<W: ?Sized + std::io::Write>(&mut self, w: &mut W) -> std::io::Result<()> {
+        self.0.begin_object(w)
+    }
+    fn end_object<W: ?Sized + std::io::Write>(&mut self, w: &mut W) -> std::io::Result<()> {
+        self.0.end_object(w)
+    }
+    fn begin_object_key<W: ?Sized + std::io::Write>(&mut self, w: &mut W, first: bool) -> std::io::Result<()> {
+        self.0.begin_object_key(w, first)
+    }
+    fn begin_object_value<W: ?Sized + std::io::Write>(&mut self, w: &mut W) -> std::io::Result<()> {
+        self.0.begin_object_value(w)
+    }
+    fn end_object_value<W: ?Sized + std::io::Write>(&mut self, w: &mut W) -> std::io::Result<()> {
+        self.0.end_object_value(w)
+    }
+}
+
+/// a value as the Python app writes it
+pub fn py_json(v: &Value) -> String {
+    use serde::Serialize;
+    let mut out = Vec::new();
+    let mut ser = serde_json::Serializer::with_formatter(&mut out, PyFormatter(serde_json::ser::PrettyFormatter::with_indent(b"  ")));
+    v.serialize(&mut ser).expect("JSON values always serialize");
+    String::from_utf8(out).expect("serde_json writes UTF-8")
+}
+
+#[derive(Debug)]
+pub enum SaveError {
+    /// passwords could not be encrypted (nothing written)
+    Seal(String),
+    Write(String),
+}
+
+/// The settings file's contents for global settings and a (validated) graph: secrets of every inbound and
+/// outbound block sealed (Python `config.save`).
+pub fn save_text(glob: &Map<String, Value>, graph: &Map<String, Value>) -> Result<String, SaveError> {
+    let mut g = graph.clone();
+    for (key, field) in [("inbounds", "inbound"), ("outbounds", "outbound")] {
+        let Some(items) = g.get(key).and_then(Value::as_array).cloned() else { continue };
+        let mut sealed = vec![];
+        for mut item in items {
+            if let Some(node) = item.as_object_mut() {
+                if let Some(Value::Object(settings)) = node.get(field) {
+                    let s = secret::seal(settings).map_err(|e| SaveError::Seal(format!("{e:?}")))?;
+                    node.insert(field.into(), Value::Object(s));
+                }
+            }
+            sealed.push(item);
+        }
+        g.insert(key.into(), Value::Array(sealed));
+    }
+    let data = json!({"version": 3, "global": glob, "graph": g});
+    Ok(py_json(&data))
+}
+
+/// Write the settings file through `<file>.tmp` (replaced in one step, so a crash never leaves half a file).
+pub fn save_to(path: &std::path::Path, glob: &Map<String, Value>, graph: &Map<String, Value>) -> Result<(), SaveError> {
+    let text = save_text(glob, graph)?;
+    let w = |e: std::io::Error| SaveError::Write(e.to_string());
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(w)?;
+    }
+    let tmp = path.with_file_name(format!("{}.tmp", path.file_name().and_then(|n| n.to_str()).unwrap_or("config.json")));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp).map_err(w)?;
+    }
+    std::fs::write(&tmp, text).map_err(w)?;
+    std::fs::rename(&tmp, path).map_err(w)
+}

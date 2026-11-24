@@ -23,7 +23,7 @@ pub const MAX_LANES: usize = 24;
 pub const MAX_GAP: i64 = 4;
 pub const MAX_WIRELESS: i64 = 9999;
 
-type Obj = Map<String, Value>;
+pub type Obj = Map<String, Value>;
 
 pub fn empty() -> Obj {
     match json!({"inbounds": [], "outbounds": [], "routers": [], "relays": [],

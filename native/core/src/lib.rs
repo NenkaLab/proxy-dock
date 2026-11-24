@@ -3,6 +3,7 @@
 #![recursion_limit = "256"] // json! of the outbound defaults
 
 pub mod config;
+pub mod edit;
 pub mod graph;
 pub mod http;
 pub mod i18n;

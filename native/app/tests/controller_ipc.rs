@@ -7,6 +7,9 @@ use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver};
 use std::time::{Duration, Instant};
 
+/// the run folder is process-wide: the tests of this file take turns
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
 }
@@ -47,6 +50,7 @@ fn expect(rx: &Receiver<Value>, secs: u64, f: impl Fn(&Value) -> bool) -> Option
 
 #[test]
 fn window_protocol() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let Some(exe) = singbox() else {
         eprintln!("sing-box not found: skipped");
         return;
@@ -105,5 +109,95 @@ fn window_protocol() {
     assert!(expect(&rx, 10, |v| v["ev"] == "card" && v["card"]["id"] == "a1" && v["card"]["state"] == "stopped").is_some());
     h.quit(Duration::from_secs(10));
     assert!(TcpStream::connect(("127.0.0.1", p1)).is_err() && TcpStream::connect(("127.0.0.1", p2)).is_err());
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+fn saved(path: &std::path::Path) -> Value {
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+#[test]
+fn editing_saves_and_applies() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(exe) = singbox() else {
+        eprintln!("sing-box not found: skipped");
+        return;
+    };
+    let home = std::env::temp_dir().join(format!("proxydock-edit-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let (p1, up) = (free_port(), free_port());
+    let settings = json!({
+        "version": 3,
+        "global": {"singbox_path": exe.display().to_string()},
+        "graph": {
+            "inbounds": [{"id": "a1", "name": "card", "autostart": true, "inbound": {"type": "http", "host": "127.0.0.1", "port": p1, "auth_enabled": true, "username": "u", "password": "secret pw"}, "target": "d"}],
+            "outbounds": [
+                {"id": "d", "name": "Direct", "outbound": {"type": "direct"}},
+                {"id": "s", "name": "Up", "outbound": {"type": "socks5", "host": "127.0.0.1", "port": up}},
+                {"id": "g", "name": "Group", "outbound": {"type": "group"}},
+            ],
+        },
+    });
+    let path = home.join("config.json");
+    std::fs::write(&path, settings.to_string()).unwrap();
+    proxydock_core::singbox::guard::set_run_dir(home.join("run"));
+    let h = controller::spawn(path.clone()).unwrap();
+    let (mut w, rx) = connect(&h, &h.token);
+    expect(&rx, 5, |v| v["ev"] == "hello").expect("hello");
+    let until = Instant::now() + Duration::from_secs(10);
+    while !h.cards().iter().any(|c| c.state == proxydock_core::manager::State::Running) && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    // plain-text password of the hand-written file: sealed on load (Windows)
+    let f = saved(&path);
+    assert_eq!(f["version"], 3);
+    if cfg!(windows) {
+        assert!(f["graph"]["inbounds"][0]["inbound"].get("password").is_none());
+        assert!(f["graph"]["inbounds"][0]["inbound"]["password_dpapi"].as_str().unwrap().len() > 20);
+    }
+
+    // moving: saved
+    ipc::send(&mut w, &json!({"cmd": "move", "blocks": [{"key": "a1", "x": 33.5, "y": 44.0}]})).unwrap();
+    let until = Instant::now() + Duration::from_secs(5);
+    while saved(&path)["graph"]["inbounds"][0]["pos"] != json!([33.5, 44.0]) && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(saved(&path)["graph"]["inbounds"][0]["pos"], json!([33.5, 44.0]));
+
+    // a refused link: Direct ends a chain -> error with the reason, canvas sent again
+    ipc::send(&mut w, &json!({"cmd": "connect", "from": "d", "out": 0, "to": "s", "in": 0})).unwrap();
+    let e = expect(&rx, 5, |v| v["ev"] == "error").expect("error");
+    assert!(e["message"].as_str().unwrap().contains("Direct"), "{e}");
+    assert!(expect(&rx, 5, |v| v["ev"] == "graph").is_some());
+
+    // the card now goes to Up: saved, and the running card restarts with it
+    ipc::send(&mut w, &json!({"cmd": "connect", "from": "a1", "out": 0, "to": "s", "in": 0})).unwrap();
+    let g = expect(&rx, 5, |v| v["ev"] == "graph").expect("graph");
+    assert!(g["canvas"]["links"].as_array().unwrap().iter().any(|l| l["from"] == "a1" && l["to"] == "s"));
+    assert_eq!(saved(&path)["graph"]["inbounds"][0]["target"], "s");
+    assert!(expect(&rx, 10, |v| v["ev"] == "card" && v["card"]["id"] == "a1" && v["card"]["state"] == "running"
+        && v["card"]["summary"].as_str().unwrap().contains(&format!("127.0.0.1:{up}"))).is_some());
+
+    // group members, adding and deleting blocks
+    ipc::send(&mut w, &json!({"cmd": "connect", "from": "g", "out": 0, "to": "d", "in": 0})).unwrap();
+    expect(&rx, 5, |v| v["ev"] == "graph").expect("graph");
+    assert_eq!(saved(&path)["graph"]["outbounds"][2]["members"], json!(["d"]));
+    ipc::send(&mut w, &json!({"cmd": "add", "kind": 1, "x": 10.0, "y": 20.0})).unwrap();
+    expect(&rx, 5, |v| v["ev"] == "graph").expect("graph");
+    assert_eq!(saved(&path)["graph"]["routers"][0]["name"], "Router");
+    ipc::send(&mut w, &json!({"cmd": "delete", "keys": ["s"]})).unwrap();
+    expect(&rx, 5, |v| v["ev"] == "graph").expect("graph");
+    let f = saved(&path);
+    assert!(f["graph"]["outbounds"].as_array().unwrap().iter().all(|o| o["id"] != "s"));
+    assert!(f["graph"]["inbounds"][0]["target"].is_null());
+    // left with nothing to send to: the card stops
+    assert!(expect(&rx, 10, |v| v["ev"] == "card" && v["card"]["id"] == "a1" && v["card"]["state"] == "stopped").is_some());
+
+    // the saved file reads back with the same password
+    let l = proxydock_core::config::load_from(&path).unwrap();
+    assert_eq!(l.graph["inbounds"][0]["inbound"]["password"], "secret pw");
+    h.quit(Duration::from_secs(10));
     let _ = std::fs::remove_dir_all(&home);
 }

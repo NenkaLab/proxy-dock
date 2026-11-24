@@ -16,6 +16,7 @@ rcgen = "0.14.10"
 time = "0.3.55"
 sha2 = "0.10"
 zip = { version = "9.8.2", default-features = false, features = ["deflate"] }
+serde = "1.0.229"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

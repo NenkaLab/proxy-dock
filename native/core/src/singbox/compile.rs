@@ -83,13 +83,7 @@ pub fn py_str(v: &Value) -> String {
         Value::String(s) => s.clone(),
         Value::Bool(b) => if *b { "True".into() } else { "False".into() },
         Value::Null => "None".into(),
-        Value::Number(n) if n.is_f64() => {
-            let s = format!("{:?}", n.as_f64().unwrap());
-            match s.split_once('e') {
-                Some((m, e)) if !e.starts_with('-') => format!("{m}e+{e}"),
-                _ => s,
-            }
-        }
+        Value::Number(n) if n.is_f64() => crate::py::float_repr(n.as_f64().unwrap()),
         other => other.to_string(),
     }
 }
