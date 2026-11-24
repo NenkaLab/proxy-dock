@@ -1,6 +1,6 @@
 // ProxyDock window (proxydock-ui.exe): Material 3 Expressive on Slint's "material" style (build.rs), same look as
 // the prototype. Pages so far: the proxy cards and the log; everything comes from the core process over ipc.
-import { Button, ComboBox, LineEdit, ListView, Palette, ScrollView, Switch } from "std-widgets.slint";
+import { Button, ComboBox, LineEdit, ListView, Palette, ScrollView, Switch, TextEdit } from "std-widgets.slint";
 import {
     NodeEditor, BaseNode, Pin, PinTypes, NodeEditorEvents, NodeEditorInternalCallbacks, NodeEditorComputations, LinkData,
 } from "@nodeeditor";
@@ -78,6 +78,8 @@ export struct FieldRow {
     options: [string],
     index: int,
     visible: bool,
+    // "item": the buttons' labels (their actions stay in the Rust side)
+    buttons: [string],
 }
 
 export struct CardRow {
@@ -290,6 +292,8 @@ component ToolbarButton inherits Rectangle {
 component FormRow inherits Rectangle {
     in property <FieldRow> f;
     callback changed(string, string);
+    // a button (index -1) or an item's button n
+    callback pressed(string, int);
     height: lay.preferred-height;
     lay := HorizontalLayout {
         spacing: 16px;
@@ -298,10 +302,10 @@ component FormRow inherits Rectangle {
             width: 260px;
             spacing: 2px;
             Text {
-                text: f.label;
-                font-size: 14px;
-                font-weight: 600;
-                color: M3.on-surface;
+                text: f.kind == "button" ? "" : f.label;
+                font-size: f.kind == "heading" ? 18px : 14px;
+                color: f.kind == "heading" ? M3.primary : M3.on-surface;
+                font-weight: f.kind == "heading" ? 700 : 600;
                 wrap: word-wrap;
             }
             if f.desc != "": Text {
@@ -325,6 +329,32 @@ component FormRow inherits Rectangle {
                 model: f.options;
                 current-index: f.index;
                 selected => { root.changed(f.key, self.current-index); }
+            }
+            if f.kind == "button": HorizontalLayout {
+                alignment: start;
+                Button {
+                    text: f.label;
+                    clicked => { root.pressed(f.key, -1); }
+                }
+            }
+            if f.kind == "item": HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: f.text;
+                    color: M3.on-surface-variant;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    font-family: "JetBrains Mono";
+                }
+                for b[i] in f.buttons: Button {
+                    text: b;
+                    clicked => { root.pressed(f.key, i); }
+                }
+            }
+            if f.kind == "info": LineEdit {
+                text: f.text;
+                read-only: true;
+                font-size: 12px;
             }
             if f.kind == "text" || f.kind == "secret" || f.kind == "int": LineEdit {
                 text: f.text;
@@ -486,6 +516,11 @@ export component App inherits Window {
     callback edit-card(string);
     callback field-changed(string, string);
     callback form-save();
+    callback form-pressed(string, int);
+    // text to read or copy (a WireGuard device's config)
+    in-out property <string> popup-title;
+    in-out property <string> popup-text;
+    in property <string> t-close: "Close";
     callback form-cancel();
     callback delete-selected();
     in property <string> t-no-graph: "";
@@ -724,6 +759,7 @@ export component App inherits Window {
                                     visible: f.visible;
                                     height: f.visible ? self.preferred-height : 0px;
                                     changed(k, v) => { root.field-changed(k, v); }
+                                    pressed(k, i) => { root.form-pressed(k, i); }
                                 }
                             }
                         }
@@ -753,6 +789,38 @@ export component App inherits Window {
                                 }
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+    if root.popup-text != "": Rectangle {
+        background: #00000080;
+        TouchArea { }
+        Rectangle {
+            width: min(parent.width - 80px, 640px);
+            height: min(parent.height - 80px, 480px);
+            border-radius: 28px;
+            background: M3.surface-container-high;
+            VerticalLayout {
+                padding: 24px;
+                spacing: 12px;
+                Text {
+                    text: root.popup-title;
+                    font-size: 20px;
+                    font-weight: 700;
+                    color: M3.on-surface;
+                }
+                TextEdit {
+                    text: root.popup-text;
+                    read-only: true;
+                    font-size: 13px;
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    Button {
+                        text: root.t-close;
+                        clicked => { root.popup-text = ""; }
                     }
                 }
             }

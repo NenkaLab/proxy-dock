@@ -140,6 +140,7 @@ pub fn spawn(config_path: PathBuf) -> std::io::Result<Handle> {
         view: canvas::View::default(),
         graph: graph::empty(),
         can_save: false,
+        drafts: HashMap::new(),
         flow_last: HashMap::new(),
         flow_sent: vec![],
     };
@@ -173,6 +174,8 @@ struct Controller {
     graph: Map<String, Value>,
     /// false when the settings file could not be read: it is never overwritten then
     can_save: bool,
+    /// the block each window is editing: (kind, draft)
+    drafts: HashMap<u64, (&'static str, Value)>,
     /// per (card, exit block): up + down bytes at the last tick (for the per-link rates)
     flow_last: HashMap<(String, String), f64>,
     /// the per-link rates last sent (bytes/s; all zero = nothing flowing)
@@ -290,35 +293,47 @@ impl Controller {
         self.broadcast(&json!({"ev": "graph", "cards": cards, "canvas": canvas}));
     }
 
-    /// the block editor: open (the fields of a block), preview (the fields for the values typed so far) and save
+    /// The block editor. open: a draft of the block and its fields; preview: the typed values go into the draft and
+    /// the fields come back (which ones show depends on them); action: a button on the draft; save: the draft is
+    /// checked and saved like a canvas edit.
     fn editor(&mut self, client: u64, cmd: &str, v: &Value) {
-        let (id, _) = v["id"].as_str().unwrap_or("").split_once("/out").unwrap_or((v["id"].as_str().unwrap_or(""), ""));
-        let id = id.to_string();
-        let values = v["values"].as_object().cloned().unwrap_or_default();
         let reply = |c: &mut Self, msg: Value| {
             if let Some(cl) = c.clients.get_mut(&client) {
                 let _ = ipc::send(&mut cl.stream, &msg);
             }
         };
-        let Some((kind, node)) = form::apply(&self.graph, &id, &values) else {
-            reply(self, json!({"ev": "error", "message": tr("This block has no settings to edit yet")}));
-            return;
-        };
-        let members: Vec<(String, String)> = node["members"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .map(|m| (m.to_string(), graph::find(&self.graph, m).and_then(|(_, n)| n["name"].as_str().map(String::from)).unwrap_or_default()))
-            .collect();
-        let fields = match kind {
-            "inbound" => form::inbound_form(&node),
-            "outbound" => form::outbound_form(&node, &members),
-            _ => form::router_form(&node),
-        };
-        let fields: Vec<Value> = fields.iter().map(form::Field::to_json).collect();
-        let title = graph::find(&self.graph, &id).and_then(|(_, n)| n["name"].as_str().map(String::from)).unwrap_or_default();
+        let values = v["values"].as_object().cloned().unwrap_or_default();
+        if cmd == "edit_open" {
+            let key = v["id"].as_str().unwrap_or("");
+            let id = key.strip_suffix("/out").unwrap_or(key).to_string();
+            let Some((kind, node)) = graph::find(&self.graph, &id).map(|(k, n)| (k, n.clone())) else { return };
+            if !matches!(kind, "inbound" | "outbound" | "router" | "relay") {
+                reply(self, json!({"ev": "error", "message": tr("This block has no settings to edit yet")}));
+                return;
+            }
+            let mut node = node;
+            form::on_open(kind, &mut node);
+            self.drafts.insert(client, (kind, node));
+        }
+        let Some((kind, draft)) = self.drafts.get(&client).cloned() else { return };
+        let mut node = form::apply(kind, &draft, &values);
+        let id = node["id"].as_str().unwrap_or("").to_string();
+        if cmd == "edit_action" {
+            match form::act(kind, &node, v["action"].as_str().unwrap_or(""), &values) {
+                Ok(done) => {
+                    node = done.node;
+                    if let Some((title, text)) = done.show {
+                        reply(self, json!({"ev": "show_text", "title": title, "text": text}));
+                    }
+                }
+                Err(msg) if !msg.is_empty() => reply(self, json!({"ev": "form_errors", "errors": [msg]})),
+                Err(_) => {}
+            }
+        }
+        self.drafts.insert(client, (kind, node.clone()));
         if cmd != "edit_save" {
+            let fields: Vec<Value> = form::form(&self.graph, &self.glob, kind, &node).iter().map(form::Field::to_json).collect();
+            let title = graph::find(&self.graph, &id).and_then(|(_, n)| n["name"].as_str().map(String::from)).unwrap_or_default();
             reply(self, json!({"ev": "form", "id": id, "kind": kind, "title": title, "fields": fields}));
             return;
         }
@@ -340,6 +355,7 @@ impl Controller {
             }
         }
         self.graph = form::with_node(&self.graph, kind, &node);
+        self.drafts.remove(&client);
         let name = node["name"].as_str().unwrap_or("").to_string();
         self.app_log(Level::Setting, &tr("Saved proxy '{name}'").replace("{name}", &name));
         self.graph_changed();
@@ -498,7 +514,10 @@ impl Controller {
             "toggle" => self.toggle(id),
             "stop_all" => self.stop_all(),
             "move" | "connect" | "disconnect" | "delete" | "add" => self.edit(cmd, v),
-            "edit_open" | "edit_preview" | "edit_save" => self.editor(n, cmd, v),
+            "edit_open" | "edit_preview" | "edit_action" | "edit_save" => self.editor(n, cmd, v),
+            "edit_close" => {
+                self.drafts.remove(&n);
+            }
             _ => {}
         }
     }

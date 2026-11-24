@@ -248,7 +248,7 @@ fn block_editor() {
     while TcpStream::connect(("127.0.0.1", p1)).is_err() && Instant::now() < until {
         std::thread::sleep(Duration::from_millis(100));
     }
-    ipc::send(&mut w, &json!({"cmd": "edit_save", "id": "a1", "values": {"inbound.port": p2.to_string(), "name": " renamed "}})).unwrap();
+    ipc::send(&mut w, &json!({"cmd": "edit_save", "id": "a1", "values": {"inbound.auth_enabled": false, "inbound.port": p2.to_string(), "name": " renamed "}})).unwrap();
     expect(&rx, 10, |v| v["ev"] == "form_saved").expect("saved");
     let f: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     assert_eq!(f["graph"]["inbounds"][0]["inbound"]["port"], p2);
@@ -261,15 +261,43 @@ fn block_editor() {
     assert!(TcpStream::connect(("127.0.0.1", p2)).is_ok() && TcpStream::connect(("127.0.0.1", p1)).is_err());
 
     // a router rule: a bad port is refused, a good condition saved
+    ipc::send(&mut w, &json!({"cmd": "edit_open", "id": "r"})).unwrap();
+    expect(&rx, 5, |v| v["ev"] == "form").expect("form");
     ipc::send(&mut w, &json!({"cmd": "edit_save", "id": "r", "values": {"rules.0.match.port": "443, 99999"}})).unwrap();
     let e = expect(&rx, 5, |v| v["ev"] == "form_errors").expect("errors");
     assert!(e["errors"].to_string().contains("99999"), "{e}");
-    ipc::send(&mut w, &json!({"cmd": "edit_save", "id": "r", "values": {"rules.0.match.geoip": "kr, jp", "rules.0.match.domain_suffix": ""}})).unwrap();
-    expect(&rx, 10, |v| v["ev"] == "form_saved").expect("saved");
+    // (the bad port is still in the draft: corrected with the new values)
+    ipc::send(&mut w, &json!({"cmd": "edit_action", "id": "r", "action": "rule.add",
+        "values": {"rules.0.match.port": "", "rules.0.match.geoip": "kr, jp", "rules.0.match.domain_suffix": ""}})).unwrap();
+    let f = expect(&rx, 5, |v| v["ev"] == "form").expect("form");
+    assert!(f["fields"].as_array().unwrap().iter().any(|x| x["key"] == "rules.1.target"));
+    ipc::send(&mut w, &json!({"cmd": "edit_save", "id": "r", "values": {"rules.1.match.domain_keyword": "ads", "rules.1.target": "d"}})).unwrap();
+    let r = expect(&rx, 10, |v| v["ev"] == "form_saved" || v["ev"] == "form_errors").expect("answer");
+    assert_eq!(r["ev"], "form_saved", "{r}");
     let f: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     assert_eq!(f["graph"]["routers"][0]["rules"][0]["match"], json!({"geoip": ["kr", "jp"]}));
+    assert_eq!(f["graph"]["routers"][0]["rules"][1]["match"], json!({"domain_keyword": ["ads"]}));
+    assert_eq!(f["graph"]["routers"][0]["rules"][1]["target"], "d");
+
+    // the card becomes a WireGuard server: a key is there, devices get addresses and configs
+    ipc::send(&mut w, &json!({"cmd": "edit_open", "id": "a1"})).unwrap();
+    expect(&rx, 5, |v| v["ev"] == "form").expect("form");
+    ipc::send(&mut w, &json!({"cmd": "edit_preview", "id": "a1", "values": {"inbound.type": "wireguard"}})).unwrap();
+    expect(&rx, 5, |v| v["ev"] == "form").expect("form");
+    ipc::send(&mut w, &json!({"cmd": "edit_action", "id": "a1", "action": "gen.inbound.wg_private_key", "values": {}})).unwrap();
+    expect(&rx, 5, |v| v["ev"] == "form").expect("form");
+    ipc::send(&mut w, &json!({"cmd": "edit_action", "id": "a1", "action": "wgdev.add", "values": {"wg_new_name": "phone"}})).unwrap();
+    let f = expect(&rx, 5, |v| v["ev"] == "form").expect("form");
+    assert_eq!(field(&f, "wgdev.0")["value"], "10.66.0.2/32");
+    ipc::send(&mut w, &json!({"cmd": "edit_action", "id": "a1", "action": "wgdev.conf.0", "values": {}})).unwrap();
+    let t = expect(&rx, 5, |v| v["ev"] == "show_text").expect("config");
+    assert!(t["text"].as_str().unwrap().contains("Address = 10.66.0.2/32"));
+    expect(&rx, 5, |v| v["ev"] == "form").expect("form after the config");
+    ipc::send(&mut w, &json!({"cmd": "edit_close"})).unwrap();
 
     // an outbound: the type decides the fields; a VLESS block needs a UUID
+    ipc::send(&mut w, &json!({"cmd": "edit_open", "id": "d"})).unwrap();
+    expect(&rx, 5, |v| v["ev"] == "form").expect("form");
     ipc::send(&mut w, &json!({"cmd": "edit_preview", "id": "d", "values": {"outbound.type": "vless"}})).unwrap();
     let f = expect(&rx, 5, |v| v["ev"] == "form").expect("form");
     assert_eq!(field(&f, "outbound.uuid")["visible"], true);

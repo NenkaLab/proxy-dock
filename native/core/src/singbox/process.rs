@@ -250,6 +250,11 @@ fn free_port() -> std::io::Result<u16> {
 }
 
 pub fn random_hex(bytes: usize) -> String {
+    random_bytes(bytes).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// bytes from the system's secure random source
+pub fn random_bytes(bytes: usize) -> Vec<u8> {
     let mut buf = vec![0u8; bytes];
     #[cfg(windows)]
     unsafe {
@@ -262,7 +267,7 @@ pub fn random_hex(bytes: usize) -> String {
             let _ = f.read_exact(&mut buf);
         }
     }
-    buf.iter().map(|b| format!("{b:02x}")).collect()
+    buf
 }
 
 #[cfg(windows)]

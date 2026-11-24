@@ -311,6 +311,8 @@ fn field_rows(fields: &[Value]) -> Vec<FieldRow> {
                     other => other.to_string(),
                 };
                 let index = opts.iter().position(|(v, _)| *v == text).map_or(-1, |i| i as i32);
+                // an item's buttons: labels for the window, actions kept here
+                let buttons: Vec<SharedString> = if kind == "item" { opts.iter().map(|(_, l)| SharedString::from(l.as_str())).collect() } else { vec![] };
                 if f["rerender"] == json!(true) {
                     e.rerender.insert(key.clone());
                 }
@@ -326,6 +328,7 @@ fn field_rows(fields: &[Value]) -> Vec<FieldRow> {
                     options: ModelRc::new(VecModel::from(opts.into_iter().map(|(_, l)| SharedString::from(l)).collect::<Vec<_>>())),
                     index,
                     visible: f["visible"] == json!(true),
+                    buttons: ModelRc::new(VecModel::from(buttons)),
                 }
             })
             .collect()
@@ -333,6 +336,7 @@ fn field_rows(fields: &[Value]) -> Vec<FieldRow> {
 }
 
 fn labels(app: &App) {
+    app.set_t_close(tr("Close").into());
     app.set_t_save(tr("Save").into());
     app.set_t_cancel(tr("Cancel").into());
     app.set_t_add_inbound(tr("Inbound").into());
@@ -471,16 +475,28 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
     {
-        let send = send.clone();
+        let send_s = send.clone();
         app.on_form_save(move || {
             let msg = EDITOR.with(|e| {
                 let e = e.borrow();
                 json!({"cmd": "edit_save", "id": e.id, "values": e.values})
             });
-            send(msg);
+            send_s(msg);
         });
+        let send_p = send.clone();
+        app.on_form_pressed(move |key, i| {
+            let msg = EDITOR.with(|e| {
+                let e = e.borrow();
+                // a plain button's key is its action; an item's button n has the action in its options
+                let action = if i < 0 { key.to_string() } else { e.options.get(key.as_str()).and_then(|o| o.get(i as usize)).cloned().unwrap_or_default() };
+                json!({"cmd": "edit_action", "id": e.id, "action": action, "values": e.values})
+            });
+            send_p(msg);
+        });
+        let send_c = send.clone();
         let weak = app.as_weak();
         app.on_form_cancel(move || {
+            send_c(json!({"cmd": "edit_close"}));
             if let Some(a) = weak.upgrade() {
                 a.set_page(EDITOR.with(|e| e.borrow().back_to));
             }
@@ -552,15 +568,20 @@ fn main() -> Result<(), slint::PlatformError> {
                                 if e.id != id || app.get_page() != 3 {
                                     // a fresh editor
                                     e.id = id;
-                                    e.values.clear();
                                     e.back_to = app.get_page();
                                 }
+                                // the core's draft has every value typed so far
+                                e.values.clear();
                             });
                             let rows = field_rows(v["fields"].as_array().map(Vec::as_slice).unwrap_or(&[]));
                             app.set_form_fields(ModelRc::new(VecModel::from(rows)));
                             app.set_form_title(v["title"].as_str().unwrap_or("").into());
                             app.set_form_errors(ModelRc::default());
                             app.set_page(3);
+                        }
+                        "show_text" => {
+                            app.set_popup_title(v["title"].as_str().unwrap_or("").into());
+                            app.set_popup_text(v["text"].as_str().unwrap_or("").into());
                         }
                         "form_errors" => {
                             let errs: Vec<SharedString> = v["errors"].as_array().into_iter().flatten().filter_map(Value::as_str).map(SharedString::from).collect();
