@@ -78,7 +78,7 @@ fn focus_process_window(pid: u32) -> bool {
     true
 }
 
-/// start (or bring up) the window process; `page`: 0 proxies, 1 log
+/// start (or bring up) the window process; `page`: 0 canvas, 1 proxy cards, 2 log
 fn open_ui(page: u32) {
     let Some(core) = CORE.get() else { return };
     let mut child = UI_CHILD.lock().unwrap();
@@ -137,7 +137,7 @@ fn show_menu(x: i32, y: i32) {
     entries.push(Entry::Item { label: tr("Quit"), id: ID_QUIT });
     menu::show(x, y, entries, move |id| match id {
         ID_OPEN => open_ui(0),
-        ID_LOG => open_ui(1),
+        ID_LOG => open_ui(2),
         ID_STOP_ALL => core.stop_all(),
         ID_QUIT => quit(),
         id if id >= ID_CARD => {
@@ -206,5 +206,5 @@ fn main() {
         return;
     }
     let has = |f: &str| args.iter().any(|a| a == f);
-    run_tray(if has("--hidden") { None } else if has("--logs") { Some(1) } else { Some(0) });
+    run_tray(if has("--hidden") { None } else if has("--logs") { Some(2) } else { Some(0) });
 }

@@ -8,6 +8,8 @@ use proxydock_core::i18n::{set_language, tr};
 use proxydock_core::log::fmt_size;
 use serde_json::{json, Value};
 use slint::{Color, ComponentHandle, Model, ModelRc, SharedString, VecModel};
+use slint_node_editor::{wire_node_editor, wire_selection, GraphLogic, LinkData, LinkPath, MovableNode, NodeEditorSetup};
+use std::collections::HashMap;
 use std::net::TcpStream;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -15,6 +17,45 @@ use std::sync::{Arc, Mutex};
 slint::include_modules!();
 
 const LOG_CAP: usize = 5000;
+
+impl MovableNode for NodeData {
+    fn id(&self) -> i32 { self.id }
+    fn x(&self) -> f32 { self.x }
+    fn y(&self) -> f32 { self.y }
+    fn selected(&self) -> bool { self.selected }
+    fn set_x(&mut self, x: f32) { self.x = x; }
+    fn set_y(&mut self, y: f32) { self.y = y; }
+}
+
+fn pin_in(node: i32, lane: i32) -> i32 {
+    node * 64 + lane * 2
+}
+
+fn pin_out(node: i32, lane: i32) -> i32 {
+    node * 64 + lane * 2 + 1
+}
+
+fn strings(v: &Value) -> ModelRc<SharedString> {
+    let items: Vec<SharedString> = v.as_array().into_iter().flatten().map(|x| SharedString::from(x.as_str().unwrap_or(""))).collect();
+    ModelRc::new(VecModel::from(items))
+}
+
+/// "#rrggbb" -> colour; links without one take the app's default wire colour
+fn hex_color(text: &str) -> Option<Color> {
+    let h = text.strip_prefix('#')?;
+    let n = u32::from_str_radix(h, 16).ok().filter(|_| h.len() == 6)?;
+    Some(Color::from_rgb_u8((n >> 16) as u8, (n >> 8) as u8, n as u8))
+}
+
+const WIRE: Color = Color::from_rgb_u8(90, 160, 240);
+
+/// bytes per second as "1.2 MB/s"
+fn rate_text(bps: f64) -> String {
+    if bps <= 0.0 {
+        return String::new();
+    }
+    format!("{}/s", fmt_size(bps))
+}
 
 fn state_text(state: &str) -> String {
     match state {
@@ -86,10 +127,108 @@ fn apply_title_bar(w: &App) {
 struct Models {
     cards: Rc<VecModel<CardRow>>,
     logs: Rc<VecModel<LogRow>>,
+    nodes: Rc<VecModel<NodeData>>,
+    links: Rc<VecModel<LinkData>>,
+    /// per link (same order as `links`): its colour, and the link's two block ids (for the rate on blocks)
+    link_meta: std::cell::RefCell<Vec<(Color, i32, i32)>>,
 }
 
 impl Models {
+    /// the canvas from the core's description (blocks keyed by block id, links by lanes)
+    fn set_canvas(&self, c: &Value) {
+        let mut ids: HashMap<String, i32> = HashMap::new();
+        let mut nodes = vec![];
+        for (i, n) in c["nodes"].as_array().into_iter().flatten().enumerate() {
+            let id = i as i32 + 1;
+            ids.insert(n["key"].as_str().unwrap_or("").to_string(), id);
+            let wires: Vec<Wire> = n["wires"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|w| Wire { i: w[0].as_i64().unwrap_or(0) as i32, o: w[1].as_i64().unwrap_or(0) as i32 })
+                .collect();
+            nodes.push(NodeData {
+                id,
+                title: n["title"].as_str().unwrap_or("").into(),
+                detail: n["detail"].as_str().unwrap_or("").into(),
+                kind: n["kind"].as_i64().unwrap_or(2) as i32,
+                x: n["x"].as_f64().unwrap_or(0.0) as f32,
+                y: n["y"].as_f64().unwrap_or(0.0) as f32,
+                selected: false,
+                ins: n["ins"].as_i64().unwrap_or(0).min(31) as i32,
+                outs: n["outs"].as_i64().unwrap_or(0).min(31) as i32,
+                in_labels: strings(&n["in_labels"]),
+                out_labels: strings(&n["out_labels"]),
+                wires: ModelRc::new(VecModel::from(wires)),
+                card: n["card"].as_str().unwrap_or("").into(),
+                state: n["state"].as_str().unwrap_or("").into(),
+                rate: SharedString::new(),
+            });
+        }
+        let mut links = vec![];
+        let mut meta = vec![];
+        for (k, l) in c["links"].as_array().into_iter().flatten().enumerate() {
+            let (Some(a), Some(b)) = (ids.get(l["from"].as_str().unwrap_or("")), ids.get(l["to"].as_str().unwrap_or(""))) else {
+                continue;
+            };
+            let color = hex_color(l["color"].as_str().unwrap_or("")).unwrap_or(WIRE);
+            let (out, inp) = (l["out"].as_i64().unwrap_or(0) as i32, l["in"].as_i64().unwrap_or(0) as i32);
+            links.push(LinkData::new(k as i32 + 1, pin_out(*a, out), pin_in(*b, inp), color));
+            meta.push((color, *a, *b));
+        }
+        self.nodes.set_vec(nodes);
+        self.links.set_vec(links);
+        *self.link_meta.borrow_mut() = meta;
+    }
+
+    /// a card's state on its canvas block
+    fn set_node_state(&self, card: &str, state: &str) {
+        for i in 0..self.nodes.row_count() {
+            let Some(mut n) = self.nodes.row_data(i) else { continue };
+            if n.card == card && n.state != state {
+                n.state = state.into();
+                self.nodes.set_row_data(i, n);
+            }
+        }
+    }
+
+    /// bytes per second on each link: links with traffic get wider and brighter, blocks show what passes them
+    fn set_flow(&self, rates: &[Value]) {
+        let meta = self.link_meta.borrow();
+        let mut per_node: HashMap<i32, (f64, f64)> = HashMap::new(); // (in, out)
+        for i in 0..self.links.row_count() {
+            let Some(mut l) = self.links.row_data(i) else { continue };
+            let Some((color, a, b)) = meta.get(i).copied() else { continue };
+            let r = rates.get(l.id as usize - 1).and_then(Value::as_f64).unwrap_or(0.0);
+            per_node.entry(a).or_default().1 += r;
+            per_node.entry(b).or_default().0 += r;
+            // 2 px idle; with traffic 3..8 px on a log scale (1 KB/s .. 100 MB/s)
+            let (width, c) = if r > 0.0 {
+                let t = ((r.max(1024.0).log10() - 3.0) / 5.0).clamp(0.0, 1.0) as f32;
+                (3.0 + 5.0 * t, color.brighter(0.35))
+            } else {
+                (2.0, color)
+            };
+            if l.line_width != width || l.color != c {
+                l.line_width = width;
+                l.color = c;
+                self.links.set_row_data(i, l);
+            }
+        }
+        for i in 0..self.nodes.row_count() {
+            let Some(mut n) = self.nodes.row_data(i) else { continue };
+            let (inp, out) = per_node.get(&n.id).copied().unwrap_or_default();
+            // what passes a block: what comes in, or for a card (nothing comes in) what leaves it
+            let text: SharedString = rate_text(if inp > 0.0 { inp } else { out }).into();
+            if n.rate != text {
+                n.rate = text;
+                self.nodes.set_row_data(i, n);
+            }
+        }
+    }
+
     fn set_card(&self, c: &Value) {
+        self.set_node_state(c["id"].as_str().unwrap_or(""), c["state"].as_str().unwrap_or(""));
         let row = card_row(c);
         match (0..self.cards.row_count()).find(|i| self.cards.row_data(*i).is_some_and(|r| r.id == row.id)) {
             Some(i) => {
@@ -126,6 +265,8 @@ impl Models {
 }
 
 fn labels(app: &App) {
+    app.set_t_canvas(tr("Canvas").into());
+    app.set_t_no_graph(tr("No proxies yet. Create one with 'New proxy'.").into());
     app.set_t_proxy(tr("Proxy").into());
     app.set_t_logs(tr("Logs").into());
     app.set_t_stop_all(tr("Stop all proxies").into());
@@ -150,9 +291,41 @@ fn main() -> Result<(), slint::PlatformError> {
     let writer = Arc::new(Mutex::new(stream.try_clone().map_err(|e| slint::PlatformError::Other(e.to_string()))?));
 
     let app = App::new()?;
-    let models = Rc::new(Models { cards: Rc::new(VecModel::default()), logs: Rc::new(VecModel::default()) });
+    let models = Rc::new(Models {
+        cards: Rc::new(VecModel::default()),
+        logs: Rc::new(VecModel::default()),
+        nodes: Rc::new(VecModel::default()),
+        links: Rc::new(VecModel::default()),
+        link_meta: Default::default(),
+    });
     app.set_cards(ModelRc::from(models.cards.clone()));
     app.set_logs(ModelRc::from(models.logs.clone()));
+    app.set_nodes(ModelRc::from(models.nodes.clone()));
+    app.set_links(ModelRc::from(models.links.clone()));
+    // canvas: moving and selecting blocks (positions stay in this window until saving settings is ported)
+    {
+        let nodes = models.nodes.clone();
+        let links = models.links.clone();
+        let setup = NodeEditorSetup::new({
+            let nodes = nodes.clone();
+            move |dragged, dx, dy| GraphLogic::commit_drag(&nodes, dragged, dx, dy)
+        });
+        let controller = setup.controller().clone();
+        wire_node_editor!(app, setup);
+        wire_selection!(app, setup, nodes, links);
+        app.on_compute_link_at({
+            let links = links.clone();
+            move |x, y| {
+                let rows = (0..links.row_count()).filter_map(|i| {
+                    let l = links.row_data(i)?;
+                    Some((l.id, l.start_pin_id, l.end_pin_id))
+                });
+                controller.cache().borrow().find_bezier_link_at_world(x, y, rows, controller.screen_distance_to_world(8.0), 50.0, 20)
+            }
+        });
+        // new links come with editing (not ported yet)
+        app.on_link_requested(|_, _| {});
+    }
     if let Some(p) = std::env::var("PROXYDOCK_PAGE").ok().and_then(|p| p.parse::<i32>().ok()) {
         app.set_page(p);
     }
@@ -187,7 +360,9 @@ fn main() -> Result<(), slint::PlatformError> {
                             m.cards.set_vec(v["cards"].as_array().into_iter().flatten().map(card_row).collect::<Vec<_>>());
                             m.add_logs(v["logs"].as_array().map(Vec::as_slice).unwrap_or(&[]));
                             m.set_stats(&v["stats"]);
+                            m.set_canvas(&v["canvas"]);
                         }
+                        "flow" => m.set_flow(v["links"].as_array().map(Vec::as_slice).unwrap_or(&[])),
                         "card" => m.set_card(&v["card"]),
                         "stats" => m.set_stats(&v["stats"]),
                         "log" => m.add_logs(v["entries"].as_array().map(Vec::as_slice).unwrap_or(&[])),
@@ -205,6 +380,7 @@ fn main() -> Result<(), slint::PlatformError> {
     MODELS.with(|m| *m.borrow_mut() = Some(models.clone()));
 
     app.show()?;
+    app.global::<NodeEditorComputations>().invoke_viewport_resized(app.get_width_(), app.get_height_());
     // the native window exists once the event loop runs: colour its title bar then, and again on theme changes
     {
         let weak = app.as_weak();

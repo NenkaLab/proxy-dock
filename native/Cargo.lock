@@ -3883,6 +3883,7 @@ dependencies = [
  "serde_json",
  "slint",
  "slint-build",
+ "slint-node-editor",
  "tiny-skia 0.12.0",
  "tray-icon",
  "windows-sys 0.61.2",
@@ -4542,6 +4543,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "spin_on",
+]
+
+[[package]]
+name = "slint-node-editor"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7f43c83bf1f3d8f321ed0ef9cdcb7ba0e94dffc07e7ab32a02eca4b40df5371"
+dependencies = [
+ "slint",
+ "slint-build",
 ]
 
 [[package]]

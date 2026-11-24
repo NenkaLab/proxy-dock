@@ -2,7 +2,7 @@
 //! through the manager (autostart, auto-restart with back-off), keeps the recent log, and serves the window
 //! process over ipc. Everything happens on one controller thread fed by a channel.
 
-use crate::ipc;
+use crate::{canvas, ipc};
 use proxydock_core::i18n::tr;
 use proxydock_core::log::{Entry, Level};
 use proxydock_core::manager::{self, Events, Manager, State};
@@ -137,6 +137,9 @@ pub fn spawn(config_path: PathBuf) -> std::io::Result<Handle> {
         running_since: HashMap::new(),
         cards: cards.clone(),
         config_path,
+        view: canvas::View::default(),
+        flow_last: HashMap::new(),
+        flow_sent: vec![],
     };
     c.load();
     std::thread::Builder::new().name("controller".into()).spawn(move || c.run(rx))?;
@@ -162,6 +165,12 @@ struct Controller {
     running_since: HashMap<String, Instant>,
     cards: Arc<Mutex<Vec<CardInfo>>>,
     config_path: PathBuf,
+    /// the canvas of the loaded graph
+    view: canvas::View,
+    /// per (card, exit block): up + down bytes at the last tick (for the per-link rates)
+    flow_last: HashMap<(String, String), f64>,
+    /// the per-link rates last sent (bytes/s; all zero = nothing flowing)
+    flow_sent: Vec<f64>,
 }
 
 fn entry_json(e: &Entry) -> Value {
@@ -193,6 +202,9 @@ impl Controller {
                 proxydock_core::i18n::set_language(self.glob["language"].as_str().unwrap_or("en"));
                 let g = graph::validate(&Value::Object(l.graph));
                 self.proxies = graph::compile(&g).into_iter().map(Value::Object).collect();
+                let summaries: HashMap<String, String> =
+                    self.proxies.iter().map(|p| (p["id"].as_str().unwrap_or("").to_string(), manager::summary(p))).collect();
+                self.view = canvas::build(&g, &|id| summaries.get(id).cloned().unwrap_or_default());
             }
             Err(config::LoadError::Missing) => {}
             Err(e) => {
@@ -290,7 +302,8 @@ impl Controller {
                 let cards: Vec<Value> = self.proxies.iter().map(|p| self.card_json(p)).collect();
                 let skip = self.logs.len().saturating_sub(LOG_SEND);
                 let logs: Vec<Value> = self.logs.iter().skip(skip).map(entry_json).collect();
-                let hello = json!({"ev": "hello", "language": self.glob["language"], "cards": cards, "logs": logs, "stats": self.stats_json()});
+                let canvas = canvas::to_json(&self.view, &|id| state_name(&self.manager.state(id)));
+                let hello = json!({"ev": "hello", "language": self.glob["language"], "cards": cards, "logs": logs, "stats": self.stats_json(), "canvas": canvas});
                 if let Some(c) = self.clients.get_mut(&n) {
                     c.ready = ipc::send(&mut c.stream, &hello).is_ok();
                 }
@@ -397,7 +410,39 @@ impl Controller {
         if self.clients.values().any(|c| c.ready) {
             let stats = self.stats_json();
             self.broadcast(&json!({"ev": "stats", "stats": stats}));
+            self.send_flow();
         }
+    }
+}
+
+impl Controller {
+    /// bytes per second on each canvas link over the last tick: each running card's traffic to each exit block
+    /// (from its sing-box connections) counted on the links of that card's way to the exit
+    fn send_flow(&mut self) {
+        let mut rates = vec![0.0f64; self.view.links.len()];
+        let mut now: HashMap<(String, String), f64> = HashMap::new();
+        for p in &self.proxies {
+            let id = p["id"].as_str().unwrap_or("");
+            for (exit, (up, down)) in self.manager.exit_totals(id) {
+                now.insert((id.to_string(), exit), up + down);
+            }
+        }
+        for (key, total) in &now {
+            let before = self.flow_last.get(key).copied().unwrap_or(*total);
+            let rate = (total - before).max(0.0);
+            if rate > 0.0 {
+                for li in self.view.paths.get(key).into_iter().flatten() {
+                    rates[*li] += rate;
+                }
+            }
+        }
+        self.flow_last = now;
+        // nothing flowing now and nothing shown: no message
+        if rates.iter().all(|r| *r == 0.0) && self.flow_sent.iter().all(|r| *r == 0.0) {
+            return;
+        }
+        self.broadcast(&json!({"ev": "flow", "links": rates}));
+        self.flow_sent = rates;
     }
 }
 

@@ -1,6 +1,11 @@
 // ProxyDock window (proxydock-ui.exe): Material 3 Expressive on Slint's "material" style (build.rs), same look as
 // the prototype. Pages so far: the proxy cards and the log; everything comes from the core process over ipc.
 import { Button, ListView, Palette, ScrollView } from "std-widgets.slint";
+import {
+    NodeEditor, BaseNode, Pin, PinTypes, NodeEditorEvents, NodeEditorInternalCallbacks, NodeEditorComputations, LinkData,
+} from "@nodeeditor";
+
+export { PinTypes, NodeEditorEvents, NodeEditorInternalCallbacks, NodeEditorComputations }
 import "../../../fonts/PretendardVariable.ttf";
 import "../../../fonts/JetBrainsMono.ttf";
 
@@ -18,6 +23,9 @@ global M3 {
     out property <color> on-error-container: dark ? #ffdad6 : #410002;
     out property <color> green-container: dark ? #1f5129 : #b7f1bc;
     out property <color> on-green-container: dark ? #b7f1bc : #002107;
+    out property <color> tertiary-container: dark ? #523f5f : #f2daff;
+    out property <color> on-tertiary-container: dark ? #f2daff : #251431;
+    out property <color> surface-container-highest: dark ? #32353a : #e0e2e8;
     out property <color> amber-container: dark ? #5a4300 : #ffdf9e;
     out property <color> on-amber-container: dark ? #ffdf9e : #261a00;
     out property <color> surface: dark ? #111418 : #f8f9ff;
@@ -32,6 +40,29 @@ global M3 {
 global Motion {
     out property <duration> fast-spatial: 350ms;
     out property <duration> fast-effects: 150ms;
+}
+
+export struct Wire { i: int, o: int }
+
+export struct NodeData {
+    id: int,
+    title: string,
+    detail: string,
+    // 0 inbound (card), 1 router / IF, 2 outbound, 3 pass-through, 4 PC
+    kind: int,
+    x: float,
+    y: float,
+    selected: bool,
+    ins: int,
+    outs: int,
+    in-labels: [string],
+    out-labels: [string],
+    wires: [Wire],
+    // a card block: its id and state ("running" / "starting" / "stopped" / "error"), else ""
+    card: string,
+    state: string,
+    // traffic through the block right now ("" when none)
+    rate: string,
 }
 
 export struct CardRow {
@@ -50,6 +81,161 @@ export struct LogRow {
     text: string,
     // 0 normal, 1 warning, 2 problem (failure, auth, block, error), 3 connection
     tone: int,
+}
+
+// A block on the canvas. Pin ids: input lane i = node * 64 + i * 2, output lane o = node * 64 + o * 2 + 1
+// (proxydock-ui.rs pin_in / pin_out).
+component ProxyNode inherits BaseNode {
+    in property <string> title;
+    in property <string> detail;
+    in property <int> kind;
+    in property <int> ins;
+    in property <int> outs;
+    in property <[string]> in-labels;
+    in property <[string]> out-labels;
+    in property <[Wire]> wires;
+    in property <string> state;
+    in property <string> rate;
+    callback toggle();
+
+    property <length> header: 54px;
+    property <length> lane-h: 26px;
+    property <length> inset: 40px;
+    property <int> rows: max(1, max(ins, outs));
+    property <bool> lanes: kind == 1 || (kind == 3 && (ins > 1 || outs > 1 || wires.length > 0));
+    property <length> rate-h: rate != "" ? 18px : 0px;
+    node-width: kind == 1 ? 250px : kind == 3 ? 200px : 230px;
+    node-height: (lanes ? header + rows * lane-h + 10px : 68px) + rate-h;
+
+    property <color> container: kind == 0 ? M3.green-container : kind == 1 ? M3.tertiary-container
+        : kind == 3 ? M3.secondary-container : kind == 4 ? M3.surface-container-highest : M3.primary-container;
+    property <color> on-container: kind == 0 ? M3.on-green-container : kind == 1 ? M3.on-tertiary-container
+        : kind == 3 ? M3.on-secondary-container : kind == 4 ? M3.on-surface : M3.on-primary-container;
+
+    // y of the centre of lane n (multi-lane blocks), or the middle of a simple block
+    pure function lane-y(n: int) -> length {
+        return root.lanes ? root.header + n * root.lane-h + root.lane-h / 2 : (root.node-height - root.rate-h) / 2;
+    }
+
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        background: root.container;
+        // selected blocks morph to a rounder shape (expressive shape change)
+        border-radius: root.selected ? 28px : 18px;
+        border-width: root.selected ? 3px : 0px;
+        border-color: M3.primary;
+        drop-shadow-blur: root.selected ? 12px : 3px;
+        drop-shadow-offset-y: root.selected ? 4px : 1px;
+        drop-shadow-color: #00000038;
+        animate border-radius, drop-shadow-blur, drop-shadow-offset-y {
+            duration: Motion.fast-spatial; easing: cubic-bezier(0.42, 1.67, 0.21, 0.90);
+        }
+        // a card's state: a dot before the title
+        if root.state != "": Rectangle {
+            x: 14px; y: 18px;
+            width: 10px; height: 10px; border-radius: 5px;
+            background: root.state == "running" ? #2e9d4a : root.state == "starting" ? #d29b00
+                : root.state == "error" ? M3.error : root.on-container.with-alpha(0.35);
+        }
+        Text {
+            x: root.state != "" ? 30px : 20px; y: 12px;
+            width: root.node-width - self.x - (root.state != "" ? 44px : 14px);
+            text: root.title;
+            font-size: 15px;
+            font-weight: 700;
+            color: root.on-container;
+            overflow: elide;
+        }
+        Text {
+            x: 20px; y: 34px;
+            width: root.node-width - 34px;
+            text: root.detail;
+            font-size: 12px;
+            color: root.on-container.with-alpha(0.72);
+            overflow: elide;
+        }
+        if root.lanes: Rectangle {
+            x: 12px;
+            y: root.header - 4px;
+            width: parent.width - 24px;
+            height: 1px;
+            background: root.on-container.with-alpha(0.15);
+        }
+        if root.rate != "": Text {
+            x: 20px;
+            y: root.node-height - root.rate-h - 6px;
+            text: root.rate;
+            font-size: 11px;
+            font-family: "JetBrains Mono";
+            font-weight: 600;
+            color: root.on-container;
+        }
+        // a card: run / stop in the corner
+        if root.state != "": Rectangle {
+            x: root.node-width - 38px; y: 8px;
+            width: 30px; height: 30px; border-radius: 15px;
+            background: run-ta.has-hover ? root.on-container.with-alpha(0.14) : transparent;
+            Text {
+                text: root.state == "running" || root.state == "starting" ? "■" : "▶";
+                font-size: 13px;
+                color: root.on-container;
+            }
+            run-ta := TouchArea { clicked => { root.toggle(); } }
+        }
+    }
+
+    // pass-through: the wiring inside the block
+    for w in root.lanes && root.kind == 3 ? root.wires : []: Path {
+        x: 0; y: 0;
+        width: root.node-width;
+        height: root.node-height;
+        viewbox-x: 0; viewbox-y: 0;
+        viewbox-width: root.node-width / 1px;
+        viewbox-height: root.node-height / 1px;
+        stroke: root.on-container.with-alpha(0.6);
+        stroke-width: 2px;
+        MoveTo { x: root.inset / 1px; y: root.lane-y(w.i) / 1px; }
+        CubicTo {
+            control-1-x: root.node-width / 2px; control-1-y: root.lane-y(w.i) / 1px;
+            control-2-x: root.node-width / 2px; control-2-y: root.lane-y(w.o) / 1px;
+            x: (root.node-width - root.inset) / 1px; y: root.lane-y(w.o) / 1px;
+        }
+    }
+
+    for label[i] in root.lanes ? root.in-labels : []: Text {
+        x: 14px;
+        y: root.lane-y(i) - self.height / 2;
+        text: label;
+        font-size: 12px;
+        color: root.on-container.with-alpha(0.8);
+    }
+    for label[o] in root.lanes || root.kind == 2 ? root.out-labels : []: Text {
+        x: root.node-width - self.width - 14px;
+        y: root.lane-y(o) - self.height / 2;
+        text: label;
+        font-size: 12px;
+        color: root.on-container.with-alpha(0.8);
+    }
+
+    for i in root.ins: Pin {
+        x: -self.width / 2;
+        y: root.lane-y(i) - self.height / 2;
+        pin-id: root.node-id * 64 + i * 2;
+        node-id: root.node-id;
+        pin-type: PinTypes.input;
+        node-screen-x: root.screen-x;
+        node-screen-y: root.screen-y;
+    }
+    for o in root.outs: Pin {
+        x: root.node-width - self.width / 2;
+        y: root.lane-y(o) - self.height / 2;
+        pin-id: root.node-id * 64 + o * 2 + 1;
+        node-id: root.node-id;
+        pin-type: PinTypes.output;
+        node-screen-x: root.screen-x;
+        node-screen-y: root.screen-y;
+    }
 }
 
 component RailItem inherits Rectangle {
@@ -167,6 +353,22 @@ component Card inherits Rectangle {
 }
 
 export component App inherits Window {
+    // canvas
+    in property <[NodeData]> nodes;
+    in property <[LinkData]> links <=> editor.links;
+    in-out property <string> grid-commands <=> editor.grid-commands;
+    out property <float> width_: editor.width / 1px;
+    out property <float> height_: editor.height / 1px;
+    in property <string> t-canvas: "Canvas";
+    in property <string> t-no-graph: "";
+    callback link-requested <=> editor.link-requested;
+    callback node-selected <=> editor.node-selected;
+    callback select-link <=> editor.select-link;
+    callback selection-cleared <=> editor.selection-cleared;
+    callback box-selection-committed <=> editor.box-selection-committed;
+    callback compute-link-at <=> editor.compute-link-at;
+    public function focus-editor() { editor.focus(); }
+
     in property <[CardRow]> cards;
     in property <[LogRow]> logs;
     in-out property <int> page: 0;
@@ -206,16 +408,22 @@ export component App inherits Window {
             spacing: 4px;
             alignment: start;
             RailItem {
-                glyph: "▦";
-                label: root.t-proxy;
+                glyph: "◇";
+                label: root.t-canvas;
                 active: root.page == 0;
                 clicked => { root.page = 0; }
             }
             RailItem {
-                glyph: "≡";
-                label: root.t-logs;
+                glyph: "▦";
+                label: root.t-proxy;
                 active: root.page == 1;
                 clicked => { root.page = 1; }
+            }
+            RailItem {
+                glyph: "≡";
+                label: root.t-logs;
+                active: root.page == 2;
+                clicked => { root.page = 2; }
             }
         }
         // page container
@@ -239,8 +447,46 @@ export component App inherits Window {
                 }
                 // both pages stay (the log keeps its scroll position); the hidden one is not drawn
                 Rectangle {
-                    VerticalLayout {
+                    // canvas: edge to edge in the page container
+                    Rectangle {
+                        x: -20px;
+                        y: -20px;
+                        width: parent.width + 40px;
+                        height: parent.height + 40px;
                         visible: root.page == 0;
+                        editor := NodeEditor {
+                            width: 100%;
+                            height: 100%;
+                            has-link-selection: true;
+                            // the software renderer keeps rectangle sizes in i16: a smaller world than the default
+                            world-content-size: 8000px;
+                            max-zoom: 2.0;
+                            for node in root.nodes: ProxyNode {
+                                node-id: node.id;
+                                title: node.title;
+                                detail: node.detail;
+                                kind: node.kind;
+                                ins: node.ins;
+                                outs: node.outs;
+                                in-labels: node.in-labels;
+                                out-labels: node.out-labels;
+                                wires: node.wires;
+                                state: node.state;
+                                rate: node.rate;
+                                toggle => { root.toggle(node.card); }
+                                world-x: node.x * 1px;
+                                world-y: node.y * 1px;
+                                selected: node.selected;
+                            }
+                        }
+                        if root.nodes.length == 0: Text {
+                            text: root.t-no-graph;
+                            color: M3.on-surface-variant;
+                            font-size: 15px;
+                        }
+                    }
+                    VerticalLayout {
+                        visible: root.page == 1;
                         spacing: 12px;
                         HorizontalLayout {
                             Text {
@@ -272,7 +518,7 @@ export component App inherits Window {
                         }
                     }
                     VerticalLayout {
-                        visible: root.page == 1;
+                        visible: root.page == 2;
                         spacing: 12px;
                         Text {
                             text: root.t-logs;
