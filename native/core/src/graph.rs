@@ -731,3 +731,248 @@ pub fn validate(raw: &Value) -> Obj {
     gpc["server"] = json!(pc.get("server").and_then(Value::as_str).unwrap_or(""));
     g
 }
+
+// --- compile to runtime proxies ---
+
+/// The graph with every link into a pass-through lane replaced by where the lanes lead (and no relays).
+pub fn without_relays(g: &Obj) -> Obj {
+    if list(g, "relays").is_empty() {
+        return g.clone();
+    }
+    let idx = lane_index(g);
+    let follow = |v: &Value| opt(idx.follow(v.as_str()));
+    let mut out = g.clone();
+    out.insert("relays".into(), json!([]));
+    for n in arr_mut(&mut out, "inbounds") {
+        n["target"] = follow(&n["target"]);
+    }
+    if let Some(Value::Array(routers)) = out.get_mut("routers") {
+        for r in routers {
+            r["default"] = follow(&r["default"]);
+            for x in r["rules"].as_array_mut().unwrap() {
+                x["target"] = follow(&x["target"]);
+            }
+        }
+    }
+    out
+}
+
+/// Outbound settings with the via chain nested in ob["via"] (null at the end); a group gets its members
+/// ({id, name, outbound}) resolved the same way.
+pub fn resolve_outbound(g: &Obj, nid: &str) -> Value {
+    let mut seen = HashSet::new();
+    let mut chain: Vec<&Value> = vec![];
+    let mut cur = Some(nid.to_string());
+    while let Some(c) = cur.filter(|c| !seen.contains(c)) {
+        seen.insert(c.clone());
+        match find(g, &c) {
+            Some(("outbound", n)) => {
+                chain.push(n);
+                cur = n["via"].as_str().map(String::from);
+            }
+            _ => break,
+        }
+    }
+    let mut ob = Value::Null;
+    for n in chain.into_iter().rev() {
+        let mut d = n["outbound"].clone();
+        d["via"] = ob;
+        if d["type"] == json!("group") {
+            let members: Vec<Value> = n
+                .get("members")
+                .and_then(Value::as_array)
+                .map(|ms| {
+                    ms.iter()
+                        .filter_map(Value::as_str)
+                        .filter_map(|mid| match find(g, mid) {
+                            Some(("outbound", m)) => {
+                                Some(json!({"id": mid, "name": m["name"], "outbound": resolve_outbound(g, mid)}))
+                            }
+                            _ => None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            d["members"] = Value::Array(members);
+        }
+        ob = d;
+    }
+    ob
+}
+
+/// names of the outbound blocks of nid's via chain
+pub fn chain_names(g: &Obj, nid: &str) -> Vec<String> {
+    let mut names = vec![];
+    let mut seen = HashSet::new();
+    let mut cur = Some(nid.to_string());
+    while let Some(c) = cur.filter(|c| !seen.contains(c)) {
+        seen.insert(c.clone());
+        match find(g, &c) {
+            Some(("outbound", n)) => {
+                names.push(n["name"].as_str().unwrap_or("").to_string());
+                cur = n["via"].as_str().map(String::from);
+            }
+            _ => break,
+        }
+    }
+    names
+}
+
+/// what an inbound block is connected to, for lists and messages
+pub fn target_label(g: &Obj, n: &Value) -> String {
+    let found = n["target"].as_str().and_then(|t| find(g, t));
+    match found {
+        None => tr("not connected"),
+        Some(("outbound", t)) => chain_names(g, t["id"].as_str().unwrap()).join(" ⇢ "),
+        Some(("router", t)) => {
+            let fmt = if t["style"] == json!("if") { tr("IF {name}") } else { tr("Router {name}") };
+            fmt.replace("{name}", t["name"].as_str().unwrap_or(""))
+        }
+        Some((_, t)) => tr("relay → {name}").replace("{name}", t["name"].as_str().unwrap_or("")),
+    }
+}
+
+/// Outbound that hands traffic to the local inbound ib (relay / connection test bridge).
+pub fn chain_outbound(ib: &Value) -> Value {
+    let host = match ib["host"].as_str().unwrap_or("") {
+        "0.0.0.0" => "127.0.0.1",
+        "::" => "::1",
+        h => h,
+    };
+    let t = ib["type"].as_str().unwrap_or("");
+    let mut ob = json!({"type": t, "host": host, "port": ib["port"], "tls_verify": false});
+    if ["socks5", "http", "https"].contains(&t) && ib["auth_enabled"] == json!(true) {
+        ob["username"] = ib["username"].clone();
+        ob["password"] = ib["password"].clone();
+    }
+    if t == "shadowsocks" {
+        ob["ss_method"] = ib["ss_method"].clone();
+        ob["ss_password"] = ib["ss_password"].clone();
+    }
+    if t == "hysteria2" {
+        ob["hy2_password"] = ib["hy2_password"].clone();
+    }
+    ob
+}
+
+/// One flattened router rule: every condition set on the way (all must match), the outbound block, the name.
+pub struct Route {
+    pub conds: Vec<Value>,
+    pub outbound: String,
+    pub name: String,
+}
+
+/// Router rules as a flat list plus the default outbound block. Rules without a target or without any condition
+/// are skipped; a rule that leads to another router takes that router's rules (and its default) under its own
+/// condition. (Python `graph.flatten_router`.)
+pub fn flatten_router(g: &Obj, rid: &str, prefix: &[Value], seen: &HashSet<String>) -> (Vec<Route>, Option<String>) {
+    let Some((_, r)) = find(g, rid) else { return (vec![], None) };
+    let mut seen = seen.clone();
+    seen.insert(rid.to_string());
+    let mut r = r.clone();
+    if r.get("switch").is_some_and(crate::secret::truthy) {
+        // manual switch: no condition, everything takes one side
+        let side = if r.get("switch_on").is_some_and(crate::secret::truthy) {
+            r["rules"][0]["target"].clone()
+        } else {
+            r["default"].clone()
+        };
+        r["rules"] = json!([]);
+        r["default"] = side;
+    }
+    let mut routes = vec![];
+    for rule in r["rules"].as_array().unwrap() {
+        let has_match = rule["match"].as_object().is_some_and(|m| !m.is_empty());
+        let Some(target) = rule["target"].as_str().filter(|_| has_match) else { continue };
+        let mut conds = prefix.to_vec();
+        conds.push(rule["match"].clone());
+        let rname = rule["name"].as_str().unwrap_or("").to_string();
+        match find(g, target) {
+            Some(("outbound", t)) => {
+                routes.push(Route { conds, outbound: t["id"].as_str().unwrap().into(), name: rname })
+            }
+            Some(("router", t)) if !seen.contains(t["id"].as_str().unwrap()) => {
+                let (sub, sub_default) = flatten_router(g, t["id"].as_str().unwrap(), &conds, &seen);
+                routes.extend(sub.into_iter().map(|x| Route {
+                    conds: x.conds,
+                    outbound: x.outbound,
+                    name: format!("{rname} › {}", x.name),
+                }));
+                if let Some(d) = sub_default {
+                    routes.push(Route { conds, outbound: d, name: rname });
+                }
+            }
+            _ => {}
+        }
+    }
+    match r["default"].as_str().and_then(|d| find(g, d)) {
+        Some(("outbound", t)) => (routes, Some(t["id"].as_str().unwrap().into())),
+        Some(("router", t)) if !seen.contains(t["id"].as_str().unwrap()) => {
+            let (sub, sub_default) = flatten_router(g, t["id"].as_str().unwrap(), prefix, &seen);
+            routes.extend(sub);
+            (routes, sub_default)
+        }
+        _ => (routes, None),
+    }
+}
+
+/// Runtime proxies, one per inbound block (Python `graph.compile`): the inbound, the resolved outbound (via
+/// chain, group members), router routes, overrides. "unlinked" = nothing to send to: cannot start.
+pub fn compile(graph: &Obj) -> Vec<Obj> {
+    let g = without_relays(graph);
+    let mut out = vec![];
+    for n in list(&g, "inbounds") {
+        let found = n["target"].as_str().and_then(|t| find(&g, t));
+        let mut routes = vec![];
+        let mut exit_id = Value::Null;
+        let mut linked = found.is_some();
+        let ob = match found {
+            Some(("router", t)) => {
+                let (flat, default) = flatten_router(&g, t["id"].as_str().unwrap(), &[], &HashSet::new());
+                exit_id = opt(default.clone());
+                routes = flat
+                    .into_iter()
+                    .map(|x| {
+                        json!({"match": x.conds, "outbound": resolve_outbound(&g, &x.outbound), "name": x.name,
+                               "block": x.outbound})
+                    })
+                    .collect();
+                match default {
+                    Some(d) => resolve_outbound(&g, &d),
+                    None => {
+                        linked = false; // no default exit: cannot start
+                        json!({"type": "direct"})
+                    }
+                }
+            }
+            Some(("outbound", t)) => {
+                exit_id = t["id"].clone();
+                resolve_outbound(&g, t["id"].as_str().unwrap())
+            }
+            Some(("inbound", t)) if !["tun", "wireguard"].contains(&t["inbound"]["type"].as_str().unwrap_or("")) => {
+                chain_outbound(&t["inbound"])
+            }
+            _ => {
+                linked = false; // nothing to send to (a TUN card cannot be relayed into)
+                json!({"type": "direct"})
+            }
+        };
+        let mut p = config::validate_proxy(&json!({
+            "id": n["id"], "name": n["name"], "autostart": n["autostart"],
+            "auto_restart": n.get("auto_restart").cloned().unwrap_or(json!(false)),
+            "inbound": n["inbound"], "outbound": ob, "overrides": n["overrides"],
+        }));
+        let po = p.get_mut("outbound").unwrap().as_object_mut().unwrap();
+        po.insert("via".into(), ob.get("via").cloned().unwrap_or(Value::Null));
+        if let Some(m) = ob.get("members") {
+            po.insert("members".into(), m.clone());
+        }
+        p.insert("routes".into(), Value::Array(routes));
+        p.insert("target".into(), n["target"].clone());
+        p.insert("exit".into(), exit_id);
+        p.insert("target_name".into(), json!(target_label(&g, n)));
+        p.insert("unlinked".into(), json!(!linked));
+        out.push(p);
+    }
+    out
+}

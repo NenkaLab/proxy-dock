@@ -10,3 +10,4 @@ pub mod net;
 pub mod paths;
 pub mod py;
 pub mod secret;
+pub mod singbox;

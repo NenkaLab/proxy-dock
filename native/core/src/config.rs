@@ -309,6 +309,35 @@ pub fn validate_proxy(raw: &Value) -> Map<String, Value> {
     p
 }
 
+/// Effective proxy settings of a proxy: its local override, otherwise the global default (Python `config.resolve`).
+pub fn resolve(proxy: &Value, glob: &Map<String, Value>) -> Map<String, Value> {
+    OVERRIDABLE
+        .iter()
+        .map(|k| {
+            let v = proxy["overrides"].get(*k).filter(|v| !v.is_null()).unwrap_or(&glob[*k]);
+            (k.to_string(), v.clone())
+        })
+        .collect()
+}
+
+/// '443,5000-6000' -> ["443:443", "5000:6000"] (sing-box server_ports), or None if invalid (Python `config.hop_ports`).
+pub fn hop_ports(text: &str) -> Option<Vec<String>> {
+    let mut out = vec![];
+    for part in text.replace(' ', "").split(',') {
+        if part.is_empty() {
+            continue;
+        }
+        let (a, b) = part.split_once('-').unwrap_or((part, ""));
+        let lo = crate::py::int(a)?;
+        let hi = crate::py::int(if b.is_empty() { a } else { b })?;
+        if !(1 <= lo && lo <= hi && hi <= 65535) {
+            return None;
+        }
+        out.push(format!("{lo}:{hi}"));
+    }
+    (!out.is_empty()).then_some(out)
+}
+
 /// What reading the settings file found besides the settings themselves.
 #[derive(Debug, Default)]
 pub struct LoadNotes {

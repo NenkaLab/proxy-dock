@@ -15,6 +15,21 @@ pub fn head(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
 
+/// `int(s)` of a string: surrounding spaces, a sign, digits with single underscores between them
+pub fn int(s: &str) -> Option<i64> {
+    let t = strip(s);
+    let digits = t.strip_prefix(['+', '-']).unwrap_or(t);
+    let ok = !digits.is_empty()
+        && !digits.starts_with('_')
+        && !digits.ends_with('_')
+        && !digits.contains("__")
+        && digits.chars().all(|c| c.is_ascii_digit() || c == '_');
+    if !ok {
+        return None;
+    }
+    t.replace('_', "").parse().ok()
+}
+
 /// Whether `int(s, 16)` accepts `s`: surrounding spaces, a sign, an optional 0x prefix, hex digits with single
 /// underscores between them.
 pub fn int16_ok(s: &str) -> bool {
