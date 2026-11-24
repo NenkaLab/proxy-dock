@@ -1,0 +1,4 @@
+[toolchain]
+# Slint 1.19 needs Rust 1.95 or newer
+channel = "1.100.0"
+profile = "minimal"

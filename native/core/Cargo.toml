@@ -1,0 +1,18 @@
+[package]
+name = "proxydock-core"
+description = "ProxyDock core: settings, block graph, sing-box config, engine processes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# preserve_order: config.json keeps its key order, like the Python app writes it
+serde_json = { version = "1", features = ["preserve_order"] }
+base64 = "0.22"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+
+[dev-dependencies]
+sha2 = "0.10"
