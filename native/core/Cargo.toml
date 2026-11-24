@@ -10,9 +10,13 @@ publish.workspace = true
 # preserve_order: config.json keeps its key order, like the Python app writes it
 serde_json = { version = "1", features = ["preserve_order"] }
 base64 = "0.22"
+regex-lite = "0.1"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_JobObjects", "Win32_System_Threading",
+    "Win32_System_SystemInformation",
+] }
 
 [dev-dependencies]
 sha2 = "0.10"

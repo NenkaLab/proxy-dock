@@ -6,6 +6,7 @@ pub mod config;
 pub mod graph;
 pub mod i18n;
 pub mod ids;
+pub mod log;
 pub mod net;
 pub mod paths;
 pub mod py;
