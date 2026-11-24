@@ -101,7 +101,7 @@ fn int_in(v: Option<&Value>, lo: i64, hi: i64) -> Option<i64> {
     }
 }
 
-fn outbound_label(t: &str) -> String {
+pub fn outbound_label(t: &str) -> String {
     match t {
         "direct" => "Direct".into(),
         "http" => tr("HTTP proxy"),
