@@ -62,50 +62,6 @@ fn target_id(g: &Obj, key: &str, lane: usize) -> Option<String> {
 
 // --- the Python setters, one per kind of output ---
 
-fn is_local_target(host: &str) -> bool {
-    let h = host.trim().to_lowercase();
-    let h = h.trim_end_matches('.');
-    if h == "localhost" || h.ends_with(".localhost") {
-        return true;
-    }
-    h.trim_matches(['[', ']']).parse::<std::net::IpAddr>().is_ok_and(|a| a.is_loopback() || a.is_unspecified())
-}
-
-/// Python `config.find_cycle`: following outbounds that point at the local inbound of a card of this app, do we
-/// come back to p? (the names on the way)
-fn find_cycle(p: &Value, proxies: &[Value]) -> Option<Vec<String>> {
-    let next = |cur: &Value| -> Option<Value> {
-        let ob = &cur["outbound"];
-        let oh = ob["host"].as_str().unwrap_or("").trim().trim_matches(['[', ']']).to_string();
-        if ob["type"] == "direct" || oh.is_empty() {
-            return None;
-        }
-        let others = proxies.iter().filter(|q| q["id"] != p["id"]).chain(std::iter::once(p));
-        others
-            .filter(|q| q["inbound"]["port"] == ob["port"])
-            .find(|q| {
-                let ih = q["inbound"]["host"].as_str().unwrap_or("");
-                oh.eq_ignore_ascii_case(ih) || (is_local_target(&oh) && is_local_target(ih))
-            })
-            .cloned()
-    };
-    let name = |q: &Value| q["name"].as_str().unwrap_or("").to_string();
-    let mut path = vec![name(p)];
-    let mut seen = std::collections::HashSet::from([p["id"].clone()]);
-    let mut cur = p.clone();
-    loop {
-        let n = next(&cur)?;
-        path.push(name(&n));
-        if n["id"] == p["id"] {
-            return Some(path);
-        }
-        if !seen.insert(n["id"].clone()) {
-            return None;
-        }
-        cur = n;
-    }
-}
-
 /// inbound iid sends traffic to tid (Python `set_target`)
 pub fn set_target(g: &mut Obj, iid: &str, tid: Option<&str>) -> Result<(), String> {
     let Some(old) = node_mut(g, "inbounds", iid).map(|n| n["target"].clone()) else { return Ok(()) };
@@ -131,7 +87,7 @@ pub fn set_target(g: &mut Obj, iid: &str, tid: Option<&str>) -> Result<(), Strin
     node_mut(g, "inbounds", iid).unwrap()["target"] = tid.map_or(Value::Null, |t| json!(t));
     let proxies: Vec<Value> = graph::compile(g).into_iter().map(Value::Object).collect();
     if let Some(p) = proxies.iter().find(|p| p["id"] == json!(iid)) {
-        if let Some(cycle) = find_cycle(p, &proxies) {
+        if let Some(cycle) = crate::checks::find_cycle(p, &proxies) {
             node_mut(g, "inbounds", iid).unwrap()["target"] = old;
             return cannot(&format!("{}{}", tr("The proxy chain loops: "), cycle.join(" → ")));
         }
