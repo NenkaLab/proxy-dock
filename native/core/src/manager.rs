@@ -5,6 +5,8 @@
 use crate::i18n::tr;
 use crate::log::{clean, now_text, Entry, Level};
 use crate::net::host_port;
+use crate::singbox::helper::Launch;
+use crate::singbox::hysteria::HyEngine;
 use crate::singbox::process::{Engine, EngineEnv, Hooks, StartError, Stats};
 use crate::singbox::{self, guard, rulesets, Kind};
 use serde_json::{Map, Value};
@@ -44,8 +46,59 @@ enum Cmd {
     Quit,
 }
 
+/// the engine of a running card
+enum Card {
+    SingBox(Engine),
+    Hysteria(HyEngine),
+}
+
+impl Card {
+    fn stats(&self) -> Stats {
+        match self {
+            Card::SingBox(e) => e.stats(),
+            Card::Hysteria(e) => e.stats(),
+        }
+    }
+    fn last_error(&self) -> String {
+        match self {
+            Card::SingBox(e) => e.last_error(),
+            Card::Hysteria(e) => e.last_error(),
+        }
+    }
+    fn last_reason(&self) -> String {
+        match self {
+            Card::SingBox(e) => e.last_reason(),
+            Card::Hysteria(e) => e.last_reason(),
+        }
+    }
+    fn exit_totals(&self) -> HashMap<String, (f64, f64)> {
+        match self {
+            Card::SingBox(e) => e.exit_totals(),
+            Card::Hysteria(e) => e.exit_totals(),
+        }
+    }
+    fn needs_restart(&self, proxy: &Value, glob: &Glob) -> bool {
+        match self {
+            Card::SingBox(e) => e.needs_restart(proxy, glob),
+            Card::Hysteria(e) => e.needs_restart(proxy, glob),
+        }
+    }
+    fn update(&mut self, proxy: &Value, glob: &Glob) {
+        match self {
+            Card::SingBox(e) => e.update(proxy, glob),
+            Card::Hysteria(e) => e.update(proxy, glob),
+        }
+    }
+    fn stop(&mut self) {
+        match self {
+            Card::SingBox(e) => e.stop(),
+            Card::Hysteria(e) => e.stop(),
+        }
+    }
+}
+
 struct Running {
-    engine: Engine,
+    engine: Card,
     proxy: Value,
     /// what engine_for chose at start (a change of it means a restart)
     engine_choice: (Kind, PathBuf),
@@ -72,11 +125,22 @@ pub struct Folders {
     pub run_dir: PathBuf,
     pub cert_dir: PathBuf,
     pub ruleset_dir: PathBuf,
+    /// tests: run every Hysteria2 server card on the official core, loopback ones too
+    pub force_hysteria: bool,
+    /// tests: start every sing-box card through this helper (normally only TUN cards without administrator
+    /// rights, through UAC)
+    pub force_helper: Option<Launch>,
 }
 
 impl Default for Folders {
     fn default() -> Self {
-        Folders { run_dir: guard::run_dir(), cert_dir: crate::paths::cert_dir(), ruleset_dir: rulesets::ruleset_dir() }
+        Folders {
+            run_dir: guard::run_dir(),
+            cert_dir: crate::paths::cert_dir(),
+            ruleset_dir: rulesets::ruleset_dir(),
+            force_hysteria: false,
+            force_helper: None,
+        }
     }
 }
 
@@ -185,6 +249,10 @@ fn add(to: &mut Stats, s: &Stats, with_active: bool) {
 
 /// "SOCKS5 127.0.0.1:1080 → Direct" (Python `ProxyInstance.summary`)
 pub fn summary(proxy: &Value) -> String {
+    summary_of(proxy, Kind::SingBox)
+}
+
+fn summary_of(proxy: &Value, kind_: Kind) -> String {
     let ib = &proxy["inbound"];
     let t = ib["type"].as_str().unwrap_or("");
     let kind = match t {
@@ -220,7 +288,8 @@ pub fn summary(proxy: &Value) -> String {
         });
         ob = o.get("via").filter(|v| !v.is_null());
     }
-    format!("{kind} {where_} → {}", parts.join(" ⇢ "))
+    let engine = if kind_ == Kind::Hysteria { " · Hysteria2 + sing-box" } else { "" };
+    format!("{kind} {where_} → {}{engine}", parts.join(" ⇢ "))
 }
 
 /// may this process create a TUN device (Windows: elevated, elsewhere: root)
@@ -309,15 +378,22 @@ impl Worker {
 
     /// everything a card's sing-box needs besides its settings: the engine, rule-sets, certificate, TUN exclusions
     fn prepare(&self, proxy: &Value, glob: &Glob) -> Result<(EngineEnv, (Kind, PathBuf)), String> {
-        let choice = singbox::engine_for(proxy, glob)?;
-        if choice.0 == Kind::Hysteria {
-            // TODO(port): the official Hysteria2 core in front of the card (singbox/hysteria.py)
-            return Err("Hysteria2 servers open to other PCs are not supported by this build yet".into());
-        }
+        let mut choice = singbox::engine_for(proxy, glob)?;
         let ib_type = proxy["inbound"]["type"].as_str().unwrap_or("");
-        if ib_type == "tun" && !is_admin() {
-            // TODO(port): the UAC helper (singbox/helper.py)
-            return Err("A TUN card needs administrator rights: run ProxyDock as administrator (the permission prompt is not ported yet)".into());
+        if self.folders.force_hysteria && ib_type == "hysteria2" {
+            singbox::find_hysteria(glob).ok_or_else(|| tr("The Hysteria2 core was not found"))?;
+            choice.0 = Kind::Hysteria;
+        }
+        let mut helper = self.folders.force_helper.clone();
+        if helper.is_none() && ib_type == "tun" && !is_admin() {
+            // TUN needs administrator rights: this card's sing-box runs through the UAC helper, which only runs
+            // the bundled sing-box (never a configured or downloaded one), so that is the one checked here
+            helper = Some(Launch::this_program().ok_or_else(|| tr("sing-box was not found"))?);
+            let bundled = singbox::find_bundled(singbox::EXE).ok_or_else(|| tr("sing-box was not found"))?;
+            if singbox::uses_certificate_pin(proxy) && !singbox::version::of(&bundled).is_some_and(|v| v.has_certificate_pin()) {
+                return Err(tr("certificate pinning needs sing-box 1.15 or later"));
+            }
+            choice.1 = bundled;
         }
         let need = rulesets::needed(proxy);
         let rulesets = if need.is_empty() {
@@ -348,8 +424,22 @@ impl Worker {
             rulesets,
             cert,
             exclude_paths,
+            helper,
         };
         Ok((env, choice))
+    }
+
+    /// the engine choice prepare would make (without downloads or certificates)
+    fn prepare_choice(&self, proxy: &Value, glob: &Glob) -> Option<(Kind, PathBuf)> {
+        let mut c = singbox::engine_for(proxy, glob).ok()?;
+        let ib_type = proxy["inbound"]["type"].as_str().unwrap_or("");
+        if self.folders.force_hysteria && ib_type == "hysteria2" {
+            c.0 = Kind::Hysteria;
+        }
+        if self.folders.force_helper.is_none() && ib_type == "tun" && !is_admin() {
+            c.1 = singbox::find_bundled(singbox::EXE)?;
+        }
+        Some(c)
     }
 
     fn start(&mut self, proxy: &Value, glob: &Glob) -> bool {
@@ -377,15 +467,20 @@ impl Worker {
                     let _ = tx.send(Cmd::Died(died_id.clone(), generation, text));
                 }),
             };
-            Engine::start(proxy, glob, &env, hooks)
-                .map(|engine| Running { engine, proxy: proxy.clone(), engine_choice: choice, generation })
-                .map_err(|e| start_message(&e, proxy))
+            let engine = if choice.0 == Kind::Hysteria {
+                let hy = singbox::find_hysteria(glob).ok_or_else(|| tr("The Hysteria2 core was not found"))?;
+                HyEngine::start(proxy, glob, &env, hooks, &hy).map(Card::Hysteria)
+            } else {
+                Engine::start(proxy, glob, &env, hooks).map(Card::SingBox)
+            };
+            engine.map(|engine| Running { engine, proxy: proxy.clone(), engine_choice: choice, generation }).map_err(|e| start_message(&e, proxy))
         });
         match started {
             Ok(r) => {
+                let kind = r.engine_choice.0;
                 self.shared.lock().unwrap().running.insert(id.clone(), r);
                 self.set(&id, State::Running);
-                self.log(Level::Info, &tr("Started: {summary}").replace("{summary}", &summary(proxy)), Some(proxy));
+                self.log(Level::Info, &tr("Started: {summary}").replace("{summary}", &summary_of(proxy, kind)), Some(proxy));
                 self.open_proxy_warnings(proxy);
                 true
             }
@@ -448,7 +543,7 @@ impl Worker {
             let sh = self.shared.lock().unwrap();
             let Some(r) = sh.running.get(&id) else { return };
             net_key(&r.proxy) != net_key(proxy)
-                || singbox::engine_for(proxy, glob).ok().as_ref() != Some(&r.engine_choice)
+                || self.prepare_choice(proxy, glob).as_ref() != Some(&r.engine_choice)
                 || r.engine.needs_restart(proxy, glob)
         };
         if restart {

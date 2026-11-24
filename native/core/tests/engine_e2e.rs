@@ -56,6 +56,13 @@ impl Log {
     }
 }
 
+/// The run folder (and the bans file in it) is process-wide: the tests of this file take turns.
+static SERIAL: Mutex<()> = Mutex::new(());
+
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn env(dir: &std::path::Path) -> EngineEnv {
     guard::set_run_dir(dir.to_path_buf());
     EngineEnv {
@@ -65,6 +72,7 @@ fn env(dir: &std::path::Path) -> EngineEnv {
         rulesets: vec![],
         cert: None,
         exclude_paths: vec![],
+        helper: None,
     }
 }
 
@@ -126,6 +134,7 @@ fn socks5(proxy: u16, user: &str, pass: &str, dest_port: u16) -> std::io::Result
 
 #[test]
 fn socks5_card_relays_counts_and_logs() {
+    let _serial = serial();
     if exe().is_none() {
         eprintln!("sing-box not found: skipped");
         return;
@@ -177,6 +186,7 @@ fn socks5_card_relays_counts_and_logs() {
 
 #[test]
 fn port_in_use_and_death_are_reported() {
+    let _serial = serial();
     if exe().is_none() {
         eprintln!("sing-box not found: skipped");
         return;
@@ -224,6 +234,7 @@ fn card_graph(g: Value) -> Value {
 
 #[test]
 fn https_card_with_self_signed_cert() {
+    let _serial = serial();
     if exe().is_none() {
         eprintln!("sing-box not found: skipped");
         return;
@@ -244,6 +255,7 @@ fn https_card_with_self_signed_cert() {
 
 #[test]
 fn router_geoip_rule_downloads_its_rule_set() {
+    let _serial = serial();
     if exe().is_none() {
         eprintln!("sing-box not found: skipped");
         return;
@@ -355,6 +367,7 @@ fn socks5_noauth(proxy: u16, dest_port: u16) -> std::io::Result<TcpStream> {
 
 #[test]
 fn certificate_pin_on_sing_box_115() {
+    let _serial = serial();
     let Some(exe) = exe_115() else {
         eprintln!("no sing-box 1.15 (PROXYDOCK_SINGBOX_115): skipped");
         return;
@@ -369,6 +382,7 @@ fn certificate_pin_on_sing_box_115() {
 
 #[test]
 fn pinned_cards_need_sing_box_115() {
+    let _serial = serial();
     let Some(old) = exe() else { return };
     let pinned = json!({"type": "hysteria2", "host": "192.0.2.1", "port": 443, "hy2_password": "x", "pin_sha256": "ab".repeat(32)});
     // pinned in the card's own chain, and only behind a router rule

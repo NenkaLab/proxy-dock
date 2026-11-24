@@ -109,7 +109,7 @@ impl std::fmt::Display for StartError {
     }
 }
 
-fn start_error(text: &str) -> StartError {
+pub(crate) fn start_error(text: &str) -> StartError {
     let t = text.to_lowercase();
     if t.contains("only one usage of each socket address") || t.contains("address already in use") {
         StartError::PortInUse(text.into())
@@ -197,6 +197,41 @@ pub struct EngineEnv {
     pub cert: Option<(String, String)>,
     /// ProxyDock's own engines: a TUN card routes them around itself
     pub exclude_paths: Vec<String>,
+    /// run sing-box through the administrator helper (a TUN card while ProxyDock is not elevated)
+    pub helper: Option<super::helper::Launch>,
+}
+
+/// sing-box started directly, or by the administrator helper
+enum Proc {
+    Local(Child),
+    Helper(super::helper::Conn),
+}
+
+impl Proc {
+    fn kill_and_wait(&mut self) {
+        match self {
+            Proc::Local(c) => {
+                let _ = c.kill();
+                let _ = c.wait();
+            }
+            Proc::Helper(h) => {
+                h.kill();
+                let until = Instant::now() + Duration::from_secs(5);
+                while h.code().is_none() && Instant::now() < until {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                h.close(); // ends the reader if the helper did not answer
+            }
+        }
+    }
+
+    /// the exit code once the process ended (its output is closed)
+    fn exit_code(&mut self) -> Option<i32> {
+        match self {
+            Proc::Local(c) => c.wait().ok().and_then(|s| s.code()),
+            Proc::Helper(h) => h.code(),
+        }
+    }
 }
 
 static TUN_OWNER: Mutex<Option<String>> = Mutex::new(None);
@@ -204,7 +239,7 @@ static TUN_OWNER: Mutex<Option<String>> = Mutex::new(None);
 /// A running card.
 pub struct Engine {
     shared: Arc<Shared>,
-    child: Arc<Mutex<Option<Child>>>,
+    child: Arc<Mutex<Option<Proc>>>,
     config_path: PathBuf,
     api: (u16, String),
     threads: Vec<std::thread::JoinHandle<()>>,
@@ -214,7 +249,7 @@ fn free_port() -> std::io::Result<u16> {
     Ok(TcpListener::bind("127.0.0.1:0")?.local_addr()?.port())
 }
 
-fn random_hex(bytes: usize) -> String {
+pub(crate) fn random_hex(bytes: usize) -> String {
     let mut buf = vec![0u8; bytes];
     #[cfg(windows)]
     unsafe {
@@ -231,7 +266,7 @@ fn random_hex(bytes: usize) -> String {
 }
 
 #[cfg(windows)]
-fn attach_to_job(child: &Child) {
+pub(crate) fn attach_to_job(child: &Child) {
     // a job object that kills its processes when ProxyDock's handle closes (even if ProxyDock crashes)
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::System::JobObjects::*;
@@ -352,25 +387,64 @@ impl Engine {
             release_tun();
             return Err(StartError::Other(e.to_string()));
         }
-        // TODO(port): a TUN card without administrator rights goes through the UAC helper (singbox/helper.py)
-        let mut cmd = Command::new(&env.exe);
-        cmd.arg("run").arg("--disable-color").arg("-c").arg(&config_path).arg("-D").arg(&env.run_dir);
-        cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        }
-        let mut child = match cmd.spawn() {
-            Ok(c) => c,
-            Err(e) => {
-                release_tun();
-                let _ = std::fs::remove_file(&config_path);
-                return Err(StartError::Other(e.to_string()));
+        // both pipes (or the helper's one stream) feed one line handler, in the order lines arrive on each
+        let (line_tx, line_rx) = mpsc::channel::<Option<String>>();
+        let mut threads = vec![];
+        let (proc_, pipes) = if let Some(how) = &env.helper {
+            (hooks.log)(Level::Info, &tr("Asking for administrator permission to start the TUN…"));
+            let conn = match super::helper::launch(how, &config_path, &env.run_dir) {
+                Ok(c) => c,
+                Err(e) => {
+                    release_tun();
+                    let _ = std::fs::remove_file(&config_path);
+                    return Err(StartError::Other(e));
+                }
+            };
+            match conn.spawn_reader(line_tx.clone()) {
+                Ok(t) => threads.push(t),
+                Err(e) => {
+                    release_tun();
+                    let _ = std::fs::remove_file(&config_path);
+                    return Err(StartError::Other(e.to_string()));
+                }
             }
+            (Proc::Helper(conn), 1)
+        } else {
+            let mut cmd = Command::new(&env.exe);
+            cmd.arg("run").arg("--disable-color").arg("-c").arg(&config_path).arg("-D").arg(&env.run_dir);
+            cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            }
+            let mut child = match cmd.spawn() {
+                Ok(c) => c,
+                Err(e) => {
+                    release_tun();
+                    let _ = std::fs::remove_file(&config_path);
+                    return Err(StartError::Other(e.to_string()));
+                }
+            };
+            #[cfg(windows)]
+            attach_to_job(&child);
+            let mut n = 0;
+            for pipe in [child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>), child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>)]
+                .into_iter()
+                .flatten()
+            {
+                let tx = line_tx.clone();
+                n += 1;
+                threads.push(std::thread::spawn(move || {
+                    for line in BufReader::new(pipe).split(b'\n').map_while(Result::ok) {
+                        let _ = tx.send(Some(String::from_utf8_lossy(&line).into_owned()));
+                    }
+                    let _ = tx.send(None);
+                }));
+            }
+            (Proc::Local(child), n)
         };
-        #[cfg(windows)]
-        attach_to_job(&child);
+        drop(line_tx);
         let shared = Arc::new(Shared {
             id: id.clone(),
             hooks,
@@ -391,28 +465,12 @@ impl Engine {
             }),
             stopping: AtomicBool::new(false),
         });
-        // both pipes feed one line handler, in the order lines arrive on each pipe
-        let (line_tx, line_rx) = mpsc::channel::<Option<String>>();
-        let mut threads = vec![];
-        for pipe in [child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>), child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>)]
-            .into_iter()
-            .flatten()
-        {
-            let tx = line_tx.clone();
-            threads.push(std::thread::spawn(move || {
-                for line in BufReader::new(pipe).split(b'\n').map_while(Result::ok) {
-                    let _ = tx.send(Some(String::from_utf8_lossy(&line).into_owned()));
-                }
-                let _ = tx.send(None);
-            }));
-        }
-        drop(line_tx);
-        let child = Arc::new(Mutex::new(Some(child)));
+        let child = Arc::new(Mutex::new(Some(proc_)));
         let (started_tx, started_rx) = mpsc::channel::<Result<(), StartError>>();
         {
             let shared = shared.clone();
             let child = child.clone();
-            threads.push(std::thread::spawn(move || read_output(&shared, &child, line_rx, started_tx)));
+            threads.push(std::thread::spawn(move || read_output(&shared, &child, line_rx, pipes, started_tx)));
         }
         let result = started_rx.recv_timeout(START_TIMEOUT).unwrap_or_else(|_| Err(StartError::Other(tr("sing-box did not start in time"))));
         let mut engine = Engine { shared, child, config_path, api: (port, secret), threads };
@@ -485,9 +543,9 @@ impl Engine {
                 *owner = None;
             }
         }
-        if let Some(mut c) = self.child.lock().unwrap().take() {
-            let _ = c.kill();
-            let _ = c.wait();
+        let proc_ = self.child.lock().unwrap().take();
+        if let Some(mut c) = proc_ {
+            c.kill_and_wait();
         }
         for t in self.threads.drain(..) {
             let _ = t.join();
@@ -518,10 +576,10 @@ fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     std::fs::write(path, text) // contains passwords; the settings folder is the user's own
 }
 
-fn read_output(shared: &Shared, child: &Mutex<Option<Child>>, lines: mpsc::Receiver<Option<String>>, started: mpsc::Sender<Result<(), StartError>>) {
+fn read_output(shared: &Shared, child: &Mutex<Option<Proc>>, lines: mpsc::Receiver<Option<String>>, pipes: usize, started: mpsc::Sender<Result<(), StartError>>) {
     let mut errors: Vec<String> = vec![];
     let mut is_started = false;
-    let mut open_pipes = 2;
+    let mut open_pipes = pipes;
     while open_pipes > 0 {
         let Ok(item) = lines.recv() else { break };
         let Some(raw) = item else {
@@ -553,7 +611,7 @@ fn read_output(shared: &Shared, child: &Mutex<Option<Child>>, lines: mpsc::Recei
         handle(shared, &level, cid, &msg);
     }
     // the pipes closed: sing-box ended
-    let code = child.lock().unwrap().as_mut().and_then(|c| c.wait().ok()).and_then(|s| s.code());
+    let code = child.lock().unwrap().as_mut().and_then(|c| c.exit_code());
     let code_text = code.map(|c| c.to_string()).unwrap_or_else(|| "?".into());
     if !is_started {
         let text = errors.last().cloned().unwrap_or_else(|| tr("sing-box exited (code {code})").replace("{code}", &code_text));

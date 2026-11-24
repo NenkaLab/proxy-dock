@@ -78,7 +78,7 @@ fn st(v: &Value) -> &str {
 }
 
 /// Python `str(v)` for the values a setting can hold
-fn py_str(v: &Value) -> String {
+pub fn py_str(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
         Value::Bool(b) => if *b { "True".into() } else { "False".into() },

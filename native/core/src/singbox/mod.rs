@@ -2,6 +2,8 @@
 
 pub mod compile;
 pub mod guard;
+pub mod helper;
+pub mod hysteria;
 pub mod process;
 pub mod latest;
 pub mod rulesets;
@@ -44,6 +46,14 @@ pub fn find(exe: &str, custom: &str, bases: &[PathBuf]) -> Option<PathBuf> {
         }
     }
     std::env::var_os("PATH").and_then(|paths| std::env::split_paths(&paths).map(|d| d.join(exe)).find(|p| p.is_file()))
+}
+
+/// `exe` from bin/ next to this program only: no setting, no download, no PATH (the elevated TUN helper must
+/// not run a program an unelevated process could have replaced)
+pub fn find_bundled(exe: &str) -> Option<PathBuf> {
+    default_bases().iter().find_map(|base| {
+        [Path::new("bin").join(platform_dir()).join(exe), Path::new("bin").join(exe)].into_iter().map(|r| base.join(r)).find(|p| p.is_file())
+    })
 }
 
 /// Where bundled engines are looked for: the folder of this executable and its parents (development builds run
