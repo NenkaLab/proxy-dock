@@ -201,3 +201,82 @@ fn editing_saves_and_applies() {
     h.quit(Duration::from_secs(10));
     let _ = std::fs::remove_dir_all(&home);
 }
+
+#[test]
+fn block_editor() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(exe) = singbox() else {
+        eprintln!("sing-box not found: skipped");
+        return;
+    };
+    let home = std::env::temp_dir().join(format!("proxydock-form-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let (p1, p2) = (free_port(), free_port());
+    let settings = json!({
+        "version": 3,
+        "global": {"singbox_path": exe.display().to_string()},
+        "graph": {
+            "inbounds": [{"id": "a1", "name": "card", "autostart": true, "inbound": {"type": "socks5", "host": "127.0.0.1", "port": p1}, "target": "r"}],
+            "outbounds": [{"id": "d", "name": "Direct", "outbound": {"type": "direct"}}],
+            "routers": [{"id": "r", "name": "R", "rules": [{"id": "x", "name": "kr", "match": {"domain_suffix": ["kr"]}, "target": "d"}], "default": "d"}],
+        },
+    });
+    let path = home.join("config.json");
+    std::fs::write(&path, settings.to_string()).unwrap();
+    proxydock_core::singbox::guard::set_run_dir(home.join("run"));
+    let h = controller::spawn(path.clone()).unwrap();
+    let (mut w, rx) = connect(&h, &h.token);
+    expect(&rx, 5, |v| v["ev"] == "hello").expect("hello");
+    let field = |form: &Value, key: &str| form["fields"].as_array().unwrap().iter().find(|f| f["key"] == key).cloned().unwrap();
+
+    // a card: account fields appear with authentication on
+    ipc::send(&mut w, &json!({"cmd": "edit_open", "id": "a1"})).unwrap();
+    let f = expect(&rx, 5, |v| v["ev"] == "form").expect("form");
+    assert_eq!(f["kind"], "inbound");
+    assert_eq!(field(&f, "inbound.port")["value"], p1);
+    assert_eq!(field(&f, "inbound.username")["visible"], false);
+    ipc::send(&mut w, &json!({"cmd": "edit_preview", "id": "a1", "values": {"inbound.auth_enabled": true}})).unwrap();
+    let f = expect(&rx, 5, |v| v["ev"] == "form").expect("form");
+    assert_eq!(field(&f, "inbound.username")["visible"], true);
+    // saving without an account: the reason, nothing saved
+    ipc::send(&mut w, &json!({"cmd": "edit_save", "id": "a1", "values": {"inbound.auth_enabled": true}})).unwrap();
+    let e = expect(&rx, 5, |v| v["ev"] == "form_errors").expect("errors");
+    assert!(e["errors"][0].as_str().unwrap().contains("username"), "{e}");
+    // a new port: saved, the running card restarts on it
+    let until = Instant::now() + Duration::from_secs(10);
+    while TcpStream::connect(("127.0.0.1", p1)).is_err() && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    ipc::send(&mut w, &json!({"cmd": "edit_save", "id": "a1", "values": {"inbound.port": p2.to_string(), "name": " renamed "}})).unwrap();
+    expect(&rx, 10, |v| v["ev"] == "form_saved").expect("saved");
+    let f: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(f["graph"]["inbounds"][0]["inbound"]["port"], p2);
+    assert_eq!(f["graph"]["inbounds"][0]["name"], "renamed");
+    assert_eq!(f["graph"]["inbounds"][0]["target"], "r");
+    let until = Instant::now() + Duration::from_secs(10);
+    while TcpStream::connect(("127.0.0.1", p2)).is_err() && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(TcpStream::connect(("127.0.0.1", p2)).is_ok() && TcpStream::connect(("127.0.0.1", p1)).is_err());
+
+    // a router rule: a bad port is refused, a good condition saved
+    ipc::send(&mut w, &json!({"cmd": "edit_save", "id": "r", "values": {"rules.0.match.port": "443, 99999"}})).unwrap();
+    let e = expect(&rx, 5, |v| v["ev"] == "form_errors").expect("errors");
+    assert!(e["errors"].to_string().contains("99999"), "{e}");
+    ipc::send(&mut w, &json!({"cmd": "edit_save", "id": "r", "values": {"rules.0.match.geoip": "kr, jp", "rules.0.match.domain_suffix": ""}})).unwrap();
+    expect(&rx, 10, |v| v["ev"] == "form_saved").expect("saved");
+    let f: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(f["graph"]["routers"][0]["rules"][0]["match"], json!({"geoip": ["kr", "jp"]}));
+
+    // an outbound: the type decides the fields; a VLESS block needs a UUID
+    ipc::send(&mut w, &json!({"cmd": "edit_preview", "id": "d", "values": {"outbound.type": "vless"}})).unwrap();
+    let f = expect(&rx, 5, |v| v["ev"] == "form").expect("form");
+    assert_eq!(field(&f, "outbound.uuid")["visible"], true);
+    assert_eq!(field(&f, "outbound.bind")["visible"], false);
+    ipc::send(&mut w, &json!({"cmd": "edit_save", "id": "d", "values": {"outbound.type": "vless", "outbound.host": "h", "outbound.port": "443"}})).unwrap();
+    let e = expect(&rx, 5, |v| v["ev"] == "form_errors").expect("errors");
+    assert!(e["errors"].to_string().contains("UUID"), "{e}");
+    h.quit(Duration::from_secs(10));
+    let _ = std::fs::remove_dir_all(&home);
+}

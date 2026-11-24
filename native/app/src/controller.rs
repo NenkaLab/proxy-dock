@@ -6,7 +6,7 @@ use crate::{canvas, ipc};
 use proxydock_core::i18n::tr;
 use proxydock_core::log::{Entry, Level};
 use proxydock_core::manager::{self, Events, Manager, State};
-use proxydock_core::{config, edit, graph, log};
+use proxydock_core::{config, edit, form, graph, log};
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, VecDeque};
 use std::net::{TcpListener, TcpStream};
@@ -290,6 +290,62 @@ impl Controller {
         self.broadcast(&json!({"ev": "graph", "cards": cards, "canvas": canvas}));
     }
 
+    /// the block editor: open (the fields of a block), preview (the fields for the values typed so far) and save
+    fn editor(&mut self, client: u64, cmd: &str, v: &Value) {
+        let (id, _) = v["id"].as_str().unwrap_or("").split_once("/out").unwrap_or((v["id"].as_str().unwrap_or(""), ""));
+        let id = id.to_string();
+        let values = v["values"].as_object().cloned().unwrap_or_default();
+        let reply = |c: &mut Self, msg: Value| {
+            if let Some(cl) = c.clients.get_mut(&client) {
+                let _ = ipc::send(&mut cl.stream, &msg);
+            }
+        };
+        let Some((kind, node)) = form::apply(&self.graph, &id, &values) else {
+            reply(self, json!({"ev": "error", "message": tr("This block has no settings to edit yet")}));
+            return;
+        };
+        let members: Vec<(String, String)> = node["members"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(|m| (m.to_string(), graph::find(&self.graph, m).and_then(|(_, n)| n["name"].as_str().map(String::from)).unwrap_or_default()))
+            .collect();
+        let fields = match kind {
+            "inbound" => form::inbound_form(&node),
+            "outbound" => form::outbound_form(&node, &members),
+            _ => form::router_form(&node),
+        };
+        let fields: Vec<Value> = fields.iter().map(form::Field::to_json).collect();
+        let title = graph::find(&self.graph, &id).and_then(|(_, n)| n["name"].as_str().map(String::from)).unwrap_or_default();
+        if cmd != "edit_save" {
+            reply(self, json!({"ev": "form", "id": id, "kind": kind, "title": title, "fields": fields}));
+            return;
+        }
+        if !self.can_save {
+            reply(self, json!({"ev": "form_errors", "errors": [tr("Save failed")]}));
+            return;
+        }
+        let errs = form::errors(&self.graph, kind, &node);
+        if !errs.is_empty() {
+            reply(self, json!({"ev": "form_errors", "errors": errs}));
+            return;
+        }
+        if kind == "inbound" {
+            let ib = &node["inbound"];
+            let host = ib["host"].as_str().unwrap_or("");
+            let local = host.eq_ignore_ascii_case("localhost") || proxydock_core::singbox::guard::is_loopback_ip(host);
+            if !local && matches!(ib["type"].as_str(), Some("socks5" | "http" | "https")) && ib["auth_enabled"] != json!(true) {
+                self.app_log(Level::Warn, &tr("Anyone on the same network can use this proxy. Turning on user authentication is recommended."));
+            }
+        }
+        self.graph = form::with_node(&self.graph, kind, &node);
+        let name = node["name"].as_str().unwrap_or("").to_string();
+        self.app_log(Level::Setting, &tr("Saved proxy '{name}'").replace("{name}", &name));
+        self.graph_changed();
+        reply(self, json!({"ev": "form_saved", "id": id}));
+    }
+
     /// a canvas edit from the window
     fn edit(&mut self, cmd: &str, v: &Value) {
         let s = |k: &str| v[k].as_str().unwrap_or("").to_string();
@@ -442,6 +498,7 @@ impl Controller {
             "toggle" => self.toggle(id),
             "stop_all" => self.stop_all(),
             "move" | "connect" | "disconnect" | "delete" | "add" => self.edit(cmd, v),
+            "edit_open" | "edit_preview" | "edit_save" => self.editor(n, cmd, v),
             _ => {}
         }
     }

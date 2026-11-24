@@ -271,7 +271,70 @@ impl Models {
     }
 }
 
+/// the open block editor: the block, the values typed so far, each choice field's option values
+#[derive(Default)]
+struct Editor {
+    id: String,
+    back_to: i32,
+    values: serde_json::Map<String, Value>,
+    options: HashMap<String, Vec<String>>,
+    rerender: std::collections::HashSet<String>,
+    kinds: HashMap<String, String>,
+}
+
+thread_local! {
+    static EDIT_REQUEST: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    static EDITOR: std::cell::RefCell<Editor> = std::cell::RefCell::new(Editor::default());
+}
+
+fn field_rows(fields: &[Value]) -> Vec<FieldRow> {
+    EDITOR.with(|e| {
+        let mut e = e.borrow_mut();
+        e.options.clear();
+        e.rerender.clear();
+        e.kinds.clear();
+        fields
+            .iter()
+            .map(|f| {
+                let key = f["key"].as_str().unwrap_or("").to_string();
+                let kind = f["kind"].as_str().unwrap_or("text").to_string();
+                let opts: Vec<(String, String)> = f["options"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|o| (o[0].as_str().unwrap_or("").to_string(), o[1].as_str().unwrap_or("").to_string()))
+                    .collect();
+                let value = &f["value"];
+                let text = match value {
+                    Value::String(t) => t.clone(),
+                    Value::Null => String::new(),
+                    other => other.to_string(),
+                };
+                let index = opts.iter().position(|(v, _)| *v == text).map_or(-1, |i| i as i32);
+                if f["rerender"] == json!(true) {
+                    e.rerender.insert(key.clone());
+                }
+                e.options.insert(key.clone(), opts.iter().map(|(v, _)| v.clone()).collect());
+                e.kinds.insert(key.clone(), kind.clone());
+                FieldRow {
+                    key: key.into(),
+                    label: f["label"].as_str().unwrap_or("").into(),
+                    desc: f["desc"].as_str().unwrap_or("").into(),
+                    kind: kind.into(),
+                    text: text.into(),
+                    checked: value == &json!(true),
+                    options: ModelRc::new(VecModel::from(opts.into_iter().map(|(_, l)| SharedString::from(l)).collect::<Vec<_>>())),
+                    index,
+                    visible: f["visible"] == json!(true),
+                }
+            })
+            .collect()
+    })
+}
+
 fn labels(app: &App) {
+    app.set_t_save(tr("Save").into());
+    app.set_t_cancel(tr("Cancel").into());
     app.set_t_add_inbound(tr("Inbound").into());
     app.set_t_add_router("Router".into());
     app.set_t_add_relay(tr("Pass-through").into());
@@ -377,6 +440,52 @@ fn main() -> Result<(), slint::PlatformError> {
             let _ = ipc::send(&mut w.lock().unwrap(), &json!({"cmd": "toggle", "id": id.as_str()}));
         });
     }
+    // block editor
+    {
+        let (send1, key_of) = (send.clone(), key_of.clone());
+        app.on_edit_block(move |node| send1(json!({"cmd": "edit_open", "id": key_of(node)})));
+        let send2 = send.clone();
+        app.on_edit_card(move |id| send2(json!({"cmd": "edit_open", "id": id.as_str()})));
+    }
+    {
+        let send = send.clone();
+        app.on_field_changed(move |key, value| {
+            let msg = EDITOR.with(|e| {
+                let mut e = e.borrow_mut();
+                let key = key.to_string();
+                let v = match e.kinds.get(&key).map(String::as_str) {
+                    Some("bool") => json!(value == "true"),
+                    Some("choice") => {
+                        let i = value.parse::<usize>().unwrap_or(0);
+                        json!(e.options.get(&key).and_then(|o| o.get(i)).cloned().unwrap_or_default())
+                    }
+                    _ => json!(value.as_str()),
+                };
+                e.values.insert(key.clone(), v);
+                // the visible fields depend on this one: ask for the form again
+                e.rerender.contains(&key).then(|| json!({"cmd": "edit_preview", "id": e.id, "values": e.values}))
+            });
+            if let Some(m) = msg {
+                send(m);
+            }
+        });
+    }
+    {
+        let send = send.clone();
+        app.on_form_save(move || {
+            let msg = EDITOR.with(|e| {
+                let e = e.borrow();
+                json!({"cmd": "edit_save", "id": e.id, "values": e.values})
+            });
+            send(msg);
+        });
+        let weak = app.as_weak();
+        app.on_form_cancel(move || {
+            if let Some(a) = weak.upgrade() {
+                a.set_page(EDITOR.with(|e| e.borrow().back_to));
+            }
+        });
+    }
     {
         let (send, models, weak) = (send.clone(), models.clone(), app.as_weak());
         app.on_add_block(move |kind| {
@@ -424,11 +533,42 @@ fn main() -> Result<(), slint::PlatformError> {
                             m.add_logs(v["logs"].as_array().map(Vec::as_slice).unwrap_or(&[]));
                             m.set_stats(&v["stats"]);
                             m.set_canvas(&v["canvas"]);
+                            // debug builds: PROXYDOCK_EDIT=<block id> opens its editor (screenshots without clicking)
+                            if cfg!(debug_assertions) {
+                                if let Ok(id) = std::env::var("PROXYDOCK_EDIT") {
+                                    EDIT_REQUEST.with(|r| *r.borrow_mut() = Some(id));
+                                }
+                            }
                         }
                         "flow" => m.set_flow(v["links"].as_array().map(Vec::as_slice).unwrap_or(&[])),
                         "graph" => {
                             m.cards.set_vec(v["cards"].as_array().into_iter().flatten().map(card_row).collect::<Vec<_>>());
                             m.set_canvas(&v["canvas"]);
+                        }
+                        "form" => {
+                            let id = v["id"].as_str().unwrap_or("").to_string();
+                            EDITOR.with(|e| {
+                                let mut e = e.borrow_mut();
+                                if e.id != id || app.get_page() != 3 {
+                                    // a fresh editor
+                                    e.id = id;
+                                    e.values.clear();
+                                    e.back_to = app.get_page();
+                                }
+                            });
+                            let rows = field_rows(v["fields"].as_array().map(Vec::as_slice).unwrap_or(&[]));
+                            app.set_form_fields(ModelRc::new(VecModel::from(rows)));
+                            app.set_form_title(v["title"].as_str().unwrap_or("").into());
+                            app.set_form_errors(ModelRc::default());
+                            app.set_page(3);
+                        }
+                        "form_errors" => {
+                            let errs: Vec<SharedString> = v["errors"].as_array().into_iter().flatten().filter_map(Value::as_str).map(SharedString::from).collect();
+                            app.set_form_errors(ModelRc::new(VecModel::from(errs)));
+                        }
+                        "form_saved" => {
+                            app.set_form_errors(ModelRc::default());
+                            app.set_page(EDITOR.with(|e| e.borrow().back_to));
                         }
                         "error" => {
                             app.set_toast(v["message"].as_str().unwrap_or("").into());
@@ -455,6 +595,16 @@ fn main() -> Result<(), slint::PlatformError> {
     });
     MODELS.with(|m| *m.borrow_mut() = Some(models.clone()));
 
+    if cfg!(debug_assertions) {
+        let send = send.clone();
+        let t = slint::Timer::default();
+        t.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(200), move || {
+            if let Some(id) = EDIT_REQUEST.with(|r| r.borrow_mut().take()) {
+                send(json!({"cmd": "edit_open", "id": id}));
+            }
+        });
+        std::mem::forget(t);
+    }
     app.show()?;
     app.global::<NodeEditorComputations>().invoke_viewport_resized(app.get_width_(), app.get_height_());
     // the native window exists once the event loop runs: colour its title bar then, and again on theme changes

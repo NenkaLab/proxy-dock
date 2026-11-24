@@ -1,6 +1,6 @@
 // ProxyDock window (proxydock-ui.exe): Material 3 Expressive on Slint's "material" style (build.rs), same look as
 // the prototype. Pages so far: the proxy cards and the log; everything comes from the core process over ipc.
-import { Button, ListView, Palette, ScrollView } from "std-widgets.slint";
+import { Button, ComboBox, LineEdit, ListView, Palette, ScrollView, Switch } from "std-widgets.slint";
 import {
     NodeEditor, BaseNode, Pin, PinTypes, NodeEditorEvents, NodeEditorInternalCallbacks, NodeEditorComputations, LinkData,
 } from "@nodeeditor";
@@ -65,6 +65,21 @@ export struct NodeData {
     rate: string,
 }
 
+// one field of the block editor (src/bin/proxydock-ui.rs fills it from core::form)
+export struct FieldRow {
+    key: string,
+    // "" = drawn as the second box of the previous row
+    label: string,
+    desc: string,
+    // "text" / "secret" / "int" / "bool" / "choice"
+    kind: string,
+    text: string,
+    checked: bool,
+    options: [string],
+    index: int,
+    visible: bool,
+}
+
 export struct CardRow {
     id: string,
     name: string,
@@ -97,6 +112,7 @@ component ProxyNode inherits BaseNode {
     in property <string> state;
     in property <string> rate;
     callback toggle();
+    callback edit();
 
     property <length> header: 54px;
     property <length> lane-h: 26px;
@@ -140,7 +156,7 @@ component ProxyNode inherits BaseNode {
         }
         Text {
             x: root.state != "" ? 30px : 20px; y: 12px;
-            width: root.node-width - self.x - (root.state != "" ? 44px : 14px);
+            width: root.node-width - self.x - (root.state != "" ? 76px : root.kind <= 2 ? 44px : 14px);
             text: root.title;
             font-size: 15px;
             font-weight: 700;
@@ -170,6 +186,18 @@ component ProxyNode inherits BaseNode {
             font-family: "JetBrains Mono";
             font-weight: 600;
             color: root.on-container;
+        }
+        // the editor (blocks that have settings)
+        if root.kind <= 2: Rectangle {
+            x: root.node-width - (root.state != "" ? 70px : 38px); y: 8px;
+            width: 30px; height: 30px; border-radius: 15px;
+            background: edit-ta.has-hover ? root.on-container.with-alpha(0.14) : transparent;
+            Text {
+                text: "✎";
+                font-size: 14px;
+                color: root.on-container;
+            }
+            edit-ta := TouchArea { clicked => { root.edit(); } }
         }
         // a card: run / stop in the corner
         if root.state != "": Rectangle {
@@ -259,6 +287,54 @@ component ToolbarButton inherits Rectangle {
     ta := TouchArea { clicked => { root.clicked(); } }
 }
 
+component FormRow inherits Rectangle {
+    in property <FieldRow> f;
+    callback changed(string, string);
+    height: lay.preferred-height;
+    lay := HorizontalLayout {
+        spacing: 16px;
+        padding-top: f.label != "" ? 10px : 2px;
+        VerticalLayout {
+            width: 260px;
+            spacing: 2px;
+            Text {
+                text: f.label;
+                font-size: 14px;
+                font-weight: 600;
+                color: M3.on-surface;
+                wrap: word-wrap;
+            }
+            if f.desc != "": Text {
+                text: f.desc;
+                font-size: 12px;
+                color: M3.on-surface-variant;
+                wrap: word-wrap;
+            }
+        }
+        VerticalLayout {
+            alignment: start;
+            horizontal-stretch: 1;
+            if f.kind == "bool": HorizontalLayout {
+                alignment: start;
+                Switch {
+                    checked: f.checked;
+                    toggled => { root.changed(f.key, self.checked ? "true" : "false"); }
+                }
+            }
+            if f.kind == "choice": ComboBox {
+                model: f.options;
+                current-index: f.index;
+                selected => { root.changed(f.key, self.current-index); }
+            }
+            if f.kind == "text" || f.kind == "secret" || f.kind == "int": LineEdit {
+                text: f.text;
+                input-type: f.kind == "secret" ? InputType.password : f.kind == "int" ? InputType.number : InputType.text;
+                edited(t) => { root.changed(f.key, t); }
+            }
+        }
+    }
+}
+
 component RailItem inherits Rectangle {
     in property <string> glyph;
     in property <string> label;
@@ -322,6 +398,7 @@ component Chip inherits Rectangle {
 component Card inherits Rectangle {
     in property <CardRow> card;
     callback toggle(string);
+    callback edit(string);
     border-radius: 20px;
     background: M3.surface-container-low;
     HorizontalLayout {
@@ -365,6 +442,13 @@ component Card inherits Rectangle {
         VerticalLayout {
             alignment: center;
             Button {
+                text: "✎";
+                clicked => { root.edit(card.id); }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            Button {
                 text: card.action;
                 primary: card.state != "running" && card.state != "starting";
                 clicked => { root.toggle(card.id); }
@@ -392,6 +476,17 @@ export component App inherits Window {
     out property <float> view-center-x: (editor.width / 2 - editor.pan-x) / editor.zoom / 1px;
     out property <float> view-center-y: (editor.height / 2 - editor.pan-y) / editor.zoom / 1px;
     callback add-block(int);
+    // block editor (page 3)
+    in property <[FieldRow]> form-fields;
+    in property <string> form-title;
+    in property <[string]> form-errors;
+    in property <string> t-save: "Save";
+    in property <string> t-cancel: "Cancel";
+    callback edit-block(int);
+    callback edit-card(string);
+    callback field-changed(string, string);
+    callback form-save();
+    callback form-cancel();
     callback delete-selected();
     in property <string> t-no-graph: "";
     callback link-requested <=> editor.link-requested;
@@ -507,6 +602,7 @@ export component App inherits Window {
                                 state: node.state;
                                 rate: node.rate;
                                 toggle => { root.toggle(node.card); }
+                                edit => { root.edit-block(node.id); }
                                 world-x: node.x * 1px;
                                 world-y: node.y * 1px;
                                 selected: node.selected;
@@ -582,6 +678,52 @@ export component App inherits Window {
                                 Card {
                                     card: c;
                                     toggle(id) => { root.toggle(id); }
+                                    edit(id) => { root.edit-card(id); }
+                                }
+                            }
+                        }
+                    }
+                    VerticalLayout {
+                        visible: root.page == 3;
+                        spacing: 12px;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                text: root.form-title;
+                                font-size: 26px;
+                                font-weight: 700;
+                                color: M3.on-surface;
+                                horizontal-stretch: 1;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                            Button { text: root.t-cancel; clicked => { root.form-cancel(); } }
+                            Button { text: root.t-save; primary: true; clicked => { root.form-save(); } }
+                        }
+                        if root.form-errors.length > 0: Rectangle {
+                            border-radius: 12px;
+                            background: M3.error-container;
+                            height: errs.preferred-height + 20px;
+                            errs := VerticalLayout {
+                                x: 16px;
+                                y: 10px;
+                                width: parent.width - 32px;
+                                for e in root.form-errors: Text {
+                                    text: "• " + e;
+                                    color: M3.on-error-container;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                        ScrollView {
+                            VerticalLayout {
+                                padding-right: 16px;
+                                padding-bottom: 24px;
+                                for f in root.form-fields: FormRow {
+                                    f: f;
+                                    visible: f.visible;
+                                    height: f.visible ? self.preferred-height : 0px;
+                                    changed(k, v) => { root.field-changed(k, v); }
                                 }
                             }
                         }

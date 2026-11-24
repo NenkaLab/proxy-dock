@@ -5,6 +5,7 @@
 pub mod checks;
 pub mod config;
 pub mod edit;
+pub mod form;
 pub mod graph;
 pub mod http;
 pub mod i18n;
