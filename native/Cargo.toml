@@ -1,8 +1,9 @@
 # ProxyDock in Rust (replacing the Python/PySide6 app step by step; the Python app stays until this one has
 # every feature). Crates:
 #   core  - settings, block graph, sing-box config, engine processes (no GUI)
+#   app   - proxydock.exe (tray + core process, no GUI toolkit) and proxydock-ui.exe (the Slint window)
 [workspace]
-members = ["core"]
+members = ["core", "app"]
 resolver = "3"
 
 [workspace.package]

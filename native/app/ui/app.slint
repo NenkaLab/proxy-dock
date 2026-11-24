@@ -1,0 +1,304 @@
+// ProxyDock window (proxydock-ui.exe): Material 3 Expressive on Slint's "material" style (build.rs), same look as
+// the prototype. Pages so far: the proxy cards and the log; everything comes from the core process over ipc.
+import { Button, ListView, Palette, ScrollView } from "std-widgets.slint";
+import "../../../fonts/PretendardVariable.ttf";
+import "../../../fonts/JetBrainsMono.ttf";
+
+// M3 color roles for seed #0061A4 (baseline tonal palette), light / dark
+global M3 {
+    out property <bool> dark: Palette.color-scheme == ColorScheme.dark;
+    out property <color> primary: dark ? #9ecaff : #0061a4;
+    out property <color> on-primary: dark ? #003258 : #ffffff;
+    out property <color> primary-container: dark ? #00497d : #d1e4ff;
+    out property <color> on-primary-container: dark ? #d1e4ff : #001d36;
+    out property <color> secondary-container: dark ? #3b4858 : #d7e3f7;
+    out property <color> on-secondary-container: dark ? #d7e3f7 : #101c2b;
+    out property <color> error: dark ? #ffb4ab : #ba1a1a;
+    out property <color> error-container: dark ? #93000a : #ffdad6;
+    out property <color> on-error-container: dark ? #ffdad6 : #410002;
+    out property <color> green-container: dark ? #1f5129 : #b7f1bc;
+    out property <color> on-green-container: dark ? #b7f1bc : #002107;
+    out property <color> amber-container: dark ? #5a4300 : #ffdf9e;
+    out property <color> on-amber-container: dark ? #ffdf9e : #261a00;
+    out property <color> surface: dark ? #111418 : #f8f9ff;
+    out property <color> surface-container-low: dark ? #191c20 : #f2f3f9;
+    out property <color> surface-container: dark ? #1d2024 : #eceef4;
+    out property <color> surface-container-high: dark ? #272a2f : #e6e8ee;
+    out property <color> on-surface: dark ? #e1e2e8 : #191c20;
+    out property <color> on-surface-variant: dark ? #c3c7cf : #43474e;
+    out property <color> outline-variant: dark ? #43474e : #c3c7cf;
+}
+
+global Motion {
+    out property <duration> fast-spatial: 350ms;
+    out property <duration> fast-effects: 150ms;
+}
+
+export struct CardRow {
+    id: string,
+    name: string,
+    summary: string,
+    // "running" / "starting" / "stopped" / "error"
+    state: string,
+    state-text: string,
+    error: string,
+    traffic: string,
+    action: string,
+}
+
+export struct LogRow {
+    text: string,
+    // 0 normal, 1 warning, 2 problem (failure, auth, block, error), 3 connection
+    tone: int,
+}
+
+component RailItem inherits Rectangle {
+    in property <string> glyph;
+    in property <string> label;
+    in property <bool> active;
+    callback clicked;
+    height: 64px;
+    VerticalLayout {
+        alignment: center;
+        spacing: 4px;
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: 56px;
+                height: 32px;
+                border-radius: 16px;
+                background: root.active ? M3.secondary-container : (ta.has-hover ? M3.surface-container-high : transparent);
+                animate background { duration: Motion.fast-effects; }
+                Text {
+                    text: root.glyph;
+                    font-size: 18px;
+                    color: root.active ? M3.on-secondary-container : M3.on-surface-variant;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        Text {
+            text: root.label;
+            font-size: 12px;
+            font-weight: root.active ? 700 : 500;
+            color: root.active ? M3.on-surface : M3.on-surface-variant;
+            horizontal-alignment: center;
+        }
+    }
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+component Chip inherits Rectangle {
+    in property <string> text;
+    in property <string> state;
+    height: 28px;
+    border-radius: 14px;
+    background: state == "running" ? M3.green-container : state == "starting" ? M3.amber-container
+        : state == "error" ? M3.error-container : M3.surface-container-high;
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        Text {
+            text: root.text;
+            font-size: 13px;
+            font-weight: 600;
+            vertical-alignment: center;
+            color: state == "running" ? M3.on-green-container : state == "starting" ? M3.on-amber-container
+                : state == "error" ? M3.on-error-container : M3.on-surface-variant;
+        }
+    }
+}
+
+component Card inherits Rectangle {
+    in property <CardRow> card;
+    callback toggle(string);
+    border-radius: 20px;
+    background: M3.surface-container-low;
+    HorizontalLayout {
+        padding: 16px;
+        padding-left: 20px;
+        spacing: 16px;
+        VerticalLayout {
+            spacing: 4px;
+            alignment: center;
+            horizontal-stretch: 1;
+            Text {
+                text: card.name;
+                font-size: 17px;
+                font-weight: 700;
+                color: M3.on-surface;
+                overflow: elide;
+            }
+            Text {
+                text: card.summary;
+                font-size: 13px;
+                color: M3.on-surface-variant;
+                overflow: elide;
+            }
+            if card.error != "": Text {
+                text: card.error;
+                font-size: 13px;
+                color: M3.error;
+                wrap: word-wrap;
+            }
+            if card.traffic != "": Text {
+                text: card.traffic;
+                font-size: 12px;
+                font-family: "JetBrains Mono";
+                color: M3.on-surface-variant;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            Chip { text: card.state-text; state: card.state; }
+        }
+        VerticalLayout {
+            alignment: center;
+            Button {
+                text: card.action;
+                primary: card.state != "running" && card.state != "starting";
+                clicked => { root.toggle(card.id); }
+            }
+        }
+    }
+}
+
+export component App inherits Window {
+    in property <[CardRow]> cards;
+    in property <[LogRow]> logs;
+    in-out property <int> page: 0;
+    in property <string> t-proxy: "Proxy";
+    in property <string> t-logs: "Logs";
+    in property <string> t-stop-all: "Stop all proxies";
+    in property <string> t-empty: "No proxies yet.";
+    in property <bool> connected: true;
+    in property <string> t-disconnected: "";
+    out property <bool> dark: M3.dark;
+    out property <color> caption-color: M3.surface-container;
+    out property <color> caption-text: M3.on-surface;
+    callback toggle(string);
+    callback stop-all();
+    // light / dark switched: the title bar colours follow
+    callback theme-changed();
+    changed dark => { root.theme-changed(); }
+    // the log follows new lines (scroll position kept while reading back is for later)
+    in property <int> log-count;
+    changed log-count => {
+        log-view.content-y = min(0px, log-view.visible-height - log-view.content-height);
+    }
+
+    title: "ProxyDock";
+    preferred-width: 980px;
+    preferred-height: 680px;
+    min-width: 560px;
+    min-height: 400px;
+    background: M3.surface-container;
+    default-font-family: "Pretendard Variable";
+
+    HorizontalLayout {
+        // navigation rail
+        VerticalLayout {
+            width: 88px;
+            padding-top: 12px;
+            spacing: 4px;
+            alignment: start;
+            RailItem {
+                glyph: "▦";
+                label: root.t-proxy;
+                active: root.page == 0;
+                clicked => { root.page = 0; }
+            }
+            RailItem {
+                glyph: "≡";
+                label: root.t-logs;
+                active: root.page == 1;
+                clicked => { root.page = 1; }
+            }
+        }
+        // page container
+        Rectangle {
+            border-radius: 28px;
+            background: M3.surface;
+            clip: true;
+            VerticalLayout {
+                padding: 20px;
+                spacing: 12px;
+                if !root.connected: Rectangle {
+                    height: 40px;
+                    border-radius: 12px;
+                    background: M3.error-container;
+                    Text {
+                        text: root.t-disconnected;
+                        color: M3.on-error-container;
+                        vertical-alignment: center;
+                        horizontal-alignment: center;
+                    }
+                }
+                // both pages stay (the log keeps its scroll position); the hidden one is not drawn
+                Rectangle {
+                    VerticalLayout {
+                        visible: root.page == 0;
+                        spacing: 12px;
+                        HorizontalLayout {
+                            Text {
+                                text: root.t-proxy;
+                                font-size: 26px;
+                                font-weight: 700;
+                                color: M3.on-surface;
+                                horizontal-stretch: 1;
+                                vertical-alignment: center;
+                            }
+                            if root.cards.length > 0: Button {
+                                text: root.t-stop-all;
+                                clicked => { root.stop-all(); }
+                            }
+                        }
+                        if root.cards.length == 0: Text {
+                            text: root.t-empty;
+                            color: M3.on-surface-variant;
+                            font-size: 15px;
+                        }
+                        ListView {
+                            for c in root.cards: VerticalLayout {
+                                padding-bottom: 10px;
+                                Card {
+                                    card: c;
+                                    toggle(id) => { root.toggle(id); }
+                                }
+                            }
+                        }
+                    }
+                    VerticalLayout {
+                        visible: root.page == 1;
+                        spacing: 12px;
+                        Text {
+                            text: root.t-logs;
+                            font-size: 26px;
+                            font-weight: 700;
+                            color: M3.on-surface;
+                        }
+                        Rectangle {
+                            border-radius: 16px;
+                            background: M3.surface-container-low;
+                            clip: true;
+                            log-view := ListView {
+                                for line in root.logs: Text {
+                                    text: line.text;
+                                    font-family: "JetBrains Mono";
+                                    font-size: 12px;
+                                    height: 20px;
+                                    x: 12px;
+                                    color: line.tone == 2 ? M3.error : line.tone == 1 ? #b26a00 : line.tone == 3 ? M3.on-surface-variant : M3.on-surface;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

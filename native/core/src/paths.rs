@@ -22,8 +22,12 @@ pub fn app_dir_named(name: &str) -> PathBuf {
     base.join(name)
 }
 
+/// the settings folder; PROXYDOCK_HOME replaces it (tests, a portable copy)
 pub fn app_dir() -> PathBuf {
-    app_dir_named(APP_ID)
+    match std::env::var_os("PROXYDOCK_HOME") {
+        Some(p) if !p.is_empty() => PathBuf::from(p),
+        _ => app_dir_named(APP_ID),
+    }
 }
 
 pub fn config_path() -> PathBuf {
