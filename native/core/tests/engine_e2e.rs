@@ -276,3 +276,118 @@ fn router_geoip_rule_downloads_its_rule_set() {
     assert!(conf.contains("geoip-cn"), "{conf}");
     engine.stop();
 }
+
+/// sing-box 1.15+ for the pinning test: PROXYDOCK_SINGBOX_115 (a path), else none (skipped)
+fn exe_115() -> Option<PathBuf> {
+    let p = PathBuf::from(std::env::var_os("PROXYDOCK_SINGBOX_115")?);
+    let v = singbox::version::of(&p)?;
+    v.has_certificate_pin().then_some(p)
+}
+
+fn der_sha256_hex(pem_path: &str) -> String {
+    use base64::Engine;
+    use sha2::{Digest, Sha256};
+    let pem = std::fs::read_to_string(pem_path).unwrap();
+    let b64: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
+    let der = base64::engine::general_purpose::STANDARD.decode(b64).unwrap();
+    Sha256::digest(der).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Hysteria2 server card with a self-signed certificate; a SOCKS5 client card whose Hysteria2 outbound pins it.
+/// Ok when a relayed connection through the client card worked.
+fn pinned_hy2(exe: &PathBuf, pin: &str, verify: bool) -> Result<(), String> {
+    let dir = temp_dir(&format!("pin-{}-{verify}", &pin[..4]));
+    let (sport, cport, echo) = (free_udp_port(), free_port(), echo_server());
+    let server = card(
+        json!({"type": "hysteria2", "host": "127.0.0.1", "port": sport, "hy2_password": "hpw"}),
+        json!({"type": "direct"}),
+    );
+    let cert = proxydock_core::tls::server_cert_paths(&server, &dir.join("certs")).unwrap();
+    let pin = if pin == "RIGHT" { der_sha256_hex(&cert.0) } else { pin.to_string() };
+    let glob = config::validate_global(&json!({}));
+    let mut e = env(&dir);
+    e.exe = exe.clone();
+    e.cert = Some(cert);
+    let (h1, l1, _) = Log::hooks();
+    let mut s = Engine::start(&server, &glob, &e, h1).map_err(|x| format!("server {x:?} {:?}", l1.0.lock().unwrap()))?;
+    let client = card_graph(json!({
+        "inbounds": [{"id": "card2", "name": "c", "inbound": {"type": "socks5", "host": "127.0.0.1", "port": cport}, "target": "o"}],
+        "outbounds": [{"id": "o", "outbound": {"type": "hysteria2", "host": "127.0.0.1", "port": sport, "hy2_password": "hpw",
+            "sni": "localhost", "pin_sha256": pin, "tls_verify": verify}}],
+    }));
+    let mut e2 = env(&dir);
+    e2.exe = exe.clone();
+    let (h2, l2, _) = Log::hooks();
+    let mut c = Engine::start(&client, &glob, &e2, h2).map_err(|x| format!("client {x:?}"))?;
+    let conf = std::fs::read_to_string(dir.join("card2.json")).unwrap();
+    assert!(conf.contains("certificate_sha256"), "{conf}");
+    let r = (|| -> Result<(), String> {
+        let mut st = socks5_noauth(cport, echo).map_err(|x| x.to_string())?;
+        st.write_all(b"hi").map_err(|x| x.to_string())?;
+        let mut got = [0u8; 8];
+        st.read_exact(&mut got).map_err(|x| x.to_string())?;
+        (&got == b"echo: hi").then_some(()).ok_or("wrong reply".into())
+    })();
+    let _ = l2;
+    c.stop();
+    s.stop();
+    r
+}
+
+fn free_udp_port() -> u16 {
+    std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+}
+
+fn socks5_noauth(proxy: u16, dest_port: u16) -> std::io::Result<TcpStream> {
+    let mut s = TcpStream::connect(("127.0.0.1", proxy))?;
+    s.set_read_timeout(Some(Duration::from_secs(8)))?;
+    s.write_all(&[5, 1, 0])?;
+    let mut r = [0u8; 2];
+    s.read_exact(&mut r)?;
+    s.write_all(&[5, 1, 0, 1, 127, 0, 0, 1, (dest_port >> 8) as u8, dest_port as u8])?;
+    let mut rep = [0u8; 10];
+    s.read_exact(&mut rep)?;
+    if rep[1] != 0 {
+        return Err(std::io::Error::other(format!("connect refused ({})", rep[1])));
+    }
+    Ok(s)
+}
+
+#[test]
+fn certificate_pin_on_sing_box_115() {
+    let Some(exe) = exe_115() else {
+        eprintln!("no sing-box 1.15 (PROXYDOCK_SINGBOX_115): skipped");
+        return;
+    };
+    let wrong = "00".repeat(32);
+    for verify in [true, false] {
+        // the pin replaces CA checks (a self-signed certificate passes) and holds even with verification off
+        assert_eq!(pinned_hy2(&exe, "RIGHT", verify), Ok(()), "right pin, tls_verify={verify}");
+        assert!(pinned_hy2(&exe, &wrong, verify).is_err(), "wrong pin accepted, tls_verify={verify}");
+    }
+}
+
+#[test]
+fn pinned_cards_need_sing_box_115() {
+    let Some(old) = exe() else { return };
+    let pinned = json!({"type": "hysteria2", "host": "192.0.2.1", "port": 443, "hy2_password": "x", "pin_sha256": "ab".repeat(32)});
+    // pinned in the card's own chain, and only behind a router rule
+    let own = card(json!({"type": "socks5", "port": 1080}), pinned.clone());
+    let routed = card_graph(json!({
+        "inbounds": [{"id": "card1", "inbound": {"type": "socks5", "port": 1080}, "target": "r"}],
+        "outbounds": [{"id": "d", "outbound": {"type": "direct"}}, {"id": "p", "outbound": pinned}],
+        "routers": [{"id": "r", "rules": [{"id": "x", "match": {"domain_suffix": ["example.com"]}, "target": "p"}], "default": "d"}],
+    }));
+    let plain = card(json!({"type": "socks5", "port": 1080}), json!({"type": "direct"}));
+    let glob = |path: &PathBuf| config::validate_global(&json!({"singbox_path": path.display().to_string()}));
+    let has_pin = singbox::version::of(&old).unwrap().has_certificate_pin();
+    for p in [&own, &routed] {
+        assert!(singbox::uses_certificate_pin(p));
+        assert_eq!(singbox::engine_for(p, &glob(&old)).is_ok(), has_pin);
+    }
+    assert!(!singbox::uses_certificate_pin(&plain));
+    assert!(singbox::engine_for(&plain, &glob(&old)).is_ok());
+    if let Some(new) = exe_115() {
+        assert_eq!(singbox::engine_for(&routed, &glob(&new)).map(|(k, e)| (k, e == new)), Ok((singbox::Kind::SingBox, true)));
+    }
+}

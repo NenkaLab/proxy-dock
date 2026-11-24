@@ -22,6 +22,7 @@ def outbound(k):
              "trojan", "tuic", "subscription", "group", "block")
     ob = {"type": t, "host": pick("s.example", "10.0.0.5", "::1"), "port": 1000 + k, "username": pick("", "user"),
           "password": pick("", "pw"), "tls_verify": pick(True, False), "sni": pick("", "sni.example"),
+          "pin_sha256": pick("", "", "", "ab" * 32, ":".join(["C3"] * 32), "abc", "+b" * 32, "zz" * 32),
           "ss_method": pick("2022-blake3-aes-256-gcm", "aes-128-gcm"), "ss_password": "c3M=",
           "hy2_password": "hp", "hy2_obfs_password": pick("", "ob"), "hy2_up_mbps": pick(0, 50), "hy2_down_mbps": pick(0, 200),
           "hy2_ports": pick("", "20000-30000", "443,5000-6000", "bad", " 1 - 2 "), "hy2_hop_interval": pick(30, 5, 0),

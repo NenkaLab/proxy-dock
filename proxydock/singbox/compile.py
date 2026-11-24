@@ -71,7 +71,22 @@ def inbound(ib, cert=None):
 
 
 def _tls(ob):
-    return {"enabled": True, "server_name": ob.get("sni") or ob["host"], "insecure": not ob.get("tls_verify", True)}
+    t = {"enabled": True, "server_name": ob.get("sni") or ob["host"], "insecure": not ob.get("tls_verify", True)}
+    if ob.get("pin_sha256") and ob.get("type") in ("https", "hysteria2"):
+        t["certificate_sha256"] = [pin_base64(ob["pin_sha256"])]     # sing-box 1.15+ (engine_for checks)
+    return t
+
+
+def pin_base64(pin):
+    """pin_sha256 (hex SHA-256 of the whole DER certificate, colons allowed) as base64, for certificate_sha256."""
+    import base64
+    h = pin.replace(":", "").lower()
+    try:
+        if len(h) != 64:
+            raise ValueError
+        return base64.b64encode(bytes.fromhex(h)).decode()
+    except ValueError:
+        raise ValueError(f"invalid certificate fingerprint {pin}") from None
 
 
 def _tls_full(ob, default_alpn=None):

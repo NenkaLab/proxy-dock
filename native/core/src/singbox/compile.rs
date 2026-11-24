@@ -250,7 +250,26 @@ fn tls(ob: &Value) -> R<Value> {
         None => get(ob, "host")?.clone(),
     };
     let verify = ob.get("tls_verify").map(truthy).unwrap_or(true);
-    Ok(json!({"enabled": true, "server_name": sni, "insecure": !verify}))
+    let mut t = json!({"enabled": true, "server_name": sni, "insecure": !verify});
+    let kind = ob.get("type").and_then(Value::as_str).unwrap_or("");
+    if let (Some(pin), true) = (opt(ob, "pin_sha256"), kind == "https" || kind == "hysteria2") {
+        t["certificate_sha256"] = json!([pin_base64(st(pin))?]);
+    }
+    Ok(t)
+}
+
+/// ProxyDock's pin_sha256 (hex SHA-256 of the whole DER certificate, colons allowed, as in Hysteria2 share links)
+/// as sing-box 1.15 certificate_sha256 wants it: base64 of the same 32 bytes
+pub fn pin_base64(pin: &str) -> R<String> {
+    use base64::Engine;
+    let h: String = pin.chars().filter(|c| *c != ':').collect::<String>().to_ascii_lowercase();
+    let bytes: Option<Vec<u8>> = (h.len() == 64 && h.bytes().all(|c| c.is_ascii_hexdigit()))
+        .then(|| (0..32).map(|i| u8::from_str_radix(&h[i * 2..i * 2 + 2], 16).ok()).collect())
+        .flatten();
+    match bytes {
+        Some(b) => Ok(base64::engine::general_purpose::STANDARD.encode(b)),
+        None => Err(BuildError::Unsupported(format!("invalid certificate fingerprint {pin}"))),
+    }
 }
 
 /// TLS for VLESS / VMess / Trojan / TUIC: SNI, verification, ALPN, uTLS fingerprint, REALITY

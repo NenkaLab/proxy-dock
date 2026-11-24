@@ -61,13 +61,7 @@ pub type Fetch<'a> = &'a dyn Fn(&str) -> Result<Vec<u8>, String>;
 
 /// HTTPS GET with a 30 s timeout and the ProxyDock user agent
 pub fn http_get(url: &str) -> Result<Vec<u8>, String> {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(30)))
-        .user_agent("ProxyDock")
-        .build()
-        .into();
-    let mut r = agent.get(url).call().map_err(|e| e.to_string())?;
-    r.body_mut().with_config().limit(64 << 20).read_to_vec().map_err(|e| e.to_string())
+    crate::http::get(url, "", Duration::from_secs(30), 64 << 20)
 }
 
 fn download(fetch: Fetch, kind: &str, name: &str, dest: &Path) -> Result<(), String> {

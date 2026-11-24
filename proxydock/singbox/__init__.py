@@ -119,7 +119,8 @@ def _engine_for(proxy, glob):
         return "python", _t("Python engine selected in Settings")
     if proxy["id"].startswith("__") and not needs_singbox(proxy):
         return "python", "internal"       # connection-test helpers (sing-box only when the outbound needs it)
-    if any(ob.get("pin_sha256") for ob in _chain(proxy["outbound"]) if ob["type"] in ("https", "hysteria2")):
+    chains = [proxy["outbound"]] + [r["outbound"] for r in proxy.get("routes") or []]
+    if any(ob.get("pin_sha256") for c in chains for ob in _chain(c) if ob["type"] in ("https", "hysteria2")):
         return "python", _t("certificate pinning needs sing-box 1.15 or later")
     if find_binary(glob) is None:
         return "python", _t("sing-box was not found")

@@ -4,6 +4,7 @@
 
 pub mod config;
 pub mod graph;
+pub mod http;
 pub mod i18n;
 pub mod ids;
 pub mod log;
