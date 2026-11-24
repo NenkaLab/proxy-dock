@@ -47,6 +47,9 @@ CloseApplications=force
 RestartApplications=no
 VersionInfoVersion={#AppVersion}
 ShowLanguageDialog=auto
+; Inno Setup 6.7 turns on Windows' RedirectionGuard by default (Windows 11 / 10 22H2); on some Windows 10 PCs setup
+; then would not start unless run in Windows 8 compatibility mode (which skips it). Per-user install: little to gain.
+RedirectionGuard=no
 
 [Languages]
 Name: "en"; MessagesFile: "compiler:Default.isl"
