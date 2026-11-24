@@ -100,7 +100,7 @@ pub fn typed(defaults: &Map<String, Value>, raw: &Value) -> Map<String, Value> {
             Value::Array(a) => Value::Array(
                 a.iter()
                     .filter_map(|x| {
-                        let t = x.as_str().unwrap().trim();
+                        let t = crate::py::strip(x.as_str().unwrap());
                         (!t.is_empty()).then(|| Value::String(t.to_string()))
                     })
                     .collect(),
@@ -263,6 +263,50 @@ pub fn validate_outbound(raw: &Value) -> Map<String, Value> {
         ob.insert("port".into(), json!(0));
     }
     ob
+}
+
+fn bool_or_false(r: &Map<String, Value>, key: &str) -> bool {
+    r.get(key).and_then(Value::as_bool).unwrap_or(false)
+}
+
+/// One proxy: id, name, flags, inbound / outbound settings and the local overrides of the global proxy
+/// defaults (None = use the global value). (Python `config.validate_proxy`.)
+pub fn validate_proxy(raw: &Value) -> Map<String, Value> {
+    let empty = Map::new();
+    let r = raw.as_object().unwrap_or(&empty);
+    let id = match r.get("id") {
+        Some(Value::String(s)) if !s.is_empty() => s.clone(),
+        _ => crate::ids::new_id(),
+    };
+    let name = match r.get("name") {
+        Some(Value::String(s)) => {
+            let base = if s.is_empty() { crate::i18n::tr("Proxy") } else { s.clone() };
+            crate::py::head(crate::py::strip(&base), 60)
+        }
+        _ => crate::i18n::tr("Proxy"),
+    };
+    let ov_empty = Value::Object(Map::new());
+    let ov = r.get("overrides").filter(|v| v.is_object()).unwrap_or(&ov_empty);
+    let defaults: Map<String, Value> =
+        OVERRIDABLE.iter().map(|k| (k.to_string(), global_defaults()[*k].clone())).collect();
+    let typed_ov = typed(&defaults, ov);
+    let mut overrides = Map::new();
+    for k in OVERRIDABLE {
+        let set = ov.get(k).is_some_and(|v| !v.is_null());
+        overrides.insert(k.into(), if set { typed_ov[k].clone() } else { Value::Null });
+    }
+    if let Some(t) = overrides["timeout"].as_i64() {
+        overrides.insert("timeout".into(), json!(t.clamp(10, 86400)));
+    }
+    let mut p = Map::new();
+    p.insert("id".into(), json!(id));
+    p.insert("name".into(), json!(name));
+    p.insert("autostart".into(), json!(bool_or_false(r, "autostart")));
+    p.insert("auto_restart".into(), json!(bool_or_false(r, "auto_restart")));
+    p.insert("inbound".into(), Value::Object(validate_inbound(r.get("inbound").unwrap_or(&Value::Null))));
+    p.insert("outbound".into(), Value::Object(validate_outbound(r.get("outbound").unwrap_or(&Value::Null))));
+    p.insert("overrides".into(), Value::Object(overrides));
+    p
 }
 
 /// What reading the settings file found besides the settings themselves.

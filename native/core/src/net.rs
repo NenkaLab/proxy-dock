@@ -2,6 +2,11 @@
 
 use std::net::IpAddr;
 
+/// 'host:port', '[v6]:port' for IPv6
+pub fn host_port(host: &str, port: i64) -> String {
+    if host.contains(':') { format!("[{host}]:{port}") } else { format!("{host}:{port}") }
+}
+
 pub fn strip_scope(addr: &str) -> &str {
     addr.split('%').next().unwrap_or(addr)
 }
