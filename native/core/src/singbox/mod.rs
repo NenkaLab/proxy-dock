@@ -3,6 +3,7 @@
 pub mod compile;
 pub mod guard;
 pub mod process;
+pub mod rulesets;
 
 use std::path::{Path, PathBuf};
 

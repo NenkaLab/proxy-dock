@@ -11,6 +11,9 @@ publish.workspace = true
 serde_json = { version = "1", features = ["preserve_order"] }
 base64 = "0.22"
 regex-lite = "0.1"
+ureq = "3.5.2"
+rcgen = "0.14.10"
+time = "0.3.55"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

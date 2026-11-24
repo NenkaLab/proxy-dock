@@ -217,3 +217,62 @@ fn port_in_use_and_death_are_reported() {
     assert!(died.lock().unwrap()[0].contains("sing-box"));
     drop(engine);
 }
+
+fn card_graph(g: Value) -> Value {
+    Value::Object(graph::compile(&graph::validate(&g)).remove(0))
+}
+
+#[test]
+fn https_card_with_self_signed_cert() {
+    if exe().is_none() {
+        eprintln!("sing-box not found: skipped");
+        return;
+    }
+    let dir = temp_dir("https");
+    let port = free_port();
+    let p = card(json!({"type": "https", "host": "127.0.0.1", "port": port}), json!({"type": "direct"}));
+    let cert = proxydock_core::tls::server_cert_paths(&p, &dir.join("certs")).unwrap();
+    assert!(cert.0.ends_with("proxy-card1.crt"));
+    let glob = config::validate_global(&json!({}));
+    let mut e = env(&dir);
+    e.cert = Some(cert);
+    let (hooks, log, _) = Log::hooks();
+    let mut engine = Engine::start(&p, &glob, &e, hooks).unwrap_or_else(|err| panic!("{err:?} {:?}", log.0.lock().unwrap()));
+    assert!(TcpStream::connect(("127.0.0.1", port)).is_ok());
+    engine.stop();
+}
+
+#[test]
+fn router_geoip_rule_downloads_its_rule_set() {
+    if exe().is_none() {
+        eprintln!("sing-box not found: skipped");
+        return;
+    }
+    let dir = temp_dir("geo");
+    let port = free_port();
+    let p = card_graph(json!({
+        "inbounds": [{"id": "card1", "name": "geo", "inbound": {"type": "http", "host": "127.0.0.1", "port": port}, "target": "r1"}],
+        "outbounds": [{"id": "out1", "outbound": {"type": "direct"}}, {"id": "out2", "outbound": {"type": "block"}}],
+        "routers": [{"id": "r1", "rules": [{"id": "x", "match": {"geoip": ["cn"]}, "target": "out2"}], "default": "out1"}],
+    }));
+    let need = proxydock_core::singbox::rulesets::needed(&p);
+    assert_eq!(need, vec![("geoip".to_string(), "cn".to_string())]);
+    let rs_dir = dir.join("rulesets");
+    let rs = match proxydock_core::singbox::rulesets::ensure_in(&rs_dir, &need, &proxydock_core::singbox::rulesets::http_get, &|_| {}) {
+        Ok(r) => r,
+        Err(err) => {
+            eprintln!("no network ({err}): skipped");
+            return;
+        }
+    };
+    assert_eq!(rs[0].0, "geoip-cn");
+    assert!(std::fs::read(&rs[0].1).unwrap().starts_with(b"SRS"));
+    let glob = config::validate_global(&json!({}));
+    let mut e = env(&dir);
+    e.rulesets = rs;
+    let (hooks, log, _) = Log::hooks();
+    let mut engine = Engine::start(&p, &glob, &e, hooks).unwrap_or_else(|err| panic!("{err:?} {:?}", log.0.lock().unwrap()));
+    let conf = std::fs::read_to_string(dir.join("card1.json")).unwrap();
+    assert!(conf.contains("geoip-cn"), "{conf}");
+    engine.stop();
+}
