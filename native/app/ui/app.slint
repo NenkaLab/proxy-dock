@@ -1,6 +1,6 @@
 // ProxyDock window (proxydock-ui.exe): Material 3 Expressive on Slint's "material" style (build.rs), same look as
 // the prototype. Pages so far: the proxy cards and the log; everything comes from the core process over ipc.
-import { Button, ListView, Palette, ScrollView, TextEdit } from "std-widgets.slint";
+import { ListView, Palette, ScrollView, TextEdit } from "std-widgets.slint";
 import {
     NodeEditor, BaseNode, Pin, PinTypes, NodeEditorEvents, NodeEditorInternalCallbacks, NodeEditorComputations, LinkData,
 } from "@nodeeditor";
@@ -641,6 +641,61 @@ component AppSpinBox inherits Rectangle {
 
 // One field of the editor on its card (the settings' look): its name and what it does on the left,
 // its control on the right; a heading is the small coloured title of the group of cards under it.
+// M3 Expressive small button: 40 high, 16 at the sides, a 20 px icon, Label Large; round, squarer while pressed.
+// primary: filled (primary), else tonal (secondary container)
+component AppButton inherits Rectangle {
+    in property <string> text;
+    in property <image> icon;
+    // (the icons are always drawn in the label's colour)
+    in property <bool> colorize-icon: true;
+    in property <bool> primary;
+    in property <bool> enabled: true;
+    callback clicked();
+    property <color> fg: !root.enabled ? M3.on-surface.with-alpha(0.38) : root.primary ? M3.on-primary : M3.on-secondary-container;
+    height: 40px;
+    preferred-width: lay.preferred-width;
+    min-width: lay.min-width;
+    horizontal-stretch: 0;
+    border-radius: ta.pressed && root.enabled ? 8px : 20px;
+    animate border-radius { duration: Motion.fast-spatial; easing: cubic-bezier(0.42, 1.67, 0.21, 0.90); }
+    background: !root.enabled ? M3.on-surface.with-alpha(0.12) : root.primary ? M3.primary : M3.secondary-container;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    // state layer
+    Rectangle {
+        border-radius: parent.border-radius;
+        background: !root.enabled ? transparent : ta.pressed ? root.fg.with-alpha(0.10) : ta.has-hover ? root.fg.with-alpha(0.08) : transparent;
+    }
+    lay := HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        spacing: 8px;
+        alignment: center;
+        if root.icon.width > 0: Image {
+            width: 20px;
+            height: 20px;
+            y: (parent.height - self.height) / 2;
+            source: root.icon;
+            colorize: root.fg;
+        }
+        if root.text != "": Text {
+            text: root.text;
+            font-size: 14px * Type.scale;
+            font-weight: 500;
+            color: root.fg;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
 // M3 switch: a 52x32 track, the thumb grows when on
 component AppSwitch inherits Rectangle {
     in-out property <bool> checked;
@@ -683,18 +738,18 @@ component FormRow inherits Rectangle {
     // a button (index -1) or an item's button n
     callback pressed(string, int);
     property <bool> heading: f.kind == "heading";
-    property <length> top-r: f.joined ? 0px : f.first ? 24px : 6px;
-    property <length> bottom-r: f.held ? 0px : f.last ? 24px : 6px;
+    property <length> top-r: f.joined ? 0px : f.first ? 28px : 4px;
+    property <length> bottom-r: f.held ? 0px : f.last ? 28px : 4px;
     height: lay.preferred-height;
     lay := VerticalLayout {
-        padding-top: root.heading ? (f.first ? 4px : 20px) : (f.first || f.joined ? 0px : 3px);
+        padding-top: root.heading ? (f.first ? 4px : 20px) : (f.first || f.joined ? 0px : 2px);
         padding-bottom: root.heading ? 8px : 0px;
         if root.heading: HorizontalLayout {
             padding-left: 20px;
             Text {
                 text: f.label;
                 font-size: 14px * Type.scale;
-                font-weight: 600;
+                font-weight: 500;
                 color: M3.primary;
                 wrap: word-wrap;
             }
@@ -720,13 +775,13 @@ component FormRow inherits Rectangle {
                     if f.kind != "button" && f.label != "": Text {
                         text: f.label;
                         font-size: 16px * Type.scale;
-                        font-weight: 500;
+                        font-weight: 400;
                         color: M3.on-surface;
                         wrap: word-wrap;
                     }
                     if f.desc != "": Text {
                         text: f.desc;
-                        font-size: 13px * Type.scale;
+                        font-size: 14px * Type.scale;
                         color: f.tone == 1 ? #1e7f3c : f.tone == 2 ? M3.error : M3.on-surface-variant;
                         wrap: word-wrap;
                     }
@@ -748,7 +803,7 @@ component FormRow inherits Rectangle {
                     }
                     if f.kind == "button": HorizontalLayout {
                         alignment: end;
-                        Button {
+                        AppButton {
                             text: f.label;
                             enabled: !f.busy;
                             clicked => { root.pressed(f.key, -1); }
@@ -763,7 +818,7 @@ component FormRow inherits Rectangle {
                             horizontal-stretch: 1;
                             font-family: Type.mono;
                         }
-                        for b[i] in f.buttons: Button {
+                        for b[i] in f.buttons: AppButton {
                             text: b;
                             clicked => { root.pressed(f.key, i); }
                         }
@@ -797,15 +852,15 @@ component PageActions inherits HorizontalLayout {
     callback save();
     alignment: end;
     spacing: 8px;
-    if root.page == 1 && root.has-cards: Button {
+    if root.page == 1 && root.has-cards: AppButton {
         text: root.t-stop-all;
         clicked => { root.stop-all(); }
     }
-    if root.page == 3: Button {
+    if root.page == 3: AppButton {
         text: root.t-cancel;
         clicked => { root.cancel(); }
     }
-    if root.page == 3: Button {
+    if root.page == 3: AppButton {
         text: root.t-save;
         primary: true;
         clicked => { root.save(); }
@@ -823,7 +878,7 @@ component PageActions inherits HorizontalLayout {
         enabled: Conn.proxies.length > 0;
         selected => { Conn.proxy-changed(); }
     }
-    if root.page == 6: Button {
+    if root.page == 6: AppButton {
         min-width: 190px;
         text: Conn.button;
         icon: @image-url("icons/network_check.svg");
@@ -906,8 +961,8 @@ component RailItem inherits Rectangle {
                 background: root.active ? M3.secondary-container : (ta.has-hover ? M3.surface-container-high : transparent);
                 animate background { duration: Motion.fast-effects; }
                 Image {
-                    width: 22px;
-                    height: 22px;
+                    width: 24px;
+                    height: 24px;
                     source: root.icon;
                     colorize: root.active ? M3.on-secondary-container : M3.on-surface-variant;
                 }
@@ -963,14 +1018,14 @@ component Card inherits Rectangle {
             horizontal-stretch: 1;
             Text {
                 text: card.name;
-                font-size: 17px * Type.scale;
-                font-weight: 700;
+                font-size: 16px * Type.scale;
+                font-weight: 500;
                 color: M3.on-surface;
                 overflow: elide;
             }
             Text {
                 text: card.summary;
-                font-size: 13px * Type.scale;
+                font-size: 14px * Type.scale;
                 color: M3.on-surface-variant;
                 overflow: elide;
             }
@@ -993,7 +1048,7 @@ component Card inherits Rectangle {
         }
         VerticalLayout {
             alignment: center;
-            Button {
+            AppButton {
                 icon: @image-url("icons/edit.svg");
                 colorize-icon: true;
                 clicked => { root.edit(card.id); }
@@ -1001,7 +1056,7 @@ component Card inherits Rectangle {
         }
         VerticalLayout {
             alignment: center;
-            Button {
+            AppButton {
                 text: card.action;
                 primary: card.state != "running" && card.state != "starting";
                 clicked => { root.toggle(card.id); }
@@ -1117,10 +1172,10 @@ component SettingsSection inherits VerticalLayout {
         }
     }
     Rectangle {
-        border-radius: 24px;
+        border-radius: 28px;
         clip: true;
         VerticalLayout {
-            spacing: 3px;
+            spacing: 2px;
             @children
         }
     }
@@ -1129,7 +1184,7 @@ component SettingsSection inherits VerticalLayout {
 // a card in a settings group, for content that is not a single row
 component SettingTile inherits Rectangle {
     background: M3.surface-container-low;
-    border-radius: 6px;
+    border-radius: 4px;
     VerticalLayout {
         padding: 20px;
         padding-top: 16px;
@@ -1147,7 +1202,7 @@ component SettingRow inherits Rectangle {
     // the description is a path (or the like): monospace, wrapped at any character
     in property <bool> desc-path;
     background: M3.surface-container-low;
-    border-radius: 6px;
+    border-radius: 4px;
     HorizontalLayout {
         padding-left: 20px;
         padding-right: 20px;
@@ -1165,7 +1220,7 @@ component SettingRow inherits Rectangle {
                 Text {
                     text: root.label;
                     font-size: 16px * Type.scale;
-                    font-weight: 500;
+                    font-weight: 400;
                     color: M3.on-surface;
                     wrap: word-wrap;
                     vertical-alignment: center;
@@ -1211,14 +1266,14 @@ component SettingField inherits SettingTile {
     Text {
         text: root.label;
         font-size: 16px * Type.scale;
-        font-weight: 500;
+        font-weight: 400;
         color: M3.on-surface;
         wrap: word-wrap;
     }
     @children
     if root.desc != "": Text {
         text: root.desc;
-        font-size: 13px * Type.scale;
+        font-size: 14px * Type.scale;
         color: M3.on-surface-variant;
         wrap: word-wrap;
     }
@@ -1321,12 +1376,12 @@ component SettingsFirewall inherits SettingsSection {
                 vertical-alignment: center;
                 horizontal-stretch: 1;
             }
-            Button {
+            AppButton {
                 text: Settings.text.fw-on;
                 enabled: Settings.fw-state == 0;
                 clicked => { Settings.firewall(true); }
             }
-            Button {
+            AppButton {
                 text: Settings.text.fw-off;
                 enabled: Settings.fw-state == 1;
                 clicked => { Settings.firewall(false); }
@@ -1438,7 +1493,7 @@ component SettingsLogs inherits SettingsSection {
         label: Settings.text.logfile;
         desc: Settings.log-dir;
         desc-path: true;
-        Button {
+        AppButton {
             text: Settings.text.open-folder;
             icon: @image-url("icons/folder_open.svg");
             colorize-icon: true;
@@ -1729,7 +1784,7 @@ component ConnPage inherits VerticalLayout {
             enabled: Conn.editable;
             accepted => { Conn.add(); }
         }
-        Button {
+        AppButton {
             text: Conn.add-text;
             icon: @image-url("icons/add.svg");
             colorize-icon: true;
@@ -1973,11 +2028,11 @@ component AboutPage inherits VerticalLayout {
                     SettingRow {
                         label: "ProxyDock " + Info.app-version;
                         desc: Upd.status;
-                        if Upd.has-release: Button {
+                        if Upd.has-release: AppButton {
                             text: Upd.t-details;
                             clicked => { Upd.dialog = true; }
                         }
-                        Button {
+                        AppButton {
                             text: Upd.t-check;
                             enabled: !Upd.busy;
                             clicked => { Upd.check(); }
@@ -1999,7 +2054,7 @@ component AboutPage inherits VerticalLayout {
                         label: Info.folder-label;
                         desc: Info.app-dir;
                         desc-path: true;
-                        Button {
+                        AppButton {
                             text: Info.open-folder;
                             icon: @image-url("icons/folder_open.svg");
                             colorize-icon: true;
@@ -2013,7 +2068,7 @@ component AboutPage inherits VerticalLayout {
                     SettingRow {
                         label: Info.repo-label;
                         desc: Info.repo-url;
-                        Button {
+                        AppButton {
                             text: Info.open;
                             icon: @image-url("icons/open_in_new.svg");
                             colorize-icon: true;
@@ -2023,7 +2078,7 @@ component AboutPage inherits VerticalLayout {
                     SettingRow {
                         label: Info.releases-label;
                         desc: Info.releases-url;
-                        Button {
+                        AppButton {
                             text: Info.open;
                             icon: @image-url("icons/open_in_new.svg");
                             colorize-icon: true;
@@ -2033,7 +2088,7 @@ component AboutPage inherits VerticalLayout {
                     SettingRow {
                         label: Info.licenses;
                         desc: Info.licenses-desc;
-                        Button {
+                        AppButton {
                             text: Info.licenses;
                             icon: @image-url("icons/description.svg");
                             colorize-icon: true;
@@ -2086,7 +2141,7 @@ component LicensePage inherits VerticalLayout {
             current-index <=> Info.lic-index;
             selected => { Info.lic-picked(); }
         }
-        Button {
+        AppButton {
             text: Info.open-folder;
             icon: @image-url("icons/folder_open.svg");
             colorize-icon: true;
@@ -2207,8 +2262,8 @@ component UpdateDialogs inherits Rectangle {
         HorizontalLayout {
             alignment: end;
             spacing: 8px;
-            Button { text: Upd.t-later; clicked => { Upd.dialog = false; } }
-            Button {
+            AppButton { text: Upd.t-later; clicked => { Upd.dialog = false; } }
+            AppButton {
                 text: Upd.action;
                 primary: true;
                 clicked => {
@@ -2236,7 +2291,7 @@ component UpdateDialogs inherits Rectangle {
         Text { text: Upd.progress-text; font-size: 13px * Type.scale; color: M3.on-surface; }
         HorizontalLayout {
             alignment: end;
-            Button { text: Upd.t-cancel; clicked => { Upd.cancel(); } }
+            AppButton { text: Upd.t-cancel; clicked => { Upd.cancel(); } }
         }
     }
     if Upd.ask-install: Dialog {
@@ -2246,8 +2301,8 @@ component UpdateDialogs inherits Rectangle {
         HorizontalLayout {
             alignment: end;
             spacing: 8px;
-            Button { text: Upd.t-later; clicked => { Upd.ask-install = false; } }
-            Button {
+            AppButton { text: Upd.t-later; clicked => { Upd.ask-install = false; } }
+            AppButton {
                 text: Upd.t-install;
                 primary: true;
                 clicked => {
@@ -2391,17 +2446,15 @@ export component App inherits Window {
         : root.page == 3 ? root.form-title : root.page == 4 ? root.cats[root.settings-cat + 1].label
         : root.page == 5 ? Stats.title : root.page == 6 ? Conn.title
         : root.page == 7 ? root.cats[10].label : root.page == 8 ? root.cats[11].label : root.page == 9 ? root.cats[12].label : "";
-    // the title bar's height (Android's top app bar: the page's title, its actions on the right)
-    property <length> bar-h: max(52px, 18px * Type.scale * 2.4);
-    // where the title's buttons end: the editor's cards' right edge, else the page's (room: the page's width)
-    pure function actions-right(room: length) -> length {
-        root.page == 3 ? form-page.x + form-page.width - 16px : root.page == 1 ? room - 12px : room
-    }
-    // in line with the page's content where that sits in the middle of the room
-    property <length> title-x: root.page == 3 ? form-page.x
-        : root.in-settings ? settings-shell.x + settings-shell.cat-w + 24px : 0px;
+    // the title bar (M3 small top app bar): 64 high, the page's title (Title Large), its actions on the right
+    property <length> bar-h: max(64px, 22px * Type.scale * 2.4);
+    // the navigation rail's width (M3 Expressive collapsed rail)
+    property <length> rail-w: 96px;
+    // every page's content (not the title bar, not the canvas) is at most this wide, in the middle of the room
+    property <length> content-max: 1040px;
 
     title: "ProxyDock";
+    icon: @image-url("icons/app.svg");
     preferred-width: 980px;
     preferred-height: 680px;
     min-width: 560px;
@@ -2420,7 +2473,7 @@ export component App inherits Window {
         height: root.height;
         // navigation rail
         VerticalLayout {
-            width: 88px;
+            width: root.rail-w;
             padding-top: 12px;
             padding-bottom: 12px;
             spacing: 4px;
@@ -2473,7 +2526,7 @@ export component App inherits Window {
             background: M3.surface;
             clip: true;
             VerticalLayout {
-                padding: 20px;
+                padding: 24px;
                 spacing: 12px;
                 if !root.connected: Rectangle {
                     height: 40px;
@@ -2490,10 +2543,10 @@ export component App inherits Window {
                 Rectangle {
                     // canvas: edge to edge in the page container
                     Rectangle {
-                        x: -20px;
-                        y: -20px;
-                        width: parent.width + 40px;
-                        height: parent.height + 40px;
+                        x: -24px;
+                        y: -24px;
+                        width: parent.width + 48px;
+                        height: parent.height + 48px;
                         visible: root.page == 0;
                         FocusScope {
                             width: 100%;
@@ -2563,8 +2616,8 @@ export component App inherits Window {
                             x: (parent.width - self.width) / 2;
                             y: parent.height - self.height - 24px;
                             width: bar.preferred-width;
-                            height: 60px;
-                            border-radius: 30px;
+                            height: 64px;
+                            border-radius: 32px;
                             background: M3.surface-container-high;
                             drop-shadow-blur: 10px;
                             drop-shadow-offset-y: 3px;
@@ -2628,6 +2681,8 @@ export component App inherits Window {
                     }
                     VerticalLayout {
                         visible: root.page == 1;
+                        width: min(parent.width, root.content-max);
+                        x: (parent.width - self.width) / 2;
                         spacing: 12px;
                         if root.cards.length == 0: Text {
                             text: root.t-empty;
@@ -2659,8 +2714,7 @@ export component App inherits Window {
                     }
                     form-page := VerticalLayout {
                         visible: root.page == 3;
-                        // the editor in a readable width, in the middle of any room left over
-                        width: min(parent.width, 916px);
+                        width: min(parent.width, root.content-max);
                         x: (parent.width - self.width) / 2;
                         spacing: 12px;
                         if root.form-notice != "": Rectangle {
@@ -2716,12 +2770,22 @@ export component App inherits Window {
                             }
                         }
                     }
-                    stats-page := StatsPage { x: 0; y: 0; visible: root.page == 5; }
-                    conn-page := ConnPage { x: 0; y: 0; visible: root.page == 6; }
+                    stats-page := StatsPage {
+                        visible: root.page == 5;
+                        width: min(parent.width, root.content-max);
+                        x: (parent.width - self.width) / 2;
+                        y: 0;
+                    }
+                    conn-page := ConnPage {
+                        visible: root.page == 6;
+                        width: min(parent.width, root.content-max);
+                        x: (parent.width - self.width) / 2;
+                        y: 0;
+                    }
                     // settings: the categories (and the app's help, about, licences) on the left, the chosen one on the right
                     settings-shell := Rectangle {
                         visible: root.in-settings;
-                        width: min(parent.width, 1060px);
+                        width: min(parent.width, root.content-max);
                         x: (parent.width - self.width) / 2;
                         // only the icons when narrow
                         property <bool> narrow: self.width < 720px;
@@ -2805,8 +2869,8 @@ export component App inherits Window {
                         x: (parent.width - self.width) / 2;
                         y: parent.height - self.height - 4px;
                         width: min(parent.width - 16px, apply-row.preferred-width);
-                        height: 60px;
-                        border-radius: 30px;
+                        height: 64px;
+                        border-radius: 32px;
                         background: M3.surface-container-high;
                         drop-shadow-blur: 12px;
                         drop-shadow-offset-y: 3px;
@@ -2840,6 +2904,8 @@ export component App inherits Window {
                     }
                     VerticalLayout {
                         visible: root.page == 2;
+                        width: min(parent.width, root.content-max);
+                        x: (parent.width - self.width) / 2;
                         spacing: 12px;
                         Rectangle {
                             border-radius: 16px;
@@ -2874,14 +2940,14 @@ export component App inherits Window {
     }
     // the title bar's title and the page's actions
     Rectangle {
-        x: 88px + 20px;
+        x: root.rail-w + 24px;
         y: 0;
-        width: root.width - 88px - 40px;
+        width: root.width - root.rail-w - 48px;
         height: root.bar-h;
         title-acts := PageActions {
             x: 0;
             y: (parent.height - 40px) / 2;
-            width: root.actions-right(parent.width);
+            width: parent.width;
             height: 40px;
             page: root.page;
             has-cards: root.cards.length > 0;
@@ -2893,12 +2959,12 @@ export component App inherits Window {
             save => { root.form-save(); }
         }
         Text {
-            x: root.title-x;
+            x: 0;
             height: parent.height;
             width: max(0px, title-acts.width - title-acts.preferred-width - 12px - self.x);
             text: root.page-title;
-            font-size: 18px * Type.scale;
-            font-weight: 600;
+            font-size: 22px * Type.scale;
+            font-weight: 400;
             color: M3.on-surface;
             vertical-alignment: center;
             overflow: elide;
@@ -2907,9 +2973,9 @@ export component App inherits Window {
     UpdateDialogs { }
     if root.toast != "": Rectangle {
         // above the canvas toolbar on the canvas, at the bottom elsewhere
-        x: 88px + (root.width - 88px - self.width) / 2;
-        y: root.height - (root.page == 0 ? 24px + 60px + 12px : 28px) - self.height;
-        width: min(root.width - 88px - 40px, toast-text.preferred-width + 40px);
+        x: root.rail-w + (root.width - root.rail-w - self.width) / 2;
+        y: root.height - (root.page == 0 ? 24px + 64px + 12px : 28px) - self.height;
+        width: min(root.width - root.rail-w - 40px, toast-text.preferred-width + 40px);
         height: toast-text.preferred-height + 24px;
         border-radius: 12px;
         background: root.toast-info ? M3.secondary-container : M3.error-container;
@@ -2965,11 +3031,11 @@ export component App inherits Window {
                     HorizontalLayout {
                         alignment: end;
                         spacing: 8px;
-                        Button {
+                        AppButton {
                             text: root.t-cancel;
                             clicked => { root.rename-open = false; }
                         }
-                        Button {
+                        AppButton {
                             text: root.t-save;
                             primary: true;
                             clicked => {
@@ -3006,7 +3072,7 @@ export component App inherits Window {
                 }
                 HorizontalLayout {
                     alignment: end;
-                    Button {
+                    AppButton {
                         text: root.t-close;
                         clicked => { root.popup-text = ""; }
                     }

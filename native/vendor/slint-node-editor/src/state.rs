@@ -1,0 +1,968 @@
+use crate::hit_test::{
+    find_link_at, find_link_route_at, find_pin_at, links_in_selection_box, nodes_in_selection_box,
+    BezierLinkRoute, NodeGeometry, SimpleLinkGeometry, SimpleNodeGeometry, SimplePinGeometry,
+};
+use crate::path::{generate_bezier_path, CubicBezier};
+use std::collections::{HashMap, HashSet};
+
+#[derive(Clone, Copy, Debug)]
+pub struct StoredPin {
+    pub node_id: i32,
+    pub pin_type: i32,
+    pub rel_x: f32,
+    pub rel_y: f32,
+}
+
+/// Helper struct to manage spatial state of the editor (node rects and pin positions)
+///
+/// Generic over N to allow using specialized node types that implement NodeGeometry.
+pub struct GeometryCache<N = SimpleNodeGeometry> {
+    pub node_rects: HashMap<i32, N>,
+    pub pin_positions: HashMap<i32, StoredPin>,
+    non_hit_testable_pins: HashSet<i32>,
+    /// The visibility projection: nodes hidden by a collapsed group keep
+    /// their geometry but are excluded from marquee, pin and link picking,
+    /// and links with a hidden endpoint have no route.
+    hidden_nodes: HashSet<i32>,
+    /// Displayed rectangles of group sheets, keyed by group id. A collapsed
+    /// sheet reports its header band, so this is what a marquee sees.
+    pub group_rects: HashMap<i32, SimpleNodeGeometry>,
+}
+
+impl<N> Default for GeometryCache<N> {
+    fn default() -> Self {
+        Self {
+            node_rects: HashMap::new(),
+            pin_positions: HashMap::new(),
+            non_hit_testable_pins: HashSet::new(),
+            hidden_nodes: HashSet::new(),
+            group_rects: HashMap::new(),
+        }
+    }
+}
+
+impl<N> GeometryCache<N> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Remove one pin from the disposable geometry projection.
+    pub fn remove_pin(&mut self, pin_id: i32) -> bool {
+        self.non_hit_testable_pins.remove(&pin_id);
+        self.pin_positions.remove(&pin_id).is_some()
+    }
+
+    /// Remove a node and every pin currently owned by it.
+    ///
+    /// The returned pin IDs let higher layers retire topology that refers to
+    /// those pins without deriving ownership from an application-specific ID.
+    pub fn remove_node(&mut self, node_id: i32) -> Vec<i32> {
+        self.node_rects.remove(&node_id);
+        self.hidden_nodes.remove(&node_id);
+        let mut removed_pins: Vec<_> = self
+            .pin_positions
+            .iter()
+            .filter_map(|(&pin_id, pin)| (pin.node_id == node_id).then_some(pin_id))
+            .collect();
+        removed_pins.sort_unstable();
+        for pin_id in &removed_pins {
+            self.remove_pin(*pin_id);
+        }
+        removed_pins
+    }
+
+    /// Clear all projected node, pin and group geometry.
+    pub fn clear(&mut self) {
+        self.node_rects.clear();
+        self.pin_positions.clear();
+        self.non_hit_testable_pins.clear();
+        self.hidden_nodes.clear();
+        self.group_rects.clear();
+    }
+
+    /// Mark a node hidden or visible. Hidden nodes keep their rectangle and
+    /// pins but take part in no hit testing, and links touching them have no
+    /// route. `BaseNode` reports this when a collapsed group hides it.
+    pub fn set_node_hidden(&mut self, node_id: i32, hidden: bool) {
+        if hidden {
+            self.hidden_nodes.insert(node_id);
+        } else {
+            self.hidden_nodes.remove(&node_id);
+        }
+    }
+
+    /// Whether a node is currently hidden.
+    pub fn is_node_hidden(&self, node_id: i32) -> bool {
+        self.hidden_nodes.contains(&node_id)
+    }
+
+    /// Whether either endpoint node is hidden. Runs once per link on the
+    /// route path, so the empty-set case costs one branch and no hashing.
+    fn touches_hidden(&self, a: i32, b: i32) -> bool {
+        !self.hidden_nodes.is_empty()
+            && (self.hidden_nodes.contains(&a) || self.hidden_nodes.contains(&b))
+    }
+
+    /// Update a group sheet's displayed rectangle (world coordinates).
+    pub fn update_group_rect(&mut self, id: i32, x: f32, y: f32, width: f32, height: f32) {
+        self.group_rects.insert(
+            id,
+            SimpleNodeGeometry {
+                id,
+                x,
+                y,
+                width,
+                height,
+            },
+        );
+    }
+
+    /// Remove a group sheet's rectangle.
+    pub fn remove_group(&mut self, group_id: i32) -> bool {
+        self.group_rects.remove(&group_id).is_some()
+    }
+
+    /// Groups whose displayed rectangle intersects the selection box, by the
+    /// same intersection rule as nodes.
+    pub fn groups_in_selection_box(&self, x: f32, y: f32, width: f32, height: f32) -> Vec<i32> {
+        nodes_in_selection_box(x, y, width, height, self.group_rects.values().copied())
+    }
+}
+
+impl<N> GeometryCache<N>
+where
+    N: NodeGeometry + Copy,
+{
+    /// Iterator over absolute pin positions for hit testing
+    pub fn get_absolute_pins(&self) -> impl Iterator<Item = SimplePinGeometry> + '_ {
+        // Hot path (pointer moves): skip the hidden-node hash entirely for the
+        // common host with nothing collapsed.
+        let any_hidden = !self.hidden_nodes.is_empty();
+        self.pin_positions
+            .iter()
+            .filter(|(pin_id, _)| !self.non_hit_testable_pins.contains(pin_id))
+            .filter(move |(_, pin)| !any_hidden || !self.hidden_nodes.contains(&pin.node_id))
+            .filter_map(move |(&pin_id, pin_pos)| {
+                let rect = self.node_rects.get(&pin_pos.node_id)?.rect();
+                Some(SimplePinGeometry {
+                    id: pin_id,
+                    x: rect.0 + pin_pos.rel_x,
+                    y: rect.1 + pin_pos.rel_y,
+                })
+            })
+    }
+
+    /// Iterator over absolute link geometries for hit testing
+    pub fn get_absolute_links<'a, I>(
+        &'a self,
+        links: I,
+    ) -> impl Iterator<Item = SimpleLinkGeometry> + 'a
+    where
+        I: Iterator<Item = (i32, i32, i32)> + 'a,
+    {
+        links.filter_map(move |(id, start_pin, end_pin)| {
+            let start_pos = self.pin_positions.get(&start_pin)?;
+            let end_pos = self.pin_positions.get(&end_pin)?;
+            if self.touches_hidden(start_pos.node_id, end_pos.node_id) {
+                return None;
+            }
+
+            let start_rect = self.node_rects.get(&start_pos.node_id)?.rect();
+            let end_rect = self.node_rects.get(&end_pos.node_id)?.rect();
+
+            Some(SimpleLinkGeometry {
+                id,
+                start_x: start_rect.0 + start_pos.rel_x,
+                start_y: start_rect.1 + start_pos.rel_y,
+                end_x: end_rect.0 + end_pos.rel_x,
+                end_y: end_rect.1 + end_pos.rel_y,
+            })
+        })
+    }
+
+    /// Find the nearest hit-testable pin at a world-space position.
+    /// Exact distance ties choose the lowest pin ID.
+    pub fn find_pin_at(&self, x: f32, y: f32, hit_radius: f32) -> i32 {
+        find_pin_at(x, y, self.get_absolute_pins(), hit_radius)
+    }
+
+    /// Find link at position
+    #[allow(clippy::too_many_arguments)]
+    pub fn find_link_at<'a, I>(
+        &'a self,
+        x: f32,
+        y: f32,
+        links: I,
+        hover_distance: f32,
+        zoom: f32,
+        bezier_min_offset: f32,
+        hit_samples: usize,
+    ) -> i32
+    where
+        I: Iterator<Item = (i32, i32, i32)> + 'a,
+    {
+        find_link_at(
+            x,
+            y,
+            self.get_absolute_links(links),
+            hover_distance,
+            zoom,
+            bezier_min_offset,
+            hit_samples,
+        )
+    }
+
+    /// Find a default rendered Bézier route in world coordinates.
+    ///
+    /// The mouse position and `world_hover_distance` are both world-space.
+    /// Routes use the same zoom-independent curve as [`Self::link_curve_world`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn find_bezier_link_at_world<'a, I>(
+        &'a self,
+        world_x: f32,
+        world_y: f32,
+        links: I,
+        world_hover_distance: f32,
+        bezier_min_offset: f32,
+        hit_samples: usize,
+    ) -> i32
+    where
+        I: Iterator<Item = (i32, i32, i32)> + 'a,
+    {
+        let routes = links.filter_map(|(id, start_pin, end_pin)| {
+            Some(BezierLinkRoute {
+                id,
+                curve: self.link_curve_world(start_pin, end_pin, bezier_min_offset)?,
+            })
+        });
+        find_link_route_at(
+            (world_x, world_y),
+            routes,
+            world_hover_distance,
+            hit_samples,
+        )
+    }
+
+    /// Compute nodes in selection box. Hidden nodes are never hit.
+    pub fn nodes_in_selection_box(&self, x: f32, y: f32, width: f32, height: f32) -> Vec<i32> {
+        nodes_in_selection_box(
+            x,
+            y,
+            width,
+            height,
+            self.node_rects
+                .values()
+                .filter(|node| !self.hidden_nodes.contains(&node.id()))
+                .copied(),
+        )
+    }
+
+    /// Compute links in selection box
+    pub fn links_in_selection_box<'a, I>(
+        &'a self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        links: I,
+    ) -> Vec<i32>
+    where
+        I: Iterator<Item = (i32, i32, i32)> + 'a,
+    {
+        links_in_selection_box(x, y, width, height, self.get_absolute_links(links))
+    }
+
+    /// Resolve absolute world-space positions for a link's start and end pins.
+    /// Returns `(start_x, start_y, end_x, end_y)`, or `None` if pins or nodes
+    /// are missing or either node is hidden — a link into a collapsed group
+    /// has no route and is not drawn.
+    pub fn resolve_link_endpoints_world(
+        &self,
+        start_pin: i32,
+        end_pin: i32,
+    ) -> Option<(f32, f32, f32, f32)> {
+        let start_pos = self.pin_positions.get(&start_pin)?;
+        let end_pos = self.pin_positions.get(&end_pin)?;
+        if self.touches_hidden(start_pos.node_id, end_pos.node_id) {
+            return None;
+        }
+
+        let start_rect = self.node_rects.get(&start_pos.node_id)?.rect();
+        let end_rect = self.node_rects.get(&end_pos.node_id)?.rect();
+
+        Some((
+            start_rect.0 + start_pos.rel_x,
+            start_rect.1 + start_pos.rel_y,
+            end_rect.0 + end_pos.rel_x,
+            end_rect.1 + end_pos.rel_y,
+        ))
+    }
+
+    /// Compute bezier path in world coordinates with explicit zoom for bezier offset scaling.
+    pub fn compute_link_path(
+        &self,
+        start_pin: i32,
+        end_pin: i32,
+        zoom: f32,
+        bezier_min_offset: f32,
+    ) -> Option<String> {
+        let (sx, sy, ex, ey) = self.resolve_link_endpoints_world(start_pin, end_pin)?;
+        Some(generate_bezier_path(
+            sx,
+            sy,
+            ex,
+            ey,
+            zoom,
+            bezier_min_offset,
+        ))
+    }
+
+    /// Compute bezier path in screen space from world-space cache data.
+    ///
+    /// Transforms world positions to screen: `screen = world * zoom + pan`
+    pub fn compute_link_path_screen(
+        &self,
+        start_pin: i32,
+        end_pin: i32,
+        zoom: f32,
+        pan_x: f32,
+        pan_y: f32,
+        bezier_min_offset: f32,
+    ) -> Option<String> {
+        let (sx, sy, ex, ey) = self.resolve_link_endpoints_world(start_pin, end_pin)?;
+        Some(generate_bezier_path(
+            sx * zoom + pan_x,
+            sy * zoom + pan_y,
+            ex * zoom + pan_x,
+            ey * zoom + pan_y,
+            zoom,
+            bezier_min_offset,
+        ))
+    }
+
+    /// The curve of a link in pure world coordinates (zoom = 1.0).
+    ///
+    /// Used when links are rendered inside a transform-scale container
+    /// that handles zoom visually. Bezier offset is unscaled.
+    pub fn link_curve_world(
+        &self,
+        start_pin: i32,
+        end_pin: i32,
+        bezier_min_offset: f32,
+    ) -> Option<CubicBezier> {
+        let (sx, sy, ex, ey) = self.resolve_link_endpoints_world(start_pin, end_pin)?;
+        Some(CubicBezier::from_endpoints(
+            sx,
+            sy,
+            ex,
+            ey,
+            1.0,
+            bezier_min_offset,
+        ))
+    }
+
+    /// Compute bezier path in pure world coordinates (zoom=1.0).
+    pub fn compute_link_path_world(
+        &self,
+        start_pin: i32,
+        end_pin: i32,
+        bezier_min_offset: f32,
+    ) -> Option<String> {
+        Some(
+            self.link_curve_world(start_pin, end_pin, bezier_min_offset)?
+                .commands_from((0.0, 0.0)),
+        )
+    }
+
+    /// Standard handler for pin position reports from Slint
+    pub fn handle_pin_report(
+        &mut self,
+        pin_id: i32,
+        node_id: i32,
+        pin_type: i32,
+        rel_x: f32,
+        rel_y: f32,
+    ) {
+        self.handle_pin_report_with_hit_testable(pin_id, node_id, pin_type, rel_x, rel_y, true);
+    }
+
+    /// Update a pin and whether it participates in pin hit testing.
+    ///
+    /// Non-hit-testable pins remain available for existing link routing and
+    /// validation. This lets a level-of-detail view hide a pin without making
+    /// its logical connections disappear.
+    pub fn handle_pin_report_with_hit_testable(
+        &mut self,
+        pin_id: i32,
+        node_id: i32,
+        pin_type: i32,
+        rel_x: f32,
+        rel_y: f32,
+        hit_testable: bool,
+    ) {
+        self.pin_positions.insert(
+            pin_id,
+            StoredPin {
+                node_id,
+                pin_type,
+                rel_x,
+                rel_y,
+            },
+        );
+        if hit_testable {
+            self.non_hit_testable_pins.remove(&pin_id);
+        } else {
+            self.non_hit_testable_pins.insert(pin_id);
+        }
+    }
+}
+
+/// Convenience implementation for the default SimpleNodeGeometry
+impl GeometryCache<SimpleNodeGeometry> {
+    /// Update a node's rectangle (shorthand for SimpleNodeGeometry)
+    pub fn update_node_rect(&mut self, id: i32, x: f32, y: f32, width: f32, height: f32) {
+        self.node_rects.insert(
+            id,
+            SimpleNodeGeometry {
+                id,
+                x,
+                y,
+                width,
+                height,
+            },
+        );
+    }
+
+    /// Standard handler for node rect reports from Slint (for SimpleNodeGeometry)
+    pub fn handle_node_rect_report(&mut self, id: i32, x: f32, y: f32, w: f32, h: f32) {
+        self.update_node_rect(id, x, y, w, h);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper to create a test cache with two nodes and pins
+    fn setup_test_cache() -> GeometryCache<SimpleNodeGeometry> {
+        let mut cache = GeometryCache::new();
+
+        // Node 1 at (0, 0) with size 100x50
+        cache.update_node_rect(1, 0.0, 0.0, 100.0, 50.0);
+        // Node 2 at (200, 100) with size 100x50
+        cache.update_node_rect(2, 200.0, 100.0, 100.0, 50.0);
+
+        // Pin 1001: output on node 1 at relative (100, 25) -> absolute (100, 25)
+        cache.handle_pin_report(1001, 1, 2, 100.0, 25.0);
+        // Pin 2001: input on node 2 at relative (0, 25) -> absolute (200, 125)
+        cache.handle_pin_report(2001, 2, 1, 0.0, 25.0);
+
+        cache
+    }
+
+    // ========================================================================
+    // GeometryCache::new() and Default
+    // ========================================================================
+
+    #[test]
+    fn test_new_cache_is_empty() {
+        let cache: GeometryCache<SimpleNodeGeometry> = GeometryCache::new();
+        assert!(cache.node_rects.is_empty());
+        assert!(cache.pin_positions.is_empty());
+    }
+
+    #[test]
+    fn test_default_cache_is_empty() {
+        let cache: GeometryCache<SimpleNodeGeometry> = GeometryCache::default();
+        assert!(cache.node_rects.is_empty());
+        assert!(cache.pin_positions.is_empty());
+    }
+
+    // ========================================================================
+    // handle_pin_report() - State Mutation
+    // ========================================================================
+
+    #[test]
+    fn test_handle_pin_report_inserts_pin() {
+        let mut cache: GeometryCache<SimpleNodeGeometry> = GeometryCache::new();
+        cache.handle_pin_report(1001, 1, 2, 50.0, 25.0);
+
+        let pin = cache.pin_positions.get(&1001).expect("Pin should exist");
+        assert_eq!(pin.node_id, 1);
+        assert_eq!(pin.pin_type, 2);
+        assert_eq!(pin.rel_x, 50.0);
+        assert_eq!(pin.rel_y, 25.0);
+    }
+
+    #[test]
+    fn test_handle_pin_report_overwrites_existing() {
+        let mut cache: GeometryCache<SimpleNodeGeometry> = GeometryCache::new();
+        cache.handle_pin_report(1001, 1, 2, 50.0, 25.0);
+        cache.handle_pin_report(1001, 1, 2, 100.0, 30.0); // Update position
+
+        let pin = cache.pin_positions.get(&1001).expect("Pin should exist");
+        assert_eq!(pin.rel_x, 100.0);
+        assert_eq!(pin.rel_y, 30.0);
+    }
+
+    #[test]
+    fn test_handle_pin_report_negative_coordinates() {
+        let mut cache: GeometryCache<SimpleNodeGeometry> = GeometryCache::new();
+        cache.handle_pin_report(1001, 1, 2, -10.0, -20.0);
+
+        let pin = cache.pin_positions.get(&1001).expect("Pin should exist");
+        assert_eq!(pin.rel_x, -10.0);
+        assert_eq!(pin.rel_y, -20.0);
+    }
+
+    #[test]
+    fn remove_pin_retires_its_geometry() {
+        let mut cache = setup_test_cache();
+
+        assert!(cache.remove_pin(1001));
+        assert!(!cache.remove_pin(1001));
+        assert!(!cache.pin_positions.contains_key(&1001));
+    }
+
+    #[test]
+    fn remove_node_cascades_to_owned_pins() {
+        let mut cache = setup_test_cache();
+
+        let removed_pins = cache.remove_node(1);
+
+        assert_eq!(removed_pins, vec![1001]);
+        assert!(!cache.node_rects.contains_key(&1));
+        assert!(!cache.pin_positions.contains_key(&1001));
+        assert!(cache.node_rects.contains_key(&2));
+        assert!(cache.pin_positions.contains_key(&2001));
+    }
+
+    #[test]
+    fn clear_removes_all_projected_geometry() {
+        let mut cache = setup_test_cache();
+
+        cache.clear();
+
+        assert!(cache.node_rects.is_empty());
+        assert!(cache.pin_positions.is_empty());
+    }
+
+    #[test]
+    fn hidden_node_keeps_geometry_but_leaves_every_hit_test_and_route() {
+        let mut cache = setup_test_cache();
+        cache.set_node_hidden(1, true);
+
+        assert!(cache.is_node_hidden(1));
+        assert!(cache.node_rects.contains_key(&1), "geometry kept");
+        assert!(cache.pin_positions.contains_key(&1001), "pins kept");
+        assert_eq!(cache.find_pin_at(100.0, 25.0, 10.0), 0, "pin not pickable");
+        assert!(!cache
+            .nodes_in_selection_box(0.0, 0.0, 50.0, 50.0)
+            .contains(&1));
+        assert!(cache.compute_link_path_world(1001, 2001, 50.0).is_none());
+        assert!(cache
+            .links_in_selection_box(90.0, 15.0, 20.0, 20.0, vec![(1, 1001, 2001)].into_iter())
+            .is_empty());
+
+        cache.set_node_hidden(1, false);
+        assert_eq!(cache.find_pin_at(100.0, 25.0, 10.0), 1001);
+        assert!(cache.compute_link_path_world(1001, 2001, 50.0).is_some());
+    }
+
+    #[test]
+    fn removing_or_clearing_a_node_drops_its_hidden_flag() {
+        let mut cache = setup_test_cache();
+        cache.set_node_hidden(1, true);
+        cache.remove_node(1);
+        assert!(!cache.is_node_hidden(1));
+
+        cache.set_node_hidden(2, true);
+        cache.update_group_rect(7, 0.0, 0.0, 10.0, 10.0);
+        cache.clear();
+        assert!(!cache.is_node_hidden(2));
+        assert!(cache.group_rects.is_empty());
+    }
+
+    #[test]
+    fn group_rects_are_marquee_selectable_by_intersection() {
+        let mut cache = setup_test_cache();
+        cache.update_group_rect(7, 500.0, 500.0, 100.0, 100.0);
+
+        assert_eq!(
+            cache.groups_in_selection_box(550.0, 550.0, 10.0, 10.0),
+            vec![7]
+        );
+        assert!(cache
+            .groups_in_selection_box(0.0, 0.0, 10.0, 10.0)
+            .is_empty());
+        assert!(cache.remove_group(7));
+        assert!(!cache.remove_group(7));
+    }
+
+    #[test]
+    fn hidden_pin_routes_but_is_not_hit_testable() {
+        let mut cache = setup_test_cache();
+        cache.handle_pin_report_with_hit_testable(1001, 1, 2, 100.0, 25.0, false);
+
+        assert_eq!(cache.find_pin_at(100.0, 25.0, 10.0), 0);
+        assert!(cache.compute_link_path_world(1001, 2001, 50.0).is_some());
+    }
+
+    // ========================================================================
+    // update_node_rect() - State Mutation
+    // ========================================================================
+
+    #[test]
+    fn test_update_node_rect_inserts_node() {
+        let mut cache = GeometryCache::new();
+        cache.update_node_rect(1, 10.0, 20.0, 100.0, 50.0);
+
+        let node = cache.node_rects.get(&1).expect("Node should exist");
+        assert_eq!(node.id, 1);
+        assert_eq!(node.x, 10.0);
+        assert_eq!(node.y, 20.0);
+        assert_eq!(node.width, 100.0);
+        assert_eq!(node.height, 50.0);
+    }
+
+    #[test]
+    fn test_update_node_rect_overwrites_existing() {
+        let mut cache = GeometryCache::new();
+        cache.update_node_rect(1, 10.0, 20.0, 100.0, 50.0);
+        cache.update_node_rect(1, 50.0, 60.0, 150.0, 80.0);
+
+        let node = cache.node_rects.get(&1).expect("Node should exist");
+        assert_eq!(node.x, 50.0);
+        assert_eq!(node.y, 60.0);
+        assert_eq!(node.width, 150.0);
+        assert_eq!(node.height, 80.0);
+    }
+
+    #[test]
+    fn test_update_node_rect_negative_coordinates() {
+        let mut cache = GeometryCache::new();
+        cache.update_node_rect(1, -100.0, -200.0, 100.0, 50.0);
+
+        let node = cache.node_rects.get(&1).expect("Node should exist");
+        assert_eq!(node.x, -100.0);
+        assert_eq!(node.y, -200.0);
+    }
+
+    // ========================================================================
+    // get_absolute_pins() - Coordinate Transformation
+    // ========================================================================
+
+    #[test]
+    fn test_get_absolute_pins_returns_absolute_positions() {
+        let cache = setup_test_cache();
+        let pins: Vec<SimplePinGeometry> = cache.get_absolute_pins().collect();
+
+        // Find pin 1001: node at (0,0) + rel (100, 25) = (100, 25)
+        let pin1 = pins
+            .iter()
+            .find(|p| p.id == 1001)
+            .expect("Pin 1001 should exist");
+        assert_eq!(pin1.x, 100.0);
+        assert_eq!(pin1.y, 25.0);
+
+        // Find pin 2001: node at (200, 100) + rel (0, 25) = (200, 125)
+        let pin2 = pins
+            .iter()
+            .find(|p| p.id == 2001)
+            .expect("Pin 2001 should exist");
+        assert_eq!(pin2.x, 200.0);
+        assert_eq!(pin2.y, 125.0);
+    }
+
+    #[test]
+    fn test_get_absolute_pins_skips_orphan_pins() {
+        let mut cache = setup_test_cache();
+        // Add a pin referencing non-existent node
+        cache.handle_pin_report(9999, 999, 1, 50.0, 25.0);
+
+        let pins: Vec<SimplePinGeometry> = cache.get_absolute_pins().collect();
+
+        // Should only have 2 valid pins, orphan is skipped
+        assert_eq!(pins.len(), 2);
+        assert!(!pins.iter().any(|p| p.id == 9999));
+    }
+
+    #[test]
+    fn test_get_absolute_pins_empty_cache() {
+        let cache: GeometryCache<SimpleNodeGeometry> = GeometryCache::new();
+        let pins: Vec<SimplePinGeometry> = cache.get_absolute_pins().collect();
+        assert!(pins.is_empty());
+    }
+
+    #[test]
+    fn test_get_absolute_pins_node_at_negative_coords() {
+        let mut cache = GeometryCache::new();
+        cache.update_node_rect(1, -100.0, -50.0, 100.0, 50.0);
+        cache.handle_pin_report(1001, 1, 2, 50.0, 25.0);
+
+        let pins: Vec<SimplePinGeometry> = cache.get_absolute_pins().collect();
+        let pin = pins
+            .iter()
+            .find(|p| p.id == 1001)
+            .expect("Pin should exist");
+        assert_eq!(pin.x, -50.0); // -100 + 50
+        assert_eq!(pin.y, -25.0); // -50 + 25
+    }
+
+    // ========================================================================
+    // get_absolute_links() - Complex Transformation
+    // ========================================================================
+
+    #[test]
+    fn test_get_absolute_links_returns_absolute_positions() {
+        let cache = setup_test_cache();
+        let links_data = vec![(1, 1001, 2001)]; // (id, start_pin, end_pin)
+        let links: Vec<SimpleLinkGeometry> =
+            cache.get_absolute_links(links_data.into_iter()).collect();
+
+        assert_eq!(links.len(), 1);
+        let link = &links[0];
+        assert_eq!(link.id, 1);
+        // Start: pin 1001 -> (100, 25)
+        assert_eq!(link.start_x, 100.0);
+        assert_eq!(link.start_y, 25.0);
+        // End: pin 2001 -> (200, 125)
+        assert_eq!(link.end_x, 200.0);
+        assert_eq!(link.end_y, 125.0);
+    }
+
+    #[test]
+    fn test_get_absolute_links_skips_missing_start_pin() {
+        let cache = setup_test_cache();
+        let links_data = vec![(1, 9999, 2001)]; // Missing start pin
+        let links: Vec<SimpleLinkGeometry> =
+            cache.get_absolute_links(links_data.into_iter()).collect();
+
+        assert!(links.is_empty());
+    }
+
+    #[test]
+    fn test_get_absolute_links_skips_missing_end_pin() {
+        let cache = setup_test_cache();
+        let links_data = vec![(1, 1001, 9999)]; // Missing end pin
+        let links: Vec<SimpleLinkGeometry> =
+            cache.get_absolute_links(links_data.into_iter()).collect();
+
+        assert!(links.is_empty());
+    }
+
+    #[test]
+    fn test_get_absolute_links_skips_missing_start_node() {
+        let mut cache = setup_test_cache();
+        // Add pin referencing non-existent node
+        cache.pin_positions.insert(
+            3001,
+            StoredPin {
+                node_id: 999,
+                pin_type: 1,
+                rel_x: 0.0,
+                rel_y: 25.0,
+            },
+        );
+
+        let links_data = vec![(1, 3001, 2001)];
+        let links: Vec<SimpleLinkGeometry> =
+            cache.get_absolute_links(links_data.into_iter()).collect();
+
+        assert!(links.is_empty());
+    }
+
+    #[test]
+    fn test_get_absolute_links_empty_input() {
+        let cache = setup_test_cache();
+        let links_data: Vec<(i32, i32, i32)> = vec![];
+        let links: Vec<SimpleLinkGeometry> =
+            cache.get_absolute_links(links_data.into_iter()).collect();
+
+        assert!(links.is_empty());
+    }
+
+    #[test]
+    fn test_get_absolute_links_multiple_links() {
+        let mut cache = setup_test_cache();
+        // Add another pin on node 2
+        cache.handle_pin_report(2002, 2, 1, 0.0, 40.0);
+
+        let links_data = vec![(1, 1001, 2001), (2, 1001, 2002)];
+        let links: Vec<SimpleLinkGeometry> =
+            cache.get_absolute_links(links_data.into_iter()).collect();
+
+        assert_eq!(links.len(), 2);
+    }
+
+    // ========================================================================
+    // compute_link_path() - Bezier Path Generation
+    // ========================================================================
+
+    #[test]
+    fn test_compute_link_path_returns_valid_svg() {
+        let cache = setup_test_cache();
+        let path = cache
+            .compute_link_path(1001, 2001, 1.0, 50.0)
+            .expect("Path should be generated");
+
+        assert!(path.starts_with("M "));
+        assert!(path.contains(" C "));
+    }
+
+    #[test]
+    fn test_compute_link_path_returns_none_for_missing_start_pin() {
+        let cache = setup_test_cache();
+        let path = cache.compute_link_path(9999, 2001, 1.0, 50.0);
+        assert!(path.is_none());
+    }
+
+    #[test]
+    fn test_compute_link_path_returns_none_for_missing_end_pin() {
+        let cache = setup_test_cache();
+        let path = cache.compute_link_path(1001, 9999, 1.0, 50.0);
+        assert!(path.is_none());
+    }
+
+    #[test]
+    fn test_compute_link_path_returns_none_for_missing_start_node() {
+        let mut cache = setup_test_cache();
+        cache.pin_positions.insert(
+            3001,
+            StoredPin {
+                node_id: 999,
+                pin_type: 1,
+                rel_x: 0.0,
+                rel_y: 25.0,
+            },
+        );
+
+        let path = cache.compute_link_path(3001, 2001, 1.0, 50.0);
+        assert!(path.is_none());
+    }
+
+    #[test]
+    fn test_compute_link_path_different_zoom_levels() {
+        let cache = setup_test_cache();
+
+        let path1 = cache.compute_link_path(1001, 2001, 1.0, 50.0).unwrap();
+        let path2 = cache.compute_link_path(1001, 2001, 2.0, 50.0).unwrap();
+
+        // Different zoom should produce different paths
+        assert_ne!(path1, path2);
+    }
+
+    // ========================================================================
+    // find_pin_at() - Delegated Hit Testing
+    // ========================================================================
+
+    #[test]
+    fn test_find_pin_at_hits_pin() {
+        let cache = setup_test_cache();
+        // Pin 1001 is at (100, 25)
+        let pin_id = cache.find_pin_at(102.0, 27.0, 10.0);
+        assert_eq!(pin_id, 1001);
+    }
+
+    #[test]
+    fn test_find_pin_at_misses_all() {
+        let cache = setup_test_cache();
+        let pin_id = cache.find_pin_at(500.0, 500.0, 10.0);
+        assert_eq!(pin_id, 0);
+    }
+
+    // ========================================================================
+    // nodes_in_selection_box() - Selection Box Query
+    // ========================================================================
+
+    #[test]
+    fn test_nodes_in_selection_box_finds_intersecting() {
+        let cache = setup_test_cache();
+        // Node 1 is at (0, 0) with size 100x50
+        // Selection box covering it
+        let selected = cache.nodes_in_selection_box(0.0, 0.0, 50.0, 50.0);
+        assert!(selected.contains(&1));
+    }
+
+    #[test]
+    fn test_nodes_in_selection_box_excludes_non_intersecting() {
+        let cache = setup_test_cache();
+        // Selection box that doesn't cover node 1 (at 0,0) or node 2 (at 200,100)
+        let selected = cache.nodes_in_selection_box(500.0, 500.0, 50.0, 50.0);
+        assert!(selected.is_empty());
+    }
+
+    // ========================================================================
+    // links_in_selection_box() - Link Selection Query
+    // ========================================================================
+
+    #[test]
+    fn test_links_in_selection_box_finds_link_with_start_inside() {
+        let cache = setup_test_cache();
+        let links_data = vec![(1, 1001, 2001)];
+
+        // Selection box covering pin 1001 position (100, 25)
+        let selected = cache.links_in_selection_box(90.0, 15.0, 20.0, 20.0, links_data.into_iter());
+        assert!(selected.contains(&1));
+    }
+
+    #[test]
+    fn test_links_in_selection_box_excludes_link_outside() {
+        let cache = setup_test_cache();
+        let links_data = vec![(1, 1001, 2001)];
+
+        // Selection box not covering either pin
+        let selected =
+            cache.links_in_selection_box(500.0, 500.0, 50.0, 50.0, links_data.into_iter());
+        assert!(selected.is_empty());
+    }
+
+    // ========================================================================
+    // compute_link_path_screen() - World→Screen Path Generation
+    // ========================================================================
+
+    #[test]
+    fn test_compute_link_path_screen_zoom1_pan0() {
+        let cache = setup_test_cache();
+        // At zoom=1, pan=0 the screen-space path should equal
+        // node_world + pin_rel (same as compute_link_path at zoom=1)
+        let path = cache
+            .compute_link_path_screen(1001, 2001, 1.0, 0.0, 0.0, 50.0)
+            .expect("Path should be generated");
+        assert!(path.starts_with("M "));
+        assert!(path.contains(" C "));
+    }
+
+    #[test]
+    fn test_compute_link_path_screen_with_pan() {
+        let cache = setup_test_cache();
+        // With pan offset, paths should differ from zero-pan
+        let path_no_pan = cache
+            .compute_link_path_screen(1001, 2001, 1.0, 0.0, 0.0, 50.0)
+            .unwrap();
+        let path_with_pan = cache
+            .compute_link_path_screen(1001, 2001, 1.0, 100.0, 50.0, 50.0)
+            .unwrap();
+        assert_ne!(path_no_pan, path_with_pan);
+    }
+
+    #[test]
+    fn test_compute_link_path_screen_with_zoom() {
+        let cache = setup_test_cache();
+        let path_z1 = cache
+            .compute_link_path_screen(1001, 2001, 1.0, 0.0, 0.0, 50.0)
+            .unwrap();
+        let path_z2 = cache
+            .compute_link_path_screen(1001, 2001, 2.0, 0.0, 0.0, 50.0)
+            .unwrap();
+        assert_ne!(path_z1, path_z2);
+    }
+
+    #[test]
+    fn test_compute_link_path_screen_missing_pin() {
+        let cache = setup_test_cache();
+        assert!(cache
+            .compute_link_path_screen(9999, 2001, 1.0, 0.0, 0.0, 50.0)
+            .is_none());
+    }
+}

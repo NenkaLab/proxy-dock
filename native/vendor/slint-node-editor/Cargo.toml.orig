@@ -1,0 +1,63 @@
+[package]
+name = "slint-node-editor"
+version = "2.0.0"
+links = "nodeeditor"
+edition = "2021"
+authors = ["Till Adam <till.adam@kdab.com>"]
+license = "MIT OR Apache-2.0"
+description = "A flexible, generic Slint component library for building visual graph editors"
+repository = "https://github.com/tilladam/slint-node-editor"
+homepage = "https://github.com/tilladam/slint-node-editor"
+documentation = "https://docs.rs/slint-node-editor"
+keywords = ["gui", "node-editor", "graph", "slint", "visual-programming"]
+categories = ["gui", "visualization"]
+readme = "README.md"
+rust-version = "1.92"
+include = [
+    "src/**/*",
+    "/*.slint",
+    "build.rs",
+    "Cargo.toml",
+    "README.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "docs/integration-guide.md",
+    "docs/component-reference.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+]
+
+[dependencies]
+slint = { version = "1.18.0", default-features = false, features = ["std", "compat-1-18"] }
+rust-sugiyama = { version = "0.4", optional = true }
+
+[features]
+layout = ["rust-sugiyama"]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[build-dependencies]
+slint-build = { version = "1.18.0", features = ["experimental-module-builds"] }
+
+[workspace]
+members = [
+    "integration-tests",
+    "examples/advanced",
+    "examples/minimal",
+    "examples/configuration",
+    "examples/custom-shapes",
+    "examples/animated-links",
+    "examples/pin-compatibility",
+    "examples/zoom-stress-test",
+    "examples/sugiyama",
+    "examples/sugiyama-stress-test",
+    "examples/edge-fade",
+    "examples/groups",
+]
+
+[workspace.dependencies]
+slint = { version = "1.18.0", default-features = false, features = ["std", "compat-1-18", "backend-winit", "renderer-skia"] }
+slint-build = { version = "1.18.0" }
+i-slint-backend-testing = { version = "1.18.0" }
+slint-node-editor = { path = "." }

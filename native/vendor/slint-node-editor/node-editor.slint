@@ -1,0 +1,1042 @@
+// Node Editor Library
+//
+// This library provides a pure Slint NodeEditor component with a three-layer
+// architecture. Computation-heavy operations are delegated to the application
+// via callbacks.
+//
+// Usage:
+// ```slint
+// import { NodeEditor, Link, Pin, PinTypes } from "node-editor.slint";
+//
+// MainWindow {
+//     NodeEditor {
+//         pan-x: 0px;
+//         pan-y: 0px;
+//         zoom: 1.0;
+//
+//         link-requested(start, end) => { /* validate and create link */ }
+//
+//         // Add nodes
+//         for node in nodes: MyNode { ... }
+//
+//         // `wire_node_editor!` installs the Rust computation callbacks.
+//     }
+// }
+// ```
+
+// Import building blocks and re-export for users
+import {
+    PinTypes,
+    ViewportState,
+    DragState,
+    GeometryVersion,
+    NodeEditorInternalCallbacks,
+    LinkCreationState,
+    LinkCreation,
+    SelectionRequest,
+    GroupSelectionRequest,
+    GroupVisibility,
+    HoverState,
+    NodeEditorEvents,
+    NodeEditorComputations,
+    BoxSelectionModifier,
+    NodeEditorGestureConfig,
+    BoxSelectionGestureState,
+    BoxSelectionGesture,
+    InteractionCancellation,
+    NodeStyleDefaults,
+    MinimapNode,
+    MinimapPosition,
+    LinkData,
+    LinkPath,
+    LinkStatus,
+    LinkStatusColors,
+    GroupData,
+    GroupStyleDefaults,
+    LinkColor,
+    Minimap,
+    Link,
+    BaseNode,
+    BaseGroup,
+    GroupSheet,
+    Pin,
+} from "node-editor-building-blocks.slint";
+// Globals used by both compiled library functions and consumer-instantiated
+// components must be exported by the module. Otherwise Slint gives the consumer
+// a separate instance and lifecycle notifications never reach its components.
+export { PinTypes, ViewportState, DragState, GeometryVersion, NodeEditorInternalCallbacks, LinkCreationState, LinkCreation, SelectionRequest, GroupSelectionRequest, GroupVisibility, HoverState, NodeEditorEvents, NodeEditorComputations, NodeEditorGestureConfig, BoxSelectionGestureState, BoxSelectionGesture, InteractionCancellation, NodeStyleDefaults, BoxSelectionModifier, MinimapNode, MinimapPosition, LinkData, LinkPath, LinkStatus, LinkStatusColors, LinkColor, GroupData, GroupStyleDefaults, Minimap, Link, BaseNode, BaseGroup, GroupSheet, Pin }
+
+/// Pure Slint node editor composite component.
+///
+/// Provides:
+/// - Layer 1: Grid background with pan/zoom input handling
+/// - Layer 2: World content, scaled: group sheets, then links, then the
+///   user's children (nodes)
+/// - Layer 3: Selection box and link preview overlays
+///
+/// Computation-heavy operations are delegated to the application via callbacks.
+///
+/// NodeEditor inherits FocusScope so it is the keyboard focus surface.
+/// Embedders call `editor.focus()` to focus programmatically. Presses on the
+/// canvas, nodes, pins, minimap, and box-selection overlay take focus through
+/// NodeEditorInternalCallbacks.take-editor-focus. wire_node_editor! forwards
+/// this to the window's public focus-editor() function, which calls editor.focus().
+/// Embedded focusable controls that accept the press keep their own focus.
+/// **No key bindings are defined** — embedders own the
+/// keymap by wrapping the editor in a parent FocusScope that handles keys.
+/// State like `is-creating-link` and operations like `cancel-link-creation()`
+/// are exposed for embedders to bind as needed.
+///
+/// **Note:** Only one NodeEditor per Window is supported. The library uses Slint
+/// globals for internal communication between BaseNode/Pin and NodeEditor.
+/// Multiple editors in separate windows work fine. This limitation will be
+/// lifted once Slint introduces component-scoped globals.
+export component NodeEditor inherits FocusScope {
+    // === Accessibility ===
+    accessible-role: list;
+    accessible-label: "Node Editor";
+
+    // === Shared viewport state ===
+    in-out property <length> pan-x: 0px;
+    in-out property <length> pan-y: 0px;
+    in-out property <float> zoom: 1.0;
+
+    // Sync viewport state to global for child components
+    init => {
+        ViewportState.zoom = root.zoom;
+        ViewportState.pan-x = root.pan-x;
+        ViewportState.pan-y = root.pan-y;
+        NodeEditorComputations.grid-spacing = root.grid-spacing;
+        NodeEditorComputations.bezier-min-offset = root.bezier-min-offset;
+        NodeEditorGestureConfig.box-selection-modifier = root.box-selection-modifier;
+        NodeEditorGestureConfig.box-selection-on-empty = root.box-selection-on-empty;
+        // Evaluate the watcher once so subsequent cancellation version changes
+        // run their handler even if no visual binding reads the property.
+        root.last-applied-cancellation-version = root.interaction-cancellation-watch;
+    }
+
+    // BaseNode and Pin update the Rust cache before incrementing request-version.
+    // Flush once on the next event-loop turn so one model row or layout batch
+    // cannot trigger a full link recomputation for every changed property.
+    property <int> geometry-request-watch: GeometryVersion.request-version;
+    changed geometry-request-watch => {
+        geometry-flush-timer.start();
+    }
+    geometry-flush-timer := Timer {
+        interval: 0ms;
+        running: false;
+        triggered => {
+            self.stop();
+            GeometryVersion.version += 1;
+        }
+    }
+
+    // === World content size ===
+    /// Size of the world-content container (nodes and links live here).
+    /// Must be large enough to contain all graph content at zoom=1.
+    in property <length> world-content-size: 100000px;
+
+    // === Grid properties ===
+    in property <length> grid-spacing: 24px;
+    in property <color> grid-color: #404040;
+    in property <brush> background-color: #1a1a1a;
+
+    // === Grid commands (set by application via callback) ===
+    in-out property <string> grid-commands;
+
+    // === Edge fade (screen-space overlays between grid and world content) ===
+    /// Brush for the left edge fade (e.g. a linear-gradient). Transparent = disabled.
+    in property <brush> edge-fade-left: transparent;
+    /// Width of the left edge fade rectangle.
+    in property <length> edge-fade-left-width: 0px;
+    /// Brush for the right edge fade. Transparent = disabled.
+    in property <brush> edge-fade-right: transparent;
+    /// Width of the right edge fade rectangle.
+    in property <length> edge-fade-right-width: 0px;
+
+    // === Zoom constraints ===
+    in property <float> min-zoom: 0.1;
+    in property <float> max-zoom: 3.0;
+    /// Enable pinch-to-zoom gesture (trackpad/touch)
+    in property <bool> pinch-zoom-enabled: true;
+
+    // === Host-side LOD (Level of Detail) convenience settings ===
+    /// Suggested zoom threshold for custom nodes to render full detail.
+    /// NodeEditor does not apply LOD itself; pass this value to node delegates.
+    in property <float> lod-full-threshold: 0.5;
+    /// Suggested zoom threshold for custom nodes to render simplified detail.
+    /// NodeEditor does not apply LOD itself; pass this value to node delegates.
+    in property <float> lod-simplified-threshold: 0.25;
+    /// Suggested minimum width for custom node delegates.
+    /// NodeEditor does not size consumer-provided nodes.
+    in property <length> min-node-width: 80px;
+    /// Suggested minimum height for custom node delegates.
+    /// NodeEditor does not size consumer-provided nodes.
+    in property <length> min-node-height: 40px;
+
+    // === Link data (set by application) ===
+    /// Logical link data - application provides this
+    in property <[LinkData]> links: [];
+    /// The palette `LinkData.accent` indexes from 1. Bind it to the application's
+    /// theme so link colours follow the theme with no push from Rust.
+    in property <[color]> link-accent-colors: [];
+    /// The fraction of its alpha a `LinkData.dimmed` link keeps.
+    in property <float> dimmed-link-alpha: 0.25;
+
+    // === Group data (set by application) ===
+    /// One row per group. The editor renders a `GroupSheet` for each below
+    /// the links; membership is the `group-id` on the application's node rows.
+    /// Leave this empty and instantiate `BaseGroup` children for a custom look.
+    in property <[GroupData]> groups: [];
+
+    // === Selection state ===
+    // The editor holds NO selection state: `selected` is per-row data on the
+    // application's node/link models, and every gesture below is a pure intent.
+    // Only the marquee rectangle — a transient gesture overlay — lives here.
+    out property <bool> is-selecting: root.internal-is-box-selecting;
+    out property <length> selection-x: min(root.box-start-x, root.box-current-x);
+    out property <length> selection-y: min(root.box-start-y, root.box-current-y);
+    out property <length> selection-width: abs(root.box-current-x - root.box-start-x);
+    out property <length> selection-height: abs(root.box-current-y - root.box-start-y);
+
+    // === Link creation state ===
+    out property <bool> is-creating-link: root.internal-is-creating-link;
+    out property <length> link-start-x: root.internal-link-start-x;
+    out property <length> link-start-y: root.internal-link-start-y;
+    in-out property <length> link-end-x: root.internal-link-end-x;
+    in-out property <length> link-end-y: root.internal-link-end-y;
+    out property <int> link-start-pin-id: root.internal-link-start-pin;
+
+    // === Link preview (set by application via callback) ===
+    in-out property <string> link-preview-path-commands;
+
+    // === Context menu state ===
+    out property <length> context-menu-x;
+    out property <length> context-menu-y;
+
+    // Node drag state is not mirrored here: BaseNode owns the live offset and
+    // reports it straight to the host through NodeEditorInternalCallbacks.
+    // DragState carries what other nodes need to follow a multi-node drag.
+
+    // === Hovered link ===
+    out property <int> hovered-link-id: -1;
+    in property <length> link-hover-distance: 8px;
+
+    // === Hovered node ===
+    // ID of the node currently under the pointer, or 0 if none. Aggregated from
+    // BaseNode via the HoverState global (nodes are consumer-instantiated, so this
+    // can't be wired in a library-side delegate the way hovered-link-id is).
+    // Note: sentinel is 0 (not -1) — negative node IDs are valid, see BaseNode.
+    out property <int> hovered-node-id: HoverState.hovered-node-id;
+    callback node-hovered();
+    changed hovered-node-id => {
+        root.node-hovered();
+    }
+
+    // === Minimap configuration ===
+    in property <bool> minimap-enabled: false;
+    in property <MinimapPosition> minimap-position: MinimapPosition.bottom-right;
+    in property <[MinimapNode]> minimap-nodes: [];
+    in-out property <length> graph-min-x: 0px;
+    in-out property <length> graph-min-y: 0px;
+    in-out property <length> graph-max-x: 1600px;
+    in-out property <length> graph-max-y: 1200px;
+    // Path-based minimap rendering (optimization for large graphs)
+    in property <string> minimap-nodes-path: "";
+    in property <int> minimap-path-version: 0;
+    pure callback compute-minimap-nodes-path(/* version */ int, /* scale */ float, /* offset-x */ float, /* offset-y */ float) -> string;
+
+    // === Pin hit radius ===
+    in property <length> pin-hit-radius: 10px;
+
+    // === Bezier curve configuration ===
+    /// Minimum control point offset for bezier curves (affects link curvature)
+    in property <float> bezier-min-offset: 50.0;
+    /// Number of samples for link hit-testing (higher = more precise, slower)
+    in property <int> link-hit-samples: 20;
+
+    // === Box selection modifier configuration ===
+    /// Allow box selection on click on empty area (no modifier needed)
+    in property <bool> box-selection-on-empty: true;
+    /// Whether link hit-testing is enabled (set to true if compute-link-at is wired)
+    in property <bool> has-link-selection: false;
+    /// Modifier key that enables box selection even over links/nodes
+    in property <BoxSelectionModifier> box-selection-modifier: BoxSelectionModifier.ctrl;
+
+    // === Internal state ===
+    property <bool> control-held: false;
+    property <bool> alt-held: false;
+    property <bool> shift-held: false;
+    property <bool> meta-held: false;
+    property <bool> modifier-forces-box-select: NodeEditorGestureConfig.forces-box-selection(
+        control-held, alt-held, shift-held, meta-held);
+    property <bool> internal-is-context-menu-dragging: false;
+    property <bool> internal-is-panning: false;
+    property <length> pan-start-mouse-x;
+    property <length> pan-start-mouse-y;
+    property <length> pan-start-offset-x;
+    property <length> pan-start-offset-y;
+
+    property <bool> internal-is-box-selecting: false;
+    property <length> box-start-x;
+    property <length> box-start-y;
+    property <length> box-current-x;
+    property <length> box-current-y;
+    property <bool> internal-box-selection-forced: false;
+
+    property <bool> internal-is-creating-link: false;
+    property <int> internal-link-start-pin: 0;
+    property <length> internal-link-start-x;
+    property <length> internal-link-start-y;
+    property <length> internal-link-end-x;
+    property <length> internal-link-end-y;
+
+    // Observe cancellation and fallback marquee requests from consumer-defined
+    // BaseNode and Pin instances.
+    property <int> interaction-cancellation-watch: InteractionCancellation.version;
+    changed interaction-cancellation-watch => {
+        if root.last-applied-cancellation-version != InteractionCancellation.version {
+            root.apply-interaction-cancellation();
+        }
+    }
+    property <int> last-applied-cancellation-version: 0;
+    property <int> box-selection-gesture-watch: BoxSelectionGesture.version;
+    changed box-selection-gesture-watch => {
+        if BoxSelectionGesture.state == BoxSelectionGestureState.started {
+            root.begin-box-selection(
+                BoxSelectionGesture.x,
+                BoxSelectionGesture.y,
+                BoxSelectionGesture.extends-selection,
+                true);
+        } else if BoxSelectionGesture.state == BoxSelectionGestureState.updating {
+            root.update-box-selection(BoxSelectionGesture.x, BoxSelectionGesture.y);
+        } else if BoxSelectionGesture.state == BoxSelectionGestureState.complete {
+            root.finish-box-selection(BoxSelectionGesture.x, BoxSelectionGesture.y);
+            BoxSelectionGesture.state = BoxSelectionGestureState.idle;
+        }
+    }
+
+    // Capture modifier state without consuming the host's key events. This
+    // enables the marquee overlay before pointer hit-testing reaches an
+    // embedded control.
+    capture-key-pressed(event) => {
+        root.control-held = event.modifiers.control;
+        root.alt-held = event.modifiers.alt;
+        root.shift-held = event.modifiers.shift;
+        root.meta-held = event.modifiers.meta;
+        return reject;
+    }
+    capture-key-released(event) => {
+        root.control-held = event.modifiers.control;
+        root.alt-held = event.modifiers.alt;
+        root.shift-held = event.modifiers.shift;
+        root.meta-held = event.modifiers.meta;
+        return reject;
+    }
+    focus-lost(_) => {
+        root.control-held = false;
+        root.alt-held = false;
+        root.shift-held = false;
+        root.meta-held = false;
+        root.cancel-interactions();
+    }
+    changed visible => {
+        if !root.visible {
+            root.cancel-interactions();
+        }
+    }
+    changed enabled => {
+        if !root.enabled {
+            root.cancel-interactions();
+        }
+    }
+
+    // === Callbacks TO Application (for computation) ===
+    /// Compute link at position (world coordinates), returns link ID or -1
+    callback compute-link-at(/* x */ length, /* y */ length) -> int;
+
+    // === Selection intents (the application owns the selection) ===
+    // Each of these reports a gesture; none of them changes any state here.
+    // Apply drag-affecting intents synchronously, before the callback returns:
+    // the live multi-node preview and drag commit read the resulting
+    // `selected` flags. Hosts that defer projection must own drag policy too.
+
+    /// A node was clicked (or dragged from unselected). Click-replace semantics
+    /// unless `shift-held`, in which case the node toggles.
+    callback node-selected(/* node-id */ int, /* shift-held */ bool);
+
+    /// A link was clicked. Same semantics as `node-selected`.
+    callback select-link(/* link-id */ int, /* shift-held */ bool);
+
+    /// A group sheet was clicked. Same semantics as `node-selected`; a plain
+    /// click is exclusive across nodes, links and groups.
+    callback group-selected(/* group-id */ int, /* shift-held */ bool);
+
+    /// The background was clicked: the whole selection should be dropped.
+    callback selection-cleared();
+
+    /// A marquee was released over the given world-coordinate rectangle.
+    /// The application hit-tests it (`nodes_in_selection_box` /
+    /// `links_in_selection_box`) and selects what it finds — extending the
+    /// existing selection when `shift-held`, replacing it otherwise.
+    callback box-selection-committed(/* x */ length, /* y */ length, /* w */ length, /* h */ length, /* shift-held */ bool);
+
+    // === Callbacks TO Application (events) ===
+    callback link-requested(/* start-pin */ int, /* end-pin */ int);
+    callback link-dropped(/* start-pin */ int, /* world-x */ float, /* world-y */ float);
+    callback link-cancelled();
+    callback link-hovered();
+    callback context-menu-requested();
+    callback context-menu-dragged(/* x */ length, /* y */ length);
+    callback context-menu-released(/* x */ length, /* y */ length);
+    // === Geometry version counter (for link path invalidation) ===
+    // Increment this when node/pin positions change to force link path recomputation.
+    in-out property <int> geometry-version <=> GeometryVersion.version;
+
+    // === Geometry Reporting Functions ===
+    // These functions schedule a coalesced geometry-version increment after
+    // calling the callbacks. Use these instead of calling the callbacks directly.
+
+    /// Report node rectangle change. Schedules a link refresh after the callback.
+    public function report-node-rect(id: int, x: length, y: length, w: length, h: length) {
+        NodeEditorInternalCallbacks.report-node-rect(id, x, y, w, h);
+        GeometryVersion.request-version += 1;
+    }
+
+    /// Report pin position change. Schedules a link refresh after the callback.
+    public function report-pin-position(pin-id: int, node-id: int, pin-type: int, rel-x: length, rel-y: length) {
+        NodeEditorInternalCallbacks.report-pin-position(pin-id, node-id, pin-type, rel-x, rel-y, true);
+        GeometryVersion.request-version += 1;
+    }
+
+
+    /// Start link creation from a pin
+    public function start-link-from-pin(pin-id: int, x: length, y: length) {
+        root.internal-is-creating-link = true;
+        root.internal-link-start-pin = pin-id;
+        root.internal-link-start-x = x;
+        root.internal-link-start-y = y;
+        root.internal-link-end-x = x;
+        root.internal-link-end-y = y;
+        root.link-preview-path-commands = NodeEditorComputations.compute-link-preview-path(
+            x / 1px, y / 1px, x / 1px, y / 1px, root.zoom, root.bezier-min-offset);
+    }
+
+    /// Update link end position during creation
+    public function update-link-end(x: length, y: length) {
+        root.internal-link-end-x = x;
+        root.internal-link-end-y = y;
+        root.link-preview-path-commands = NodeEditorComputations.compute-link-preview-path(
+            root.internal-link-start-x / 1px, root.internal-link-start-y / 1px,
+            x / 1px, y / 1px, root.zoom, root.bezier-min-offset);
+    }
+
+    /// Complete link creation
+    public function complete-link-creation() {
+        if root.internal-is-creating-link {
+            // Call compute-pin-at and request link if valid
+            // Note: Convert screen coords to world coords since pin positions are stored in world space
+            // world = (screen - pan) / zoom
+            root.try-complete-link(NodeEditorComputations.compute-pin-at(
+                (root.internal-link-end-x - root.pan-x) / root.zoom / 1px,
+                (root.internal-link-end-y - root.pan-y) / root.zoom / 1px,
+                root.pin-hit-radius / root.zoom / 1px));
+            root.internal-is-creating-link = false;
+        }
+    }
+
+    /// Internal helper to complete link if end pin is valid
+    function try-complete-link(end-pin: int) {
+        if end-pin != 0 {
+            root.link-requested(root.internal-link-start-pin, end-pin);
+        } else {
+            root.link-dropped(
+                root.internal-link-start-pin,
+                (root.internal-link-end-x - root.pan-x) / root.zoom / 1px,
+                (root.internal-link-end-y - root.pan-y) / root.zoom / 1px);
+        }
+    }
+
+    /// Cancel link creation
+    public function cancel-link-creation() {
+        if root.internal-is-creating-link {
+            root.internal-is-creating-link = false;
+            root.link-cancelled();
+        }
+    }
+
+    /// Apply zoom with pan adjustment - takes calculated new zoom and mouse position graph coords
+    public function apply-zoom-with-adjustment(new-zoom: float, mouse-x: length, mouse-y: length, graph-x: float, graph-y: float) {
+        root.zoom = new-zoom;
+        root.pan-x = mouse-x - graph-x * new-zoom * 1px;
+        root.pan-y = mouse-y - graph-y * new-zoom * 1px;
+    }
+
+    /// Zoom sensitivity for scroll-to-zoom (higher = faster zoom)
+    in property <float> scroll-zoom-sensitivity: 0.002;
+
+    /// Handle scroll-to-zoom (Ctrl+scroll or pinch gesture)
+    /// delta-y: scroll amount (positive = zoom in, negative = zoom out)
+    /// mouse-x, mouse-y: screen coordinates to zoom toward
+    function handle-scroll-zoom(delta-y: length, mouse-x: length, mouse-y: length) {
+        // Convert scroll delta to zoom factor and apply zoom centered on mouse
+        // Calculate graph coordinates under mouse, then apply new zoom
+        root.apply-zoom-with-adjustment(
+            clamp(root.zoom * (1.0 + (delta-y / 1px) * root.scroll-zoom-sensitivity), root.min-zoom, root.max-zoom),
+            mouse-x,
+            mouse-y,
+            (mouse-x - root.pan-x) / root.zoom / 1px,
+            (mouse-y - root.pan-y) / root.zoom / 1px);
+    }
+
+    /// Report a click on a node. The application resolves the gesture against
+    /// its own selection state; nothing is decided here.
+    public function select-node(node-id: int, shift-held: bool) {
+        root.node-selected(node-id, shift-held);
+    }
+
+    /// Report a click on a group sheet.
+    public function select-group(group-id: int, shift-held: bool) {
+        root.group-selected(group-id, shift-held);
+    }
+
+    /// Report that the whole selection should be dropped.
+    public function clear-selection() {
+        root.selection-cleared();
+    }
+
+    /// Begin a marquee in screen coordinates. Selection changes are deferred
+    /// until commit so cancellation preserves the host's current selection.
+    function begin-box-selection(x: length, y: length, extends-selection: bool, forced: bool) {
+        root.internal-is-box-selecting = true;
+        root.internal-box-selection-forced = forced;
+        root.box-start-x = x;
+        root.box-start-y = y;
+        root.box-current-x = x;
+        root.box-current-y = y;
+        background-ta.box-select-extends = extends-selection;
+    }
+
+    function update-box-selection(x: length, y: length) {
+        if root.internal-is-box-selecting {
+            root.box-current-x = x;
+            root.box-current-y = y;
+        }
+    }
+
+    function finish-box-selection(x: length, y: length) {
+        if root.internal-is-box-selecting {
+            root.box-current-x = x;
+            root.box-current-y = y;
+            root.internal-is-box-selecting = false;
+            root.internal-box-selection-forced = false;
+            root.box-selection-committed(
+                (root.selection-x - root.pan-x) / root.zoom,
+                (root.selection-y - root.pan-y) / root.zoom,
+                root.selection-width / root.zoom,
+                root.selection-height / root.zoom,
+                background-ta.box-select-extends);
+        }
+    }
+
+    function apply-interaction-cancellation() {
+        root.last-applied-cancellation-version = InteractionCancellation.version;
+        root.internal-is-context-menu-dragging = false;
+        root.internal-is-panning = false;
+        root.internal-is-box-selecting = false;
+        root.internal-box-selection-forced = false;
+        root.cancel-link-creation();
+        LinkCreation.state = LinkCreationState.idle;
+        LinkCreation.start-pin-id = 0;
+        DragState.is-dragging = false;
+        DragState.dragged-node-id = 0;
+        DragState.dragged-group-id = 0;
+        DragState.drag-offset-x = 0px;
+        DragState.drag-offset-y = 0px;
+        BoxSelectionGesture.state = BoxSelectionGestureState.idle;
+        NodeEditorInternalCallbacks.cancel-node-drag();
+    }
+
+    /// Cancel every transient pointer interaction. Hosts should call this
+    /// before conditionally removing an editor; hiding or disabling it invokes
+    /// the same path automatically.
+    public function cancel-interactions() {
+        InteractionCancellation.version += 1;
+        root.apply-interaction-cancellation();
+    }
+
+    // === Trigger updates on viewport changes ===
+    changed pan-x => {
+        ViewportState.pan-x = root.pan-x;
+        GeometryVersion.version += 1;
+        NodeEditorComputations.viewport-changed(root.zoom, root.pan-x / 1px, root.pan-y / 1px);
+        NodeEditorComputations.request-grid-update();
+    }
+    changed pan-y => {
+        ViewportState.pan-y = root.pan-y;
+        GeometryVersion.version += 1;
+        NodeEditorComputations.viewport-changed(root.zoom, root.pan-x / 1px, root.pan-y / 1px);
+        NodeEditorComputations.request-grid-update();
+    }
+    changed zoom => {
+        ViewportState.zoom = root.zoom;
+        GeometryVersion.version += 1;
+        NodeEditorComputations.viewport-changed(root.zoom, root.pan-x / 1px, root.pan-y / 1px);
+        NodeEditorComputations.request-grid-update();
+    }
+    // DragState is synced by BaseNode directly (it initiates drags)
+    // Report both dimensions once after the current batch of size changes.
+    viewport-resize-timer := Timer {
+        interval: 0ms;
+        running: false;
+        triggered => {
+            self.stop();
+            NodeEditorComputations.viewport-resized(root.width / 1px, root.height / 1px);
+        }
+    }
+    changed width => {
+        viewport-resize-timer.start();
+        NodeEditorComputations.request-grid-update();
+    }
+    changed height => {
+        viewport-resize-timer.start();
+        NodeEditorComputations.request-grid-update();
+    }
+    changed grid-spacing => {
+        NodeEditorComputations.grid-spacing = root.grid-spacing;
+        NodeEditorComputations.configuration-changed(
+            root.grid-spacing / 1px, root.bezier-min-offset);
+        NodeEditorComputations.request-grid-update();
+    }
+    changed bezier-min-offset => {
+        NodeEditorComputations.bezier-min-offset = root.bezier-min-offset;
+        NodeEditorComputations.configuration-changed(
+            root.grid-spacing / 1px, root.bezier-min-offset);
+        GeometryVersion.version += 1;
+    }
+    changed box-selection-modifier => {
+        NodeEditorGestureConfig.box-selection-modifier = root.box-selection-modifier;
+    }
+    changed box-selection-on-empty => {
+        NodeEditorGestureConfig.box-selection-on-empty = root.box-selection-on-empty;
+    }
+    
+    // Watch LinkCreation global for pin-initiated link creation
+    property <int> link-creation-watch: LinkCreation.version;
+    changed link-creation-watch => {
+        if LinkCreation.state == LinkCreationState.started {
+            root.start-link-from-pin(LinkCreation.start-pin-id, LinkCreation.current-x, LinkCreation.current-y);
+        } else if LinkCreation.state == LinkCreationState.updating {
+            root.update-link-end(LinkCreation.current-x, LinkCreation.current-y);
+        } else if LinkCreation.state == LinkCreationState.complete {
+            root.complete-link-creation();
+            LinkCreation.state = LinkCreationState.idle;
+        } else {
+            root.cancel-link-creation();
+        }
+    }
+    
+    // Watch SelectionRequest global for node-initiated selection
+    property <int> selection-request-watch: SelectionRequest.version;
+    changed selection-request-watch => {
+        root.select-node(SelectionRequest.node-id, SelectionRequest.shift-held);
+    }
+
+    // Watch GroupSelectionRequest global for sheet-initiated selection
+    property <int> group-selection-request-watch: GroupSelectionRequest.version;
+    changed group-selection-request-watch => {
+        root.select-group(GroupSelectionRequest.group-id, GroupSelectionRequest.shift-held);
+    }
+
+    /// Call this after initial geometry has been reported to force link path recomputation.
+    public function refresh-links() {
+        GeometryVersion.version += 1;
+    }
+
+    // === Minimap Positioning ===
+    in property <length> minimap-size-width: 180px;
+    in property <length> minimap-size-height: 135px;
+    in property <length> minimap-margin: 24px;
+
+    pure function compute-minimap-x() -> length {
+        if (root.minimap-position == MinimapPosition.top-left || root.minimap-position == MinimapPosition.bottom-left) {
+            return root.minimap-margin;
+        } else {
+            return root.width - root.minimap-size-width - root.minimap-margin;
+        }
+    }
+
+    pure function compute-minimap-y() -> length {
+        if (root.minimap-position == MinimapPosition.top-left || root.minimap-position == MinimapPosition.top-right) {
+            return root.minimap-margin;
+        } else {
+            return root.height - root.minimap-size-height - root.minimap-margin;
+        }
+    }
+
+    // === Layer 1: Background with grid and input handling ===
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        background: root.background-color;
+        clip: false;  // Don't clip scaled content
+
+        // Grid
+        Path {
+            width: 100%;
+            height: 100%;
+            commands: root.grid-commands;
+            stroke: root.grid-color;
+            stroke-width: 1px;
+            fill: transparent;
+            viewbox-x: 0;
+            viewbox-y: 0;
+            viewbox-width: max(self.width / 1px, 1);
+            viewbox-height: max(self.height / 1px, 1);
+        }
+
+        // Pinch-to-zoom gesture handler (trackpad/touch)
+        // Placed before TouchArea so it captures gesture events first.
+        // While active, it grabs input and prevents pan/selection.
+        pinch-gesture := ScaleRotateGestureHandler {
+            enabled: root.pinch-zoom-enabled;
+
+            property <float> zoom-at-start: 1.0;
+            property <float> graph-center-x: 0;
+            property <float> graph-center-y: 0;
+
+            started => {
+                zoom-at-start = root.zoom;
+                graph-center-x = (self.center.x - root.pan-x) / root.zoom / 1px;
+                graph-center-y = (self.center.y - root.pan-y) / root.zoom / 1px;
+            }
+
+            updated => {
+                root.apply-zoom-with-adjustment(
+                    clamp(zoom-at-start * self.scale, root.min-zoom, root.max-zoom),
+                    self.center.x,
+                    self.center.y,
+                    graph-center-x,
+                    graph-center-y);
+            }
+        }
+
+        // Background TouchArea - handles pan, zoom, box selection, link clicks
+        background-ta := TouchArea {
+            width: 100%;
+            height: 100%;
+
+            // Cached link hit-test result to avoid redundant compute-link-at calls
+            property <int> link-at-cursor: -1;
+            // Shift state captured at marquee start — the release event that
+            // commits the box carries no modifiers of its own.
+            property <bool> box-select-extends: false;
+
+            scroll-event(event) => {
+                // Ctrl (or ⌘ on macOS) + scroll zooms, centered on the mouse — but
+                // only for a vertical-only gesture. A trackpad pinch/zoom arrives as
+                // an emulated Ctrl+scroll with delta-x ≈ 0, whereas a two-finger pan
+                // carries a real horizontal component. So a meaningful delta-x means
+                // "pan" regardless of the (possibly stale) Ctrl flag: macOS can swallow
+                // the Ctrl key-up on some hotkeys (e.g. Ctrl+Shift+Cmd+4 screenshots),
+                // which would otherwise leave the canvas stuck in zoom-only mode.
+                // ProxyDock: a plain vertical wheel zooms (centred on the mouse), like most node editors;
+                // Shift + wheel or a gesture with a horizontal part (a touchpad's two-finger pan) pans.
+                if abs(event.delta-x) < 1px && !event.modifiers.shift {
+                    root.handle-scroll-zoom(event.delta-y, self.mouse-x, self.mouse-y);
+                } else if event.modifiers.shift && abs(event.delta-x) < 1px {
+                    root.pan-x += event.delta-y;
+                } else {
+                    root.pan-x += event.delta-x;
+                    root.pan-y += event.delta-y;
+                }
+                accept
+            }
+
+            // A pointer leaving the canvas for a node drawn above it, or for
+            // outside the window, sends this area no move, so the wire it
+            // last hovered would stay hovered.
+            changed has-hover => {
+                if !self.has-hover {
+                    root.update-link-hover(-1);
+                }
+            }
+
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down {
+                    NodeEditorInternalCallbacks.take-editor-focus();
+                    if event.button == PointerEventButton.middle {
+                        // Start pan
+                        root.internal-is-panning = true;
+                        root.pan-start-mouse-x = self.mouse-x;
+                        root.pan-start-mouse-y = self.mouse-y;
+                        root.pan-start-offset-x = root.pan-x;
+                        root.pan-start-offset-y = root.pan-y;
+                    } else if event.button == PointerEventButton.left {
+                        // Cache link hit-test once per click
+                        link-at-cursor = root.has-link-selection
+                            ? root.compute-link-at(
+                                (self.mouse-x - root.pan-x) / root.zoom,
+                                (self.mouse-y - root.pan-y) / root.zoom)
+                            : -1;
+
+                        // Check if box selection should start:
+                        // - Modifier key forces box selection even over links
+                        // - Empty area allows box selection if box-selection-on-empty is true
+                        let modifier-forces-box-select = NodeEditorGestureConfig.forces-box-selection(
+                            event.modifiers.control,
+                            event.modifiers.alt,
+                            event.modifiers.shift,
+                            event.modifiers.meta);
+
+                        if modifier-forces-box-select || (root.box-selection-on-empty && link-at-cursor < 0) {
+                            root.begin-box-selection(
+                                self.mouse-x,
+                                self.mouse-y,
+                                event.modifiers.shift,
+                                modifier-forces-box-select);
+                        } else if link-at-cursor >= 0 {
+                            // Clicked on a link - select it
+                            root.select-link(link-at-cursor, event.modifiers.shift);
+                        }
+                    } else if event.button == PointerEventButton.right {
+                        root.context-menu-x = self.mouse-x;
+                        root.context-menu-y = self.mouse-y;
+                        root.internal-is-context-menu-dragging = true;
+                        root.context-menu-requested();
+                    }
+                }
+                if event.kind == PointerEventKind.up {
+                    if root.internal-is-context-menu-dragging && event.button == PointerEventButton.right {
+                        root.internal-is-context-menu-dragging = false;
+                        root.context-menu-released(self.mouse-x, self.mouse-y);
+                    }
+                    if root.internal-is-panning && event.button == PointerEventButton.middle {
+                        root.internal-is-panning = false;
+                    }
+                    if root.internal-is-box-selecting && event.button == PointerEventButton.left {
+                        root.finish-box-selection(self.mouse-x, self.mouse-y);
+                    }
+                    if root.internal-is-creating-link && event.button == PointerEventButton.left {
+                        root.complete-link-creation();
+                    }
+                }
+                if event.kind == PointerEventKind.cancel {
+                    root.cancel-interactions();
+                }
+                if event.kind == PointerEventKind.move {
+                    if root.internal-is-context-menu-dragging {
+                        root.context-menu-dragged(self.mouse-x, self.mouse-y);
+                    }
+                    // Link hover detection when not doing other interactions
+                    if root.has-link-selection && !root.internal-is-panning && !root.internal-is-box-selecting && !root.internal-is-creating-link {
+                        root.update-link-hover(root.compute-link-at((self.mouse-x - root.pan-x) / root.zoom, (self.mouse-y - root.pan-y) / root.zoom));
+                    }
+                }
+            }
+
+            moved => {
+                if root.internal-is-panning {
+                    root.pan-x = root.pan-start-offset-x + (self.mouse-x - root.pan-start-mouse-x);
+                    root.pan-y = root.pan-start-offset-y + (self.mouse-y - root.pan-start-mouse-y);
+                }
+                if root.internal-is-box-selecting {
+                    root.update-box-selection(self.mouse-x, self.mouse-y);
+                }
+                if root.internal-is-creating-link {
+                    root.update-link-end(self.mouse-x, self.mouse-y);
+                }
+            }
+        }
+    }
+
+    /// Update link hover state
+    public function update-link-hover(new-hovered: int) {
+        if new-hovered != root.hovered-link-id {
+            root.hovered-link-id = new-hovered;
+            root.link-hovered();
+        }
+    }
+
+    // === Edge fades (screen-space, between grid and world content) ===
+    if root.edge-fade-left-width > 0: Rectangle {
+        x: 0;
+        y: 0;
+        width: root.edge-fade-left-width;
+        height: root.height;
+        background: root.edge-fade-left;
+    }
+    if root.edge-fade-right-width > 0: Rectangle {
+        x: root.width - root.edge-fade-right-width;
+        y: 0;
+        width: root.edge-fade-right-width;
+        height: root.height;
+        background: root.edge-fade-right;
+    }
+
+    // === Layer 2: World Content (scaled) ===
+    // Container positioned at pan offset with transform-scale for zoom.
+    // Nodes use pure world coordinates (x: world-x, y: world-y).
+    // After transform: screen = pan + world * zoom ✓
+    world-content := Rectangle {
+        x: root.pan-x;
+        y: root.pan-y;
+        width: root.world-content-size;
+        height: root.world-content-size;
+        transform-origin: { x: 0, y: 0 };
+        transform-scale: root.zoom;
+        background: transparent;
+        clip: false;
+
+        // Group sheets first: below the links, so internal links stay visible,
+        // and below the nodes, so members win the press.
+        for group in root.groups: GroupSheet {
+            group-id: group.id;
+            title: group.title;
+            world-x: group.x;
+            world-y: group.y;
+            group-width: group.width;
+            group-height: group.height;
+            sheet-color: group.color;
+            selected: group.selected;
+            collapsed: group.collapsed;
+            lod-simplified-threshold: root.lod-simplified-threshold;
+        }
+
+        // Render links from `links` property
+        for link in root.links: Link {
+            // Bound once, read five times: every binding that named the
+            // callback would evaluate it again, and a GeometryVersion bump
+            // already re-evaluates every link in the graph.
+            geometry: NodeEditorComputations.compute-link-path(link.start-pin-id, link.end-pin-id, GeometryVersion.version);
+            link-color: LinkColor.of(link, root.link-accent-colors, root.dimmed-link-alpha);
+            line-width: link.line-width > 0 ? link.line-width * 1px : 2px;
+            selected: link.selected;
+            hovered: root.hovered-link-id == link.id;
+        }
+
+        // User-provided children (nodes)
+        @children
+    }
+
+    // === Layer 3: Overlays ===
+
+    // Selection box
+    Rectangle {
+        visible: root.is-selecting;
+        x: root.selection-x;
+        y: root.selection-y;
+        width: root.selection-width;
+        height: root.selection-height;
+        background: #4488ff20;
+        border-color: #4488ff;
+        border-width: 1px;
+    }
+
+    // Link preview
+    Path {
+        visible: root.is-creating-link;
+        width: 100%;
+        height: 100%;
+        commands: root.link-preview-path-commands;
+        stroke: #ffffff80;
+        stroke-width: 2px * root.zoom;
+        fill: transparent;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: max(self.width / 1px, 1);
+        viewbox-height: max(self.height / 1px, 1);
+    }
+
+    // === Minimap ===
+    if root.minimap-enabled: Minimap {
+        x: root.compute-minimap-x();
+        y: root.compute-minimap-y();
+        nodes: root.minimap-nodes;
+        nodes-path: root.minimap-nodes-path;
+        path-version: root.minimap-path-version;
+        viewport-x: root.pan-x;
+        viewport-y: root.pan-y;
+        viewport-zoom: root.zoom;
+        viewport-width: root.width;
+        viewport-height: root.height;
+        graph-min-x: root.graph-min-x;
+        graph-min-y: root.graph-min-y;
+        graph-max-x: root.graph-max-x;
+        graph-max-y: root.graph-max-y;
+        minimap-width: root.minimap-size-width;
+        minimap-height: root.minimap-size-height;
+
+        compute-nodes-path(version, scale, offset-x, offset-y) => {
+            root.compute-minimap-nodes-path(version, scale, offset-x, offset-y)
+        }
+
+        navigate-to(graph-x, graph-y) => {
+            root.pan-x = -graph-x * root.zoom + (root.width / 2);
+            root.pan-y = -graph-y * root.zoom + (root.height / 2);
+        }
+
+        update-pan(new-pan-x, new-pan-y) => {
+            root.pan-x = new-pan-x;
+            root.pan-y = new-pan-y;
+        }
+    }
+
+    // Enabled only while the configured modifier is held (or until a forced
+    // marquee releases). Its topmost position gives one owner the left-button
+    // gesture over links, consumer nodes, pins, and embedded controls. With no
+    // reserved modifier it is disabled, so normal child input is untouched.
+    forced-box-ta := TouchArea {
+        width: 100%;
+        height: 100%;
+        enabled: root.modifier-forces-box-select || root.internal-box-selection-forced;
+
+        scroll-event(_) => { return reject; }
+
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                NodeEditorInternalCallbacks.take-editor-focus();
+                if event.button == PointerEventButton.left {
+                    root.begin-box-selection(
+                        self.mouse-x,
+                        self.mouse-y,
+                        event.modifiers.shift,
+                        true);
+                } else if event.button == PointerEventButton.middle {
+                    root.internal-is-panning = true;
+                    root.pan-start-mouse-x = self.mouse-x;
+                    root.pan-start-mouse-y = self.mouse-y;
+                    root.pan-start-offset-x = root.pan-x;
+                    root.pan-start-offset-y = root.pan-y;
+                } else if event.button == PointerEventButton.right {
+                    root.context-menu-x = self.mouse-x;
+                    root.context-menu-y = self.mouse-y;
+                    root.internal-is-context-menu-dragging = true;
+                    root.context-menu-requested();
+                }
+            } else if event.kind == PointerEventKind.up {
+                if event.button == PointerEventButton.left {
+                    root.finish-box-selection(self.mouse-x, self.mouse-y);
+                } else if event.button == PointerEventButton.middle {
+                    root.internal-is-panning = false;
+                } else if event.button == PointerEventButton.right && root.internal-is-context-menu-dragging {
+                    root.internal-is-context-menu-dragging = false;
+                    root.context-menu-released(self.mouse-x, self.mouse-y);
+                }
+            } else if event.kind == PointerEventKind.cancel {
+                root.cancel-interactions();
+            } else if event.kind == PointerEventKind.move && root.internal-is-context-menu-dragging {
+                root.context-menu-dragged(self.mouse-x, self.mouse-y);
+            }
+        }
+
+        moved => {
+            if root.internal-is-panning {
+                root.pan-x = root.pan-start-offset-x + (self.mouse-x - root.pan-start-mouse-x);
+                root.pan-y = root.pan-start-offset-y + (self.mouse-y - root.pan-start-mouse-y);
+            }
+            root.update-box-selection(self.mouse-x, self.mouse-y);
+        }
+    }
+
+}

@@ -1,0 +1,58 @@
+# Contributing
+
+Use Slint 1.18.0 or newer and Rust 1.92 or newer. Applications
+choose their own backend and renderer; the library does not select one.
+
+Before submitting changes, run:
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --all-features --locked
+./smoke/run.sh packaged
+```
+
+The downstream fixture exercises the public @nodeeditor import and standard
+macros. Add interaction regressions there when changing consumer wiring; keep
+pure geometry and selection tests in the library. The `integration-tests`
+workspace package owns the UI fixture and resolves `@nodeeditor` through Cargo
+metadata. Run it alone with `cargo test -p node-editor-integration-tests`.
+Library builds do not compile this package or its UI. The standalone fixture can
+be formatted with `rustfmt --edition 2021 smoke/downstream/src/main.rs`.
+
+## Supported configurations and limitations
+
+Linux CI checks the workspace and the software-rendered downstream fixture.
+The workspace examples use Skia. macOS has local test coverage; Windows runtime
+behavior is not currently covered by CI. Do not interpret compilation as a
+platform accessibility or rendering certification.
+
+Only one editor per window is supported. Selection and document history belong
+to the host. Keyboard-only graph editing and structural accessibility remain
+incomplete. Example LOD is application code, not automatic virtualization.
+No large-graph frame-time guarantee is currently published. Hosts should offer
+reduced-motion controls when adopting animated-links in an application.
+
+## Compatibility and releases
+
+Starting with 1.0, breaking public API changes require a new major version and
+migration instructions in CHANGELOG.md. Prefer deprecation when an existing API
+can remain correct. Changes to callback ownership, units, IDs, and generated
+Slint types are API changes even if their Rust signatures are unchanged.
+
+Since 2.0, one change to generated Slint structs is not breaking: a new field
+whose default keeps the previous behaviour may arrive in a minor release.
+Construct structs such as `LinkData` and `GroupData` through their constructors
+or end a literal in `..Default::default()`; a literal naming every field is not
+covered by this compatibility promise. Renaming or removing a field, changing
+its meaning, or adding one whose default changes behaviour still requires a
+major version. The generated `Inner*` globals and `SharedGlobals` are
+implementation details of Slint's code generator, not API.
+
+Run the Release verification workflow on the intended release commit before
+publishing. It checks the real archive, downstream interaction, minimum Rust
+version, and publication dry run. Included-files smoke success alone is not a
+release gate. See docs/crates-io-release-plan.md for the release checklist.
+
+For uncommitted release preparation, `./smoke/run.sh packaged --allow-dirty`
+verifies the working tree. Repeat without that option on the release commit.

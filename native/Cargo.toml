@@ -12,8 +12,20 @@ edition = "2024"
 license = "GPL-3.0-or-later"
 publish = false
 
+# debug builds: our code lightly optimised, the dependencies (Slint, Skia, ...) fully: a usable debug window
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
 strip = true
 panic = "abort"
+
+# slint-node-editor 2.0.0 (MIT OR Apache-2.0, KDAB) with one change: a plain mouse wheel zooms the canvas
+# (upstream zooms with Ctrl + wheel and pans with the wheel). See vendor/slint-node-editor/node-editor.slint.
+[patch.crates-io]
+slint-node-editor = { path = "vendor/slint-node-editor" }

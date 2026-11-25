@@ -31,7 +31,7 @@ def main():
             if any(k["kind"] in (None, "normal") for k in d["dep_kinds"]):
                 todo.append(d["pkg"])
     rows = sorted((pkgs[i]["name"], pkgs[i]["version"], pkgs[i].get("license") or "see the crate", pkgs[i].get("repository") or "")
-                  for i in seen if pkgs[i]["source"] is not None)
+                  for i in seen if i not in meta["workspace_members"])
     lines = [
         "ProxyDock (Rust app) is built from these Rust crates, each under the licence shown (SPDX).",
         "Their full texts are in each crate's source (crates.io) and repository.",

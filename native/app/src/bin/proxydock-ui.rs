@@ -725,10 +725,15 @@ fn labels(app: &App) {
 }
 
 fn main() -> Result<(), slint::PlatformError> {
-    // Slint draws its own context menus; the software renderer keeps the GPU driver out of this process
+    // Slint draws its own context menus
     unsafe { std::env::set_var("SLINT_NO_MUDA", "1") };
+    // Skia on the GPU: the CPU renderer redraws every pixel of the canvas on each pan or zoom, which gets slow
+    // on large windows (measured: 59 ms a frame at 1900x1100). The CPU renderer stays as the fallback.
     if std::env::var_os("SLINT_BACKEND").is_none() {
-        let _ = slint::BackendSelector::new().backend_name("winit".into()).renderer_name("software".into()).select();
+        let gpu = slint::BackendSelector::new().backend_name("winit".into()).renderer_name("skia".into()).select();
+        if gpu.is_err() {
+            let _ = slint::BackendSelector::new().backend_name("winit".into()).renderer_name("software".into()).select();
+        }
     }
     let Some((port, token)) = std::env::var(ipc::ENV).ok().and_then(|v| {
         let mut it = v.split_whitespace();
@@ -1127,13 +1132,27 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
-    // the core's events, read on a thread and applied on the UI thread
+    // the core's events, read on a thread and applied on the UI thread in batches: everything that arrived
+    // since the last update is applied at once (a burst of log lines is one model change and one redraw)
     let weak = app.as_weak();
     std::thread::spawn(move || {
+        let queue: Arc<Mutex<Vec<Value>>> = Arc::default();
         for v in ipc::messages(stream) {
+            let first = {
+                let mut q = queue.lock().unwrap();
+                q.push(v);
+                q.len() == 1
+            };
+            if !first {
+                // an update is already on its way and takes this one too
+                continue;
+            }
             let weak = weak.clone();
+            let queue = queue.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 let Some(app) = weak.upgrade() else { return };
+                let batch = std::mem::take(&mut *queue.lock().unwrap());
+                for v in batch {
                 MODELS.with(|m| {
                     let Some(m) = m.borrow().clone() else { return };
                     match v["ev"].as_str().unwrap_or("") {
@@ -1268,6 +1287,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     }
                     app.set_log_count(m.logs.row_count() as i32);
                 });
+                }
             });
         }
         // the core quit (or crashed): nothing left to show

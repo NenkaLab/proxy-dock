@@ -42,34 +42,42 @@ fn tray_message(text: &str) {
     unsafe { Shell_NotifyIconW(NIM_MODIFY, &nid) };
 }
 
-/// 32x32 RGBA: blue rounded square with three white boxes on a dock, like make_icon() in proxydock/ui/common.py
+/// 32x32 RGBA of the app icon (icon.svg at the project root: a blue square, three bars on a dock),
+/// drawn with anti-aliasing
 fn icon_rgba() -> Vec<u8> {
-    let s = 32i32;
-    let inside = |x: i32, y: i32, x0: i32, y0: i32, x1: i32, y1: i32, r: i32| {
-        if x < x0 || y < y0 || x >= x1 || y >= y1 {
-            return false;
-        }
-        let cx = x.clamp(x0 + r, x1 - 1 - r);
-        let cy = y.clamp(y0 + r, y1 - 1 - r);
-        (x - cx).pow(2) + (y - cy).pow(2) <= r * r
+    use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Rect, Transform};
+    const SIZE: u32 = 32;
+    // icon.svg is 163 units wide
+    let k = SIZE as f32 / 163.0;
+    let rounded = |x: f32, y: f32, w: f32, h: f32, r: f32| {
+        // a rounded rectangle (cubic corners)
+        let c = r * 0.552_284_8;
+        let mut pb = PathBuilder::new();
+        pb.move_to(x + r, y);
+        pb.line_to(x + w - r, y);
+        pb.cubic_to(x + w - r + c, y, x + w, y + r - c, x + w, y + r);
+        pb.line_to(x + w, y + h - r);
+        pb.cubic_to(x + w, y + h - r + c, x + w - r + c, y + h, x + w - r, y + h);
+        pb.line_to(x + r, y + h);
+        pb.cubic_to(x + r - c, y + h, x, y + h - r + c, x, y + h - r);
+        pb.line_to(x, y + r);
+        pb.cubic_to(x, y + r - c, x + r - c, y, x + r, y);
+        pb.close();
+        pb.finish()
     };
-    let mut out = Vec::with_capacity((s * s * 4) as usize);
-    for y in 0..s {
-        for x in 0..s {
-            let white = inside(x, y, 6, 21, 26, 24, 1)
-                || inside(x, y, 8, 13, 12, 20, 1)
-                || inside(x, y, 14, 9, 18, 20, 1)
-                || inside(x, y, 20, 12, 24, 20, 1);
-            out.extend_from_slice(&if white {
-                [255, 255, 255, 255]
-            } else if inside(x, y, 2, 2, 30, 30, 7) {
-                [0, 120, 212, 255]
-            } else {
-                [0, 0, 0, 0]
-            });
+    let mut pm = Pixmap::new(SIZE, SIZE).unwrap();
+    let mut paint = Paint::default();
+    paint.anti_alias = true;
+    paint.set_color_rgba8(0x00, 0x78, 0xD4, 255);
+    pm.fill_rect(Rect::from_xywh(0.0, 0.0, SIZE as f32, SIZE as f32).unwrap(), &paint, Transform::identity(), None);
+    paint.set_color_rgba8(0xD9, 0xD9, 0xD9, 255);
+    for (x, y, w, h) in [(24.0, 106.0, 116.0, 20.0), (104.0, 65.0, 20.0, 35.0), (72.0, 49.0, 20.0, 51.0), (40.0, 37.0, 20.0, 63.0)] {
+        if let Some(path) = rounded(x * k, y * k, w * k, h * k, 6.0 * k) {
+            pm.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
         }
     }
-    out
+    // (every pixel is opaque: premultiplied and straight alpha are the same)
+    pm.take()
 }
 
 /// Bring the first visible top-level window of process `pid` to the front. True if one was found.

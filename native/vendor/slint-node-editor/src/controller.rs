@@ -1,0 +1,1022 @@
+//! High-level controller for node editor applications.
+//!
+//! The [`NodeEditorController`] reduces boilerplate by managing geometry tracking,
+//! link path computation, and viewport state in one place.
+//!
+//! # Standard integration
+//!
+//! Construct a [`crate::NodeEditorSetup`] and pass it to
+//! [`crate::wire_node_editor!`]. The macro installs this controller's geometry,
+//! computation, viewport and grid handlers on the generated Slint globals. Its
+//! callback replacement rules and required generated members are documented in
+//! the crate README. The repository's
+//! [compiled quick start](https://github.com/tilladam/slint-node-editor/tree/main/smoke/downstream)
+//! demonstrates model-owned selection, movement, connection and deletion.
+
+use crate::hit_test::{NodeGeometry, SimpleLinkGeometry};
+use crate::state::GeometryCache;
+use slint::SharedString;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
+
+/// Viewport and configuration state, behind a single `Rc<RefCell<_>>`.
+///
+/// The geometry cache is kept separate (its own `Rc<RefCell<_>>`) because
+/// it is exposed to callers via [`NodeEditorController::cache()`].
+struct ViewportState {
+    zoom: f32,
+    pan_x: f32,
+    pan_y: f32,
+    bezier_offset: f32,
+    dragged_node_id: i32,
+    dragged_group_id: i32,
+    grid_spacing: f32,
+    /// Links registered for hit testing, keyed by link ID.
+    links: HashMap<i32, (i32, i32)>,
+}
+
+impl ViewportState {
+    fn new() -> Self {
+        Self {
+            zoom: 1.0,
+            pan_x: 0.0,
+            pan_y: 0.0,
+            bezier_offset: 50.0,
+            dragged_node_id: 0,
+            dragged_group_id: 0,
+            grid_spacing: 24.0,
+            links: HashMap::new(),
+        }
+    }
+
+    /// Clamp zoom to a safe positive value.
+    fn safe_zoom(&self) -> f32 {
+        if self.zoom.is_finite() && self.zoom > 0.0 {
+            self.zoom
+        } else {
+            1.0
+        }
+    }
+}
+
+/// Controller that manages node editor state and provides callback implementations.
+///
+/// This provides a high-level API that handles:
+/// - Geometry caching (node rects, pin positions) in **world space**
+/// - Link path computation (world→screen conversion done internally)
+/// - Hit testing facades (screen-space input, world-space internals)
+/// - Viewport/zoom/pan tracking
+/// - Drag tracking
+///
+/// The cache stores node rects in world coordinates, which are invariant to
+/// zoom/pan changes. This eliminates the O(N) viewport resync loop that was
+/// previously needed when zoom or pan changed.
+///
+/// Clone this controller to share it across callbacks.
+#[derive(Clone)]
+pub struct NodeEditorController {
+    cache: Rc<RefCell<GeometryCache>>,
+    state: Rc<RefCell<ViewportState>>,
+}
+
+impl Default for NodeEditorController {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl NodeEditorController {
+    /// Create a new controller with default settings.
+    pub fn new() -> Self {
+        Self {
+            cache: Rc::new(RefCell::new(GeometryCache::new())),
+            state: Rc::new(RefCell::new(ViewportState::new())),
+        }
+    }
+
+    /// Set the bezier curve offset for link paths (default: 50.0).
+    pub fn set_bezier_offset(&self, offset: f32) {
+        self.state.borrow_mut().bezier_offset = offset;
+    }
+
+    /// Get the bezier curve offset used for rendered link paths.
+    pub fn bezier_offset(&self) -> f32 {
+        self.state.borrow().bezier_offset
+    }
+
+    /// Set the grid spacing (default: 24.0).
+    pub fn set_grid_spacing(&self, spacing: f32) {
+        self.state.borrow_mut().grid_spacing = spacing;
+    }
+
+    /// Get the grid spacing used by grid generation.
+    pub fn grid_spacing(&self) -> f32 {
+        self.state.borrow().grid_spacing
+    }
+
+    /// Get the current zoom level.
+    pub fn zoom(&self) -> f32 {
+        self.state.borrow().zoom
+    }
+
+    /// Convert a screen-space distance in pixels to world-space units.
+    pub fn screen_distance_to_world(&self, screen_distance: f32) -> f32 {
+        screen_distance / self.state.borrow().safe_zoom()
+    }
+
+    /// Get access to the geometry cache.
+    pub fn cache(&self) -> Rc<RefCell<GeometryCache>> {
+        self.cache.clone()
+    }
+
+    /// Get the ID of the node currently being dragged (0 if none).
+    pub fn dragged_node_id(&self) -> i32 {
+        self.state.borrow().dragged_node_id
+    }
+
+    /// Get the ID of the group whose sheet is being dragged (0 if none).
+    pub fn dragged_group_id(&self) -> i32 {
+        self.state.borrow().dragged_group_id
+    }
+
+    // === Callback factories ===
+
+    /// Returns a callback for `compute-link-path`.
+    ///
+    /// Computes bezier paths for use inside a scaled container at origin.
+    /// Positions are calculated so that after transform-scale, links appear at correct screen position.
+    ///
+    /// `make_path` receives box-relative commands and the box, and builds the
+    /// `LinkPath` the callback expects — see
+    /// [`CubicBezier::to_link_path`](crate::path::CubicBezier::to_link_path)
+    /// for why the type is not named here. A link whose pins are not in the
+    /// cache yet yields `T::default()`, an empty path at the origin.
+    pub fn compute_link_path_callback<T: Default>(
+        &self,
+        make_path: impl Fn(String, f32, f32, f32, f32) -> T,
+    ) -> impl Fn(i32, i32, i32) -> T {
+        let cache = self.cache.clone();
+        let state = self.state.clone();
+        move |start_pin, end_pin, _version| {
+            let s = state.borrow();
+            match cache
+                .borrow()
+                .link_curve_world(start_pin, end_pin, s.bezier_offset)
+            {
+                Some(curve) => curve.to_link_path(&make_path),
+                None => T::default(),
+            }
+        }
+    }
+
+    /// Returns a callback for `node-drag-started`.
+    pub fn node_drag_started_callback(&self) -> impl Fn(i32) {
+        let state = self.state.clone();
+        move |node_id| {
+            state.borrow_mut().dragged_node_id = node_id;
+        }
+    }
+
+    // === Direct handlers ===
+
+    /// Update cached node rectangle (world coordinates).
+    pub fn handle_node_rect(&self, id: i32, x: f32, y: f32, w: f32, h: f32) {
+        self.cache
+            .borrow_mut()
+            .handle_node_rect_report(id, x, y, w, h);
+    }
+
+    /// Handle a world-space pin geometry report by updating the cache.
+    ///
+    /// The Slint `Pin` component reports `rel_x`/`rel_y` as **world-space**
+    /// offsets relative to the node origin. The Pin component divides by zoom
+    /// internally (`center-x: (self.x + self.width / 2) / zoom`), so the
+    /// values received here are already zoom-invariant.
+    pub fn handle_pin_position(&self, pid: i32, nid: i32, ptype: i32, x: f32, y: f32) {
+        self.cache
+            .borrow_mut()
+            .handle_pin_report(pid, nid, ptype, x, y);
+    }
+
+    /// Update cached pin geometry and its pin-picking eligibility.
+    pub fn handle_pin_position_with_hit_testable(
+        &self,
+        pid: i32,
+        nid: i32,
+        ptype: i32,
+        x: f32,
+        y: f32,
+        hit_testable: bool,
+    ) {
+        self.cache.borrow_mut().handle_pin_report_with_hit_testable(
+            pid,
+            nid,
+            ptype,
+            x,
+            y,
+            hit_testable,
+        );
+    }
+
+    /// Seed a node's world-space rect directly, bypassing screen→world conversion.
+    ///
+    /// Use this to pre-populate the geometry cache for nodes that haven't been
+    /// rendered by Slint yet (e.g. off-screen nodes whose link endpoints are
+    /// visible). The coordinates must be in world space. Direct seeding bypasses
+    /// the component geometry-reporting lifecycle; after seeding a batch, call
+    /// `NodeEditor.refresh-links()` once to invalidate existing route bindings.
+    pub fn seed_node_world_rect(&self, id: i32, x: f32, y: f32, w: f32, h: f32) {
+        self.cache
+            .borrow_mut()
+            .handle_node_rect_report(id, x, y, w, h);
+    }
+
+    /// Handle node-drag-started: track the dragged node.
+    pub fn handle_node_drag_started(&self, node_id: i32) {
+        let mut s = self.state.borrow_mut();
+        s.dragged_node_id = node_id;
+        s.dragged_group_id = 0;
+    }
+
+    /// Handle start-group-drag: track the dragged sheet.
+    pub fn handle_group_drag_started(&self, group_id: i32) {
+        let mut s = self.state.borrow_mut();
+        s.dragged_group_id = group_id;
+        s.dragged_node_id = 0;
+    }
+
+    /// Clear controller state after a node or group drag ends or is cancelled.
+    pub fn handle_node_drag_finished(&self) {
+        let mut s = self.state.borrow_mut();
+        s.dragged_node_id = 0;
+        s.dragged_group_id = 0;
+    }
+
+    /// Update a group sheet's displayed rectangle (world coordinates).
+    pub fn handle_group_rect(&self, id: i32, x: f32, y: f32, w: f32, h: f32) {
+        self.cache.borrow_mut().update_group_rect(id, x, y, w, h);
+    }
+
+    /// Retire a group sheet's rectangle and any drag of it.
+    pub fn remove_group(&self, group_id: i32) -> bool {
+        let removed = self.cache.borrow_mut().remove_group(group_id);
+        let mut state = self.state.borrow_mut();
+        if state.dragged_group_id == group_id {
+            state.dragged_group_id = 0;
+        }
+        removed
+    }
+
+    /// Record that a node is hidden (by a collapsed group) or visible again.
+    pub fn set_node_hidden(&self, node_id: i32, hidden: bool) {
+        self.cache.borrow_mut().set_node_hidden(node_id, hidden);
+    }
+
+    /// Set the zoom level (called from update-viewport).
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use set_viewport() which also updates pan state"
+    )]
+    pub fn set_zoom(&self, zoom: f32) {
+        if zoom.is_finite() && zoom > 0.0 {
+            self.state.borrow_mut().zoom = zoom;
+        }
+    }
+
+    /// Set viewport state: zoom, pan_x, pan_y.
+    /// Invalid updates (nonfinite values or nonpositive zoom) are ignored atomically.
+    ///
+    /// Since the cache stores world-space coordinates, changing zoom/pan
+    /// requires no per-node updates.
+    pub fn set_viewport(&self, zoom: f32, pan_x: f32, pan_y: f32) {
+        if !zoom.is_finite() || zoom <= 0.0 || !pan_x.is_finite() || !pan_y.is_finite() {
+            return;
+        }
+        let mut s = self.state.borrow_mut();
+        s.zoom = zoom;
+        s.pan_x = pan_x;
+        s.pan_y = pan_y;
+    }
+
+    /// Register a link for hit testing. Idempotent: re-registering the same ID
+    /// updates the pin pair.
+    pub fn register_link(&self, id: i32, start_pin: i32, end_pin: i32) {
+        self.state
+            .borrow_mut()
+            .links
+            .insert(id, (start_pin, end_pin));
+    }
+
+    /// Unregister a link by ID.
+    pub fn unregister_link(&self, id: i32) {
+        self.state.borrow_mut().links.remove(&id);
+    }
+
+    /// Clear all registered links.
+    pub fn clear_links(&self) {
+        self.state.borrow_mut().links.clear();
+    }
+
+    /// Remove a pin and any registered hit-test links incident on it.
+    pub fn remove_pin(&self, pin_id: i32) -> bool {
+        let removed = self.cache.borrow_mut().remove_pin(pin_id);
+        self.state
+            .borrow_mut()
+            .links
+            .retain(|_, pins| pins.0 != pin_id && pins.1 != pin_id);
+        removed
+    }
+
+    /// Remove a node, its pins, and registered hit-test links using those pins.
+    pub fn remove_node(&self, node_id: i32) -> Vec<i32> {
+        let removed_pins = self.cache.borrow_mut().remove_node(node_id);
+        let removed_pin_set: HashSet<_> = removed_pins.iter().copied().collect();
+        let mut state = self.state.borrow_mut();
+        state.links.retain(|_, pins| {
+            !removed_pin_set.contains(&pins.0) && !removed_pin_set.contains(&pins.1)
+        });
+        if state.dragged_node_id == node_id {
+            state.dragged_node_id = 0;
+        }
+        removed_pins
+    }
+
+    /// Reset geometry and controller-owned topology for a graph switch.
+    pub fn reset_graph(&self) {
+        self.cache.borrow_mut().clear();
+        let mut state = self.state.borrow_mut();
+        state.links.clear();
+        state.dragged_node_id = 0;
+        state.dragged_group_id = 0;
+    }
+
+    /// Clear only the geometry cache (node rects and pin positions).
+    ///
+    /// Use [`Self::reset_graph`] when switching graphs so registered hit-test
+    /// links and drag state are retired as well.
+    pub fn clear_geometry(&self) {
+        self.cache.borrow_mut().clear();
+    }
+
+    /// Compute link path for given pins (screen-space output from world-space cache).
+    pub fn compute_link_path(&self, start_pin: i32, end_pin: i32) -> SharedString {
+        let s = self.state.borrow();
+        self.cache
+            .borrow()
+            .compute_link_path_screen(
+                start_pin,
+                end_pin,
+                s.zoom,
+                s.pan_x,
+                s.pan_y,
+                s.bezier_offset,
+            )
+            .unwrap_or_default()
+            .into()
+    }
+
+    /// Generate grid commands for current viewport.
+    pub fn generate_grid(&self, width: f32, height: f32, pan_x: f32, pan_y: f32) -> SharedString {
+        let s = self.state.borrow();
+        crate::generate_grid_commands(width, height, s.zoom, pan_x, pan_y, s.grid_spacing).into()
+    }
+
+    /// Generate grid commands from the controller's current viewport and spacing.
+    pub fn generate_current_grid(&self, width: f32, height: f32) -> SharedString {
+        let s = self.state.borrow();
+        crate::generate_grid_commands(width, height, s.zoom, s.pan_x, s.pan_y, s.grid_spacing)
+            .into()
+    }
+
+    /// Generate initial grid commands (zoom=1, pan=0).
+    pub fn generate_initial_grid(&self, width: f32, height: f32) -> SharedString {
+        let spacing = self.state.borrow().grid_spacing;
+        crate::generate_grid_commands(width, height, 1.0, 0.0, 0.0, spacing).into()
+    }
+
+    // === Hit-testing facades ===
+
+    /// Find the link closest to the given world-space position.
+    ///
+    /// Returns the link ID, or -1 if no link is within
+    /// `world_hover_distance`. The route is the same zoom-independent world
+    /// curve produced by the standard renderer callback.
+    pub fn find_link_at_world(
+        &self,
+        world_x: f32,
+        world_y: f32,
+        world_hover_distance: f32,
+        bezier_min_offset: f32,
+        hit_samples: usize,
+    ) -> i32 {
+        let s = self.state.borrow();
+        let cache = self.cache.borrow();
+        let links = s
+            .links
+            .iter()
+            .map(|(&id, &(start_pin, end_pin))| (id, start_pin, end_pin));
+        cache.find_bezier_link_at_world(
+            world_x,
+            world_y,
+            links,
+            world_hover_distance,
+            bezier_min_offset,
+            hit_samples,
+        )
+    }
+
+    /// Find the link closest to the given screen-space position.
+    ///
+    /// Returns the link ID, or -1 if no link is within the screen-pixel
+    /// `screen_hover_distance`. Converts the point and tolerance to world space
+    /// once, then tests the same world curve used for rendering.
+    pub fn find_link_at_screen(
+        &self,
+        mouse_x: f32,
+        mouse_y: f32,
+        screen_hover_distance: f32,
+        bezier_min_offset: f32,
+        hit_samples: usize,
+    ) -> i32 {
+        let s = self.state.borrow();
+        let zoom = s.safe_zoom();
+        let pan_x = s.pan_x;
+        let pan_y = s.pan_y;
+        drop(s);
+
+        let world_x = (mouse_x - pan_x) / zoom;
+        let world_y = (mouse_y - pan_y) / zoom;
+        let world_hover_distance = screen_hover_distance / zoom;
+        self.find_link_at_world(
+            world_x,
+            world_y,
+            world_hover_distance,
+            bezier_min_offset,
+            hit_samples,
+        )
+    }
+
+    /// Find the pin closest to the given screen-space position.
+    ///
+    /// Returns the nearest hit-testable pin ID, or 0 if no pin is within
+    /// `hit_radius`. Exact distance ties choose the lowest pin ID.
+    pub fn find_pin_at_screen(&self, mouse_x: f32, mouse_y: f32, hit_radius: f32) -> i32 {
+        let s = self.state.borrow();
+        let zoom = s.safe_zoom();
+        let pan_x = s.pan_x;
+        let pan_y = s.pan_y;
+        drop(s);
+        let cache = self.cache.borrow();
+
+        let pins = cache.get_absolute_pins().map(|pin| {
+            // World→screen: pin_world * zoom + pan
+            let sx = pin.x * zoom + pan_x;
+            let sy = pin.y * zoom + pan_y;
+            crate::hit_test::SimplePinGeometry {
+                id: pin.id,
+                x: sx,
+                y: sy,
+            }
+        });
+
+        crate::hit_test::find_pin_at(mouse_x, mouse_y, pins, hit_radius)
+    }
+
+    /// Find all nodes whose world-space rect intersects the given screen-space selection box.
+    ///
+    /// Converts the selection box from screen→world and performs AABB intersection.
+    pub fn nodes_in_selection_box_screen(&self, sx: f32, sy: f32, sw: f32, sh: f32) -> Vec<i32> {
+        let s = self.state.borrow();
+        let z = s.safe_zoom();
+        let world_x = (sx - s.pan_x) / z;
+        let world_y = (sy - s.pan_y) / z;
+        let world_w = sw / z;
+        let world_h = sh / z;
+        drop(s);
+
+        self.cache
+            .borrow()
+            .nodes_in_selection_box(world_x, world_y, world_w, world_h)
+    }
+
+    /// Find all links that have at least one endpoint inside the given world-space selection box.
+    pub fn links_in_selection_box_world(
+        &self,
+        world_x: f32,
+        world_y: f32,
+        world_w: f32,
+        world_h: f32,
+    ) -> Vec<i32> {
+        let s = self.state.borrow();
+        let cache = self.cache.borrow();
+
+        // Compute world-space link endpoints: node_world + pin_rel
+        let link_geometries = s.links.iter().filter_map(|(&id, &(start_pin, end_pin))| {
+            let start_pos = cache.pin_positions.get(&start_pin)?;
+            let end_pos = cache.pin_positions.get(&end_pin)?;
+            let start_rect = cache.node_rects.get(&start_pos.node_id)?.rect();
+            let end_rect = cache.node_rects.get(&end_pos.node_id)?.rect();
+
+            Some(SimpleLinkGeometry {
+                id,
+                start_x: start_rect.0 + start_pos.rel_x,
+                start_y: start_rect.1 + start_pos.rel_y,
+                end_x: end_rect.0 + end_pos.rel_x,
+                end_y: end_rect.1 + end_pos.rel_y,
+            })
+        });
+
+        crate::hit_test::links_in_selection_box(world_x, world_y, world_w, world_h, link_geometries)
+    }
+
+    /// Find all links that have at least one endpoint inside the given screen-space selection box.
+    ///
+    /// Converts the box from screen→world and delegates to [`links_in_selection_box_world`](Self::links_in_selection_box_world).
+    pub fn links_in_selection_box_screen(&self, sx: f32, sy: f32, sw: f32, sh: f32) -> Vec<i32> {
+        let s = self.state.borrow();
+        let z = s.safe_zoom();
+        let world_x = (sx - s.pan_x) / z;
+        let world_y = (sy - s.pan_y) / z;
+        let world_w = sw / z;
+        let world_h = sh / z;
+        drop(s);
+
+        self.links_in_selection_box_world(world_x, world_y, world_w, world_h)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[allow(deprecated)]
+    use super::*;
+    use crate::hit_test::NodeGeometry;
+
+    /// Helper: set up a controller with two nodes and pins, suitable for hit testing.
+    fn setup_controller() -> NodeEditorController {
+        let ctrl = NodeEditorController::new();
+        ctrl.set_viewport(1.0, 0.0, 0.0);
+
+        {
+            let mut cache = ctrl.cache.borrow_mut();
+            // Node 1 at world (0, 0), 100x50
+            cache.handle_node_rect_report(1, 0.0, 0.0, 100.0, 50.0);
+            // Node 2 at world (200, 100), 100x50
+            cache.handle_node_rect_report(2, 200.0, 100.0, 100.0, 50.0);
+            // Pin 1001: output on node 1 at world-relative (100, 25)
+            cache.handle_pin_report(1001, 1, 2, 100.0, 25.0);
+            // Pin 2001: input on node 2 at world-relative (0, 25)
+            cache.handle_pin_report(2001, 2, 1, 0.0, 25.0);
+        }
+
+        // Register a link between the pins
+        ctrl.register_link(1, 1001, 2001);
+        ctrl
+    }
+
+    fn setup_controller_with_link(start: (f32, f32), end: (f32, f32)) -> NodeEditorController {
+        let ctrl = NodeEditorController::new();
+        ctrl.handle_node_rect(1, start.0, start.1, 1.0, 1.0);
+        ctrl.handle_node_rect(2, end.0, end.1, 1.0, 1.0);
+        ctrl.handle_pin_position(1, 1, 2, 0.0, 0.0);
+        ctrl.handle_pin_position(2, 2, 1, 0.0, 0.0);
+        ctrl.register_link(7, 1, 2);
+        ctrl
+    }
+
+    // ========================================================================
+    // Construction and basic accessors
+    // ========================================================================
+
+    #[test]
+    fn test_new_defaults() {
+        let ctrl = NodeEditorController::new();
+        assert_eq!(ctrl.zoom(), 1.0);
+        assert_eq!(ctrl.dragged_node_id(), 0);
+    }
+
+    #[test]
+    fn test_set_viewport() {
+        let ctrl = NodeEditorController::new();
+        ctrl.set_viewport(2.0, 10.0, 20.0);
+        assert_eq!(ctrl.zoom(), 2.0);
+        let s = ctrl.state.borrow();
+        assert_eq!(s.pan_x, 10.0);
+        assert_eq!(s.pan_y, 20.0);
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn test_set_zoom_deprecated_still_works() {
+        let ctrl = NodeEditorController::new();
+        ctrl.set_zoom(3.0);
+        assert_eq!(ctrl.zoom(), 3.0);
+    }
+
+    // ========================================================================
+    // Link registration (HashMap-based, idempotent)
+    // ========================================================================
+
+    #[test]
+    fn test_register_link_idempotent() {
+        let ctrl = NodeEditorController::new();
+        ctrl.register_link(1, 100, 200);
+        ctrl.register_link(1, 100, 200); // duplicate
+        assert_eq!(ctrl.state.borrow().links.len(), 1);
+    }
+
+    #[test]
+    fn test_register_link_updates_pins() {
+        let ctrl = NodeEditorController::new();
+        ctrl.register_link(1, 100, 200);
+        ctrl.register_link(1, 300, 400); // same ID, different pins
+        let s = ctrl.state.borrow();
+        assert_eq!(s.links.get(&1), Some(&(300, 400)));
+    }
+
+    #[test]
+    fn test_unregister_link() {
+        let ctrl = NodeEditorController::new();
+        ctrl.register_link(1, 100, 200);
+        ctrl.unregister_link(1);
+        assert!(ctrl.state.borrow().links.is_empty());
+    }
+
+    #[test]
+    fn test_clear_links() {
+        let ctrl = NodeEditorController::new();
+        ctrl.register_link(1, 100, 200);
+        ctrl.register_link(2, 300, 400);
+        ctrl.clear_links();
+        assert!(ctrl.state.borrow().links.is_empty());
+    }
+
+    #[test]
+    fn remove_pin_prunes_registered_links() {
+        let ctrl = setup_controller();
+
+        assert!(ctrl.remove_pin(1001));
+
+        assert!(!ctrl.cache.borrow().pin_positions.contains_key(&1001));
+        assert!(ctrl.state.borrow().links.is_empty());
+    }
+
+    #[test]
+    fn remove_node_cascades_geometry_links_and_drag_state() {
+        let ctrl = setup_controller();
+        ctrl.handle_node_drag_started(1);
+
+        assert_eq!(ctrl.remove_node(1), vec![1001]);
+
+        assert!(!ctrl.cache.borrow().node_rects.contains_key(&1));
+        assert!(!ctrl.cache.borrow().pin_positions.contains_key(&1001));
+        assert!(ctrl.state.borrow().links.is_empty());
+        assert_eq!(ctrl.dragged_node_id(), 0);
+    }
+
+    #[test]
+    fn reset_graph_clears_geometry_topology_and_drag_state() {
+        let ctrl = setup_controller();
+        ctrl.handle_node_drag_started(1);
+
+        ctrl.reset_graph();
+
+        assert!(ctrl.cache.borrow().node_rects.is_empty());
+        assert!(ctrl.cache.borrow().pin_positions.is_empty());
+        assert!(ctrl.state.borrow().links.is_empty());
+        assert_eq!(ctrl.dragged_node_id(), 0);
+    }
+
+    #[test]
+    fn finishing_drag_clears_drag_state() {
+        let ctrl = NodeEditorController::new();
+        ctrl.handle_node_drag_started(1);
+
+        ctrl.handle_node_drag_finished();
+
+        assert_eq!(ctrl.dragged_node_id(), 0);
+    }
+
+    #[test]
+    fn node_and_group_drags_are_exclusive_and_both_finish() {
+        let ctrl = NodeEditorController::new();
+        ctrl.handle_node_drag_started(1);
+        ctrl.handle_group_drag_started(7);
+        assert_eq!((ctrl.dragged_node_id(), ctrl.dragged_group_id()), (0, 7));
+
+        ctrl.handle_node_drag_started(2);
+        assert_eq!((ctrl.dragged_node_id(), ctrl.dragged_group_id()), (2, 0));
+
+        ctrl.handle_group_drag_started(7);
+        ctrl.handle_node_drag_finished();
+        assert_eq!((ctrl.dragged_node_id(), ctrl.dragged_group_id()), (0, 0));
+    }
+
+    #[test]
+    fn removing_a_group_retires_its_rect_and_drag() {
+        let ctrl = NodeEditorController::new();
+        ctrl.handle_group_rect(7, 1.0, 2.0, 3.0, 4.0);
+        ctrl.handle_group_drag_started(7);
+
+        assert!(ctrl.remove_group(7));
+        assert!(!ctrl.remove_group(7));
+        assert!(ctrl.cache().borrow().group_rects.is_empty());
+        assert_eq!(ctrl.dragged_group_id(), 0);
+
+        ctrl.handle_group_rect(8, 0.0, 0.0, 1.0, 1.0);
+        ctrl.handle_group_drag_started(8);
+        ctrl.reset_graph();
+        assert!(ctrl.cache().borrow().group_rects.is_empty());
+        assert_eq!(ctrl.dragged_group_id(), 0);
+    }
+
+    #[test]
+    fn hidden_nodes_are_projected_into_the_cache() {
+        let ctrl = setup_controller();
+        ctrl.set_node_hidden(1, true);
+        assert!(ctrl.cache().borrow().is_node_hidden(1));
+        assert_eq!(ctrl.find_pin_at_screen(100.0, 25.0, 10.0), 0);
+        ctrl.set_node_hidden(1, false);
+        assert_eq!(ctrl.find_pin_at_screen(100.0, 25.0, 10.0), 1001);
+    }
+
+    // ========================================================================
+    // handle_node_rect: stores world coordinates directly
+    // ========================================================================
+
+    #[test]
+    fn test_handle_node_rect_stores_directly() {
+        let ctrl = NodeEditorController::new();
+        ctrl.handle_node_rect(1, 100.0, 200.0, 50.0, 30.0);
+        let cache = ctrl.cache.borrow();
+        let rect = cache.node_rects.get(&1).unwrap().rect();
+        assert_eq!(rect, (100.0, 200.0, 50.0, 30.0));
+    }
+
+    // ========================================================================
+    // find_link_at_screen at various zoom levels
+    // ========================================================================
+
+    #[test]
+    fn test_find_link_at_screen_zoom1() {
+        let ctrl = setup_controller();
+        // At zoom=1, pan=0: pin 1001 is at screen (100, 25), pin 2001 at (200, 125)
+        let result = ctrl.find_link_at_screen(100.0, 25.0, 10.0, 50.0, 20);
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_find_link_at_screen_miss() {
+        let ctrl = setup_controller();
+        let result = ctrl.find_link_at_screen(500.0, 500.0, 10.0, 50.0, 20);
+        assert_eq!(result, -1);
+    }
+
+    #[test]
+    fn test_find_link_at_screen_zoom2() {
+        let ctrl = setup_controller();
+        ctrl.set_viewport(2.0, 0.0, 0.0);
+        // At zoom=2, pan=0: pin 1001 screen pos = (0+100)*2+0 = 200, (0+25)*2+0 = 50
+        let result = ctrl.find_link_at_screen(200.0, 50.0, 10.0, 50.0, 20);
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_find_link_at_screen_with_pan() {
+        let ctrl = setup_controller();
+        ctrl.set_viewport(1.0, 50.0, 30.0);
+        // At zoom=1, pan=(50,30): pin 1001 screen pos = (0+100)*1+50 = 150, (0+25)*1+30 = 55
+        let result = ctrl.find_link_at_screen(150.0, 55.0, 10.0, 50.0, 20);
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn screen_hit_test_uses_the_rendered_world_curve() {
+        let ctrl = NodeEditorController::new();
+        ctrl.handle_node_rect(1, 0.0, 0.0, 1.0, 1.0);
+        ctrl.handle_node_rect(2, 30.0, 100.0, 1.0, 1.0);
+        ctrl.handle_pin_position(1, 1, 2, 0.0, 0.0);
+        ctrl.handle_pin_position(2, 2, 1, 0.0, 0.0);
+        ctrl.register_link(7, 1, 2);
+        ctrl.set_viewport(3.0, 17.0, -11.0);
+        let rendered = crate::path::CubicBezier::from_endpoints(0.0, 0.0, 30.0, 100.0, 1.0, 50.0);
+        let (world_x, world_y) = rendered.eval(0.2);
+
+        assert_eq!(
+            ctrl.find_link_at_screen(world_x * 3.0 + 17.0, world_y * 3.0 - 11.0, 1.0, 50.0, 1000,),
+            7
+        );
+    }
+
+    #[test]
+    fn screen_hit_tolerance_does_not_grow_with_zoom() {
+        let ctrl = NodeEditorController::new();
+        ctrl.handle_node_rect(1, 0.0, 0.0, 1.0, 1.0);
+        ctrl.handle_node_rect(2, 200.0, 0.0, 1.0, 1.0);
+        ctrl.handle_pin_position(1, 1, 2, 0.0, 0.0);
+        ctrl.handle_pin_position(2, 2, 1, 0.0, 0.0);
+        ctrl.register_link(7, 1, 2);
+        ctrl.set_viewport(3.0, 0.0, 0.0);
+
+        assert_eq!(ctrl.find_link_at_screen(300.0, 20.0, 8.0, 50.0, 100), -1);
+    }
+
+    #[test]
+    fn rendered_world_curves_are_pickable_across_viewports_and_edge_shapes() {
+        let edges = [
+            ((0.0, 0.0), (200.0, 0.0), "horizontal"),
+            ((0.0, 0.0), (10.0, 5.0), "short"),
+            ((25.0, -75.0), (25.0, 125.0), "vertical"),
+            ((180.0, 90.0), (-70.0, -30.0), "reversed"),
+        ];
+
+        for (start, end, shape) in edges {
+            let rendered =
+                crate::path::CubicBezier::from_endpoints(start.0, start.1, end.0, end.1, 1.0, 50.0);
+            let ctrl = setup_controller_with_link(start, end);
+
+            for zoom in [0.1, 0.25, 1.0, 3.0] {
+                let pan = (37.0, -29.0);
+                ctrl.set_viewport(zoom, pan.0, pan.1);
+
+                for t in [0.0, 0.2, 0.5, 0.8, 1.0] {
+                    let (world_x, world_y) = rendered.eval(t);
+                    assert_eq!(
+                        ctrl.find_link_at_screen(
+                            world_x * zoom + pan.0,
+                            world_y * zoom + pan.1,
+                            2.0,
+                            50.0,
+                            1000,
+                        ),
+                        7,
+                        "failed to pick {shape} edge at zoom {zoom} and t {t}",
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn screen_tolerance_is_constant_across_zoom_levels_and_pan() {
+        let ctrl = setup_controller_with_link((0.0, 0.0), (200.0, 0.0));
+
+        for zoom in [0.1, 0.25, 1.0, 3.0] {
+            let pan = (37.0, -29.0);
+            ctrl.set_viewport(zoom, pan.0, pan.1);
+            let midpoint_screen = (100.0 * zoom + pan.0, pan.1);
+
+            assert_eq!(
+                ctrl.find_link_at_screen(
+                    midpoint_screen.0,
+                    midpoint_screen.1 + 7.0,
+                    8.0,
+                    50.0,
+                    1000,
+                ),
+                7,
+                "seven-screen-pixel offset missed at zoom {zoom}",
+            );
+            assert_eq!(
+                ctrl.find_link_at_screen(
+                    midpoint_screen.0,
+                    midpoint_screen.1 + 9.0,
+                    8.0,
+                    50.0,
+                    1000,
+                ),
+                -1,
+                "nine-screen-pixel offset hit at zoom {zoom}",
+            );
+        }
+    }
+
+    // ========================================================================
+    // find_pin_at_screen at various zoom levels
+    // ========================================================================
+
+    #[test]
+    fn test_find_pin_at_screen_zoom1() {
+        let ctrl = setup_controller();
+        // Pin 1001 at screen (100, 25)
+        let result = ctrl.find_pin_at_screen(102.0, 27.0, 10.0);
+        assert_eq!(result, 1001);
+    }
+
+    #[test]
+    fn test_find_pin_at_screen_miss() {
+        let ctrl = setup_controller();
+        let result = ctrl.find_pin_at_screen(500.0, 500.0, 10.0);
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_find_pin_at_screen_zoom2() {
+        let ctrl = setup_controller();
+        ctrl.set_viewport(2.0, 0.0, 0.0);
+        // Pin 1001 screen pos = (0+100)*2 = 200, (0+25)*2 = 50
+        let result = ctrl.find_pin_at_screen(200.0, 50.0, 10.0);
+        assert_eq!(result, 1001);
+    }
+
+    #[test]
+    fn test_find_pin_at_screen_with_pan() {
+        let ctrl = setup_controller();
+        ctrl.set_viewport(1.0, 50.0, 30.0);
+        // Pin 1001 screen pos = 100+50=150, 25+30=55
+        let result = ctrl.find_pin_at_screen(150.0, 55.0, 10.0);
+        assert_eq!(result, 1001);
+    }
+
+    #[test]
+    fn test_find_pin_at_screen_skips_non_hit_testable_pins() {
+        let ctrl = setup_controller();
+        ctrl.handle_pin_position_with_hit_testable(1001, 1, 2, 100.0, 25.0, false);
+
+        assert_eq!(ctrl.find_pin_at_screen(100.0, 25.0, 10.0), 0);
+    }
+
+    // ========================================================================
+    // nodes_in_selection_box_screen
+    // ========================================================================
+
+    #[test]
+    fn test_nodes_in_box_zoom1() {
+        let ctrl = setup_controller();
+        let result = ctrl.nodes_in_selection_box_screen(0.0, 0.0, 50.0, 50.0);
+        assert!(result.contains(&1));
+        assert!(!result.contains(&2));
+    }
+
+    #[test]
+    fn test_nodes_in_box_zoom2() {
+        let ctrl = setup_controller();
+        ctrl.set_viewport(2.0, 0.0, 0.0);
+        // Screen box (0,0,100,100) → world (0,0,50,50) → intersects node 1 at (0,0,100,50)
+        let result = ctrl.nodes_in_selection_box_screen(0.0, 0.0, 100.0, 100.0);
+        assert!(result.contains(&1));
+    }
+
+    // ========================================================================
+    // links_in_selection_box_screen
+    // ========================================================================
+
+    #[test]
+    fn test_links_in_box_zoom1() {
+        let ctrl = setup_controller();
+        // Link 1: start at world (100,25), end at world (200,125)
+        let result = ctrl.links_in_selection_box_screen(90.0, 15.0, 20.0, 20.0);
+        assert!(result.contains(&1));
+    }
+
+    #[test]
+    fn test_links_in_box_miss() {
+        let ctrl = setup_controller();
+        let result = ctrl.links_in_selection_box_screen(500.0, 500.0, 50.0, 50.0);
+        assert!(result.is_empty());
+    }
+
+    // ========================================================================
+    // safe_zoom guard
+    // ========================================================================
+
+    #[test]
+    fn test_safe_zoom_zero() {
+        let ctrl = NodeEditorController::new();
+        ctrl.set_viewport(0.0, 0.0, 0.0);
+        ctrl.handle_node_rect(1, 100.0, 200.0, 50.0, 30.0);
+        let result = ctrl.nodes_in_selection_box_screen(0.0, 0.0, 200.0, 300.0);
+        assert!(result.contains(&1));
+    }
+
+    #[test]
+    fn test_safe_zoom_negative() {
+        let ctrl = NodeEditorController::new();
+        ctrl.set_viewport(-1.0, 0.0, 0.0);
+        ctrl.handle_node_rect(1, 100.0, 200.0, 50.0, 30.0);
+        let _ = ctrl.find_link_at_screen(0.0, 0.0, 10.0, 50.0, 20);
+        let _ = ctrl.find_pin_at_screen(0.0, 0.0, 10.0);
+    }
+}
+
+#[cfg(test)]
+mod viewport_contract_tests {
+    use super::*;
+    #[test]
+    fn invalid_viewport_updates_preserve_the_previous_transform() {
+        let ctrl = NodeEditorController::new();
+        ctrl.set_viewport(2.0, 10.0, 20.0);
+        for (z, x, y) in [
+            (f32::INFINITY, 0.0, 0.0),
+            (f32::NAN, 0.0, 0.0),
+            (0.0, 0.0, 0.0),
+            (-1.0, 0.0, 0.0),
+            (1.0, f32::NAN, 0.0),
+            (1.0, 0.0, f32::INFINITY),
+        ] {
+            ctrl.set_viewport(z, x, y);
+            let s = ctrl.state.borrow();
+            assert_eq!((s.zoom, s.pan_x, s.pan_y), (2.0, 10.0, 20.0));
+        }
+    }
+}

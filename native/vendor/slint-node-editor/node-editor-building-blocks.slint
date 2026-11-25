@@ -1,0 +1,1704 @@
+// Node Editor Building Blocks
+//
+// This file contains the foundational components for building node editors:
+// - PinTypes: Standard pin type constants
+// - NodeLayout: Layout constants and helper functions
+// - Minimap: Bird's-eye view component
+// - Link: Bezier link rendering component
+// - BaseNode: Base component for creating custom nodes
+// - Pin: Connection point component
+
+/// Standard pin types for library components.
+/// Applications can extend these by defining their own globals.
+export global PinTypes {
+    /// Input pin type (standard for data/signal inputs)
+    out property <int> input: 1;
+    /// Output pin type (standard for data/signal outputs)
+    out property <int> output: 2;
+}
+
+/// Viewport state shared from NodeEditor to all child components.
+/// This allows nodes and pins to access zoom/pan without requiring
+/// these properties to be passed explicitly by examples.
+export global ViewportState {
+    /// Current zoom level (updated by NodeEditor)
+    in-out property <float> zoom: 1.0;
+    /// Current pan X offset (updated by NodeEditor)
+    in-out property <length> pan-x: 0px;
+    /// Current pan Y offset (updated by NodeEditor)
+    in-out property <length> pan-y: 0px;
+}
+
+/// Drag state shared from NodeEditor to all child nodes.
+/// This allows BaseNode to compute drag offsets internally without
+/// requiring examples to pass drag state to each node.
+export global DragState {
+    /// Whether any node is currently being dragged
+    in-out property <bool> is-dragging: false;
+    /// ID of the node currently being dragged (0 if none)
+    in-out property <int> dragged-node-id: 0;
+    /// ID of the group whose sheet is being dragged (0 if none). A node drag
+    /// and a group drag are exclusive: at most one of the two IDs is set.
+    in-out property <int> dragged-group-id: 0;
+    /// X offset of the drag operation
+    in-out property <length> drag-offset-x: 0px;
+    /// Y offset of the drag operation
+    in-out property <length> drag-offset-y: 0px;
+}
+
+/// Modifier key for triggering box selection over interactive graph content.
+export enum BoxSelectionModifier {
+    /// No modifier reserves pointer gestures; empty canvas can still marquee.
+    none,
+    /// Control or Command enables box selection anywhere.
+    ctrl,
+    /// Alt enables box selection anywhere.
+    alt,
+    /// Shift enables box selection anywhere and extends the selection.
+    shift,
+}
+
+/// Gesture configuration published by NodeEditor for consumer-defined nodes
+/// and their pins.
+export global NodeEditorGestureConfig {
+    in-out property <BoxSelectionModifier> box-selection-modifier: BoxSelectionModifier.ctrl;
+    /// NodeEditor's `box-selection-on-empty`, so an undraggable node can act
+    /// as empty canvas does.
+    in-out property <bool> box-selection-on-empty: true;
+
+    pure public function forces-box-selection(control: bool, alt: bool, shift: bool, meta: bool) -> bool {
+        return (self.box-selection-modifier == BoxSelectionModifier.ctrl && (control || meta))
+            || (self.box-selection-modifier == BoxSelectionModifier.alt && alt)
+            || (self.box-selection-modifier == BoxSelectionModifier.shift && shift);
+    }
+}
+
+/// Forwarded marquee lifecycle for BaseNode and Pin. The normal path uses a
+/// NodeEditor-owned overlay; this path covers a modifier pressed while focus
+/// was outside the editor.
+export enum BoxSelectionGestureState { idle, started, updating, complete }
+export global BoxSelectionGesture {
+    in-out property <int> version: 0;
+    in-out property <BoxSelectionGestureState> state: BoxSelectionGestureState.idle;
+    in-out property <length> x: 0px;
+    in-out property <length> y: 0px;
+    in-out property <bool> extends-selection: false;
+}
+
+/// Incremented whenever an owner loses its pointer grab or the host explicitly
+/// cancels the editor. Every gesture participant resets its local state.
+export global InteractionCancellation {
+    in-out property <int> version: 0;
+}
+
+/// Geometry version counter for link path invalidation.
+/// BaseNode/Pin request invalidation automatically when geometry changes;
+/// NodeEditor coalesces the requests and advances the version.
+export global GeometryVersion {
+    /// Counter consumed by link bindings. NodeEditor advances it once after
+    /// flushing all geometry reports queued in the current event-loop turn.
+    in-out property <int> version: 0;
+    /// Internal request counter written after a geometry report reaches Rust.
+    in-out property <int> request-version: 0;
+    /// Changes when the disposable projection is reset so live components
+    /// publish themselves again, even when their IDs and geometry are reused.
+    in-out property <int> projection-version: 0;
+}
+
+/// Link creation lifecycle states.
+export enum LinkCreationState { idle, started, updating, complete }
+
+/// Link creation state - updated by Pin, consumed by NodeEditor.
+/// This allows Pin to trigger link creation without manual callback forwarding.
+export global LinkCreation {
+    /// Version counter - incremented on every start/update/complete
+    in-out property <int> version: 0;
+    /// Current lifecycle state
+    in-out property <LinkCreationState> state: LinkCreationState.idle;
+    /// The pin ID that started the link
+    in-out property <int> start-pin-id: 0;
+    /// Current X position (screen coordinates)
+    in-out property <length> current-x: 0px;
+    /// Current Y position (screen coordinates)
+    in-out property <length> current-y: 0px;
+}
+
+/// Selection request state - updated by BaseNode, consumed by NodeEditor.
+/// This allows BaseNode to request selection changes without manual callback forwarding.
+export global SelectionRequest {
+    /// Version counter - incremented on every selection request
+    in-out property <int> version: 0;
+    /// The node ID to select/deselect
+    in-out property <int> node-id: 0;
+    /// Whether shift key was held during the click
+    in-out property <bool> shift-held: false;
+}
+
+/// Selection request for a group sheet - updated by BaseGroup, consumed by
+/// NodeEditor, which reports it as `group-selected`.
+export global GroupSelectionRequest {
+    in-out property <int> version: 0;
+    in-out property <int> group-id: 0;
+    in-out property <bool> shift-held: false;
+}
+
+/// Changes whenever a sheet's `collapsed` flag changes. Members read it so
+/// their visibility binding re-asks the host whether their group is collapsed.
+export global GroupVisibility {
+    in-out property <int> version: 0;
+}
+
+/// Hover state - updated by BaseNode, consumed by NodeEditor.
+/// Mirrors the node-selection flow: BaseNode writes the hovered node's ID here
+/// on pointer enter/exit and NodeEditor exposes it as `hovered-node-id`.
+/// Hover is *state* (not a command), so no version counter is needed — the
+/// editor binds directly to this property.
+///
+/// Sentinel: `0` means "no node hovered", matching BaseNode's `node-id == 0`
+/// = not-a-node convention (note: negative IDs are valid node IDs, so `-1`
+/// would be ambiguous here — unlike the link-hover API).
+export global HoverState {
+    /// The node whose `hovered` is true, or 0 if none: the node under the
+    /// pointer, or the one whose content holds a press the pointer has since
+    /// dragged away from it.
+    in-out property <int> hovered-node-id: 0;
+}
+
+/// Public events emitted by node editor building blocks.
+/// Applications may install handlers directly on this global.
+export global NodeEditorEvents {
+    /// A consumer-provided BaseNode was double-clicked.
+    callback node-double-clicked(/* node-id */ int);
+    /// A group sheet was double-clicked.
+    callback group-double-clicked(/* group-id */ int);
+    /// The sheet's collapse affordance asked for an explicit collapsed state.
+    /// The host applies it to its group row (`wire_groups!` does this); the
+    /// target value, not a toggle, keeps a repeated request idempotent.
+    callback group-collapse-requested(/* group-id */ int, /* collapsed */ bool);
+}
+
+/// Internal callback registry for BaseNode/Pin → Rust communication.
+/// Wired automatically by `wire_node_editor!` — examples don't touch this.
+/// A link's drawn curve and the box it fits in.
+///
+/// `commands` are relative to `x`/`y` so the element can sit at the box rather
+/// than spanning the canvas. The box is the centreline's: `Link` pads it for
+/// the stroke. A box that does not contain what `commands` draw leaves the
+/// pixels outside it stale under partial rendering.
+export struct LinkPath {
+    commands: string,
+    x: length,
+    y: length,
+    width: length,
+    height: length,
+}
+
+export global NodeEditorInternalCallbacks {
+    /// Give the editor keyboard focus inside a pointer press. TouchAreas accept
+    /// presses before the ancestor FocusScope can apply focus-on-click.
+    /// This must be synchronous: a deferred changed watcher could steal focus
+    /// from a control focused by the press's own callbacks.
+    /// wire_node_editor! forwards this to the window's focus-editor() function.
+    callback take-editor-focus();
+    /// Report node rectangle (world coordinates)
+    callback report-node-rect(/* id */ int, /* x */ length, /* y */ length, /* width */ length, /* height */ length);
+    /// Report pin position relative to node
+    callback report-pin-position(/* pin-id */ int, /* node-id */ int, /* pin-type */ int, /* rel-x */ length, /* rel-y */ length, /* hit-testable */ bool);
+    /// Retire projected geometry for a node and its pins.
+    callback remove-node-from-cache(/* node-id */ int);
+    /// Retire projected geometry for one pin.
+    callback remove-pin-from-cache(/* pin-id */ int);
+    /// Retire all projected geometry and controller-owned topology.
+    callback reset-graph-cache();
+    /// Start node drag
+    callback start-node-drag(/* node-id */ int, /* already-selected */ bool, /* world-x */ length, /* world-y */ length);
+    /// Update node drag
+    callback update-node-drag(/* delta-x */ length, /* delta-y */ length);
+    /// Clear host-side state for a node drag that did not reach its normal end.
+    callback cancel-node-drag();
+    /// End node drag. Carries the dragged node so the commit is self-contained:
+    /// the host moves the dragged node, plus whatever else its rows show as
+    /// selected. Nothing depends on when the press-time selection intent landed.
+    callback end-node-drag(/* node-id */ int, /* delta-x */ length, /* delta-y */ length);
+    /// Report a group sheet's displayed rectangle (world coordinates).
+    callback report-group-rect(/* group-id */ int, /* x */ length, /* y */ length, /* width */ length, /* height */ length);
+    /// Retire projected geometry for a group sheet.
+    callback remove-group-from-cache(/* group-id */ int);
+    /// A node became hidden or visible. Hidden nodes keep their geometry but
+    /// are excluded from marquee, pin and link picking.
+    callback set-node-hidden(/* node-id */ int, /* hidden */ bool);
+    /// Start a group sheet drag.
+    callback start-group-drag(/* group-id */ int, /* world-x */ length, /* world-y */ length);
+    /// Update a group sheet drag.
+    callback update-group-drag(/* delta-x */ length, /* delta-y */ length);
+    /// End a group sheet drag. The host moves the dragged group, every other
+    /// selected group, the members of those groups and the selected nodes.
+    callback end-group-drag(/* group-id */ int, /* delta-x */ length, /* delta-y */ length);
+    /// Retire every active pointer gesture and clear the shared drag state,
+    /// so a stale release cannot commit a drag whose target is gone.
+    function retire-gestures() {
+        InteractionCancellation.version += 1;
+        DragState.is-dragging = false;
+        DragState.dragged-node-id = 0;
+        DragState.dragged-group-id = 0;
+        DragState.drag-offset-x = 0px;
+        DragState.drag-offset-y = 0px;
+    }
+
+    /// Remove a node from the geometry projection and clear interactions that
+    /// could still refer to it. Hosts must call this when removing a model row.
+    public function remove-node(node-id: int) {
+        if HoverState.hovered-node-id == node-id {
+            HoverState.hovered-node-id = 0;
+        }
+        // Forwarded marquees may hold a grab on this node or one of its pins.
+        // Their source is not tracked, so retire the active forwarded gesture.
+        // A node removed during a group drag may have been a member of the
+        // moving set, so that gesture is retired as well.
+        if DragState.dragged-node-id == node-id
+            || (DragState.is-dragging && DragState.dragged-group-id != 0)
+            || BoxSelectionGesture.state != BoxSelectionGestureState.idle {
+            self.retire-gestures();
+        }
+        if LinkCreation.state != LinkCreationState.idle {
+            LinkCreation.state = LinkCreationState.idle;
+            LinkCreation.version += 1;
+        }
+        LinkCreation.start-pin-id = 0;
+        self.remove-node-from-cache(node-id);
+        GeometryVersion.request-version += 1;
+    }
+
+    /// Remove a group sheet from the geometry projection and cancel a drag of
+    /// it. Hosts must call this when removing a group row; membership on the
+    /// node rows is application data and stays the host's responsibility.
+    public function remove-group(group-id: int) {
+        if DragState.dragged-group-id == group-id || BoxSelectionGesture.state != BoxSelectionGestureState.idle {
+            self.retire-gestures();
+        }
+        self.remove-group-from-cache(group-id);
+        GeometryVersion.request-version += 1;
+    }
+
+    /// Remove one pin from the geometry projection. Existing logical links are
+    /// application data and remain the host's responsibility.
+    public function remove-pin(pin-id: int) {
+        if BoxSelectionGesture.state != BoxSelectionGestureState.idle {
+            InteractionCancellation.version += 1;
+        }
+        if LinkCreation.start-pin-id == pin-id {
+            if LinkCreation.state != LinkCreationState.idle {
+                LinkCreation.state = LinkCreationState.idle;
+                LinkCreation.version += 1;
+            }
+            LinkCreation.start-pin-id = 0;
+        }
+        self.remove-pin-from-cache(pin-id);
+        GeometryVersion.request-version += 1;
+    }
+
+    /// Clear projected state before replacing the current graph.
+    public function reset-graph() {
+        self.retire-gestures();
+        HoverState.hovered-node-id = 0;
+        if LinkCreation.state != LinkCreationState.idle {
+            LinkCreation.state = LinkCreationState.idle;
+            LinkCreation.version += 1;
+        }
+        LinkCreation.start-pin-id = 0;
+        self.reset-graph-cache();
+        GeometryVersion.projection-version += 1;
+        GeometryVersion.request-version += 1;
+    }
+}
+
+/// Computational callbacks and synchronized configuration used by NodeEditor.
+/// `wire_node_editor!` installs the default Rust implementations.
+export global NodeEditorComputations {
+    /// Current editor configuration. NodeEditor publishes these values so the
+    /// Rust controller and the Slint renderer use one source of truth.
+    in-out property <length> grid-spacing: 24px;
+    in-out property <float> bezier-min-offset: 50.0;
+
+    /// Grid generation was requested after a viewport, size, or spacing change.
+    callback request-grid-update();
+
+    /// Runtime editor configuration changed.
+    callback configuration-changed(
+        /* grid-spacing */ float,
+        /* bezier-min-offset */ float);
+
+    /// Compute a link's curve and the box it fits in, between two pins.
+    /// The geometry-version parameter triggers re-evaluation when geometry changes.
+    pure callback compute-link-path(
+        /* start-pin-id */ int,
+        /* end-pin-id */ int,
+        /* geometry-version */ int) -> LinkPath;
+
+    /// Viewport state changed (zoom or pan)
+    callback viewport-changed(
+        /* zoom */ float,
+        /* pan-x */ float,
+        /* pan-y */ float);
+
+    /// Editor size changed, in logical pixels, independently of grid rendering.
+    /// Batched dimension changes produce one deferred call with the final size.
+    /// Changes are not replayed for a new handler; the host seeds its initial size.
+    callback viewport-resized(/* width */ float, /* height */ float);
+
+    /// Compute pin ID at world coordinates with a world-space hit radius.
+    pure callback compute-pin-at(
+        /* x */ float,
+        /* y */ float,
+        /* pin-hit-radius */ float) -> int;
+
+    /// Does this group move with the current drag? True when the group's own
+    /// sheet is being dragged, or when the group is selected while a node or
+    /// another sheet is. BaseNode asks this for its members so the live
+    /// preview follows the same movement set the host commits with. An unwired
+    /// callback answers false. Installed by `wire_groups!`.
+    pure callback group-in-drag(
+        /* group-id */ int,
+        /* dragged-node-id */ int,
+        /* dragged-group-id */ int) -> bool;
+
+    /// Is this group collapsed? Members hide themselves while it is. The
+    /// version parameter (GroupVisibility.version) re-evaluates the binding
+    /// after a sheet's flag changes. An unwired callback answers false, so a
+    /// host without groups never hides a node. Installed by `wire_groups!`.
+    pure callback group-collapsed(/* group-id */ int, /* version */ int) -> bool;
+
+    /// Compute link preview path (for link creation drag)
+    pure callback compute-link-preview-path(
+        /* start-x */ float,
+        /* start-y */ float,
+        /* end-x */ float,
+        /* end-y */ float,
+        /* zoom */ float,
+        /* bezier-offset */ float) -> string;
+}
+
+/// Optional layout helpers for common node structures.
+///
+/// This global provides sensible defaults for positioning pins and calculating coordinates
+/// in nodes with a standard layout: [pin-margin] [title-height] [pin-margin] [pin].
+///
+/// **Important:** These are purely optional convenience helpers. Applications can:
+/// 1. Override individual properties to customize node appearance
+/// 2. Define their own globals with different layout assumptions
+/// 3. Not use these functions at all and calculate positions manually
+///
+/// This design prevents coupling the library to specific node structures while providing
+/// useful defaults for the common case.
+export global NodeStyleDefaults {
+    // === Layout Constants (OPTIONAL - override to customize) ===
+
+    /// Pin diameter (customize this to change pin size)
+    in-out property <length> pin-size: 12px;
+    /// Margin from node edge to pin center (customize this to change spacing)
+    in-out property <length> pin-margin: 8px;
+    /// Title bar height (customize this if your nodes have different title sizes)
+    in-out property <length> title-height: 24px;
+    /// Grid spacing (for reference, not used by library)
+    in-out property <length> grid-spacing: 24px;
+
+    // === Position Computation Functions (OPTIONAL) ===
+    //
+    // These functions assume a specific node layout. If your nodes have a different
+    // structure, don't use these functions—calculate positions directly instead.
+
+    /// Compute node screen X position from world coordinates
+    pure public function screen-x(world-x: float, zoom: float, pan-x: length) -> length {
+        return world-x * 1px * zoom + pan-x;
+    }
+
+    /// Compute node screen Y position from world coordinates
+    pure public function screen-y(world-y: float, zoom: float, pan-y: length) -> length {
+        return world-y * 1px * zoom + pan-y;
+    }
+
+    // === Pin Position Computation (Absolute Screen Coordinates) ===
+
+    /// Compute input pin absolute X position
+    pure public function input-pin-x(node-world-x: float, zoom: float, pan-x: length) -> length {
+        return node-world-x * 1px * zoom + pan-x + (self.pin-margin + self.pin-size / 2) * zoom;
+    }
+
+    /// Compute input pin absolute Y position
+    pure public function input-pin-y(node-world-y: float, zoom: float, pan-y: length) -> length {
+        return node-world-y * 1px * zoom + pan-y + (self.pin-margin + self.title-height + self.pin-margin + self.pin-size / 2) * zoom;
+    }
+
+    // === Pin Relative Offsets (Unscaled, From Node Origin) ===
+
+    /// Input pin relative X offset (unscaled, from node top-left)
+    pure public function input-pin-relative-x() -> length {
+        return self.pin-margin + self.pin-size / 2;
+    }
+
+    /// Input pin relative Y offset (unscaled, from node top-left)
+    pure public function input-pin-relative-y() -> length {
+        return self.pin-margin + self.title-height + self.pin-margin + self.pin-size / 2;
+    }
+
+    /// Output pin relative Y offset (unscaled, from node top-left)
+    pure public function output-pin-relative-y() -> length {
+        return self.pin-margin + self.title-height + self.pin-margin + self.pin-size / 2;
+    }
+}
+
+/// Simplified node representation for minimap rendering.
+export struct MinimapNode {
+    /// Unique node identifier
+    id: int,
+    /// X position in graph coordinates
+    x: length,
+    /// Y position in graph coordinates
+    y: length,
+    /// Node width
+    width: length,
+    /// Node height
+    height: length,
+    /// Optional per-node color for minimap rendering
+    color: color,
+}
+
+/// Positioning options for minimap placement within the NodeEditor.
+export enum MinimapPosition {
+    top-left,
+    top-right,
+    bottom-left,
+    bottom-right,
+}
+
+/// Standard link status constants for computation graphs.
+/// Applications can use these or define their own status values.
+/// Status < 0 means "no status" — the link uses its `accent` or `color` field.
+/// Note: Slint struct fields default to 0 (= idle). Applications that use
+/// explicit colors instead of statuses must set `status: LinkStatus.none` (-1).
+export global LinkStatus {
+    /// No status — link uses its accent or color field.
+    out property <int> none: -1;
+    /// Not yet computed / idle.
+    out property <int> idle: 0;
+    /// Computation in progress.
+    out property <int> running: 1;
+    /// Computation completed successfully.
+    out property <int> succeeded: 2;
+    /// Computation completed with an error.
+    out property <int> failed: 3;
+}
+
+/// Colors for the built-in link statuses.
+/// Override these properties to customize status colors.
+export global LinkStatusColors {
+    /// Color for idle links (status == 0). Default: gray.
+    in-out property <color> idle: #888888;
+    /// Color for running links (status == 1). Default: yellow.
+    in-out property <color> running: #e8b830;
+    /// Color for succeeded links (status == 2). Default: green.
+    in-out property <color> succeeded: #50c878;
+    /// Color for failed links (status == 3). Default: red.
+    in-out property <color> failed: #e05050;
+}
+
+/// Logical link data (what the application provides)
+export struct LinkData {
+    id: int,
+    start-pin-id: int,
+    end-pin-id: int,
+    color: color,
+    /// Whether this link is selected — the application owns selection state and
+    /// projects it into this field (the editor never writes it).
+    selected: bool,
+    /// Line width in pixels (default: 2.0 if not specified)
+    line-width: float,
+    /// Computation status (-1 = no status, use accent or color field; >= 0 = use status color).
+    /// Default (0) maps to idle. Set to LinkStatus.none (-1) to use the accent or color field.
+    status: int,
+    /// A 1-based index into the editor's `link-accent-colors`, used when `status`
+    /// is not a known status. 0 (the default) is no accent; an index out of range
+    /// falls through to `color`.
+    accent: int,
+    /// Draw the link faded to the editor's `dimmed-link-alpha`, e.g. to set apart
+    /// what an application's focus excludes. Default `false`.
+    dimmed: bool,
+}
+
+/// The colour a link is drawn in: the one rule `NodeEditor`'s link repeater applies.
+export global LinkColor {
+    /// In order: a known status (idle, running, succeeded, failed) takes its
+    /// `LinkStatusColors` colour; otherwise an `accent` in `1..=accents.length`
+    /// takes `accents[accent - 1]`; otherwise the link's own `color`. Last, a
+    /// `dimmed` link keeps that colour's hue at `dimmed-alpha` times its alpha.
+    ///
+    /// Status comes first because it is transient state that already overrides
+    /// `color`, and a running or failed link says more than its identity. The
+    /// accent comes before `color` because an application that binds a palette
+    /// means it. Keys count from 1 so that the struct default, 0, is no accent.
+    /// The dim applies over every step, status included: it says the link is
+    /// outside the application's focus whatever its state, and keeping the hue
+    /// keeps a failed link recognisably failed. It multiplies alpha rather than
+    /// replacing it, so an already translucent colour keeps its proportion.
+    public pure function of(link: LinkData, accents: [color], dimmed-alpha: float) -> color {
+        let color = undimmed(link, accents);
+        return link.dimmed ? color.transparentize(1 - dimmed-alpha) : color;
+    }
+
+    pure function undimmed(link: LinkData, accents: [color]) -> color {
+        if (link.status == LinkStatus.running) {
+            return LinkStatusColors.running;
+        }
+        if (link.status == LinkStatus.succeeded) {
+            return LinkStatusColors.succeeded;
+        }
+        if (link.status == LinkStatus.failed) {
+            return LinkStatusColors.failed;
+        }
+        if (link.status == LinkStatus.idle) {
+            return LinkStatusColors.idle;
+        }
+        if (link.accent >= 1 && link.accent <= accents.length) {
+            return accents[link.accent - 1];
+        }
+        return link.color;
+    }
+}
+
+/// Logical group data (what the application provides). One row per group;
+/// membership is the `group-id` on the node rows, not a list here.
+export struct GroupData {
+    id: int,
+    title: string,
+    /// Authoritative bounds in world coordinates. Changed by the host on
+    /// creation, membership change, an explicit fit, or a drag commit.
+    x: length,
+    y: length,
+    width: length,
+    height: length,
+    /// Sheet colour; a fully transparent colour uses GroupStyleDefaults.
+    color: color,
+    /// Members are hidden while the group is collapsed.
+    collapsed: bool,
+    /// Selection is per-row data like a node's; the editor never writes it.
+    selected: bool,
+}
+
+/// Styling for the default `GroupSheet`. Override these properties to
+/// restyle every sheet; use `GroupData.color` for one.
+export global GroupStyleDefaults {
+    in-out property <color> sheet-color: #4a7ab8;
+    /// Opacity of the sheet body. Sheets rendered by NodeEditor sit below
+    /// links, so the body may be opaque; a BaseGroup among the editor's
+    /// children sits above them and needs a translucent body.
+    in-out property <float> body-opacity: 0.18;
+    in-out property <float> header-opacity: 0.6;
+    in-out property <length> header-height: 32px;
+    in-out property <length> border-radius: 10px;
+    in-out property <length> border-width: 1px;
+    in-out property <length> border-width-selected: 2px;
+    in-out property <color> border-color-selected: #ffffff;
+    in-out property <color> title-color: #ffffff;
+    in-out property <length> title-font-size: 14px;
+}
+
+/// Minimap component for bird's-eye view of the node graph.
+export component Minimap inherits Rectangle {
+    // === Data Input ===
+    in property <[MinimapNode]> nodes;
+
+    // === Path-based rendering (optimization for large graphs) ===
+    // When nodes-path is non-empty, it's used instead of the nodes array for rendering.
+    // The path should contain SVG path commands for all node rectangles.
+    in property <string> nodes-path: "";
+
+    // Callback to compute the nodes path. Called when scale/offset/version changes.
+    // Parameters: version (for cache invalidation), scale, offset-x, offset-y
+    // Returns: SVG path string for all nodes
+    pure callback compute-nodes-path(/* version */ int, /* scale */ float, /* offset-x */ float, /* offset-y */ float) -> string;
+
+    // Version counter to trigger path recomputation
+    in property <int> path-version: 0;
+
+    // === Viewport State ===
+    in property <length> viewport-x;
+    in property <length> viewport-y;
+    in property <float> viewport-zoom: 1.0;
+    in property <length> viewport-width;
+    in property <length> viewport-height;
+
+    // === Graph Bounds ===
+    in property <length> graph-min-x;
+    in property <length> graph-min-y;
+    in property <length> graph-max-x;
+    in property <length> graph-max-y;
+
+    // === Styling ===
+    in property <length> minimap-width: 200px;
+    in property <length> minimap-height: 150px;
+    in property <color> minimap-background-color: #1a1a1aee;
+    in property <color> minimap-node-color: #4a4a4a;
+    in property <color> minimap-viewport-border-color: #ffffff;
+    in property <length> minimap-viewport-border-width: 2px;
+    in property <color> minimap-border-color: #333333;
+    in property <length> minimap-border-width: 1px;
+    in property <length> minimap-padding: 8px;
+
+    // === Interaction ===
+    callback navigate-to(/* graph-x */ length, /* graph-y */ length);
+    callback update-pan(/* new-pan-x */ length, /* new-pan-y */ length);
+
+    // === Internal drag state ===
+    property <bool> internal-is-panning: false;
+    property <length> pan-start-mouse-x: 0px;
+    property <length> pan-start-mouse-y: 0px;
+    property <length> pan-start-viewport-x: 0px;
+    property <length> pan-start-viewport-y: 0px;
+    property <length> drag-threshold: 3px;
+
+    // === Coordinate Transformation ===
+    // Visible region in graph/world coordinates.
+    // Derived from screen = pan + world * zoom, inverted at screen origin (0,0).
+    property <length> visible-min-x: -root.viewport-x / root.viewport-zoom;
+    property <length> visible-min-y: -root.viewport-y / root.viewport-zoom;
+    property <length> visible-max-x: root.visible-min-x + (root.viewport-width / root.viewport-zoom);
+    property <length> visible-max-y: root.visible-min-y + (root.viewport-height / root.viewport-zoom);
+
+    // Minimap content = union(graph bounds, visible viewport). Using the union
+    // guarantees the viewport indicator always fits inside the minimap: when
+    // the viewport is zoomed out past the graph, the minimap "zooms out" so
+    // both the graph and the viewport are visible.
+    property <length> content-min-x: min(root.graph-min-x, root.visible-min-x);
+    property <length> content-min-y: min(root.graph-min-y, root.visible-min-y);
+    property <length> content-max-x: max(root.graph-max-x, root.visible-max-x);
+    property <length> content-max-y: max(root.graph-max-y, root.visible-max-y);
+    property <length> content-width: max(root.content-max-x - root.content-min-x, 1px);
+    property <length> content-height: max(root.content-max-y - root.content-min-y, 1px);
+
+    property <length> available-width: root.minimap-width - 2 * root.minimap-padding;
+    property <length> available-height: root.minimap-height - 2 * root.minimap-padding;
+    property <float> scale: min(
+        root.available-width / root.content-width,
+        root.available-height / root.content-height);
+
+    // === Viewport Indicator in Minimap Coordinates ===
+    property <length> viewport-indicator-x: root.minimap-padding + (root.visible-min-x - root.content-min-x) * root.scale;
+    property <length> viewport-indicator-y: root.minimap-padding + (root.visible-min-y - root.content-min-y) * root.scale;
+    property <length> viewport-indicator-width: (root.visible-max-x - root.visible-min-x) * root.scale;
+    property <length> viewport-indicator-height: (root.visible-max-y - root.visible-min-y) * root.scale;
+
+    width: root.minimap-width;
+    height: root.minimap-height;
+    background: root.minimap-background-color;
+    border-color: root.minimap-border-color;
+    border-width: root.minimap-border-width;
+    border-radius: 4px;
+
+    // Computed path for optimized rendering (recomputed when path-version changes)
+    // Note: path-version is passed to force Slint to re-evaluate when it changes
+    property <string> computed-path: root.compute-nodes-path(
+        root.path-version,
+        root.scale,
+        root.minimap-padding / 1px - (root.content-min-x / 1px) * root.scale,
+        root.minimap-padding / 1px - (root.content-min-y / 1px) * root.scale);
+
+    // Use computed path, or nodes-path if provided externally
+    property <string> effective-path: root.nodes-path != "" ? root.nodes-path : root.computed-path;
+
+    // Path-based rendering (optimized - single element for all nodes).
+    // The viewbox locks path-command coordinates to logical pixels in the
+    // minimap's local space; without it, Slint auto-fits the bounding box
+    // of the commands to the element size, stretching node rectangles.
+    if root.effective-path != "": Path {
+        x: 0;
+        y: 0;
+        width: root.minimap-width;
+        height: root.minimap-height;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: max(self.width / 1px, 1);
+        viewbox-height: max(self.height / 1px, 1);
+        commands: root.effective-path;
+        fill: root.minimap-node-color;
+    }
+
+    // Fallback: individual rectangles (used when no path callback is set)
+    if root.effective-path == "": Rectangle {
+        for node in root.nodes: Rectangle {
+            x: root.minimap-padding + (node.x - root.content-min-x) * root.scale;
+            y: root.minimap-padding + (node.y - root.content-min-y) * root.scale;
+            width: node.width * root.scale;
+            height: node.height * root.scale;
+            background: node.color.alpha > 0 ? node.color : root.minimap-node-color;
+        }
+    }
+
+    Rectangle {
+        x: root.viewport-indicator-x;
+        y: root.viewport-indicator-y;
+        width: root.viewport-indicator-width;
+        height: root.viewport-indicator-height;
+        background: transparent;
+        border-color: root.minimap-viewport-border-color;
+        border-width: root.minimap-viewport-border-width;
+    }
+
+    TouchArea {
+        width: 100%;
+        height: 100%;
+        mouse-cursor: root.internal-is-panning ? MouseCursor.grabbing : MouseCursor.grab;
+
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                NodeEditorInternalCallbacks.take-editor-focus();
+            }
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                // Store initial state
+                root.pan-start-mouse-x = self.mouse-x;
+                root.pan-start-mouse-y = self.mouse-y;
+                root.pan-start-viewport-x = root.viewport-x;
+                root.pan-start-viewport-y = root.viewport-y;
+                root.internal-is-panning = false;
+            }
+            if event.kind == PointerEventKind.up && event.button == PointerEventButton.left {
+                if !root.internal-is-panning {
+                    // Treat as click: center viewport
+                    root.navigate-to(
+                        root.content-min-x + ((self.mouse-x - root.minimap-padding) / root.scale),
+                        root.content-min-y + ((self.mouse-y - root.minimap-padding) / root.scale));
+                }
+                root.internal-is-panning = false;
+            }
+        }
+
+        moved => {
+            if self.pressed {
+                // Check drag threshold
+                if !root.internal-is-panning {
+                    root.internal-is-panning = sqrt(
+                        pow((self.mouse-x - root.pan-start-mouse-x) / 1px, 2) + pow((self.mouse-y - root.pan-start-mouse-y) / 1px, 2)) * 1px > root.drag-threshold;
+                }
+                if root.internal-is-panning {
+                    // Calculate delta in minimap space
+                    root.update-pan(
+                        root.pan-start-viewport-x - (self.mouse-x - root.pan-start-mouse-x) / root.scale * root.viewport-zoom,
+                        root.pan-start-viewport-y - (self.mouse-y - root.pan-start-mouse-y) / root.scale * root.viewport-zoom);
+                }
+            }
+        }
+    }
+}
+
+/// A bezier link between two pins, sized to its own curve.
+///
+/// The element covers the curve and nothing else. A link spanning the canvas
+/// marks the whole canvas dirty on every change — including a selection flip,
+/// which moves nothing — and that is what stops partial rendering paying for
+/// itself in a graph.
+export component Link inherits Path {
+    in property <LinkPath> geometry;
+    in property <color> link-color: #888888;
+    in property <length> line-width: 2px;
+    in property <bool> selected: false;
+    in property <bool> hovered: false;
+
+    // Half the widest stroke the link can ever take, plus slop. Constant
+    // across selected/hovered on purpose: sizing to the current stroke would
+    // move the element on hover, dirtying the box it left as well as the one
+    // it arrived at.
+    //
+    // The slop is divided by the zoom because it is a *device*-pixel quantity
+    // expressed in the world units this element is measured in: antialiasing
+    // spreads a fixed number of screen pixels however far the canvas is zoomed
+    // out, and a stroke thinner than a device pixel is drawn as a hairline
+    // rather than vanishing. 1.5 covers half a hairline plus a pixel of edge.
+    property <length> stroke-padding: line-width * 0.75 + 1.5px / max(ViewportState.zoom, 0.01);
+
+    x: geometry.x - stroke-padding;
+    y: geometry.y - stroke-padding;
+    width: geometry.width + 2 * stroke-padding;
+    height: geometry.height + 2 * stroke-padding;
+
+    stroke: selected ? link-color.brighter(50%) : (hovered ? link-color.brighter(25%) : link-color);
+    stroke-width: selected ? line-width * 1.5 : (hovered ? line-width * 1.25 : line-width);
+    fill: transparent;
+
+    // One path unit is one pixel, with the commands' origin sitting
+    // `stroke-padding` inside the element.
+    //
+    // A `Path` fits its viewbox into the element *inset by the stroke width*
+    // and then offsets by half of it, and the default `fit: contain` scales
+    // both axes by the smaller of the two ratios. A viewbox the size of the
+    // element is therefore not 1:1: on a link between pins at the same height
+    // the box is only as tall as the padding, so the vertical ratio is small,
+    // and `contain` applies it to the length as well — a horizontal link comes
+    // out short of both its pins. Sizing the viewbox to the inset makes both
+    // ratios exactly 1 for any stroke width, which is what keeps a selected
+    // link on the same curve as an unselected one.
+    //
+    // The inset stays positive because `stroke-padding` exceeds half of the
+    // widest stroke by the antialiasing slop.
+    viewbox-x: (root.stroke-width / 2 - root.stroke-padding) / 1px;
+    viewbox-y: (root.stroke-width / 2 - root.stroke-padding) / 1px;
+    viewbox-width: (root.width - root.stroke-width) / 1px;
+    viewbox-height: (root.height - root.stroke-width) / 1px;
+
+    commands: geometry.commands;
+}
+
+/// The pointer gesture shared by BaseNode and BaseGroup.
+///
+/// A press selects, or defers selection to the release when the item is
+/// already selected, so dragging a selected item keeps the selection. A move
+/// past the threshold drags, and the release commits it; a release without a
+/// move is a click. The configured modifier forwards a marquee to the editor
+/// instead, and so does a slide on an undraggable owner whenever a drag on
+/// empty canvas would draw one. Owners turn the callbacks into intents: the
+/// gesture holds no ids and touches no shared drag state itself.
+component DragGesture inherits TouchArea {
+    /// The owner's current selection flag, latched at press time.
+    in property <bool> selected: false;
+    /// The owner's `screen-x` / `screen-y`. This area sits at the owner's
+    /// top-left, so they place it in the editor's space.
+    in property <length> owner-screen-x: 0px;
+    in property <length> owner-screen-y: 0px;
+    /// Off, a move past the threshold starts no drag: no drag callback and
+    /// no offset. It does what a drag on empty canvas does instead, and the
+    /// release is no click, so it applies no deferred selection.
+    in property <bool> draggable: true;
+    /// True while a drag is in progress.
+    out property <bool> is-dragging: false;
+    /// Live drag offset in world units; zero outside a drag.
+    out property <length> offset-x: 0px;
+    out property <length> offset-y: 0px;
+
+    /// The press (or the release of a click on a selected item) asked for a
+    /// selection change. `shift-held` is the toggle modifier.
+    callback selection-requested(/* shift-held */ bool);
+    /// The pointer moved past the threshold. `selected-at-press` answers "is
+    /// this item selected?" from press-time facts alone (it was, or this
+    /// press asked for it), so a drag never reads the flag back and never
+    /// depends on when the host applied the intent.
+    callback drag-started(/* selected-at-press */ bool);
+    callback drag-moved(/* delta-x */ length, /* delta-y */ length);
+    /// The drag released; the offsets are reset after this returns.
+    callback drag-ended(/* delta-x */ length, /* delta-y */ length);
+    callback item-double-clicked();
+
+    property <bool> shift-held: false;
+    property <length> drag-threshold: 5px;
+    property <length> press-x: 0px;
+    property <length> press-y: 0px;
+    property <bool> was-selected-on-press: false;
+    /// Whether this press emitted a selection intent.
+    property <bool> selection-intent-sent: false;
+    /// The pointer passed the threshold while the owner was not draggable and
+    /// the canvas draws no marquee on an empty-area drag.
+    property <bool> slid: false;
+    // The pointer in the editor's space, which a forwarded marquee is read in
+    // and a Pin forwards in. Not absolute-position: that is window space, off
+    // by wherever the editor sits in its window. self.mouse-x/y is in world
+    // space (inside the scaled container).
+    property <length> pointer-x: root.owner-screen-x + self.mouse-x * ViewportState.zoom;
+    property <length> pointer-y: root.owner-screen-y + self.mouse-y * ViewportState.zoom;
+    // True while this area forwards the configured marquee gesture to the
+    // owning NodeEditor instead of selecting or dragging the item.
+    property <bool> forwarding-box-selection: false;
+    // Set by shared cancellation so the remainder of the current pointer
+    // sequence cannot restart a drag or turn into a click.
+    property <bool> press-cancelled: false;
+    property <bool> dbl-click-armed: false;
+    dbl-click-timer := Timer {
+        interval: 400ms;
+        triggered => {
+            root.dbl-click-armed = false;
+        }
+    }
+
+    public function cancel-gesture() {
+        root.is-dragging = false;
+        root.slid = false;
+        root.forwarding-box-selection = false;
+        root.press-cancelled = true;
+        root.offset-x = 0px;
+        root.offset-y = 0px;
+        root.selection-intent-sent = false;
+    }
+
+    pointer-event(event) => {
+        if event.kind == PointerEventKind.down {
+            NodeEditorInternalCallbacks.take-editor-focus();
+        }
+        if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+            // Always initialize tracking state — even for inert presses —
+            // so `moved` and `up` never observe stale values.
+            root.shift-held = event.modifiers.shift;
+            root.is-dragging = false;
+            root.slid = false;
+            root.press-cancelled = false;
+            root.press-x = root.pointer-x;
+            root.press-y = root.pointer-y;
+            root.offset-x = 0px;
+            root.offset-y = 0px;
+            root.was-selected-on-press = root.selected;
+            root.selection-intent-sent = false;
+            root.forwarding-box-selection = NodeEditorGestureConfig.forces-box-selection(
+                event.modifiers.control,
+                event.modifiers.alt,
+                event.modifiers.shift,
+                event.modifiers.meta);
+
+            if root.forwarding-box-selection {
+                BoxSelectionGesture.x = root.pointer-x;
+                BoxSelectionGesture.y = root.pointer-y;
+                BoxSelectionGesture.extends-selection = event.modifiers.shift;
+                BoxSelectionGesture.state = BoxSelectionGestureState.started;
+                BoxSelectionGesture.version += 1;
+            } else if root.shift-held || !root.selected {
+                // Select immediately when shift toggles or the item is not
+                // yet selected. Otherwise defer to the release, to tell a
+                // click from a drag.
+                root.selection-requested(root.shift-held);
+                root.selection-intent-sent = true;
+            }
+        }
+        if event.kind == PointerEventKind.up && event.button == PointerEventButton.left {
+            if root.press-cancelled {
+                root.press-cancelled = false;
+            } else if root.forwarding-box-selection {
+                BoxSelectionGesture.x = root.pointer-x;
+                BoxSelectionGesture.y = root.pointer-y;
+                BoxSelectionGesture.state = BoxSelectionGestureState.complete;
+                BoxSelectionGesture.version += 1;
+            } else if root.is-dragging {
+                // Report the tracked offset, not one recalculated from the
+                // mouse position.
+                root.drag-ended(root.offset-x, root.offset-y);
+                root.is-dragging = false;
+                root.offset-x = 0px;
+                root.offset-y = 0px;
+            } else if root.slid {
+                root.slid = false;
+            } else {
+                // Click without drag - apply the deferred selection now
+                if root.was-selected-on-press && !root.shift-held {
+                    root.selection-requested(root.shift-held);
+                }
+                if root.dbl-click-armed {
+                    root.item-double-clicked();
+                    root.dbl-click-armed = false;
+                } else {
+                    root.dbl-click-armed = true;
+                    dbl-click-timer.restart();
+                }
+            }
+            root.forwarding-box-selection = false;
+        }
+        if event.kind == PointerEventKind.cancel {
+            InteractionCancellation.version += 1;
+        }
+    }
+
+    moved => {
+        if self.pressed && !root.press-cancelled && root.forwarding-box-selection {
+            BoxSelectionGesture.x = root.pointer-x;
+            BoxSelectionGesture.y = root.pointer-y;
+            BoxSelectionGesture.state = BoxSelectionGestureState.updating;
+            BoxSelectionGesture.version += 1;
+        } else if self.pressed && !root.press-cancelled {
+            if !root.is-dragging && !root.slid {
+                if abs(root.pointer-x - root.press-x) > root.drag-threshold || abs(root.pointer-y - root.press-y) > root.drag-threshold {
+                    if root.draggable {
+                        root.is-dragging = true;
+                        root.drag-started(root.was-selected-on-press || root.selection-intent-sent);
+                    } else if NodeEditorGestureConfig.box-selection-on-empty {
+                        // Anchored at the press, as a marquee on empty canvas
+                        // is. The next move spans it: the editor reads the
+                        // channel once per change, so an update sent here
+                        // too would hide the start.
+                        root.forwarding-box-selection = true;
+                        BoxSelectionGesture.x = root.press-x;
+                        BoxSelectionGesture.y = root.press-y;
+                        BoxSelectionGesture.extends-selection = root.shift-held;
+                        BoxSelectionGesture.state = BoxSelectionGestureState.started;
+                        BoxSelectionGesture.version += 1;
+                    } else {
+                        root.slid = true;
+                    }
+                }
+            }
+            if root.is-dragging {
+                root.offset-x = (root.pointer-x - root.press-x) / ViewportState.zoom;
+                root.offset-y = (root.pointer-y - root.press-y) / ViewportState.zoom;
+                root.drag-moved(root.offset-x, root.offset-y);
+            }
+        }
+    }
+}
+
+/// Base component for all node types in the node editor.
+/// Nodes are positioned in pure WORLD coordinates. The parent container (at pan-x, pan-y)
+/// applies transform-scale for zoom, so nodes just use x: world-x, y: world-y directly.
+///
+/// Zoom/pan values are accessed from the ViewportState global - examples don't need to pass them.
+///
+/// **Accessibility:** BaseNode defaults to `accessible-label: "Node " + node-id`.
+/// Override this in your node component with the node's title for better screen reader
+/// and MCP introspection support: `accessible-label: title;`
+export component BaseNode inherits Rectangle {
+    // === Common Properties ===
+    in property <int> node-id;
+    in property <bool> selected: false;
+    /// The group this node belongs to, or 0 for none. Bind it from your model
+    /// row like `selected`: members follow their group's drag and are hidden
+    /// while it is collapsed.
+    in property <int> group-id: 0;
+    in property <length> world-x;
+    in property <length> world-y;
+    /// Off, a user drag moves this node only with its group. A drag starting
+    /// on it does what one on empty canvas does: it draws a marquee when
+    /// `box-selection-on-empty` is on and nothing otherwise, the host sees no
+    /// node drag, and a press still selects it. A drag of other selected nodes
+    /// leaves it in place; a group that moves carries it. Bind it from your
+    /// model row, the field your `MovableNode::draggable` reads, as you bind
+    /// `selected`: the preview reads this, the drag commit reads that.
+    in property <bool> draggable: true;
+
+    // === Accessibility ===
+    accessible-role: list-item;
+    accessible-label: "Node " + node-id;
+    accessible-description: selected ? "selected" : "";
+    // Temporary offset during the synchronous host commit callback.
+    property <length> persistent-offset-x: 0px;
+    property <length> persistent-offset-y: 0px;
+    property <int> reported-node-id: 0;
+    property <int> projection-version: GeometryVersion.projection-version;
+    property <int> interaction-cancellation-watch: InteractionCancellation.version;
+    // === Node Size ===
+    // Set these to match your node's visual dimensions.
+    in property <length> node-width: 150px;
+    in property <length> node-height: 100px;
+
+    // === Styling Properties (overridable) ===
+    in property <color> background-color: #2d2d2d;
+    in property <color> background-color-selected: #3a3a4a;
+    in property <color> border-color-normal: #555;
+    in property <color> border-color-selected: #4a9eff;
+    in property <length> border-radius-base: 8px;
+    in property <length> border-width-normal: 1px;
+    in property <length> border-width-selected: 2px;
+
+    // === Computed Properties ===
+    // World position (for reporting to Rust)
+    // For multi-node drag: selected, draggable nodes that aren't being directly
+    // dragged use global DragState offset; the drag commit moves the same rows.
+    // root.selected must be read FIRST: && short-circuits, and a dependency is
+    // recorded on every property read during evaluation — with the global
+    // DragState.is-dragging in front, every node in the graph re-evaluates (and
+    // repaints) on the drag start/end toggle. Selected-first scopes that toggle
+    // to the selection, the only nodes the selection can carry.
+    //
+    // A member also follows a shared drag when its group moves, draggable or
+    // not: the sheet is being dragged, or the group is selected while
+    // something else is. The host answers that through
+    // NodeEditorComputations.group-in-drag, the same predicate its drag commit
+    // uses, so the live preview and the committed positions cannot disagree.
+    // Ungrouped nodes that the selection does not carry never read the drag
+    // state at all.
+    property <bool> carried-by-selection: root.selected && root.draggable;
+    property <bool> follows-shared-drag: (root.carried-by-selection || root.group-id != 0)
+        && DragState.is-dragging
+        && node-id != DragState.dragged-node-id
+        && (root.carried-by-selection || NodeEditorComputations.group-in-drag(root.group-id, DragState.dragged-node-id, DragState.dragged-group-id));
+    property <length> world-pos-x: world-x + persistent-offset-x + (root.follows-shared-drag ? DragState.drag-offset-x : drag-area.offset-x);
+    property <length> world-pos-y: world-y + persistent-offset-y + (root.follows-shared-drag ? DragState.drag-offset-y : drag-area.offset-y);
+
+    // === Collapse ===
+    // Collapse is a visibility projection: a member of a collapsed group is not
+    // rendered, takes no input, and reports itself hidden so the Rust cache
+    // excludes it from marquee, pin and link picking while keeping its
+    // geometry. The host answers from its group rows; an unwired callback
+    // means expanded. A subclass may override `visible` with its own policy;
+    // whatever it decides is what gets reported.
+    visible: root.group-id == 0 || !NodeEditorComputations.group-collapsed(root.group-id, GroupVisibility.version);
+    // Screen position (for external reference only)
+    out property <length> screen-x: world-pos-x * ViewportState.zoom + ViewportState.pan-x;
+    out property <length> screen-y: world-pos-y * ViewportState.zoom + ViewportState.pan-y;
+
+    // === Common Styling ===
+    // Pure world coordinates - container handles pan and transform-scale handles zoom
+    x: world-pos-x;
+    y: world-pos-y;
+    width: node-width;
+    height: node-height;
+    // BaseNode is transparent - visual styling should be in child elements
+    background: transparent;
+    clip: false;
+
+    // Cache updates happen synchronously through the callback. Request route
+    // invalidation only afterwards so link bindings never observe stale cache
+    // data. NodeEditor coalesces requests from x/y/size and pin changes.
+    function report-geometry() {
+        if reported-node-id != node-id {
+            if reported-node-id != 0 {
+                NodeEditorInternalCallbacks.remove-node(reported-node-id);
+            }
+            reported-node-id = node-id;
+        }
+        if node-id != 0 {
+            NodeEditorInternalCallbacks.report-node-rect(node-id, world-pos-x, world-pos-y, node-width, node-height);
+            GeometryVersion.request-version += 1;
+        }
+    }
+
+    function report-visibility() {
+        if node-id != 0 {
+            NodeEditorInternalCallbacks.set-node-hidden(node-id, !self.visible);
+            GeometryVersion.request-version += 1;
+        }
+    }
+
+    // Report rect on changes (in WORLD coordinates - without offset).
+    // Guard against node-id == 0 (Slint default before parent binds the real ID).
+    // Negative IDs are valid (e.g. viewport-anchored edge ports).
+    init => {
+        root.report-geometry();
+        // The cache's default for an unknown node is visible; only a node
+        // born hidden (its group already collapsed) has something to say.
+        if !self.visible {
+            root.report-visibility();
+        }
+    }
+
+    changed node-id => {
+        root.report-geometry();
+        root.report-visibility();
+    }
+
+    changed projection-version => {
+        root.report-geometry();
+        root.report-visibility();
+    }
+    changed visible => {
+        root.report-visibility();
+    }
+    changed group-id => {
+        // A membership change mid-gesture invalidates the movement set.
+        if DragState.is-dragging {
+            InteractionCancellation.version += 1;
+        }
+    }
+    changed interaction-cancellation-watch => {
+        drag-area.cancel-gesture();
+    }
+
+    changed world-x => {
+        // The model is authoritative after a commit. Clear the temporary drag
+        // offset, then publish the settled geometry even when world-pos-x has
+        // the same value it had on the final live-drag frame.
+        if abs(persistent-offset-x) > 0.1px {
+            root.persistent-offset-x = 0px;
+        }
+        root.report-geometry();
+    }
+    changed world-y => {
+        if abs(persistent-offset-y) > 0.1px {
+            root.persistent-offset-y = 0px;
+        }
+        root.report-geometry();
+    }
+    changed node-width => {
+        root.report-geometry();
+    }
+    changed node-height => {
+        root.report-geometry();
+    }
+
+    // Watch world-pos-x/y for live link updates during multi-node drag
+    changed world-pos-x => {
+        root.report-geometry();
+    }
+    changed world-pos-y => {
+        root.report-geometry();
+    }
+
+    // === Hover ===
+    // Exposed so subclasses can react to hover directly (e.g. show pills/badges),
+    // and aggregated to NodeEditor.hovered-node-id via the HoverState global.
+    // drag-area holds the subclass's content, so its has-hover stays true over
+    // every child inside the node's rect, and while a child holds a press (a
+    // link dragged from a pin, say) until its release. Content drawn outside
+    // the rect, such as the outer half of a pin centred on the edge, does not
+    // hover the node: a TouchArea takes hover only within its own bounds.
+    out property <bool> hovered: drag-area.has-hover;
+    changed hovered => {
+        // Guard against node-id == 0 (unbound) — same convention as geometry reporting.
+        if (node-id != 0) {
+            if (self.hovered) {
+                HoverState.hovered-node-id = node-id;
+            } else if (HoverState.hovered-node-id == node-id) {
+                // Only clear if we're still the reported node; if the pointer moved
+                // straight onto another node that already claimed the slot, leave it.
+                HoverState.hovered-node-id = 0;
+            }
+        }
+    }
+
+    // === Drag Handling ===
+    // The gesture covers the full node area; its intents carry this node's
+    // id and drive the shared drag state that other nodes follow.
+    drag-area := DragGesture {
+        x: 0;
+        y: 0;
+        width: root.node-width;
+        height: root.node-height;
+        owner-screen-x: root.screen-x;
+        owner-screen-y: root.screen-y;
+        selected: root.selected;
+        draggable: root.draggable;
+
+        selection-requested(shift) => {
+            SelectionRequest.node-id = node-id;
+            SelectionRequest.shift-held = shift;
+            SelectionRequest.version += 1;
+        }
+        drag-started(selected-at-press) => {
+            NodeEditorInternalCallbacks.start-node-drag(node-id, selected-at-press, world-x, world-y);
+            // Set global drag state for multi-node drag
+            DragState.is-dragging = true;
+            DragState.dragged-node-id = node-id;
+        }
+        drag-moved(dx, dy) => {
+            NodeEditorInternalCallbacks.update-node-drag(dx, dy);
+            // Update global drag offset for other selected nodes
+            DragState.drag-offset-x = dx;
+            DragState.drag-offset-y = dy;
+            // Update geometry for live link updates
+            root.report-geometry();
+        }
+        drag-ended(dx, dy) => {
+            // Transfer drag offset to persistent before ending drag
+            root.persistent-offset-x += dx;
+            root.persistent-offset-y += dy;
+            NodeEditorInternalCallbacks.end-node-drag(node-id, dx, dy);
+            // The host's projected model is authoritative even if it
+            // rejected the move or snapped back to unchanged coordinates.
+            root.persistent-offset-x = 0px;
+            root.persistent-offset-y = 0px;
+            DragState.is-dragging = false;
+            DragState.dragged-node-id = 0;
+            DragState.drag-offset-x = 0px;
+            DragState.drag-offset-y = 0px;
+        }
+        item-double-clicked => {
+            NodeEditorEvents.node-double-clicked(node-id);
+        }
+
+        // A subclass's content sits inside the gesture, so hovering it is
+        // hovering the node, and a press no child takes still selects or drags.
+        @children
+    }
+}
+
+/// A connection point on a node where links can be attached.
+export component Pin inherits Rectangle {
+    in property <int> pin-id;
+    in property <int> node-id;  // Node this pin belongs to (for position reporting)
+    in property <int> pin-type;  // Type of pin (input/output/custom)
+    /// Whether the pin accepts input and participates in hit testing.
+    in property <bool> enabled: true;
+
+    // === Accessibility ===
+    accessible-role: button;
+    accessible-label: pin-type == 1 ? "input pin" : pin-type == 2 ? "output pin" : "pin";
+    in property <color> base-color: #888888;
+    in property <color> hover-color: #aaaaaa;
+    in property <length> base-size: 12px;
+    in property <length> node-screen-x: 0px;  // Needed for drag preview coordinates
+    in property <length> node-screen-y: 0px;
+    in property <length> parent-offset-x: 0px;  // For wrapped pins (offset from node)
+    in property <length> parent-offset-y: 0px;  // For wrapped pins (offset from node)
+    /// Increment this to force pin position re-reporting (workaround for init timing)
+    in property <int> refresh-trigger: 0;
+    property <int> reported-pin-id: 0;
+    property <int> projection-version: GeometryVersion.projection-version;
+    property <int> interaction-cancellation-watch: InteractionCancellation.version;
+
+    property <length> pin-radius: base-size / 2;
+
+    /// Pin center X relative to node top-left
+    out property <length> center-x: parent-offset-x + self.x + self.width / 2;
+    /// Pin center Y relative to node top-left
+    out property <length> center-y: parent-offset-y + self.y + self.height / 2;
+
+    width: base-size;
+    height: base-size;
+    background: touch.has-hover ? hover-color : base-color;
+    border-radius: pin-radius;
+
+    // Pin reports during a node drag update the cache, while BaseNode owns the
+    // single route refresh for that frame. Outside a drag, request a coalesced
+    // refresh after the cache callback returns.
+    function report-geometry() {
+        if reported-pin-id != pin-id {
+            if reported-pin-id > 0 {
+                NodeEditorInternalCallbacks.remove-pin(reported-pin-id);
+            }
+            reported-pin-id = pin-id;
+        }
+        if pin-id > 0 {
+            NodeEditorInternalCallbacks.report-pin-position(pin-id, node-id, pin-type, center-x, center-y, self.visible && self.enabled);
+            if (!DragState.is-dragging) {
+                GeometryVersion.request-version += 1;
+            }
+        }
+    }
+
+    init => {
+        root.report-geometry();
+    }
+    // Re-route when a pin settles to a new position (for example, after its node
+    // resizes), but do not request separately while a node is being dragged.
+    // BaseNode already schedules the route refresh for that frame; the pin only
+    // needs to keep its cached relative position current.
+    changed pin-id => {
+        root.report-geometry();
+    }
+    changed node-id => {
+        root.report-geometry();
+    }
+    changed pin-type => {
+        root.report-geometry();
+    }
+    changed visible => {
+        root.report-geometry();
+    }
+    changed enabled => {
+        root.report-geometry();
+    }
+    changed center-x => {
+        root.report-geometry();
+    }
+    changed center-y => {
+        root.report-geometry();
+    }
+    changed refresh-trigger => {
+        root.report-geometry();
+    }
+    changed projection-version => {
+        root.report-geometry();
+    }
+    changed interaction-cancellation-watch => {
+        touch.forwarding-box-selection = false;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        property <bool> forwarding-box-selection: false;
+
+        moved => {
+            if forwarding-box-selection {
+                BoxSelectionGesture.x = node-screen-x + (parent-offset-x + root.x + self.mouse-x) * ViewportState.zoom;
+                BoxSelectionGesture.y = node-screen-y + (parent-offset-y + root.y + self.mouse-y) * ViewportState.zoom;
+                BoxSelectionGesture.state = BoxSelectionGestureState.updating;
+                BoxSelectionGesture.version += 1;
+            } else if LinkCreation.state != LinkCreationState.idle {
+                // Include parent-offset in screen coordinate calculation so examples don't need zoom math
+                LinkCreation.current-x = node-screen-x + (parent-offset-x + root.x + self.mouse-x) * ViewportState.zoom;
+                LinkCreation.current-y = node-screen-y + (parent-offset-y + root.y + self.mouse-y) * ViewportState.zoom;
+                LinkCreation.state = LinkCreationState.updating;
+                LinkCreation.version += 1;
+            }
+        }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                NodeEditorInternalCallbacks.take-editor-focus();
+            }
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                forwarding-box-selection = NodeEditorGestureConfig.forces-box-selection(
+                    event.modifiers.control,
+                    event.modifiers.alt,
+                    event.modifiers.shift,
+                    event.modifiers.meta);
+                if forwarding-box-selection {
+                    BoxSelectionGesture.x = node-screen-x + (parent-offset-x + root.x + self.mouse-x) * ViewportState.zoom;
+                    BoxSelectionGesture.y = node-screen-y + (parent-offset-y + root.y + self.mouse-y) * ViewportState.zoom;
+                    BoxSelectionGesture.extends-selection = event.modifiers.shift;
+                    BoxSelectionGesture.state = BoxSelectionGestureState.started;
+                    BoxSelectionGesture.version += 1;
+                } else {
+                    // Set LinkCreation state to start link creation (NodeEditor watches this)
+                    // Pin position within node must be scaled by zoom since we're inside a scaled container
+                    LinkCreation.start-pin-id = pin-id;
+                    LinkCreation.current-x = node-screen-x + (parent-offset-x + root.x + self.x + self.width / 2) * ViewportState.zoom;
+                    LinkCreation.current-y = node-screen-y + (parent-offset-y + root.y + self.y + self.height / 2) * ViewportState.zoom;
+                    LinkCreation.state = LinkCreationState.started;
+                    LinkCreation.version += 1;
+                }
+            } else if event.kind == PointerEventKind.up && event.button == PointerEventButton.left {
+                if forwarding-box-selection {
+                    BoxSelectionGesture.x = node-screen-x + (parent-offset-x + root.x + self.mouse-x) * ViewportState.zoom;
+                    BoxSelectionGesture.y = node-screen-y + (parent-offset-y + root.y + self.mouse-y) * ViewportState.zoom;
+                    BoxSelectionGesture.state = BoxSelectionGestureState.complete;
+                    BoxSelectionGesture.version += 1;
+                    forwarding-box-selection = false;
+                } else {
+                    // If we're currently creating a link (started from another pin), complete it
+                    if LinkCreation.state != LinkCreationState.idle {
+                        LinkCreation.current-x = node-screen-x + (parent-offset-x + root.x + self.mouse-x) * ViewportState.zoom;
+                        LinkCreation.current-y = node-screen-y + (parent-offset-y + root.y + self.mouse-y) * ViewportState.zoom;
+                        LinkCreation.state = LinkCreationState.complete;
+                        LinkCreation.version += 1;
+                    }
+                }
+            } else if event.kind == PointerEventKind.cancel {
+                InteractionCancellation.version += 1;
+            }
+        }
+    }
+}
+
+/// An association of nodes rendered as a backing sheet behind its members.
+///
+/// Not a node: no pins, no links. Carries the sheet's drag gesture, selection
+/// intent and geometry reporting like `BaseNode`; membership is the
+/// `group-id` on the nodes. The rectangle is the host's authoritative bounds.
+/// `NodeEditor` renders a `GroupSheet` per row of `groups` below the links;
+/// a custom subclass among the editor's children renders above them. The
+/// movement and collapse contracts are in docs/component-reference.md.
+export component BaseGroup inherits Rectangle {
+    in property <int> group-id;
+    in property <bool> selected: false;
+    /// Collapsed groups show only their header band and hide their members.
+    in property <bool> collapsed: false;
+    in property <length> world-x;
+    in property <length> world-y;
+    /// Authoritative bounds from the host's group row.
+    in property <length> group-width: 200px;
+    in property <length> group-height: 150px;
+    /// Height of the band shown while collapsed, and of the input band when
+    /// `header-only-input` is set.
+    in property <length> header-height: GroupStyleDefaults.header-height;
+    /// Restrict pointer input to the header band so links and the canvas
+    /// inside the sheet stay clickable. Off by default: the whole sheet drags.
+    in property <bool> header-only-input: false;
+
+    // === Accessibility ===
+    accessible-role: groupbox;
+    accessible-label: "Group " + group-id;
+    accessible-description: root.collapsed ? (root.selected ? "selected, collapsed" : "collapsed") : (root.selected ? "selected" : "");
+
+    property <length> persistent-offset-x: 0px;
+    property <length> persistent-offset-y: 0px;
+    property <int> reported-group-id: 0;
+    property <int> projection-version: GeometryVersion.projection-version;
+    property <int> interaction-cancellation-watch: InteractionCancellation.version;
+
+    // A selected sheet follows any drag it did not start itself (a node drag or
+    // another sheet's); the dragged sheet uses its own live offset.
+    property <bool> follows-shared-drag: root.selected && DragState.is-dragging && group-id != DragState.dragged-group-id;
+    property <length> world-pos-x: world-x + persistent-offset-x + (root.follows-shared-drag ? DragState.drag-offset-x : drag-area.offset-x);
+    property <length> world-pos-y: world-y + persistent-offset-y + (root.follows-shared-drag ? DragState.drag-offset-y : drag-area.offset-y);
+    /// The rendered height: the header band while collapsed.
+    out property <length> displayed-height: root.collapsed ? root.header-height : root.group-height;
+    out property <length> screen-x: world-pos-x * ViewportState.zoom + ViewportState.pan-x;
+    out property <length> screen-y: world-pos-y * ViewportState.zoom + ViewportState.pan-y;
+    out property <bool> hovered: drag-area.has-hover;
+
+    x: world-pos-x;
+    y: world-pos-y;
+    width: group-width;
+    height: displayed-height;
+    background: transparent;
+    clip: false;
+
+    // The displayed rectangle is what marquee selection and the minimap see:
+    // a collapsed sheet contributes its band, not its expanded bounds.
+    function report-geometry() {
+        if reported-group-id != group-id {
+            if reported-group-id != 0 {
+                NodeEditorInternalCallbacks.remove-group(reported-group-id);
+            }
+            reported-group-id = group-id;
+        }
+        if group-id != 0 {
+            NodeEditorInternalCallbacks.report-group-rect(group-id, world-pos-x, world-pos-y, group-width, displayed-height);
+            GeometryVersion.request-version += 1;
+        }
+    }
+
+    init => {
+        root.report-geometry();
+    }
+    changed group-id => {
+        root.report-geometry();
+    }
+    changed projection-version => {
+        root.report-geometry();
+    }
+    changed interaction-cancellation-watch => {
+        drag-area.cancel-gesture();
+    }
+    changed world-x => {
+        // The row is authoritative after a commit: drop the gesture offset and
+        // publish the settled rectangle even when world-pos-x already had this
+        // value on the final live-drag frame.
+        if abs(persistent-offset-x) > 0.1px {
+            root.persistent-offset-x = 0px;
+        }
+        root.report-geometry();
+    }
+    changed world-y => {
+        if abs(persistent-offset-y) > 0.1px {
+            root.persistent-offset-y = 0px;
+        }
+        root.report-geometry();
+    }
+    changed group-width => {
+        root.report-geometry();
+    }
+    changed displayed-height => {
+        root.report-geometry();
+    }
+    changed world-pos-x => {
+        root.report-geometry();
+    }
+    changed world-pos-y => {
+        root.report-geometry();
+    }
+    changed collapsed => {
+        // Members re-evaluate their visibility against the host's rows.
+        GroupVisibility.version += 1;
+        // A visibility change mid-gesture invalidates the movement set.
+        if DragState.is-dragging {
+            InteractionCancellation.version += 1;
+        }
+    }
+
+    // === Drag Handling ===
+    // Sits below links and nodes in the editor, so member nodes and anything
+    // drawn over the sheet win the press. Hit testing is rectangular whatever
+    // a subclass draws.
+    drag-area := DragGesture {
+        x: 0;
+        y: 0;
+        width: root.group-width;
+        height: root.header-only-input && !root.collapsed ? root.header-height : root.displayed-height;
+        owner-screen-x: root.screen-x;
+        owner-screen-y: root.screen-y;
+        selected: root.selected;
+
+        selection-requested(shift) => {
+            GroupSelectionRequest.group-id = group-id;
+            GroupSelectionRequest.shift-held = shift;
+            GroupSelectionRequest.version += 1;
+        }
+        drag-started(_) => {
+            NodeEditorInternalCallbacks.start-group-drag(group-id, world-x, world-y);
+            DragState.is-dragging = true;
+            DragState.dragged-node-id = 0;
+            DragState.dragged-group-id = group-id;
+        }
+        drag-moved(dx, dy) => {
+            NodeEditorInternalCallbacks.update-group-drag(dx, dy);
+            // Members and other selected sheets follow through DragState.
+            DragState.drag-offset-x = dx;
+            DragState.drag-offset-y = dy;
+            root.report-geometry();
+        }
+        drag-ended(dx, dy) => {
+            root.persistent-offset-x += dx;
+            root.persistent-offset-y += dy;
+            NodeEditorInternalCallbacks.end-group-drag(group-id, dx, dy);
+            // The host's rows are authoritative even if it rejected or
+            // snapped the move.
+            root.persistent-offset-x = 0px;
+            root.persistent-offset-y = 0px;
+            DragState.is-dragging = false;
+            DragState.dragged-group-id = 0;
+            DragState.drag-offset-x = 0px;
+            DragState.drag-offset-y = 0px;
+        }
+        item-double-clicked => {
+            NodeEditorEvents.group-double-clicked(group-id);
+        }
+    }
+}
+
+/// The default backing sheet: a translucent rounded rectangle with a header
+/// band carrying the title and a collapse toggle. Restyle every sheet through
+/// `GroupStyleDefaults`, one through `GroupData.color`, or derive from
+/// `BaseGroup` for a different look altogether.
+export component GroupSheet inherits BaseGroup {
+    in property <string> title;
+    /// Sheet colour; a fully transparent colour falls back to the defaults.
+    in property <color> sheet-color: transparent;
+    /// Below this zoom the sheet is a flat box without header or title.
+    in property <float> lod-simplified-threshold: 0.25;
+
+    accessible-label: root.title != "" ? root.title : "Group " + root.group-id;
+
+    property <color> effective-color: root.sheet-color.alpha > 0 ? root.sheet-color : GroupStyleDefaults.sheet-color;
+    property <bool> simplified: ViewportState.zoom < root.lod-simplified-threshold;
+
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        background: root.effective-color.with-alpha(root.simplified ? GroupStyleDefaults.header-opacity : GroupStyleDefaults.body-opacity);
+        border-radius: GroupStyleDefaults.border-radius;
+        border-width: root.selected ? GroupStyleDefaults.border-width-selected : GroupStyleDefaults.border-width;
+        border-color: root.selected ? GroupStyleDefaults.border-color-selected : root.effective-color.with-alpha(0.8);
+    }
+
+    if !root.simplified: Rectangle {
+        x: 0;
+        y: 0;
+        width: 100%;
+        height: root.header-height;
+        background: root.effective-color.with-alpha(GroupStyleDefaults.header-opacity);
+        border-top-left-radius: GroupStyleDefaults.border-radius;
+        border-top-right-radius: GroupStyleDefaults.border-radius;
+        border-bottom-left-radius: root.collapsed ? GroupStyleDefaults.border-radius : 0px;
+        border-bottom-right-radius: root.collapsed ? GroupStyleDefaults.border-radius : 0px;
+
+        Text {
+            x: 10px;
+            y: 0;
+            width: parent.width - root.header-height - 10px;
+            height: 100%;
+            vertical-alignment: center;
+            text: root.title;
+            color: GroupStyleDefaults.title-color;
+            font-size: GroupStyleDefaults.title-font-size;
+            font-weight: 600;
+            overflow: elide;
+        }
+
+        // Drawn after the drag area, so it wins the press (IR-9).
+        toggle := TouchArea {
+            x: parent.width - root.header-height;
+            y: 0;
+            width: root.header-height;
+            height: root.header-height;
+            accessible-role: button;
+            accessible-label: root.collapsed ? "expand group" : "collapse group";
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down {
+                    NodeEditorInternalCallbacks.take-editor-focus();
+                }
+            }
+            clicked => {
+                NodeEditorEvents.group-collapse-requested(root.group-id, !root.collapsed);
+            }
+            Text {
+                width: 100%;
+                height: 100%;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                text: root.collapsed ? "▸" : "▾";
+                color: GroupStyleDefaults.title-color;
+                font-size: GroupStyleDefaults.title-font-size + 2px;
+            }
+        }
+    }
+}

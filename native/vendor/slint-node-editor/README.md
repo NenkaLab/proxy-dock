@@ -1,0 +1,128 @@
+# Slint Node Editor
+
+A Rust and Slint component library for visual graph editors, such as data flow
+diagrams, state machines, and shader graphs. Build nodes from Slint components
+and connect them with interactive links.
+
+[![Advanced example with custom nodes, embedded controls, live connections, and a minimap](https://raw.githubusercontent.com/tilladam/slint-node-editor/v1.0.0/docs/media/advanced.png)](https://github.com/tilladam/slint-node-editor/releases/download/v1.0.0/demo.mp4)
+
+[Watch or download the demo (MP4, 33 seconds, 30 fps)](https://github.com/tilladam/slint-node-editor/releases/download/v1.0.0/demo.mp4): dragging,
+connections, embedded controls, animated links, and automatic layout.
+
+## Features
+
+- Node dragging, multi-selection, and box selection.
+- Node groups with movable, collapsible backing sheets.
+- Interactive connections with application-defined pin compatibility.
+- Pan, zoom, grid, and minimap.
+- Custom node shapes, embedded Slint controls, and link styling and routing.
+- Examples of animated links and zoom-dependent node detail.
+- Optional automatic graph layout through the `layout` feature.
+
+Your application owns the node and link models, selection, and editing policies.
+The library provides the components, geometry tracking, hit testing, and Rust
+helpers to connect them. You choose node data structures and pin IDs; helpers
+handle common selection and drag behavior.
+
+## Try it
+
+Requires **Slint 1.18 or newer** and **Rust 1.92 or newer**.
+From a checkout of this repository, run:
+
+```sh
+cargo run -p advanced
+```
+
+The advanced example includes custom nodes, embedded controls, link validation,
+and a minimap. For a smaller starting point, run `cargo run -p minimal`.
+
+### Default controls
+
+| Action | Gesture |
+|---|---|
+| Select a node or link | Click |
+| Toggle selection | Shift+click |
+| Move selected nodes | Drag a node |
+| Connect pins | Drag from one pin to another |
+| Pan | Scroll or middle-button drag |
+| Zoom around the pointer | Ctrl+scroll (also Command+scroll on macOS) |
+| Box select | Drag on empty space, or Ctrl+drag over any surface |
+
+Selection behavior uses the standard Rust helpers. Applications can customize
+these policies; deletion and keyboard shortcuts are application-owned. Zoom
+controls clamp to `min-zoom` and `max-zoom` (defaults: 0.1 and 3.0).
+
+## Use it in your application
+
+The [integration guide](docs/integration-guide.md) walks through a complete,
+tested application that supports adding, moving, connecting, and deleting nodes.
+Start with its four files:
+
+- [Cargo.toml](smoke/downstream/Cargo.toml)
+- [build.rs](smoke/downstream/build.rs)
+- [ui/app.slint](smoke/downstream/ui/app.slint)
+- [src/main.rs](smoke/downstream/src/main.rs)
+
+Add the registry dependency:
+
+```toml
+slint-node-editor = "2.0.0"
+```
+
+Upgrading from 1.x: see the 2.0.0 migration notes in [CHANGELOG.md](CHANGELOG.md).
+Generated Slint structs such as `LinkData` may gain fields in minor releases, so
+build them with their constructor or end a literal in `..Default::default()`; see
+[compatibility and releases](CONTRIBUTING.md#compatibility-and-releases).
+
+The integration has three parts:
+
+1. Import components from `@nodeeditor` and build your nodes with `BaseNode` and `Pin`.
+2. Use `NodeEditorSetup`, `wire_node_editor!`, and `wire_selection!` to wire geometry, dragging, and selection.
+3. Handle connection validation, link picking, and graph edits in your application.
+
+See the [component reference](docs/component-reference.md) for properties,
+callbacks, geometry lifecycle, and layout helpers. Generate the Rust API docs
+locally with `cargo doc --open --no-deps --all-features -p slint-node-editor`.
+
+## Examples
+
+Run any example with `cargo run -p <name>` from the repository root.
+
+| Example | Demonstrates |
+|---|---|
+| [minimal](examples/minimal) | Basic nodes, links, and standard setup helpers |
+| [configuration](examples/configuration) | Geometry reporting, grid/curve settings, and host-side LOD configuration |
+| [advanced](examples/advanced) | Custom nodes, embedded controls, minimap, and application policies |
+| [animated-links](examples/animated-links) | Growing links and glow effects |
+| [custom-shapes](examples/custom-shapes) | Custom routing, theme palettes, and focus dimming |
+| [pin-compatibility](examples/pin-compatibility) | Compatibility checks and connection feedback |
+| [zoom-stress-test](examples/zoom-stress-test) | Zoom-dependent node detail and widget scaling |
+| [edge-fade](examples/edge-fade) | Viewport edge styling |
+| [groups](examples/groups) | Node groups: backing sheets that move, collapse and refit around their members |
+| [sugiyama](examples/sugiyama) | Automatic layout with unequal node sizes and configurable rank alignment |
+| [sugiyama-stress-test](examples/sugiyama-stress-test) | Layout with larger graphs |
+
+![Sugiyama example arranging an eight-node graph from input to output](https://raw.githubusercontent.com/tilladam/slint-node-editor/v1.0.0/docs/media/automatic-layout.png)
+
+In `sugiyama`, use **Scramble** to rearrange the nodes and **Auto Layout** to
+restore a layered graph. Choose **Centre** or **Start** alignment to compare
+how differently sized nodes line up within a rank; changing the choice applies
+the layout immediately.
+
+## Limitations
+
+- One editor per window is supported; separate windows can each have an editor.
+- Keyboard-only graph editing and structural accessibility are incomplete.
+- Zoom-dependent detail is implemented by application nodes. The library does
+  not automatically virtualize the graph or guarantee large-graph frame rates.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for supported configurations and checks,
+and [CHANGELOG.md](CHANGELOG.md) for API changes and migration notes.
+
+## License
+
+MIT or Apache-2.0, at your option: [MIT](LICENSE-MIT), [Apache-2.0](LICENSE-APACHE).
+
+This covers the library's code. Slint has separate licensing terms; see
+[Slint's license](https://github.com/slint-ui/slint/blob/master/LICENSE.md)
+for the terms that apply to your application.
