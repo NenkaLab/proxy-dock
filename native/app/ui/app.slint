@@ -1,6 +1,6 @@
 // ProxyDock window (proxydock-ui.exe): Material 3 Expressive on Slint's "material" style (build.rs), same look as
 // the prototype. Pages so far: the proxy cards and the log; everything comes from the core process over ipc.
-import { Button, ComboBox, LineEdit, ListView, Palette, ScrollView, SpinBox, Switch, TextEdit } from "std-widgets.slint";
+import { Button, ListView, Palette, ScrollView, Switch, TextEdit } from "std-widgets.slint";
 import {
     NodeEditor, BaseNode, Pin, PinTypes, NodeEditorEvents, NodeEditorInternalCallbacks, NodeEditorComputations, LinkData,
 } from "@nodeeditor";
@@ -343,6 +343,236 @@ component ToolbarButton inherits Rectangle {
     }
 }
 
+// --- the app's own fields: one height and one corner radius everywhere (the material style's differ) ---
+
+global Field {
+    out property <length> height: 40px;
+    out property <length> radius: 12px;
+}
+
+// a one-line text box; long text scrolls to its end while it has focus
+component AppLineEdit inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder-text;
+    in property <bool> enabled: true;
+    in property <bool> read-only;
+    in property <InputType> input-type: InputType.text;
+    in property <length> font-size: 14px;
+    in property <string> font-family;
+    out property <bool> has-focus: input.has-focus;
+    callback accepted(string);
+    callback edited(string);
+    public function select-all() { input.select-all(); }
+    forward-focus: input;
+    height: Field.height;
+    min-width: 80px;
+    border-radius: Field.radius;
+    background: root.read-only ? transparent : M3.surface-container-high;
+    border-width: input.has-focus ? 2px : 1px;
+    border-color: input.has-focus ? M3.primary : M3.outline-variant;
+    opacity: root.enabled ? 1 : 0.5;
+    clip: true;
+    Rectangle {
+        x: 14px;
+        width: parent.width - 28px;
+        height: parent.height;
+        clip: true;
+        input := TextInput {
+            property <length> room: parent.width;
+            // the end stays in view while typing past the edge
+            x: self.has-focus && self.preferred-width > self.room ? self.room - self.preferred-width : 0px;
+            width: max(self.room, self.preferred-width + 2px);
+            height: parent.height;
+            vertical-alignment: center;
+            single-line: true;
+            text <=> root.text;
+            enabled: root.enabled;
+            read-only: root.read-only;
+            input-type: root.input-type;
+            font-size: root.font-size;
+            font-family: root.font-family;
+            color: M3.on-surface;
+            selection-background-color: M3.primary.with-alpha(0.35);
+            accepted => { root.accepted(self.text); }
+            edited => { root.edited(self.text); }
+        }
+        if root.text == "" && !input.has-focus: Text {
+            x: 0;
+            width: parent.width;
+            height: parent.height;
+            text: root.placeholder-text;
+            font-size: root.font-size;
+            color: M3.on-surface-variant.with-alpha(0.7);
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}
+
+// one entry of a drop-down list
+component ComboItem inherits Rectangle {
+    in property <string> text;
+    in property <bool> current;
+    callback picked();
+    height: 38px;
+    border-radius: 8px;
+    background: root.current ? M3.secondary-container : item-ta.has-hover ? M3.on-surface.with-alpha(0.08) : transparent;
+    Text {
+        x: 12px;
+        width: parent.width - 44px;
+        text: root.text;
+        font-size: 14px;
+        color: root.current ? M3.on-secondary-container : M3.on-surface;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    if root.current: Image {
+        x: parent.width - 30px;
+        width: 18px;
+        height: 18px;
+        source: @image-url("icons/check.svg");
+        colorize: M3.on-secondary-container;
+    }
+    item-ta := TouchArea { clicked => { root.picked(); } }
+}
+
+// a drop-down list
+component AppComboBox inherits Rectangle {
+    in property <[string]> model;
+    in-out property <int> current-index;
+    in property <bool> enabled: true;
+    callback selected(string);
+    height: Field.height;
+    min-width: 100px;
+    border-radius: Field.radius;
+    background: ta.has-hover && root.enabled ? M3.surface-container-highest : M3.surface-container-high;
+    border-width: 1px;
+    border-color: M3.outline-variant;
+    opacity: root.enabled ? 1 : 0.5;
+    accessible-role: combobox;
+    accessible-value: root.model[root.current-index];
+    Text {
+        x: 14px;
+        width: parent.width - 48px;
+        text: root.model[root.current-index];
+        font-size: 14px;
+        color: M3.on-surface;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    Image {
+        x: parent.width - 34px;
+        width: 20px;
+        height: 20px;
+        source: @image-url("icons/expand_more.svg");
+        colorize: M3.on-surface-variant;
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        clicked => { popup.show(); }
+    }
+    popup := PopupWindow {
+        x: 0;
+        y: root.height + 4px;
+        width: root.width;
+        height: min(root.model.length * 38px + 12px, 340px);
+        Rectangle {
+            border-radius: Field.radius;
+            background: M3.surface-container-high;
+            drop-shadow-blur: 12px;
+            drop-shadow-offset-y: 3px;
+            drop-shadow-color: #00000050;
+            border-width: 1px;
+            border-color: M3.outline-variant;
+            // a short list as it is, a long one scrolls
+            if root.model.length <= 8: VerticalLayout {
+                x: 6px;
+                y: 6px;
+                width: parent.width - 12px;
+                height: root.model.length * 38px;
+                alignment: start;
+                for item[i] in root.model: ComboItem {
+                    text: item;
+                    current: i == root.current-index;
+                    picked => {
+                        root.current-index = i;
+                        root.selected(item);
+                    }
+                }
+            }
+            if root.model.length > 8: ListView {
+                x: 6px;
+                y: 6px;
+                width: parent.width - 12px;
+                height: parent.height - 12px;
+                for item[i] in root.model: ComboItem {
+                    text: item;
+                    current: i == root.current-index;
+                    picked => {
+                        root.current-index = i;
+                        root.selected(item);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// a number with − and + (typed numbers are kept within minimum..maximum)
+component AppSpinBox inherits Rectangle {
+    in-out property <int> value;
+    in property <int> minimum: 0;
+    in property <int> maximum: 100;
+    in property <bool> enabled: true;
+    height: Field.height;
+    border-radius: Field.radius;
+    background: M3.surface-container-high;
+    border-width: num.has-focus ? 2px : 1px;
+    border-color: num.has-focus ? M3.primary : M3.outline-variant;
+    opacity: root.enabled ? 1 : 0.5;
+    function set(v: int) {
+        root.value = max(root.minimum, min(root.maximum, v));
+        num.text = root.value;
+    }
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 4px;
+        spacing: 2px;
+        num := TextInput {
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+            input-type: InputType.number;
+            text: root.value;
+            font-size: 14px;
+            color: M3.on-surface;
+            enabled: root.enabled;
+            edited => {
+                if self.text.is-float() {
+                    root.value = max(root.minimum, min(root.maximum, self.text.to-float()));
+                }
+            }
+            accepted => { root.set(self.text.is-float() ? self.text.to-float() : root.value); }
+        }
+        for step[i] in [-1, 1]: Rectangle {
+            width: 32px;
+            height: 32px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 16px;
+            background: step-ta.has-hover && root.enabled ? M3.on-surface.with-alpha(0.10) : transparent;
+            Image {
+                width: 18px;
+                height: 18px;
+                source: step < 0 ? @image-url("icons/remove.svg") : @image-url("icons/add.svg");
+                colorize: M3.on-surface;
+            }
+            step-ta := TouchArea {
+                enabled: root.enabled;
+                clicked => { root.set(root.value + step); }
+            }
+        }
+    }
+}
+
 component FormRow inherits Rectangle {
     in property <FieldRow> f;
     callback changed(string, string);
@@ -379,7 +609,7 @@ component FormRow inherits Rectangle {
                     toggled => { root.changed(f.key, self.checked ? "true" : "false"); }
                 }
             }
-            if f.kind == "choice": ComboBox {
+            if f.kind == "choice": AppComboBox {
                 model: f.options;
                 current-index: f.index;
                 selected => { root.changed(f.key, self.current-index); }
@@ -406,12 +636,13 @@ component FormRow inherits Rectangle {
                     clicked => { root.pressed(f.key, i); }
                 }
             }
-            if f.kind == "info": LineEdit {
+            if f.kind == "info": AppLineEdit {
                 text: f.text;
                 read-only: true;
                 font-size: 12px;
+                font-family: "JetBrains Mono";
             }
-            if f.kind == "text" || f.kind == "secret" || f.kind == "int": LineEdit {
+            if f.kind == "text" || f.kind == "secret" || f.kind == "int": AppLineEdit {
                 text: f.text;
                 input-type: f.kind == "secret" ? InputType.password : f.kind == "int" ? InputType.number : InputType.text;
                 edited(t) => { root.changed(f.key, t); }
@@ -695,7 +926,7 @@ component SettingsDefaults inherits SettingsSection {
             font-weight: 600;
             color: M3.on-surface;
         }
-        LineEdit { text <=> Settings.allowed; }
+        AppLineEdit { text <=> Settings.allowed; }
         Text {
             text: Settings.text.allowed-desc;
             font-size: 12px;
@@ -711,7 +942,7 @@ component SettingsDefaults inherits SettingsSection {
     SettingRow {
         label: Settings.text.timeout;
         desc: Settings.text.timeout-desc;
-        SpinBox {
+        AppSpinBox {
             width: 150px;
             minimum: 10;
             maximum: 86400;
@@ -737,7 +968,7 @@ component SettingsDefaults inherits SettingsSection {
             font-weight: 600;
             color: M3.on-surface;
         }
-        LineEdit {
+        AppLineEdit {
             text <=> Settings.dns;
             placeholder-text: "1.1.1.1 · tls://dns.google · https://cloudflare-dns.com/dns-query";
         }
@@ -761,7 +992,7 @@ component SettingsDisplay inherits SettingsSection {
     SettingRow {
         label: Settings.text.language;
         desc: Settings.text.language-desc;
-        ComboBox {
+        AppComboBox {
             width: 170px;
             model: Settings.languages;
             current-index <=> Settings.language;
@@ -770,7 +1001,7 @@ component SettingsDisplay inherits SettingsSection {
     SettingRow {
         label: Settings.text.theme;
         desc: Settings.text.theme-desc;
-        ComboBox {
+        AppComboBox {
             width: 170px;
             model: Settings.themes;
             current-index <=> Settings.theme;
@@ -779,7 +1010,7 @@ component SettingsDisplay inherits SettingsSection {
     SettingRow {
         label: Settings.text.scale;
         desc: Settings.text.scale-desc;
-        ComboBox {
+        AppComboBox {
             width: 170px;
             model: Settings.scales;
             current-index <=> Settings.scale;
@@ -788,7 +1019,7 @@ component SettingsDisplay inherits SettingsSection {
     SettingRow {
         label: Settings.text.logsize;
         desc: Settings.text.logsize-desc;
-        SpinBox {
+        AppSpinBox {
             width: 150px;
             minimum: 8;
             maximum: 20;
@@ -944,7 +1175,7 @@ component StatsPage inherits VerticalLayout {
             horizontal-stretch: 1;
             vertical-alignment: center;
         }
-        ComboBox {
+        AppComboBox {
             width: 240px;
             model: Stats.choices;
             current-index <=> Stats.choice;
@@ -1133,7 +1364,7 @@ component ConnPage inherits VerticalLayout {
             horizontal-stretch: 1;
             vertical-alignment: center;
         }
-        ComboBox {
+        AppComboBox {
             width: 220px;
             model: Conn.proxies;
             current-index <=> Conn.proxy;
@@ -1160,8 +1391,9 @@ component ConnPage inherits VerticalLayout {
             horizontal-stretch: 1;
             vertical-alignment: center;
         }
-        LineEdit {
+        AppLineEdit {
             width: 260px;
+            y: (parent.height - self.height) / 2;
             text <=> Conn.site;
             placeholder-text: Conn.placeholder;
             enabled: Conn.editable;
@@ -1831,7 +2063,7 @@ export component App inherits Window {
                         font-weight: 700;
                         color: M3.on-surface;
                     }
-                    rename-input := LineEdit {
+                    rename-input := AppLineEdit {
                         enabled: root.rename-open;
                         text <=> root.rename-text;
                         accepted(text) => {
