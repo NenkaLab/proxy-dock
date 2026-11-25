@@ -302,3 +302,53 @@ fn hysteria2_server_card_on_the_official_core() {
     m.stop_all(Duration::from_secs(10));
     assert_eq!(m.state("hs"), State::Stopped);
 }
+
+/// "Check connection" goes through the whole chain: the outbound's "via" block is used (an HTTP proxy that
+/// records the CONNECT it gets), and a failure comes back with what sing-box logged
+#[test]
+fn connection_check_uses_the_chain() {
+    if exe().is_none() {
+        eprintln!("sing-box not found: skipped");
+        return;
+    }
+    let (m, _seen) = manager();
+    let dead = free_port();
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let hop = l.local_addr().unwrap().port();
+    let asked = Arc::new(Mutex::new(Vec::<String>::new()));
+    let a = asked.clone();
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        for s in l.incoming().take(3).flatten() {
+            let mut s = s;
+            let mut buf = [0u8; 1024];
+            let n = s.read(&mut buf).unwrap_or(0);
+            a.lock().unwrap().push(String::from_utf8_lossy(&buf[..n]).lines().next().unwrap_or("").to_string());
+            let _ = s.write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n");
+        }
+    });
+    let g = graph::validate(&json!({
+        "inbounds": [{"id": "c", "name": "card", "inbound": {"type": "socks5", "host": "127.0.0.1", "port": free_port()}, "target": "s"}],
+        "outbounds": [{"id": "s", "outbound": {"type": "socks5", "host": "127.0.0.1", "port": dead}, "via": "h"},
+                      {"id": "h", "outbound": {"type": "http", "host": "127.0.0.1", "port": hop}}],
+    }));
+    let card = Value::Object(graph::compile(&g).remove(0));
+    let glob = glob(json!({}));
+    let out = proxydock_core::probe::check_outbound(&m.remote(), &card, &glob, "__check_t__");
+    assert_eq!(out["ok"], false, "{out:?}");
+    let asked = asked.lock().unwrap().clone();
+    assert!(asked.iter().any(|l| l.starts_with(&format!("CONNECT 127.0.0.1:{dead}"))), "the chain's first hop was not used: {asked:?} {out:?}");
+    assert!(!out["detail"].as_str().unwrap_or("").is_empty(), "{out:?}");
+    assert_eq!(m.state("__check_t__"), State::Stopped);
+    let (ok, text) = proxydock_core::probe::result_text("socks5", &out, None);
+    assert!(!ok && text.contains('\n'), "{text}");
+
+    // straight out to the internet: ok when this PC is online (not required)
+    let direct = card_direct();
+    let out = proxydock_core::probe::check_outbound(&m.remote(), &direct, &glob, "__check_d__");
+    eprintln!("direct check: {}", proxydock_core::probe::result_text("direct", &out, None).1);
+}
+
+fn card_direct() -> Value {
+    card("cd", free_port())
+}

@@ -71,6 +71,12 @@ impl Card {
             Card::Hysteria(e) => e.last_reason(),
         }
     }
+    fn clear_last(&self) {
+        match self {
+            Card::SingBox(e) => e.clear_last(),
+            Card::Hysteria(e) => e.clear_last(),
+        }
+    }
     fn exit_totals(&self) -> HashMap<String, (f64, f64)> {
         match self {
             Card::SingBox(e) => e.exit_totals(),
@@ -119,6 +125,45 @@ pub struct Manager {
     worker: Option<std::thread::JoinHandle<()>>,
 }
 
+/// What another thread needs of the manager (the connection check starts and reads its own card).
+#[derive(Clone)]
+pub struct Remote {
+    tx: Sender<Cmd>,
+    shared: Arc<Mutex<Shared>>,
+}
+
+impl Remote {
+    pub fn start(&self, proxy: &Value, glob: &Glob) -> Receiver<bool> {
+        let (t, r) = channel();
+        let _ = self.tx.send(Cmd::Start(proxy.clone(), glob.clone(), Some(t)));
+        r
+    }
+
+    pub fn stop(&self, id: &str) -> Receiver<()> {
+        let (t, r) = channel();
+        let _ = self.tx.send(Cmd::Stop(id.to_string(), Some(t)));
+        r
+    }
+
+    pub fn state(&self, id: &str) -> State {
+        self.shared.lock().unwrap().status.get(id).cloned().unwrap_or(State::Stopped)
+    }
+
+    pub fn last_error(&self, id: &str) -> String {
+        self.shared.lock().unwrap().running.get(id).map(|r| r.engine.last_error()).unwrap_or_default()
+    }
+
+    pub fn last_reason(&self, id: &str) -> String {
+        self.shared.lock().unwrap().running.get(id).map(|r| r.engine.last_reason()).unwrap_or_default()
+    }
+
+    pub fn clear_last(&self, id: &str) {
+        if let Some(r) = self.shared.lock().unwrap().running.get(id) {
+            r.engine.clear_last();
+        }
+    }
+}
+
 /// where the worker finds the engines' folders (replaceable for tests)
 #[derive(Clone)]
 pub struct Folders {
@@ -156,6 +201,10 @@ impl Manager {
         let w = Worker { tx: tx.clone(), shared: shared.clone(), events, folders, generation: 0 };
         let worker = std::thread::Builder::new().name("proxy-manager".into()).spawn(move || w.run(rx)).ok();
         Manager { tx, shared, worker }
+    }
+
+    pub fn remote(&self) -> Remote {
+        Remote { tx: self.tx.clone(), shared: self.shared.clone() }
     }
 
     /// Start a card (a running one restarts). The receiver says whether it is running now.

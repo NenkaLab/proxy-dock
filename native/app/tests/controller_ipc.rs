@@ -423,3 +423,63 @@ fn share_links_and_subscriptions() {
     h.quit(Duration::from_secs(10));
     let _ = std::fs::remove_dir_all(&home);
 }
+
+#[test]
+fn connection_check_and_port_check() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(exe) = singbox() else {
+        eprintln!("sing-box not found: skipped");
+        return;
+    };
+    let home = std::env::temp_dir().join(format!("proxydock-probe-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let busy = TcpListener::bind("127.0.0.1:0").unwrap();
+    let busy_port = busy.local_addr().unwrap().port();
+    let dead = free_port();
+    let settings = json!({
+        "version": 3,
+        "global": {"singbox_path": exe.display().to_string()},
+        "graph": {
+            "inbounds": [{"id": "a1", "name": "card", "inbound": {"type": "socks5", "host": "127.0.0.1", "port": busy_port}, "target": "u"}],
+            "outbounds": [{"id": "u", "name": "Up", "outbound": {"type": "socks5", "host": "127.0.0.1", "port": dead}},
+                          {"id": "b", "name": "Nothing", "outbound": {"type": "block"}}],
+        },
+    });
+    let path = home.join("config.json");
+    std::fs::write(&path, settings.to_string()).unwrap();
+    proxydock_core::singbox::guard::set_run_dir(home.join("run"));
+    let h = controller::spawn(path.clone()).unwrap();
+    let (mut w, rx) = connect(&h, &h.token);
+    expect(&rx, 5, |v| v["ev"] == "hello").expect("hello");
+    let field = |form: &Value, key: &str| form["fields"].as_array().unwrap().iter().find(|f| f["key"] == key).cloned().unwrap();
+
+    // the card's port is taken by another program
+    ipc::send(&mut w, &json!({"cmd": "edit_open", "id": "a1"})).unwrap();
+    expect(&rx, 5, |v| v["ev"] == "form").expect("form");
+    ipc::send(&mut w, &json!({"cmd": "edit_action", "id": "a1", "action": "port.check", "values": {}})).unwrap();
+    let n = expect(&rx, 5, |v| v["ev"] == "notice").expect("notice");
+    assert_eq!(n["ok"], false, "{n}");
+    expect(&rx, 5, |v| v["ev"] == "form").expect("form after the port check");
+    // the check: the upstream does not answer, and the inbound port is reported too
+    ipc::send(&mut w, &json!({"cmd": "edit_action", "id": "a1", "action": "probe", "values": {}})).unwrap();
+    let f = expect(&rx, 5, |v| v["ev"] == "form").expect("busy form");
+    assert_eq!(field(&f, "probe")["busy"], true);
+    let n = expect(&rx, 40, |v| v["ev"] == "notice").expect("notice");
+    assert_eq!(n["ok"], false, "{n}");
+    let f = expect(&rx, 5, |v| v["ev"] == "form").expect("form");
+    let probe = field(&f, "probe");
+    assert_eq!(probe["tone"], 2);
+    let text = probe["desc"].as_str().unwrap();
+    assert!(text.contains(&busy_port.to_string()) && text.lines().count() >= 2, "{text}");
+    drop(busy);
+
+    // a Block outbound: nothing to check
+    ipc::send(&mut w, &json!({"cmd": "edit_open", "id": "b"})).unwrap();
+    expect(&rx, 5, |v| v["ev"] == "form").expect("form");
+    ipc::send(&mut w, &json!({"cmd": "edit_action", "id": "b", "action": "probe", "values": {}})).unwrap();
+    let f = expect(&rx, 5, |v| v["ev"] == "form").expect("form");
+    assert!(field(&f, "probe")["desc"].as_str().unwrap().contains("Block"));
+    h.quit(Duration::from_secs(10));
+    let _ = std::fs::remove_dir_all(&home);
+}

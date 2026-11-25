@@ -17,6 +17,7 @@ pub mod log;
 pub mod manager;
 pub mod net;
 pub mod paths;
+pub mod probe;
 pub mod py;
 pub mod secret;
 pub mod singbox;

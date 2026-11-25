@@ -200,6 +200,7 @@ pub fn inbound_form(g: &Obj, glob: &Map<String, Value>, node: &Value) -> Vec<Fie
     b.add("type", "Protocol", "", inbound_types(), true).rerender = true;
     b.add("host", "Listen address · port", "127.0.0.1 = this PC only, 0.0.0.0 = allow other PCs (check authentication and firewall)", Kind::Text, it != "tun" && it != "wireguard");
     b.add("port", if it == "wireguard" { "Listen address · port" } else { "" }, "", Kind::Int { min: 1, max: 65535 }, it != "tun");
+    b.push(field("port.check", "Check availability", "", Kind::Button, json!(null), it != "tun"));
     b.add("tun_stack", "Network stack", "How sing-box handles the captured packets. Try another one if some apps misbehave",
         choice(&[("mixed", tr("mixed (recommended)")), ("system", "system".into()), ("gvisor", "gvisor".into())]), it == "tun");
     b.add("tun_strict_route", "Strict route", "Also stops traffic that tries to go around the TUN. Can break IPv6 on Windows; leave off unless needed", Kind::Bool, it == "tun");
@@ -242,6 +243,8 @@ pub fn inbound_form(g: &Obj, glob: &Map<String, Value>, node: &Value) -> Vec<Fie
     b.push(field("target", "Outbound block", "Where this inbound sends its traffic. Choosing another inbound relays into it. Also editable on the canvas.",
         inbound_targets(g, id), json!(node["target"].as_str().unwrap_or("")), true));
     // this card's own settings instead of the global ones
+    b.push(field("", "Check connection", "", Kind::Heading, json!(null), true));
+    b.push(field("probe", "Check connection", "Tests the current, unsaved settings: connects to an HTTPS site through the outbound and checks that the inbound port can be opened (including the certificate).", Kind::Button, json!(null), true));
     b.push(field("", "Local settings (uncheck to use a value just for this proxy)", "", Kind::Heading, json!(null), true));
     for (key, label, desc) in OVERRIDABLE {
         let own = &node["overrides"][key];
@@ -377,6 +380,8 @@ pub fn outbound_form(g: &Obj, node: &Value) -> Vec<Field> {
     b.add("wg_allowed_ips", "Allowed IPs", "Destinations sent into the tunnel. 0.0.0.0/0, ::/0 = everything", Kind::Text, wg);
     b.add("wg_mtu", "MTU · keepalive (s)", "Keepalive 0 = off. 25 helps behind NAT", Kind::Int { min: 576, max: 9200 }, wg);
     b.add("wg_keepalive", "", "", Kind::Int { min: 0, max: 3600 }, wg);
+    b.push(field("", "Check connection", "", Kind::Heading, json!(null), true));
+    b.push(field("probe", "Check connection", "Tests the current, unsaved settings: connects to an HTTPS site through this outbound.", Kind::Button, json!(null), true));
     b.out
 }
 
@@ -871,6 +876,34 @@ pub fn with_node(g: &Obj, kind: &str, node: &Value) -> Obj {
 
 /// What has to be fixed before the edited node can be saved (Python `EditorInterface._errors`).
 pub fn errors(g: &Obj, kind: &str, node: &Value) -> Vec<String> {
+    errors_for(g, kind, node, false)
+}
+
+/// What has to be fixed before the connection check (an unconnected card cannot be checked)
+pub fn check_errors(g: &Obj, kind: &str, node: &Value) -> Vec<String> {
+    errors_for(g, kind, node, true)
+}
+
+/// The proxy the connection check uses for the edited block (Python `_as_proxy`): a card as compiled with the
+/// draft, or for an outbound block one that leaves through it (its chain and group members included).
+pub fn as_proxy(g: &Obj, kind: &str, node: &Value) -> Option<Value> {
+    let g2 = with_node(g, kind, node);
+    match kind {
+        "inbound" => graph::compile(&g2).into_iter().map(Value::Object).find(|p| p["id"] == node["id"]),
+        "outbound" => {
+            let mut p = Value::Object(crate::config::validate_proxy(&json!({"id": "__edit__", "name": node["name"], "outbound": node["outbound"]})));
+            let resolved = graph::resolve_outbound(&g2, s(node, "id"));
+            p["outbound"]["via"] = resolved.get("via").cloned().unwrap_or(Value::Null);
+            if let Some(m) = resolved.get("members") {
+                p["outbound"]["members"] = m.clone();
+            }
+            Some(p)
+        }
+        _ => None,
+    }
+}
+
+fn errors_for(g: &Obj, kind: &str, node: &Value, for_check: bool) -> Vec<String> {
     let g2 = with_node(g, kind, node);
     let id = s(node, "id");
     match kind {
@@ -888,7 +921,7 @@ pub fn errors(g: &Obj, kind: &str, node: &Value) -> Vec<String> {
             let others: Vec<Value> = compiled.iter().filter(|o| o["id"] != node["id"]).cloned().collect();
             let unlinked = crate::checks::unlinked_error();
             // an unconnected inbound can be saved, it just cannot start
-            errs.extend(crate::checks::check_proxy(p, &others).into_iter().filter(|e| p["unlinked"] != json!(true) || *e != unlinked));
+            errs.extend(crate::checks::check_proxy(p, &others).into_iter().filter(|e| for_check || p["unlinked"] != json!(true) || *e != unlinked));
             errs
         }
         "outbound" => {

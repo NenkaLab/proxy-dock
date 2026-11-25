@@ -589,7 +589,7 @@ fn main() -> Result<(), slint::PlatformError> {
                             m.add_logs(v["logs"].as_array().map(Vec::as_slice).unwrap_or(&[]));
                             m.set_stats(&v["stats"]);
                             m.set_canvas(&v["canvas"]);
-                            // debug builds: PROXYDOCK_EDIT=<block id> opens its editor (screenshots without clicking)
+                            // debug builds: PROXYDOCK_EDIT=<block id>[,<button>] opens its editor (screenshots without clicking)
                             if cfg!(debug_assertions) {
                                 if let Ok(id) = std::env::var("PROXYDOCK_EDIT") {
                                     EDIT_REQUEST.with(|r| *r.borrow_mut() = Some(id));
@@ -681,8 +681,13 @@ fn main() -> Result<(), slint::PlatformError> {
         let send = send.clone();
         let t = slint::Timer::default();
         t.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(200), move || {
-            if let Some(id) = EDIT_REQUEST.with(|r| r.borrow_mut().take()) {
+            if let Some(req) = EDIT_REQUEST.with(|r| r.borrow_mut().take()) {
+                // "<id>" or "<id>,<button>": the button is pressed once the editor is open
+                let (id, action) = req.split_once(',').unwrap_or((&req, ""));
                 send(json!({"cmd": "edit_open", "id": id}));
+                if !action.is_empty() {
+                    send(json!({"cmd": "edit_action", "id": id, "action": action, "values": {}}));
+                }
             }
         });
         std::mem::forget(t);

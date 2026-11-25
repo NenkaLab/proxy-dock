@@ -167,6 +167,7 @@ pub fn spawn(config_path: PathBuf) -> std::io::Result<Handle> {
         busy: std::collections::HashSet::new(),
         sub_busy: std::collections::HashSet::new(),
         next_sub_check: Instant::now() + SUB_FIRST,
+        probe_text: HashMap::new(),
     };
     c.load();
     std::thread::Builder::new().name("controller".into()).spawn(move || c.run(rx))?;
@@ -209,6 +210,8 @@ struct Controller {
     /// subscription blocks being refreshed in the background
     sub_busy: std::collections::HashSet<String>,
     next_sub_check: Instant,
+    /// the last connection check of each window: (block, text, tone 0 / 1 ok / 2 failed)
+    probe_text: HashMap<u64, (String, String, i32)>,
 }
 
 fn entry_json(e: &Entry) -> Value {
@@ -343,11 +346,15 @@ impl Controller {
             let mut node = node;
             form::on_open(kind, &mut node);
             self.drafts.insert(client, (kind, node));
+            self.probe_text.remove(&client);
         }
         let Some((kind, draft)) = self.drafts.get(&client).cloned() else { return };
         let mut node = form::apply(kind, &draft, &values);
         let id = node["id"].as_str().unwrap_or("").to_string();
         let action = v["action"].as_str().unwrap_or("");
+        if cmd == "edit_action" && action == "port.check" {
+            self.check_port(client, &node);
+        }
         if cmd == "edit_action" && NETWORK_ACTIONS.contains(&action) {
             self.drafts.insert(client, (kind, node.clone()));
             self.start_work(client, action, kind, &node);
@@ -411,6 +418,12 @@ impl Controller {
                     j["label"] = json!(tr(busy_label(&f.key)));
                     j["busy"] = json!(true);
                 }
+                if f.key == "probe" {
+                    if let Some((_, text, tone)) = self.probe_text.get(&client).filter(|(b, _, _)| *b == id) {
+                        j["desc"] = json!(text);
+                        j["tone"] = json!(tone);
+                    }
+                }
                 j
             })
             .collect();
@@ -450,7 +463,7 @@ impl Controller {
     }
 
     /// the work of a network button (None: nothing to do, a message was shown)
-    fn network_job(&mut self, client: u64, action: &str, _kind: &'static str, node: &Value) -> Option<Job> {
+    fn network_job(&mut self, client: u64, action: &str, kind: &'static str, node: &Value) -> Option<Job> {
         let id = node["id"].as_str().unwrap_or("").to_string();
         match action {
             "sub.update" => {
@@ -497,8 +510,63 @@ impl Controller {
                     })
                 }))
             }
+            "probe" => {
+                if kind == "outbound" && node["outbound"]["type"] == json!("block") {
+                    let text = tr("A Block outbound refuses every connection, so there is nothing to check.");
+                    self.probe_text.insert(client, (id, text, 0));
+                    return None;
+                }
+                let errs = form::check_errors(&self.graph, kind, node);
+                if !errs.is_empty() {
+                    self.notice(client, false, &tr("Please fix first"), &errs.iter().take(4).cloned().collect::<Vec<_>>().join("\n"));
+                    return None;
+                }
+                let p = form::as_proxy(&self.graph, kind, node)?;
+                let inbound = kind == "inbound";
+                // the card runs on these settings already: its port is in use by itself
+                let running = inbound
+                    && self.manager.state(&id) == State::Running
+                    && graph::find(&self.graph, &id).is_some_and(|(_, saved)| {
+                        saved["inbound"]["host"] == node["inbound"]["host"] && saved["inbound"]["port"] == node["inbound"]["port"]
+                    });
+                self.probe_text.insert(client, (id.clone(), tr("Connecting through the outbound\u{2026}"), 0));
+                let (remote, glob, ot) = (self.manager.remote(), self.glob.clone(), p["outbound"]["type"].as_str().unwrap_or("direct").to_string());
+                let check_id = format!("__check_{client}__");
+                Some(Box::new(move || {
+                    let out = proxydock_core::probe::check_outbound(&remote, &p, &glob, &check_id);
+                    let inb = inbound.then(|| proxydock_core::probe::check_inbound(&p, running));
+                    let (ok, text) = proxydock_core::probe::result_text(&ot, &out, inb);
+                    Box::new(move |c: &mut Controller| {
+                        if c.drafts.get(&client).is_some_and(|(_, n)| n["id"] == json!(id)) {
+                            c.probe_text.insert(client, (id.clone(), text.clone(), if ok { 1 } else { 2 }));
+                            let title = tr("Connection check ") + &tr(if ok { "succeeded" } else { "failed" });
+                            c.notice(client, ok, &title, text.lines().next().unwrap_or(""));
+                        }
+                    })
+                }))
+            }
             _ => None,
         }
+    }
+
+    /// "Check availability" next to a card's port (Python `_check_port`)
+    fn check_port(&mut self, client: u64, node: &Value) {
+        let ib = &node["inbound"];
+        let host = match proxydock_core::py::strip(ib["host"].as_str().unwrap_or("")) {
+            "" => "127.0.0.1".to_string(),
+            h => h.to_string(),
+        };
+        let port = ib["port"].as_i64().unwrap_or(0).clamp(0, 65535) as u16;
+        let id = node["id"].as_str().unwrap_or("");
+        let saved_same = graph::find(&self.graph, id).is_some_and(|(_, saved)| saved["inbound"]["port"] == json!(port) && saved["inbound"]["host"] == json!(host));
+        if self.manager.state(id) == State::Running && saved_same {
+            let title = tr("Port {port}").replace("{port}", &port.to_string());
+            self.notice(client, true, &title, &tr("This proxy is running on this port."));
+            return;
+        }
+        let (ok, msg) = proxydock_core::probe::check_port(&host, port, ib["type"] == json!("hysteria2"));
+        let title = tr("Port {port} ").replace("{port}", &port.to_string()) + &tr(if ok { "available" } else { "unavailable" });
+        self.notice(client, ok, &title, &msg);
     }
 
     /// change the window's draft if it still edits block `id`

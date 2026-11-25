@@ -357,6 +357,11 @@ impl HyEngine {
         self.inner.last_reason()
     }
 
+    pub fn clear_last(&self) {
+        self.shared.last_error.lock().unwrap().clear();
+        self.inner.clear_last();
+    }
+
     pub fn needs_restart(&self, proxy: &Value, glob: &Map<String, Value>) -> bool {
         let new = config::resolve(proxy, glob);
         RESTART_KEYS.iter().any(|k| new[*k] != self.cfg[*k]) || self.inner.needs_restart(&inner_proxy(proxy, &self.inner_login), glob)

@@ -508,6 +508,13 @@ impl Engine {
         self.shared.state.lock().unwrap().last_reason.clone()
     }
 
+    /// forget the last failure (the connection check reads the one of each test)
+    pub fn clear_last(&self) {
+        let mut st = self.shared.state.lock().unwrap();
+        st.last_error.clear();
+        st.last_reason.clear();
+    }
+
     /// whether new settings need a restart (route settings live in the sing-box config)
     pub fn needs_restart(&self, proxy: &Value, glob: &serde_json::Map<String, Value>) -> bool {
         let st = self.shared.state.lock().unwrap();

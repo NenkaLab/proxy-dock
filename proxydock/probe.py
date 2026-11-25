@@ -150,6 +150,10 @@ def checker_for(proxy, glob, check_id=CHECK_ID):
     p = config.new_proxy(_t("Check connection"), {"type": "socks5", "host": "127.0.0.1", "port": 1},
                          copy.deepcopy(proxy["outbound"]))
     p["id"] = check_id
+    # validate_proxy keeps only the known outbound keys: put the chain and the group members back
+    for k in ("via", "members"):
+        if k in proxy["outbound"]:
+            p["outbound"][k] = copy.deepcopy(proxy["outbound"][k])
     p["inbound"]["port"] = 0
     p["overrides"] = config.resolve(proxy, glob)
     p["overrides"].update(allowed_domains=["*"], log_connections=False, log_close=False)
