@@ -409,6 +409,31 @@ component AppLineEdit inherits Rectangle {
     }
 }
 
+// Edge protection: where a scrolled area's content goes on past its top or bottom, it fades into the background
+component EdgeFade inherits Rectangle {
+    // the scroll view's viewport-y (0 or less), viewport-height and visible-height
+    in property <length> offset;
+    in property <length> content;
+    in property <length> view;
+    // the colour behind the content
+    in property <color> fade-color;
+    in property <length> size: 28px;
+    Rectangle {
+        y: 0;
+        height: root.size;
+        opacity: root.offset < -1px ? 1 : 0;
+        animate opacity { duration: 150ms; }
+        background: @linear-gradient(180deg, root.fade-color 0%, root.fade-color.with-alpha(0) 100%);
+    }
+    Rectangle {
+        y: root.height - root.size;
+        height: root.size;
+        opacity: root.content + root.offset > root.view + 1px ? 1 : 0;
+        animate opacity { duration: 150ms; }
+        background: @linear-gradient(0deg, root.fade-color 0%, root.fade-color.with-alpha(0) 100%);
+    }
+}
+
 // one entry of a drop-down list
 component ComboItem inherits Rectangle {
     in property <string> text;
@@ -507,19 +532,30 @@ component AppComboBox inherits Rectangle {
                     }
                 }
             }
-            if root.model.length > 8: ListView {
+            if root.model.length > 8: Rectangle {
                 x: 6px;
                 y: 6px;
                 width: parent.width - 12px;
                 height: parent.height - 12px;
-                for item[i] in root.model: ComboItem {
-                    text: item;
-                    font: i < root.fonts.length ? root.fonts[i] : "";
-                    current: i == root.current-index;
-                    picked => {
-                        root.current-index = i;
-                        root.selected(item);
+                combo-list := ListView {
+                    for item[i] in root.model: ComboItem {
+                        text: item;
+                        font: i < root.fonts.length ? root.fonts[i] : "";
+                        current: i == root.current-index;
+                        picked => {
+                            root.current-index = i;
+                            root.selected(item);
+                        }
                     }
+                }
+                EdgeFade {
+                    // (not over the scroll bar)
+                    x: 0;
+                    width: parent.width - 14px;
+                    offset: combo-list.content-y;
+                    content: combo-list.content-height;
+                    view: combo-list.visible-height;
+                    fade-color: M3.surface-container-high;
                 }
             }
         }
@@ -1440,49 +1476,61 @@ component ConnPage inherits VerticalLayout {
                     Rectangle { width: 28px; }
                 }
             }
-            ListView {
-                for r[i] in Conn.rows: Rectangle {
-                    height: 36px;
-                    background: mod(i, 2) == 1 ? M3.on-surface.with-alpha(0.03) : transparent;
-                    HorizontalLayout {
-                        padding-left: 16px;
-                        padding-right: 12px;
-                        spacing: 12px;
-                        if root.wide: Text { width: 90px; text: r.region; font-size: 13px; color: M3.on-surface-variant; vertical-alignment: center; overflow: elide; }
-                        Text { width: 120px; text: r.name; font-size: 13px; font-weight: 600; color: M3.on-surface; vertical-alignment: center; overflow: elide; }
-                        if root.wide: Text { width: 170px; text: r.host; font-size: 12px; font-family: "JetBrains Mono"; color: M3.on-surface-variant; vertical-alignment: center; overflow: elide; }
-                        Text {
-                            horizontal-stretch: 1;
-                            text: r.result;
-                            font-size: 13px;
-                            color: r.tone == 1 ? #2e9d4a : r.tone == 2 ? M3.error : M3.on-surface-variant;
-                            vertical-alignment: center;
-                            overflow: elide;
-                        }
-                        Text { width: 70px; text: r.conn; font-size: 12px; font-family: "JetBrains Mono"; color: M3.on-surface; vertical-alignment: center; horizontal-alignment: right; }
-                        Text { width: 70px; text: r.total; font-size: 12px; font-family: "JetBrains Mono"; color: M3.on-surface; vertical-alignment: center; horizontal-alignment: right; }
-                        // a site the user added can be taken out again
-                        Rectangle {
-                            width: 28px;
-                            if r.added: Rectangle {
+            Rectangle {
+                vertical-stretch: 1;
+                conn-list := ListView {
+                    for r[i] in Conn.rows: Rectangle {
+                        height: 36px;
+                        background: mod(i, 2) == 1 ? M3.on-surface.with-alpha(0.03) : transparent;
+                        HorizontalLayout {
+                            padding-left: 16px;
+                            padding-right: 12px;
+                            spacing: 12px;
+                            if root.wide: Text { width: 90px; text: r.region; font-size: 13px; color: M3.on-surface-variant; vertical-alignment: center; overflow: elide; }
+                            Text { width: 120px; text: r.name; font-size: 13px; font-weight: 600; color: M3.on-surface; vertical-alignment: center; overflow: elide; }
+                            if root.wide: Text { width: 170px; text: r.host; font-size: 12px; font-family: "JetBrains Mono"; color: M3.on-surface-variant; vertical-alignment: center; overflow: elide; }
+                            Text {
+                                horizontal-stretch: 1;
+                                text: r.result;
+                                font-size: 13px;
+                                color: r.tone == 1 ? #2e9d4a : r.tone == 2 ? M3.error : M3.on-surface-variant;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                            Text { width: 70px; text: r.conn; font-size: 12px; font-family: "JetBrains Mono"; color: M3.on-surface; vertical-alignment: center; horizontal-alignment: right; }
+                            Text { width: 70px; text: r.total; font-size: 12px; font-family: "JetBrains Mono"; color: M3.on-surface; vertical-alignment: center; horizontal-alignment: right; }
+                            // a site the user added can be taken out again
+                            Rectangle {
                                 width: 28px;
-                                height: 28px;
-                                border-radius: 14px;
-                                background: rm-ta.has-hover && Conn.editable ? M3.on-surface.with-alpha(0.10) : transparent;
-                                opacity: Conn.editable ? 1 : 0.38;
-                                Image {
-                                    width: 16px;
-                                    height: 16px;
-                                    source: @image-url("icons/close.svg");
-                                    colorize: M3.on-surface-variant;
-                                }
-                                rm-ta := TouchArea {
-                                    enabled: Conn.editable;
-                                    clicked => { Conn.remove(r.host); }
+                                if r.added: Rectangle {
+                                    width: 28px;
+                                    height: 28px;
+                                    border-radius: 14px;
+                                    background: rm-ta.has-hover && Conn.editable ? M3.on-surface.with-alpha(0.10) : transparent;
+                                    opacity: Conn.editable ? 1 : 0.38;
+                                    Image {
+                                        width: 16px;
+                                        height: 16px;
+                                        source: @image-url("icons/close.svg");
+                                        colorize: M3.on-surface-variant;
+                                    }
+                                    rm-ta := TouchArea {
+                                        enabled: Conn.editable;
+                                        clicked => { Conn.remove(r.host); }
+                                    }
                                 }
                             }
                         }
                     }
+                }
+                EdgeFade {
+                    // (not over the scroll bar)
+                    x: 0;
+                    width: parent.width - 14px;
+                    offset: conn-list.content-y;
+                    content: conn-list.content-height;
+                    view: conn-list.visible-height;
+                    fade-color: M3.surface-container-low;
                 }
             }
         }
@@ -1833,14 +1881,26 @@ export component App inherits Window {
                             color: M3.on-surface-variant;
                             font-size: 15px;
                         }
-                        ListView {
-                            for c in root.cards: VerticalLayout {
-                                padding-bottom: 10px;
-                                Card {
-                                    card: c;
-                                    toggle(id) => { root.toggle(id); }
-                                    edit(id) => { root.edit-card(id); }
+                        Rectangle {
+                            vertical-stretch: 1;
+                            card-list := ListView {
+                                for c in root.cards: VerticalLayout {
+                                    padding-bottom: 10px;
+                                    Card {
+                                        card: c;
+                                        toggle(id) => { root.toggle(id); }
+                                        edit(id) => { root.edit-card(id); }
+                                    }
                                 }
+                            }
+                            EdgeFade {
+                                // (not over the scroll bar)
+                                x: 0;
+                                width: parent.width - 14px;
+                                offset: card-list.content-y;
+                                content: card-list.content-height;
+                                view: card-list.visible-height;
+                                fade-color: M3.surface;
                             }
                         }
                     }
@@ -1888,17 +1948,29 @@ export component App inherits Window {
                                 }
                             }
                         }
-                        ScrollView {
-                            VerticalLayout {
-                                padding-right: 16px;
-                                padding-bottom: 24px;
-                                for f in root.form-fields: FormRow {
-                                    f: f;
-                                    visible: f.visible;
-                                    height: f.visible ? self.preferred-height : 0px;
-                                    changed(k, v) => { root.field-changed(k, v); }
-                                    pressed(k, i) => { root.form-pressed(k, i); }
+                        Rectangle {
+                            vertical-stretch: 1;
+                            form-scroll := ScrollView {
+                                VerticalLayout {
+                                    padding-right: 16px;
+                                    padding-bottom: 24px;
+                                    for f in root.form-fields: FormRow {
+                                        f: f;
+                                        visible: f.visible;
+                                        height: f.visible ? self.preferred-height : 0px;
+                                        changed(k, v) => { root.field-changed(k, v); }
+                                        pressed(k, i) => { root.form-pressed(k, i); }
+                                    }
                                 }
+                            }
+                            EdgeFade {
+                                // (not over the scroll bar)
+                                x: 0;
+                                width: parent.width - 14px;
+                                offset: form-scroll.content-y;
+                                content: form-scroll.content-height;
+                                view: form-scroll.visible-height;
+                                fade-color: M3.surface;
                             }
                         }
                     }
@@ -1918,43 +1990,55 @@ export component App inherits Window {
                                 vertical-alignment: center;
                             }
                         }
-                        settings-scroll := ScrollView {
-                            // two columns of sections when there is room, one otherwise; never wider than reads well
-                            out property <bool> wide: self.visible-width >= 720px;
-                            out property <length> content-w: min(self.visible-width - 16px, 1360px);
-                            VerticalLayout {
-                                padding-right: 16px;
-                                // room for the apply bar
-                                padding-bottom: 96px;
-                                alignment: start;
-                                if settings-scroll.wide: HorizontalLayout {
-                                    width: settings-scroll.content-w;
-                                    spacing: 16px;
-                                    VerticalLayout {
-                                        // equal halves (long texts would otherwise widen one column)
-                                        width: (settings-scroll.content-w - 16px) / 2;
+                        Rectangle {
+                            vertical-stretch: 1;
+                            settings-scroll := ScrollView {
+                                // two columns of sections when there is room, one otherwise; never wider than reads well
+                                out property <bool> wide: self.visible-width >= 720px;
+                                out property <length> content-w: min(self.visible-width - 16px, 1360px);
+                                VerticalLayout {
+                                    padding-right: 16px;
+                                    // room for the apply bar
+                                    padding-bottom: 96px;
+                                    alignment: start;
+                                    if settings-scroll.wide: HorizontalLayout {
+                                        width: settings-scroll.content-w;
                                         spacing: 16px;
-                                        alignment: start;
-                                        SettingsDefaults {}
+                                        VerticalLayout {
+                                            // equal halves (long texts would otherwise widen one column)
+                                            width: (settings-scroll.content-w - 16px) / 2;
+                                            spacing: 16px;
+                                            alignment: start;
+                                            SettingsDefaults {}
+                                        }
+                                        VerticalLayout {
+                                            // equal halves (long texts would otherwise widen one column)
+                                            width: (settings-scroll.content-w - 16px) / 2;
+                                            spacing: 16px;
+                                            alignment: start;
+                                            SettingsDisplay {}
+                                            SettingsEngine {}
+                                            SettingsLogs {}
+                                        }
                                     }
-                                    VerticalLayout {
-                                        // equal halves (long texts would otherwise widen one column)
-                                        width: (settings-scroll.content-w - 16px) / 2;
+                                    if !settings-scroll.wide: VerticalLayout {
+                                        width: min(settings-scroll.content-w, 720px);
                                         spacing: 16px;
-                                        alignment: start;
+                                        SettingsDefaults {}
                                         SettingsDisplay {}
                                         SettingsEngine {}
                                         SettingsLogs {}
                                     }
                                 }
-                                if !settings-scroll.wide: VerticalLayout {
-                                    width: min(settings-scroll.content-w, 720px);
-                                    spacing: 16px;
-                                    SettingsDefaults {}
-                                    SettingsDisplay {}
-                                    SettingsEngine {}
-                                    SettingsLogs {}
-                                }
+                            }
+                            EdgeFade {
+                                // (not over the scroll bar)
+                                x: 0;
+                                width: parent.width - 14px;
+                                offset: settings-scroll.content-y;
+                                content: settings-scroll.content-height;
+                                view: settings-scroll.visible-height;
+                                fade-color: M3.surface;
                             }
                         }
                     }
@@ -2019,6 +2103,15 @@ export component App inherits Window {
                                     color: line.tone == 2 ? M3.error : line.tone == 1 ? #b26a00 : line.tone == 3 ? M3.on-surface-variant : M3.on-surface;
                                     vertical-alignment: center;
                                 }
+                            }
+                            EdgeFade {
+                                // (not over the scroll bar)
+                                x: 0;
+                                width: parent.width - 14px;
+                                offset: log-view.content-y;
+                                content: log-view.content-height;
+                                view: log-view.visible-height;
+                                fade-color: M3.surface-container-low;
                             }
                         }
                     }
