@@ -934,6 +934,7 @@ fn labels(app: &App) {
     app.set_t_proxy(tr("Proxy").into());
     app.set_t_logs(tr("Logs").into());
     app.set_t_stop_all(tr("Stop all proxies").into());
+    app.set_t_copy(tr("Copy address/link for clients").into());
     app.set_t_empty(tr("No proxies yet. Create one with 'New proxy'.").into());
 }
 
@@ -1059,6 +1060,8 @@ fn main() -> Result<(), slint::PlatformError> {
         app.on_edit_block(move |node| send1(json!({"cmd": "edit_open", "id": key_of(node)})));
         let send2 = send.clone();
         app.on_edit_card(move |id| send2(json!({"cmd": "edit_open", "id": id.as_str()})));
+        let send3 = send.clone();
+        app.on_copy_card(move |id| send3(json!({"cmd": "copy_client", "id": id.as_str()})));
     }
     {
         let send = send.clone();

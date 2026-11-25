@@ -242,6 +242,22 @@ pub fn repr(s: &str) -> String {
     out
 }
 
+/// `urllib.parse.quote(s, safe)`: UTF-8 bytes as %XX except letters, digits, `_.-~` and the `safe` characters
+pub fn quote(s: &str, safe: &str) -> String {
+    let mut out = String::new();
+    for ch in s.chars() {
+        if ch.is_ascii_alphanumeric() || "_.-~".contains(ch) || (ch.is_ascii() && safe.contains(ch)) {
+            out.push(ch);
+        } else {
+            let mut buf = [0u8; 4];
+            for b in ch.encode_utf8(&mut buf).bytes() {
+                out.push_str(&format!("%{b:02X}"));
+            }
+        }
+    }
+    out
+}
+
 /// `urllib.parse.unquote(s)`: %XX in each run of ASCII characters decoded as UTF-8 (bad bytes become U+FFFD)
 pub fn unquote(s: &str) -> String {
     if !s.contains('%') {

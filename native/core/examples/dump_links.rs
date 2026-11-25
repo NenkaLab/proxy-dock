@@ -12,6 +12,9 @@ fn main() {
         .iter()
         .map(|c| {
             let text = c["text"].as_str().unwrap_or("");
+            if c["kind"] == "client" {
+                return json!({"ok": true, "url": proxydock_core::links::client_url(&c["card"], c["lan"].as_str().unwrap_or(""))});
+            }
             if c["kind"] == "link" {
                 match proxydock_core::links::parse(text) {
                     Ok((fields, name)) => json!({"ok": true, "fields": fields, "name": name}),

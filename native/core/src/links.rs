@@ -294,3 +294,111 @@ mod tests {
         assert!(parse("trojan://p@host").is_err());
     }
 }
+
+// --- the other way: what a client app needs to use a card (Python `ui/proxies.client_url`) ---
+
+fn bracket(host: &str) -> String {
+    if host.contains(':') { format!("[{host}]") } else { host.to_string() }
+}
+
+/// `ss.ss_link`: a SIP002 ss:// link (2022 ciphers percent-encode the user info instead of base64)
+pub fn ss_link(host: &str, port: i64, method: &str, password: &str, name: &str) -> String {
+    use base64::Engine;
+    let v2022 = crate::checks::SS_METHODS.iter().any(|m| m.0 == method && m.2);
+    let user = if v2022 {
+        format!("{}:{}", py::quote(method, ""), py::quote(password, ""))
+    } else {
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!("{method}:{password}"))
+    };
+    format!("ss://{user}@{}:{port}#{}", bracket(host), py::quote(name, ""))
+}
+
+/// `hysteria2.hy2_link`
+pub fn hy2_link(host: &str, port: i64, password: &str, sni: &str, insecure: bool, name: &str, obfs: &str) -> String {
+    let mut q = vec![];
+    if !obfs.is_empty() {
+        q.push("obfs=salamander".to_string());
+        q.push(format!("obfs-password={}", py::quote(obfs, "")));
+    }
+    if !sni.is_empty() {
+        q.push(format!("sni={}", py::quote(sni, "/")));
+    }
+    if insecure {
+        q.push("insecure=1".to_string());
+    }
+    let query = if q.is_empty() { String::new() } else { format!("?{}", q.join("&")) };
+    format!("hysteria2://{}@{}:{port}/{query}#{}", py::quote(password, ""), bracket(host), py::quote(name, ""))
+}
+
+/// The address or link to put into a client app for card `p` (empty for a TUN card or a WireGuard server
+/// without devices). A card open to every address (0.0.0.0 / ::) is reached at `lan_ip`.
+pub fn client_url(p: &Value, lan_ip: &str) -> String {
+    let ib = &p["inbound"];
+    let s = |k: &str| ib.get(k).and_then(Value::as_str).unwrap_or("");
+    let port = ib.get("port").and_then(Value::as_i64).unwrap_or(0);
+    let host = match s("host") {
+        "0.0.0.0" | "::" => lan_ip,
+        h => h,
+    };
+    let name = p.get("name").and_then(Value::as_str).unwrap_or("");
+    match s("type") {
+        "tun" => String::new(),
+        "forward" => crate::net::host_port(host, port),
+        "wireguard" => {
+            let peers = crate::singbox::compile::wg_peers(ib);
+            match peers.first() {
+                Some(peer) => crate::wg::client_conf(ib, peer, if s("wg_endpoint").is_empty() { lan_ip } else { s("wg_endpoint") }),
+                None => String::new(),
+            }
+        }
+        "shadowsocks" => ss_link(host, port, s("ss_method"), s("ss_password"), name),
+        "hysteria2" => hy2_link(host, port, s("hy2_password"), "", s("tls_cert").is_empty(), name, s("hy2_obfs_password")),
+        t => {
+            let scheme = match t {
+                "socks4" => "socks4a",
+                "socks5" | "http" | "https" => t,
+                _ => return String::new(),
+            };
+            let auth = ib.get("auth_enabled").is_some_and(|v| v.as_bool().unwrap_or(false));
+            let cred = if t != "socks4" && auth { format!("{}:{}@", s("username"), s("password")) } else { String::new() };
+            format!("{scheme}://{cred}{}", crate::net::host_port(host, port))
+        }
+    }
+}
+
+#[cfg(test)]
+mod client_tests {
+    use super::*;
+
+    fn card(ib: Value) -> Value {
+        json!({"name": "My card", "inbound": ib})
+    }
+
+    #[test]
+    fn addresses_and_links() {
+        let lan = "192.168.0.5";
+        assert_eq!(client_url(&card(json!({"type": "socks5", "host": "0.0.0.0", "port": 1080, "auth_enabled": true, "username": "u", "password": "p"})), lan), "socks5://u:p@192.168.0.5:1080");
+        assert_eq!(client_url(&card(json!({"type": "socks4", "host": "127.0.0.1", "port": 1080, "auth_enabled": true})), lan), "socks4a://127.0.0.1:1080");
+        assert_eq!(client_url(&card(json!({"type": "http", "host": "::", "port": 8080, "auth_enabled": false})), lan), "http://192.168.0.5:8080");
+        assert_eq!(client_url(&card(json!({"type": "https", "host": "::1", "port": 8443, "auth_enabled": false})), lan), "https://[::1]:8443");
+        assert_eq!(client_url(&card(json!({"type": "forward", "host": "0.0.0.0", "port": 2222})), lan), "192.168.0.5:2222");
+        assert_eq!(client_url(&card(json!({"type": "tun"})), lan), "");
+        assert_eq!(client_url(&card(json!({"type": "wireguard", "wg_peers": "[]"})), lan), "");
+        let hy = client_url(&card(json!({"type": "hysteria2", "host": "0.0.0.0", "port": 443, "hy2_password": "p w", "tls_cert": "", "hy2_obfs_password": "o"})), lan);
+        assert_eq!(hy, "hysteria2://p%20w@192.168.0.5:443/?obfs=salamander&obfs-password=o&insecure=1#My%20card");
+    }
+
+    #[test]
+    fn links_read_back() {
+        // what this side writes, the link reader takes
+        let ss = ss_link("1.2.3.4", 8388, "aes-256-gcm", "pa:ss", "n");
+        let (f, name) = parse(&ss).unwrap();
+        assert_eq!((f["host"].as_str(), f["ss_password"].as_str(), name.as_str()), (Some("1.2.3.4"), Some("pa:ss"), "n"));
+        let ss22 = ss_link("a.com", 443, "2022-blake3-aes-128-gcm", "k/+=", "x y");
+        let (f, name) = parse(&ss22).unwrap();
+        assert_eq!((f["ss_method"].as_str(), f["ss_password"].as_str(), name.as_str()), (Some("2022-blake3-aes-128-gcm"), Some("k/+="), "x y"));
+        let hy = hy2_link("::1", 443, "pw", "", true, "h", "");
+        let (f, _) = parse(&hy).unwrap();
+        assert_eq!((f["host"].as_str(), f["hy2_password"].as_str()), (Some("::1"), Some("pw")));
+    }
+}

@@ -1789,6 +1789,18 @@ impl Controller {
             "toggle" => self.toggle(id),
             "stop_all" => self.stop_all(),
             "route_of" => self.route_of(n, id, v["message"].as_str().unwrap_or("")),
+            // the address or link a client app needs for card `id` (Python `proxies.copy_url`)
+            "copy_client" => {
+                let url = self.proxy(id).map(|p| proxydock_core::links::client_url(p, &proxydock_core::wg::local_lan_ip())).unwrap_or_default();
+                let tun = self.proxy(id).is_some_and(|p| p["inbound"]["type"] == "tun");
+                let msg = if url.is_empty() {
+                    let why = if tun { tr("A TUN card captures apps on this PC directly; there is no address for clients") } else { tr("Nothing to copy") };
+                    json!({"ev": "error", "message": why})
+                } else {
+                    json!({"ev": "show_text", "title": "", "text": url})
+                };
+                self.send_to(n, &msg);
+            }
             "move" | "connect" | "disconnect" | "delete" | "add" | "duplicate" | "rename" => self.edit(cmd, v),
             "settings_save" => self.save_settings(v),
             "latency" => {

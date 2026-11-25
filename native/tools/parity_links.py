@@ -166,10 +166,37 @@ FIXED = [
 ]
 
 
+def client_card():
+    t = pick(["socks5", "socks4", "http", "https", "shadowsocks", "hysteria2", "forward", "tun", "wireguard"])
+    peers = pick(["[]", json.dumps([{"name": "phone", "private_key": "QL" * 21 + "w=", "public_key": "Pk" * 21 + "w=",
+                                     "address": "10.66.0.2/32"}]), "nope"])
+    ib = {"type": t, "host": pick(["127.0.0.1", "0.0.0.0", "::", "::1", "192.168.1.9", "my.host"]),
+          "port": pick([1080, 443, 8388, 65535]), "auth_enabled": pick([True, False]),
+          "username": pick(["u", "user name", "한글"]), "password": pick(["p", "p@ss:w/rd", ""]),
+          "ss_method": pick(["aes-256-gcm", "chacha20-ietf-poly1305", "2022-blake3-aes-128-gcm", "2022-blake3-chacha20-poly1305"]),
+          "ss_password": pick(["pw", "k/+=", "x y", "한"]), "hy2_password": pick(["pw", "p w", "a@b", "%"]),
+          "tls_cert": pick(["", "c.pem"]), "hy2_obfs_password": pick(["", "ob fs", "o"]),
+          "wg_peers": peers, "wg_private_key": "SK" * 21 + "w=", "wg_address": "10.66.0.1/24",
+          "wg_endpoint": pick(["", "vpn.example"]), "wg_mtu": pick([1408, 1280])}
+    return {"name": pick(NAMES_C), "inbound": ib}
+
+
+NAMES_C = ["", "My card", "한글 카드", "a#b", "x/y?z"]
+
+
+def python_client(card, lan):
+    from proxydock.ui import proxies
+    proxies.local_lan_ip = lambda: lan
+    return proxies.client_url(card)
+
+
 def python_side(cases):
     out = []
     for c in cases:
         try:
+            if c["kind"] == "client":
+                out.append({"ok": True, "url": python_client(c["card"], c["lan"])})
+                continue
             if c["kind"] == "link":
                 fields, name = links.parse(c["text"])
                 out.append({"ok": True, "fields": fields, "name": name})
@@ -193,6 +220,8 @@ def main():
     i18n.set_language(lang)
     cases = FIXED + [{"kind": "link", "text": link()} if R.random() < 0.6 else {"kind": "sub", "text": sub_body()}
                      for _ in range(count)]
+    # what a client app needs to use a card (ui/proxies.client_url)
+    cases += [{"kind": "client", "card": client_card(), "lan": pick(["192.168.0.5", "10.1.2.3"])} for _ in range(count // 2)]
     with contextlib.redirect_stdout(io.StringIO()):
         py = python_side(cases)
     path = os.path.join(tempfile.mkdtemp(), "cases.json")

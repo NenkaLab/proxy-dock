@@ -81,6 +81,8 @@ pub fn client_conf(ib: &Value, peer: &Value, endpoint_host: &str) -> String {
         "PersistentKeepalive = 25".into(),
     ]
     .join("\n")
+        // (ends with a newline, as Python's does: the .conf file's last line)
+        + "\n"
 }
 
 #[cfg(test)]

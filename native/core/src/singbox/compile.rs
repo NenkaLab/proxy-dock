@@ -134,7 +134,8 @@ fn obj(pairs: Vec<(&str, Value)>) -> Value {
     Value::Object(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
 }
 
-fn wg_peers(ib: &Value) -> Vec<Value> {
+/// a WireGuard server's devices (Python `config.wg_peers`)
+pub fn wg_peers(ib: &Value) -> Vec<Value> {
     let text = ib.get("wg_peers").and_then(Value::as_str).filter(|s| !s.is_empty()).unwrap_or("[]");
     match serde_json::from_str::<Value>(text) {
         Ok(Value::Array(a)) => a.into_iter().filter(|x| x.get("public_key").is_some_and(Value::is_string)).collect(),

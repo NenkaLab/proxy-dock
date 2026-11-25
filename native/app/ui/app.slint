@@ -1146,8 +1146,11 @@ component Chip inherits Rectangle {
 
 component Card inherits Rectangle {
     in property <CardRow> card;
+    in property <string> t-copy;
     callback toggle(string);
     callback edit(string);
+    // the card's address / link for client apps, to the clipboard
+    callback copy(string);
     border-radius: 20px;
     background: M3.surface-container-low;
     HorizontalLayout {
@@ -1188,12 +1191,25 @@ component Card inherits Rectangle {
             alignment: center;
             Chip { text: card.state-text; state: card.state; }
         }
-        VerticalLayout {
+        HorizontalLayout {
             alignment: center;
-            AppButton {
-                icon: @image-url("icons/edit.svg");
-                colorize-icon: true;
-                clicked => { root.edit(card.id); }
+            spacing: 8px;
+            VerticalLayout {
+                alignment: center;
+                AppButton {
+                    icon: @image-url("icons/content_copy.svg");
+                    colorize-icon: true;
+                    accessible-label: root.t-copy;
+                    clicked => { root.copy(card.id); }
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                AppButton {
+                    icon: @image-url("icons/edit.svg");
+                    colorize-icon: true;
+                    clicked => { root.edit(card.id); }
+                }
             }
         }
         VerticalLayout {
@@ -2668,6 +2684,8 @@ export component App inherits Window {
     in property <string> t-cancel: "Cancel";
     callback edit-block(int);
     callback edit-card(string);
+    callback copy-card(string);
+    in property <string> t-copy: "Copy";
     callback field-changed(string, string);
     callback form-save();
     callback form-pressed(string, int);
@@ -2991,6 +3009,8 @@ export component App inherits Window {
                                         card: c;
                                         toggle(id) => { root.toggle(id); }
                                         edit(id) => { root.edit-card(id); }
+                                        copy(id) => { root.copy-card(id); }
+                                        t-copy: root.t-copy;
                                     }
                                 }
                             }
