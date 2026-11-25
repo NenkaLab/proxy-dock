@@ -1249,9 +1249,26 @@ impl Controller {
         self.send_latency();
     }
 
+    /// the canvas for the window, each block with its right-click menu
+    fn canvas_json(&self) -> Value {
+        let mut canvas = canvas::to_json(&self.view, &|id| state_name(&self.manager.state(id)));
+        for n in canvas["nodes"].as_array_mut().into_iter().flatten() {
+            let key = n["key"].as_str().unwrap_or("").to_string();
+            n["menu"] = edit::block_menu(&self.graph, &key);
+        }
+        canvas
+    }
+
+    /// what the canvas's "add" menus offer: the inbound and outbound types with their names
+    fn add_menu_json(&self) -> Value {
+        let ib: Vec<Value> = proxydock_core::config::INBOUND_TYPES.iter().map(|t| json!([t, edit::inbound_label(t)])).collect();
+        let ob: Vec<Value> = proxydock_core::config::OUTBOUND_TYPES.iter().map(|t| json!([t, graph::outbound_label(t)])).collect();
+        json!({"inbounds": ib, "outbounds": ob})
+    }
+
     fn send_canvas(&mut self) {
         let cards: Vec<Value> = self.proxies.iter().map(|p| self.card_json(p)).collect();
-        let canvas = canvas::to_json(&self.view, &|id| state_name(&self.manager.state(id)));
+        let canvas = self.canvas_json();
         self.broadcast(&json!({"ev": "graph", "cards": cards, "canvas": canvas, "stat_meta": self.stat_meta()}));
     }
 
@@ -1641,6 +1658,121 @@ impl Controller {
         }
     }
 
+    /// A new block from the canvas's menus or toolbar: {"what": "inbound" | "outbound" | "router" | "if" | "relay" |
+    /// "wireless" | "link", "type", "text" (a share link), "x", "y"}; older form {"kind"}. Returns the block to open
+    /// in the editor, if any.
+    fn add_block(&mut self, v: &Value) -> Option<String> {
+        let f = |k: &str| v[k].as_f64().unwrap_or(0.0);
+        let (x, y) = (f("x"), f("y"));
+        let what = v["what"].as_str().unwrap_or("");
+        let t = v["type"].as_str().unwrap_or("");
+        let mut open = None;
+        let id = match what {
+            "inbound" if proxydock_core::config::INBOUND_TYPES.contains(&t) => edit::add_inbound(&mut self.graph, t, x, y),
+            "outbound" if proxydock_core::config::OUTBOUND_TYPES.contains(&t) => {
+                let id = edit::add_outbound(&mut self.graph, t, None, None, x, y);
+                if t != "direct" {
+                    open = Some(id.clone());
+                }
+                id
+            }
+            "router" | "if" => {
+                let id = edit::add_router(&mut self.graph, what, x, y);
+                open = Some(id.clone());
+                id
+            }
+            "relay" => edit::add_relay(&mut self.graph, x, y),
+            "wireless" => edit::add_wireless(&mut self.graph, x, y),
+            "link" => match proxydock_core::links::parse(v["text"].as_str().unwrap_or("").trim()) {
+                Ok((fields, name)) => {
+                    let id = edit::add_outbound(&mut self.graph, "", Some(&fields), Some(&name), x, y);
+                    open = Some(id.clone());
+                    id
+                }
+                Err(e) => {
+                    // (Python `add_from_link`'s message)
+                    let msg = format!(
+                        "{}: {e}\n{}",
+                        tr("Cannot use the clipboard"),
+                        tr("Copy a vless://, vmess://, trojan://, tuic://, ss:// or hysteria2:// link first")
+                    );
+                    self.broadcast(&json!({"ev": "error", "message": msg}));
+                    return None;
+                }
+            },
+            "" => edit::add(&mut self.graph, v["kind"].as_i64().unwrap_or(2) as i32, x, y),
+            _ => return None,
+        };
+        // (a wireless pair is named by its number: Python `graph.wireless_label`)
+        let name: Option<String> = graph::find(&self.graph, &id).map(|(_, n)| {
+            if n["wireless"] == json!(true) {
+                tr("Wireless {name}").replace("{name}", &format!("#{}", n["number"].as_i64().unwrap_or(0)))
+            } else {
+                name_of(n)
+            }
+        });
+        if let Some(name) = name {
+            self.app_log(Level::Setting, &tr("Created block '{name}'").replace("{name}", &name));
+        }
+        self.graph_changed();
+        open
+    }
+
+    /// An entry of a block's right-click menu (`edit::block_menu`) chosen: {"key", "action"}
+    fn node_action(&mut self, n: u64, v: &Value) {
+        let key = v["key"].as_str().unwrap_or("").to_string();
+        let action = v["action"].as_str().unwrap_or("").to_string();
+        let (bid, _) = key.split_once("/out").map(|(b, _)| (b.to_string(), true)).unwrap_or((key.clone(), false));
+        let changed = match action.as_str() {
+            "edit" => {
+                self.on_command(n, &json!({"cmd": "edit_open", "id": key}));
+                return;
+            }
+            "toggle" => {
+                self.toggle(&bid);
+                return;
+            }
+            "copy" => {
+                self.on_command(n, &json!({"cmd": "copy_client", "id": bid}));
+                return;
+            }
+            "pc" => {
+                self.edit("connect", &json!({"from": "pc", "out": 0, "to": bid, "in": 0}));
+                return;
+            }
+            "pc.restore" | "pc.off" => {
+                let cmd = if action == "pc.off" { "pc_off" } else { "pc_restore" };
+                self.platform_command(&json!({"cmd": cmd}));
+                return;
+            }
+            "latency" => {
+                self.test_latency(&[bid]);
+                return;
+            }
+            "duplicate" | "delete" => {
+                self.edit(&action, &json!({"keys": [key]}));
+                return;
+            }
+            "disconnect" => match graph::find(&self.graph, &bid).map(|(k, _)| k) {
+                Some("inbound") => edit::set_target(&mut self.graph, &bid, None).is_ok(),
+                Some("outbound") => edit::set_via(&mut self.graph, &bid, None).is_ok(),
+                _ => false,
+            },
+            "cut" => edit::cut_links(&mut self.graph, &key),
+            "wireless.repair" => edit::repair_wireless(&mut self.graph, &bid),
+            a if a.starts_with("lane.add.") => edit::add_lane(&mut self.graph, &bid, &a["lane.add.".len()..]),
+            a if a.starts_with("lane.del.") => edit::remove_lane(&mut self.graph, &bid, &a["lane.del.".len()..]),
+            a if a.starts_with("member.") => {
+                self.platform_command(&json!({"cmd": "select_member", "group": bid, "member": &a["member.".len()..]}));
+                return;
+            }
+            _ => false,
+        };
+        if changed {
+            self.graph_changed();
+        }
+    }
+
     fn proxy(&self, id: &str) -> Option<&Value> {
         self.proxies.iter().find(|p| p["id"] == json!(id))
     }
@@ -1761,8 +1893,9 @@ impl Controller {
                 let cards: Vec<Value> = self.proxies.iter().map(|p| self.card_json(p)).collect();
                 let skip = self.logs.len().saturating_sub(LOG_SEND);
                 let logs: Vec<Value> = self.logs.iter().skip(skip).map(entry_json).collect();
-                let canvas = canvas::to_json(&self.view, &|id| state_name(&self.manager.state(id)));
+                let canvas = self.canvas_json();
                 let hello = json!({"ev": "hello", "language": self.glob["language"], "cards": cards, "logs": logs, "stats": self.stats_json(), "canvas": canvas, "undo": !self.undo.is_empty(), "redo": !self.redo.is_empty(),
+                    "add_menu": self.add_menu_json(),
                     "settings": self.settings_json(), "latency": self.latency_json(),
                     "history": self.stat_history_json(), "conn": self.conn_sites_json(), "about": self.about_json(),
                     "update": self.update_json()});
@@ -1801,7 +1934,14 @@ impl Controller {
                 };
                 self.send_to(n, &msg);
             }
-            "move" | "connect" | "disconnect" | "delete" | "add" | "duplicate" | "rename" => self.edit(cmd, v),
+            "move" | "connect" | "disconnect" | "delete" | "duplicate" | "rename" => self.edit(cmd, v),
+            "add" => {
+                // (Python opens the editor for a new outbound other than Direct, and for a router / IF)
+                if let Some(open) = self.add_block(v) {
+                    self.on_command(n, &json!({"cmd": "edit_open", "id": open}));
+                }
+            }
+            "node_action" => self.node_action(n, v),
             "settings_save" => self.save_settings(v),
             "latency" => {
                 let keys: Vec<String> = v["keys"].as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect();

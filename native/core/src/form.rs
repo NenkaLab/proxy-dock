@@ -511,7 +511,7 @@ fn truth(v: &Value) -> bool {
 }
 
 /// Python `graph.set_lane_count`: grow or shrink a side (straight blocks keep both sides equal)
-fn set_lane_count(n: &mut Value, side: &str, count: usize) {
+pub fn set_lane_count(n: &mut Value, side: &str, count: usize) {
     let count = if n["wireless"] == json!(true) { 1 } else { count.clamp(1, graph::MAX_LANES) };
     let routed = n["routed"] == json!(true);
     let sides: Vec<&str> = if routed { vec![side] } else { vec!["inputs", "outputs"] };

@@ -51,6 +51,9 @@ global Motion {
 
 export struct Wire { i: int, o: int }
 
+// an entry of a right-click menu (`action` goes back to the core)
+export struct MenuLeaf { action: string, title: string }
+
 export struct NodeData {
     id: int,
     title: string,
@@ -73,6 +76,37 @@ export struct NodeData {
     // an outbound block's latency: "123 ms", "✕", "…" ("" = none); tone 0 testing, 1 fast, 2 slow, 3 very slow / failed
     badge: string,
     badge-tone: int,
+    // its right-click menu (edit::block_menu): its own entries, one submenu, "disconnect all", duplicate / delete
+    menu: [MenuLeaf],
+    menu-sub-title: string,
+    menu-sub: [MenuLeaf],
+    menu-cut: bool,
+    menu-tail: bool,
+}
+
+
+// the canvas menus' texts (proxydock-ui.rs `labels`)
+export global CanvasText {
+    in property <string> run: "Run";
+    in property <string> stop: "Stop";
+    in property <string> add-inbound: "Add inbound";
+    in property <string> add-outbound: "Add outbound";
+    in property <string> add-router: "Add router";
+    in property <string> from-link: "From a share link (clipboard)";
+    in property <string> router: "Router";
+    in property <string> if-block: "IF";
+    in property <string> relay: "Pass-through";
+    in property <string> wireless: "Wireless pair";
+    in property <string> fit: "Fit";
+    in property <string> latency: "Test latency";
+    in property <string> undo: "Undo";
+    in property <string> redo: "Redo";
+    in property <string> cut: "Disconnect all links";
+    in property <string> duplicate: "Duplicate";
+    in property <string> delete: "Delete";
+    // the types the add menus offer: [type, name]
+    in property <[MenuLeaf]> inbounds;
+    in property <[MenuLeaf]> outbounds;
 }
 
 // the settings page's texts (translated in proxydock-ui.rs)
@@ -165,6 +199,12 @@ component ProxyNode inherits BaseNode {
     in property <int> badge-tone;
     callback toggle();
     callback edit();
+    in property <[MenuLeaf]> menu;
+    in property <string> menu-sub-title;
+    in property <[MenuLeaf]> menu-sub;
+    in property <bool> menu-cut;
+    in property <bool> menu-tail;
+    callback menu-action(string);
 
     property <length> header: 54px;
     property <length> lane-h: 26px;
@@ -330,6 +370,40 @@ component ProxyNode inherits BaseNode {
         pin-type: PinTypes.output;
         node-screen-x: root.screen-x;
         node-screen-y: root.screen-y;
+    }
+    // the right-click menu (Run / Stop follows the card's live state)
+    ContextMenuArea {
+        x: 0;
+        y: 0;
+        width: root.node-width;
+        height: root.node-height;
+        Menu {
+            for e in root.menu: MenuItem {
+                title: e.action == "toggle" ? (root.state == "running" || root.state == "starting" ? CanvasText.stop : CanvasText.run) : e.title;
+                activated => { root.menu-action(e.action); }
+            }
+            if root.menu-sub-title != "": Menu {
+                title: root.menu-sub-title;
+                for e in root.menu-sub: MenuItem {
+                    title: e.title;
+                    activated => { root.menu-action(e.action); }
+                }
+            }
+            if root.menu-cut: MenuSeparator {}
+            if root.menu-cut: MenuItem {
+                title: CanvasText.cut;
+                activated => { root.menu-action("cut"); }
+            }
+            if root.menu-tail: MenuSeparator {}
+            if root.menu-tail: MenuItem {
+                title: CanvasText.duplicate;
+                activated => { root.menu-action("duplicate"); }
+            }
+            if root.menu-tail: MenuItem {
+                title: CanvasText.delete;
+                activated => { root.menu-action("delete"); }
+            }
+        }
     }
 }
 
@@ -2676,6 +2750,23 @@ export component App inherits Window {
     out property <float> view-center-x: (editor.width / 2 - editor.pan-x) / editor.zoom / 1px;
     out property <float> view-center-y: (editor.height / 2 - editor.pan-y) / editor.zoom / 1px;
     callback add-block(int);
+    // the canvas menus: add a block where the menu was opened (what, type, world x, y), a block's entry chosen,
+    // fit everything into view
+    callback canvas-add-at(string, string, float, float);
+    callback node-action(int, string);
+    callback canvas-fit();
+    // where the empty-canvas menu was opened (world coordinates)
+    function canvas-add(what: string, t: string) {
+        root.canvas-add-at(what, t, (editor.pointer-x - editor.pan-x) / editor.zoom / 1px, (editor.pointer-y - editor.pan-y) / editor.zoom / 1px);
+    }
+    // the canvas view (fit sets them)
+    in-out property <float> canvas-zoom <=> editor.zoom;
+    in-out property <length> canvas-pan-x <=> editor.pan-x;
+    in-out property <length> canvas-pan-y <=> editor.pan-y;
+    // a question before something that cannot be taken back (delete): its text, and the answer yes
+    in-out property <string> confirm-text;
+    in property <string> t-yes: "Delete";
+    callback confirm-yes();
     // block editor (page 3)
     in property <[FieldRow]> form-fields;
     in property <string> form-title;
@@ -2775,7 +2866,7 @@ export component App inherits Window {
     in property <length> caption-h: 0px;
     in property <int> caption-hover;
     in property <int> caption-pressed;
-    in property <bool> maximized;
+    in property <bool> win-maximized;
     in property <bool> window-active: true;
 
     // (placed: the window's minimum size is set above, not taken from the pages)
@@ -2879,6 +2970,70 @@ export component App inherits Window {
                                 }
                                 reject
                             }
+                        // the empty canvas's right-click menu: add blocks where it was clicked, fit, test, undo
+                        canvas-menu := ContextMenuArea {
+                            width: 100%;
+                            height: 100%;
+                            Menu {
+                                Menu {
+                                    title: CanvasText.add-inbound;
+                                    for t in CanvasText.inbounds: MenuItem {
+                                        title: t.title;
+                                        activated => { root.canvas-add("inbound", t.action); }
+                                    }
+                                }
+                                Menu {
+                                    title: CanvasText.add-outbound;
+                                    MenuItem {
+                                        title: CanvasText.from-link;
+                                        activated => { root.canvas-add("link", ""); }
+                                    }
+                                    MenuSeparator {}
+                                    for t in CanvasText.outbounds: MenuItem {
+                                        title: t.title;
+                                        activated => { root.canvas-add("outbound", t.action); }
+                                    }
+                                }
+                                Menu {
+                                    title: CanvasText.add-router;
+                                    MenuItem {
+                                        title: CanvasText.router;
+                                        activated => { root.canvas-add("router", ""); }
+                                    }
+                                    MenuItem {
+                                        title: CanvasText.if-block;
+                                        activated => { root.canvas-add("if", ""); }
+                                    }
+                                    MenuItem {
+                                        title: CanvasText.relay;
+                                        activated => { root.canvas-add("relay", ""); }
+                                    }
+                                    MenuItem {
+                                        title: CanvasText.wireless;
+                                        activated => { root.canvas-add("wireless", ""); }
+                                    }
+                                }
+                                MenuSeparator {}
+                                MenuItem {
+                                    title: CanvasText.fit;
+                                    activated => { root.canvas-fit(); }
+                                }
+                                MenuItem {
+                                    title: CanvasText.latency;
+                                    activated => { root.test-latency(); }
+                                }
+                                MenuSeparator {}
+                                MenuItem {
+                                    title: CanvasText.undo;
+                                    enabled: root.can-undo;
+                                    activated => { root.undo(); }
+                                }
+                                MenuItem {
+                                    title: CanvasText.redo;
+                                    enabled: root.can-redo;
+                                    activated => { root.redo(); }
+                                }
+                            }
                         editor := NodeEditor {
                             width: 100%;
                             height: 100%;
@@ -2911,10 +3066,17 @@ export component App inherits Window {
                                 badge-tone: node.badge-tone;
                                 toggle => { root.toggle(node.card); }
                                 edit => { root.edit-block(node.id); }
+                                menu: node.menu;
+                                menu-sub-title: node.menu-sub-title;
+                                menu-sub: node.menu-sub;
+                                menu-cut: node.menu-cut;
+                                menu-tail: node.menu-tail;
+                                menu-action(a) => { root.node-action(node.id, a); }
                                 world-x: node.x * 1px;
                                 world-y: node.y * 1px;
                                 selected: node.selected;
                             }
+                        }
                         }
                         }
                         if root.nodes.length == 0: Text {
@@ -3302,7 +3464,7 @@ export component App inherits Window {
                 height: 1px;
                 background: cap-btn.fg;
             }
-            if i == 1 && !root.maximized: Rectangle {
+            if i == 1 && !root.win-maximized: Rectangle {
                 width: 10px;
                 height: 10px;
                 border-width: 1px;
@@ -3310,7 +3472,7 @@ export component App inherits Window {
                 border-color: cap-btn.fg;
             }
             // restore: two windows, one behind the other
-            if i == 1 && root.maximized: Rectangle {
+            if i == 1 && root.win-maximized: Rectangle {
                 width: 10px;
                 height: 10px;
                 Rectangle {
@@ -3393,6 +3555,45 @@ export component App inherits Window {
             wrap: word-wrap;
             color: root.toast-info ? M3.on-secondary-container : M3.on-error-container;
             horizontal-alignment: center;
+        }
+    }
+    if root.confirm-text != "": Rectangle {
+        background: #00000060;
+        TouchArea {
+            clicked => { root.confirm-text = ""; }
+        }
+        Rectangle {
+            width: min(parent.width - 80px, 440px);
+            height: confirm-lay.preferred-height;
+            border-radius: 28px;
+            background: M3.surface-container-high;
+            TouchArea { }
+            confirm-lay := VerticalLayout {
+                padding: 24px;
+                spacing: 24px;
+                Text {
+                    text: root.confirm-text;
+                    font-size: 16px * Type.scale;
+                    color: M3.on-surface;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    AppButton {
+                        text: root.t-cancel;
+                        clicked => { root.confirm-text = ""; }
+                    }
+                    AppButton {
+                        text: root.t-yes;
+                        primary: true;
+                        clicked => {
+                            root.confirm-text = "";
+                            root.confirm-yes();
+                        }
+                    }
+                }
+            }
         }
     }
     Rectangle {

@@ -103,6 +103,49 @@ fn log_row(e: &Value) -> LogRow {
     }
 }
 
+/// menu entries from the core ([{action, title}])
+fn leaves(v: &Value) -> ModelRc<MenuLeaf> {
+    let items: Vec<MenuLeaf> = v
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|e| MenuLeaf { action: e["action"].as_str().unwrap_or("").into(), title: e["title"].as_str().unwrap_or("").into() })
+        .collect();
+    ModelRc::new(VecModel::from(items))
+}
+
+/// [[type, name]] -> menu entries (the add menus)
+fn type_leaves(v: &Value) -> ModelRc<MenuLeaf> {
+    let items: Vec<MenuLeaf> = v
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|e| MenuLeaf { action: e[0].as_str().unwrap_or("").into(), title: e[1].as_str().unwrap_or("").into() })
+        .collect();
+    ModelRc::new(VecModel::from(items))
+}
+
+/// The view that shows every block (Python `fit_view`), from the blocks' rectangles the editor knows
+fn fit_canvas(app: &App, rects: &[(f32, f32, f32, f32)]) {
+    if rects.is_empty() {
+        return;
+    }
+    let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    for (x, y, w, h) in rects {
+        x0 = x0.min(*x);
+        y0 = y0.min(*y);
+        x1 = x1.max(x + w);
+        y1 = y1.max(y + h);
+    }
+    let (vw, vh) = (app.get_width_(), app.get_height_());
+    // room around, and above the floating toolbar
+    let (pad, bottom) = (48.0, 110.0);
+    let zoom = ((vw - pad * 2.0) / (x1 - x0).max(1.0)).min((vh - pad - bottom) / (y1 - y0).max(1.0)).clamp(0.25, 1.25);
+    app.set_canvas_zoom(zoom);
+    app.set_canvas_pan_x(vw / 2.0 - (x0 + x1) / 2.0 * zoom);
+    app.set_canvas_pan_y((vh - bottom + pad) / 2.0 - (y0 + y1) / 2.0 * zoom);
+}
+
 fn traffic_text(st: &Value) -> String {
     let n = |k: &str| st[k].as_u64().unwrap_or(0);
     if n("total") == 0 && n("up") == 0 && n("down") == 0 {
@@ -200,6 +243,11 @@ impl Models {
                 rate: SharedString::new(),
                 badge: SharedString::new(),
                 badge_tone: 0,
+                menu: leaves(&n["menu"]["head"]),
+                menu_sub_title: n["menu"]["sub_title"].as_str().unwrap_or("").into(),
+                menu_sub: leaves(&n["menu"]["sub"]),
+                menu_cut: n["menu"]["cut"] == json!(true),
+                menu_tail: n["menu"]["tail"] == json!(true),
             });
         }
         let mut links = vec![];
@@ -572,6 +620,20 @@ fn set_route(m: &Models, ways: Option<&std::collections::HashSet<usize>>) {
     }
 }
 
+thread_local! {
+    /// what "yes" in the question box does (a message to the core)
+    static CONFIRM: std::cell::RefCell<Option<Value>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Ask before deleting blocks (Python `confirm_delete`): "yes" sends `then`
+fn ask_delete(weak: &slint::Weak<App>, names: &[String], then: Value) {
+    let Some(a) = weak.upgrade() else { return };
+    let list = names.join(", ");
+    CONFIRM.with(|c| *c.borrow_mut() = Some(then));
+    a.set_t_yes(tr("Delete").into());
+    a.set_confirm_text(tr("Delete '{name}'? It will be stopped if it is running.").replace("{name}", &list).into());
+}
+
 /// a message at the bottom of the canvas for `secs` (a newer one replaces it and its timer)
 fn show_toast(app: &App, text: &str, info: bool, secs: f32) {
     app.set_toast(text.into());
@@ -934,6 +996,26 @@ fn labels(app: &App) {
     app.set_t_proxy(tr("Proxy").into());
     app.set_t_logs(tr("Logs").into());
     app.set_t_stop_all(tr("Stop all proxies").into());
+    {
+        let t = app.global::<CanvasText>();
+        t.set_run(tr("Run").into());
+        t.set_stop(tr("Stop").into());
+        t.set_add_inbound(tr("Add inbound").into());
+        t.set_add_outbound(tr("Add outbound").into());
+        t.set_add_router(tr("Add router").into());
+        t.set_from_link(tr("From a share link (clipboard)").into());
+        t.set_router(tr("Router (several rules)").into());
+        t.set_if_block(tr("IF (one condition: then / else)").into());
+        t.set_relay(tr("Pass-through (tidy up the wiring)").into());
+        t.set_wireless(tr("Wireless pair (linked without a wire)").into());
+        t.set_fit(tr("Fit").into());
+        t.set_latency(tr("Test latency").into());
+        t.set_undo(tr("Undo").into());
+        t.set_redo(tr("Redo").into());
+        t.set_cut(tr("Disconnect all links").into());
+        t.set_duplicate(tr("Duplicate").into());
+        t.set_delete(tr("Delete").into());
+    }
     app.set_t_copy(tr("Copy address/link for clients").into());
     app.set_t_empty(tr("No proxies yet. Create one with 'New proxy'.").into());
 }
@@ -1013,6 +1095,16 @@ fn main() -> Result<(), slint::PlatformError> {
         });
         let controller = setup.controller().clone();
         {
+            // fit: every block in view, from the rectangles the editor measured
+            let (controller, weak) = (controller.clone(), app.as_weak());
+            app.on_canvas_fit(move || {
+                let Some(a) = weak.upgrade() else { return };
+                let rects: Vec<(f32, f32, f32, f32)> =
+                    controller.cache().borrow().node_rects.values().map(|r| { use slint_node_editor::NodeGeometry; r.rect() }).collect();
+                fit_canvas(&a, &rects);
+            });
+        }
+        {
             // the links' curves, for the moving dots
             let controller = controller.clone();
             CURVE.with(|c| {
@@ -1056,12 +1148,65 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     // block editor
     {
-        let (send1, key_of) = (send.clone(), key_of.clone());
-        app.on_edit_block(move |node| send1(json!({"cmd": "edit_open", "id": key_of(node)})));
+        let (send1, key_of1) = (send.clone(), key_of.clone());
+        app.on_edit_block(move |node| send1(json!({"cmd": "edit_open", "id": key_of1(node)})));
         let send2 = send.clone();
         app.on_edit_card(move |id| send2(json!({"cmd": "edit_open", "id": id.as_str()})));
         let send3 = send.clone();
         app.on_copy_card(move |id| send3(json!({"cmd": "copy_client", "id": id.as_str()})));
+        // the question box's "yes"
+        let send4 = send.clone();
+        app.on_confirm_yes(move || {
+            if let Some(m) = CONFIRM.with(|c| c.borrow_mut().take()) {
+                send4(m);
+            }
+        });
+        // a block double-clicked: its editor (Python)
+        let (send5, key_of5) = (send.clone(), key_of.clone());
+        app.global::<NodeEditorEvents>().on_node_double_clicked(move |node| {
+            let key = key_of5(node);
+            if key != "pc" {
+                send5(json!({"cmd": "edit_open", "id": key}));
+            }
+        });
+        // the empty canvas's menu: a block where it was opened (a share link from the clipboard)
+        let send6 = send.clone();
+        app.on_canvas_add_at(move |what, t, x, y| {
+            let text = if what == "link" { clipboard_text() } else { String::new() };
+            send6(json!({"cmd": "add", "what": what.as_str(), "type": t.as_str(), "text": text, "x": x - 115.0, "y": y - 34.0}));
+        });
+        // a block's menu: most entries go to the core; delete asks first; "go to the partner" is the window's
+        let (send7, key_of7, models7, weak7) = (send.clone(), key_of.clone(), models.clone(), app.as_weak());
+        app.on_node_action(move |node, action| {
+            let key = key_of7(node);
+            match action.as_str() {
+                "delete" => {
+                    let names: Vec<String> = models7.nodes.iter().filter(|n| n.id == node).map(|n| n.title.to_string()).collect();
+                    ask_delete(&weak7, &names, json!({"cmd": "delete", "keys": [key], "links": []}));
+                }
+                a if a.starts_with("wireless.partner.") => {
+                    let id = key.strip_suffix("/out").unwrap_or(&key).to_string();
+                    let partner = if a.ends_with(".out") { format!("{id}/out") } else { id };
+                    for i in 0..models7.nodes.row_count() {
+                        let Some(mut n) = models7.nodes.row_data(i) else { continue };
+                        let on = key_of7(n.id) == partner;
+                        if n.selected != on {
+                            n.selected = on;
+                            models7.nodes.set_row_data(i, n.clone());
+                        }
+                        if on {
+                            if let Some(app) = weak7.upgrade() {
+                                // the partner in the middle of the view
+                                let z = app.get_canvas_zoom();
+                                app.set_canvas_pan_x(app.get_width_() / 2.0 - (n.x + 100.0) * z);
+                                app.set_canvas_pan_y(app.get_height_() / 2.0 - (n.y + 34.0) * z);
+                            }
+                        }
+                    }
+                }
+                _ => send7(json!({"cmd": "node_action", "key": key, "action": action.as_str()})),
+            }
+        });
     }
     {
         let send = send.clone();
@@ -1129,8 +1274,10 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     {
         let (send, models, key_of) = (send.clone(), models.clone(), key_of.clone());
+        let weak = app.as_weak();
         app.on_delete_selected(move || {
-            // one message (one undo step): selected links are cut first, then selected blocks deleted
+            // one message (one undo step): selected links are cut first, then selected blocks deleted (blocks
+            // only after the question, as in Python `confirm_delete`)
             let links: Vec<Value> = models
                 .links
                 .iter()
@@ -1141,9 +1288,14 @@ fn main() -> Result<(), slint::PlatformError> {
                 })
                 .collect();
             let keys: Vec<String> = models.nodes.iter().filter(|n| n.selected).map(|n| key_of(n.id)).collect();
-            if !keys.is_empty() || !links.is_empty() {
-                send(json!({"cmd": "delete", "keys": keys, "links": links}));
+            if keys.is_empty() {
+                if !links.is_empty() {
+                    send(json!({"cmd": "delete", "keys": keys, "links": links}));
+                }
+                return;
             }
+            let names: Vec<String> = models.nodes.iter().filter(|n| n.selected).map(|n| n.title.to_string()).collect();
+            ask_delete(&weak, &names, json!({"cmd": "delete", "keys": keys, "links": links}));
         });
     }
     {
@@ -1402,6 +1554,11 @@ fn main() -> Result<(), slint::PlatformError> {
                     let Some(m) = m.borrow().clone() else { return };
                     match v["ev"].as_str().unwrap_or("") {
                         "hello" => {
+                            if v["add_menu"].is_object() {
+                                let t = app.global::<CanvasText>();
+                                t.set_inbounds(type_leaves(&v["add_menu"]["inbounds"]));
+                                t.set_outbounds(type_leaves(&v["add_menu"]["outbounds"]));
+                            }
                             set_language(v["language"].as_str().unwrap_or("en"));
                             apply_fonts(&app, v["language"].as_str().unwrap_or("en"));
                             labels(&app);
@@ -2387,7 +2544,7 @@ mod caption {
             SetWindowPos(hwnd, std::ptr::null_mut(), 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
         }
         app.set_caption_h(HEIGHT);
-        app.set_maximized(unsafe { IsZoomed(hwnd) } != 0);
+        app.set_win_maximized(unsafe { IsZoomed(hwnd) } != 0);
         true
     }
 
@@ -2525,8 +2682,8 @@ mod caption {
                 WM_SIZE => {
                     let max = wp == SIZE_MAXIMIZED;
                     with_app(|a| {
-                        if a.get_maximized() != max {
-                            a.set_maximized(max);
+                        if a.get_win_maximized() != max {
+                            a.set_win_maximized(max);
                         }
                     });
                     DefSubclassProc(hwnd, msg, wp, lp)

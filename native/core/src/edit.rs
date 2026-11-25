@@ -254,8 +254,12 @@ pub fn move_block(g: &mut Obj, key: &str, x: f64, y: f64) {
 /// Delete a block (Python `graph.remove`): links into it are cut; links into a deleted pass-through's lanes are
 /// spliced to where those lanes led. A wireless half deletes the whole pair.
 pub fn delete(g: &mut Obj, key: &str) {
-    let (nid, _) = block_of(key);
+    let (nid, out_half) = block_of(key);
     let nid = nid.to_string();
+    // one half of an intact wireless pair: the pair breaks, the other half stays (Python `delete_wireless_half`)
+    if break_wireless(g, &nid, if out_half { "out" } else { "in" }) {
+        return;
+    }
     let Some((kind, gone)) = graph::find(g, &nid).map(|(k, n)| (k, n.clone())) else { return };
     let mut replace: std::collections::HashMap<String, Value> = Default::default();
     if kind == "relay" {
@@ -591,4 +595,334 @@ mod tests {
         assert_eq!(n["inbound"]["port"], 1081); // 1080 is taken by A
         assert_eq!(unique_name(&g, "A"), "A 2");
     }
+}
+
+
+// --- blocks by type, wireless pairs, cutting links, lanes (Python `ui/canvas.add_inbound`, `window.new_*`,
+// `graph.add_wireless / break_wireless / repair_wireless / cut_links / remove_lane`) ---
+
+/// the name of an inbound type as menus and new blocks show it (Python `INBOUND_TYPES`)
+pub fn inbound_label(t: &str) -> String {
+    match t {
+        "socks5" => "SOCKS5".into(),
+        "socks4" => "SOCKS4".into(),
+        "http" => "HTTP".into(),
+        "https" => "HTTPS".into(),
+        "shadowsocks" => "Shadowsocks".into(),
+        "hysteria2" => "Hysteria2".into(),
+        "wireguard" => "WireGuard".into(),
+        "forward" => tr("Port forward"),
+        "tun" => "TUN".into(),
+        other => other.into(),
+    }
+}
+
+/// the port a new inbound of type `t` starts from (Python `canvas.DEFAULT_PORTS`; a TUN card has no port: any
+/// free number keeps the port checks quiet)
+fn default_port(t: &str) -> i64 {
+    match t {
+        "socks4" => 1084,
+        "http" => 8080,
+        "https" | "hysteria2" => 8443,
+        "shadowsocks" => 8388,
+        "wireguard" => 51820,
+        "forward" => 2222,
+        "tun" => 30300,
+        _ => 1080,
+    }
+}
+
+fn push(g: &mut Obj, list: &str, n: crate::graph::Obj) -> String {
+    let id = n["id"].as_str().unwrap_or("").to_string();
+    arr(g, list).push(Value::Object(n));
+    id
+}
+
+/// A new inbound block of type `t` at x, y, not connected (Python `canvas.add_inbound`): servers open to the LAN
+/// (Shadowsocks, Hysteria2, WireGuard), the others local, on the first free port from the type's usual one.
+pub fn add_inbound(g: &mut Obj, t: &str, x: f64, y: f64) -> String {
+    let used: std::collections::HashSet<i64> = arr(g, "inbounds").iter().filter_map(|n| n["inbound"]["port"].as_i64()).collect();
+    let port = (default_port(t)..).find(|p| !used.contains(p)).unwrap();
+    let host = if matches!(t, "shadowsocks" | "hysteria2" | "wireguard") { "0.0.0.0" } else { "127.0.0.1" };
+    let name = unique_name(g, &inbound_label(t));
+    let n = graph::validate_inbound_node(&json!({
+        "id": crate::ids::new_id(), "name": name, "inbound": {"type": t, "host": host, "port": port}, "pos": [x, y],
+    }));
+    push(g, "inbounds", n)
+}
+
+/// A new outbound block of type `t` (or with `fields` from a share link, named `name`) at x, y
+pub fn add_outbound(g: &mut Obj, t: &str, fields: Option<&serde_json::Map<String, Value>>, name: Option<&str>, x: f64, y: f64) -> String {
+    let ob = match fields {
+        Some(f) => Value::Object(f.clone()),
+        None => json!({"type": t}),
+    };
+    let mut n = graph::validate_outbound_node(&json!({"id": crate::ids::new_id(), "outbound": ob, "pos": [x, y]}));
+    let base = name.filter(|s| !s.trim().is_empty()).map(|s| s.trim().to_string()).unwrap_or_else(|| n["name"].as_str().unwrap_or("").to_string());
+    n.insert("name".into(), json!(unique_name(g, &crate::py::head(&base, 60))));
+    push(g, "outbounds", n)
+}
+
+/// A new router (`style` "router": several rules) or IF ("if": one condition, then / else) at x, y
+pub fn add_router(g: &mut Obj, style: &str, x: f64, y: f64) -> String {
+    let is_if = style == "if";
+    let name = unique_name(g, if is_if { "IF" } else { "Router" });
+    let rule = if is_if { "IF".to_string() } else { tr("Rule {n}").replace("{n}", "1") };
+    let n = graph::validate_router_node(&json!({
+        "id": crate::ids::new_id(), "name": name, "pos": [x, y], "style": if is_if { "if" } else { "router" },
+        "rules": [{"name": rule, "match": {}}],
+    }));
+    push(g, "routers", n)
+}
+
+/// A new pass-through with three lanes at x, y
+pub fn add_relay(g: &mut Obj, x: f64, y: f64) -> String {
+    let lanes: Vec<Value> = (0..3).map(|_| Value::Object(graph::new_lane("out"))).collect();
+    let name = unique_name(g, &tr("Pass-through"));
+    let n = graph::validate_relay_node(&json!({"id": crate::ids::new_id(), "name": name, "pos": [x, y], "inputs": lanes}));
+    push(g, "relays", n)
+}
+
+/// A new wireless pair: the input half at x, y, the output half to its right (Python `graph.add_wireless`)
+pub fn add_wireless(g: &mut Obj, x: f64, y: f64) -> String {
+    let n = graph::validate_relay_node(&json!({
+        "id": crate::ids::new_id(), "pos": [x, y], "wireless": true, "number": graph::next_wireless_number(g),
+        "pos_out": [x + 300.0, y], "inputs": [graph::new_lane("out")],
+    }));
+    push(g, "relays", n)
+}
+
+/// One half ("in" / "out") of an intact wireless pair is deleted: every link of the pair is cut and the other
+/// half stays, disabled (Python `graph.break_wireless`). False if `rid` is no intact pair.
+pub fn break_wireless(g: &mut Obj, rid: &str, half: &str) -> bool {
+    let Some((kind, r)) = graph::find(g, rid).map(|(k, n)| (k, n.clone())) else { return false };
+    if kind != "relay" || r["wireless"] != json!(true) || r["broken"].as_str().is_some_and(|b| !b.is_empty()) || !matches!(half, "in" | "out") {
+        return false;
+    }
+    let lane_in = r["inputs"][0]["id"].clone();
+    let cut = |t: &mut Value| {
+        if *t == lane_in {
+            *t = Value::Null;
+        }
+    };
+    for n in arr(g, "inbounds").iter_mut() {
+        cut(&mut n["target"]);
+    }
+    for x in arr(g, "routers").iter_mut() {
+        cut(&mut x["default"]);
+        for rule in x["rules"].as_array_mut().into_iter().flatten() {
+            cut(&mut rule["target"]);
+        }
+    }
+    for x in arr(g, "relays").iter_mut() {
+        for o in x["outputs"].as_array_mut().into_iter().flatten() {
+            cut(&mut o["target"]);
+        }
+    }
+    if let Some(r) = node_mut(g, "relays", rid) {
+        r["inputs"][0]["out"] = Value::Null;
+        r["outputs"][0]["target"] = Value::Null;
+        r["broken"] = json!(half);
+    }
+    true
+}
+
+/// Make the missing half of a broken wireless pair again, next to the one left, with no links (Python
+/// `graph.repair_wireless`)
+pub fn repair_wireless(g: &mut Obj, rid: &str) -> bool {
+    let Some(r) = node_mut(g, "relays", rid) else { return false };
+    let broken = r["broken"].as_str().unwrap_or("").to_string();
+    if broken.is_empty() {
+        return false;
+    }
+    let f = |v: &Value, i: usize| v[i].as_f64().unwrap_or(0.0);
+    if broken == "in" {
+        r["pos"] = json!([f(&r["pos_out"], 0) - 300.0, f(&r["pos_out"], 1)]);
+    } else {
+        r["pos_out"] = json!([f(&r["pos"], 0) + 300.0, f(&r["pos"], 1)]);
+    }
+    r["broken"] = Value::Null;
+    r["inputs"][0]["out"] = r["outputs"][0]["id"].clone();
+    true
+}
+
+/// Cut every link into and out of the block behind `key` (the block stays; a pass-through keeps its inside
+/// wiring; for a wireless half only that half's links). Python `graph.cut_links`. True if anything changed.
+pub fn cut_links(g: &mut Obj, key: &str) -> bool {
+    let (bid, out_half) = block_of(key);
+    let bid = bid.to_string();
+    let Some((kind, b)) = graph::find(g, &bid).map(|(k, n)| (k, n.clone())) else { return false };
+    let half = if b["wireless"] == json!(true) { Some(if out_half { "out" } else { "in" }) } else { None };
+    let take_in = half != Some("out");
+    let take_out = half != Some("in");
+    let into: Vec<Value> = if !take_in {
+        vec![]
+    } else if kind == "relay" {
+        b["inputs"].as_array().into_iter().flatten().map(|x| x["id"].clone()).collect()
+    } else {
+        vec![json!(bid)]
+    };
+    let before = Value::Object(g.clone());
+    let cut = |t: &Value| if into.contains(t) { Value::Null } else { t.clone() };
+    for n in arr(g, "inbounds").iter_mut() {
+        n["target"] = if take_out && n["id"] == json!(bid) { Value::Null } else { cut(&n["target"]) };
+    }
+    for r in arr(g, "routers").iter_mut() {
+        let mine = take_out && r["id"] == json!(bid);
+        r["default"] = if mine { Value::Null } else { cut(&r["default"]) };
+        for x in r["rules"].as_array_mut().into_iter().flatten() {
+            x["target"] = if mine { Value::Null } else { cut(&x["target"]) };
+        }
+    }
+    for r in arr(g, "relays").iter_mut() {
+        let mine = take_out && r["id"] == json!(bid);
+        for x in r["outputs"].as_array_mut().into_iter().flatten() {
+            x["target"] = if mine { Value::Null } else { cut(&x["target"]) };
+        }
+    }
+    for n in arr(g, "outbounds").iter_mut() {
+        if take_out && n["id"] == json!(bid) {
+            n["via"] = Value::Null;
+            n["members"] = json!([]);
+            continue;
+        }
+        n["via"] = cut(&n["via"]);
+        if let Some(m) = n["members"].as_array_mut() {
+            m.retain(|x| !into.contains(x));
+        }
+    }
+    if take_out && g.get("pc").and_then(|p| p.get("inbound")) == Some(&json!(bid)) {
+        g.get_mut("pc").unwrap()["inbound"] = Value::Null;
+    }
+    Value::Object(g.clone()) != before
+}
+
+/// Add a lane to a pass-through (`side` "inputs", or "outputs" for an output lane of a routed one)
+pub fn add_lane(g: &mut Obj, rid: &str, side: &str) -> bool {
+    let Some(mut n) = graph::find(g, rid).filter(|(k, _)| *k == "relay").map(|(_, n)| n.clone()) else { return false };
+    if n["wireless"] == json!(true) {
+        return false;
+    }
+    let count = n[side].as_array().map_or(0, Vec::len) + 1;
+    if count > graph::MAX_LANES {
+        return false;
+    }
+    crate::form::set_lane_count(&mut n, side, count);
+    *g = crate::form::with_node(g, "relay", &n);
+    true
+}
+
+/// Remove one lane (an input or output lane id) of a pass-through (Python `graph.remove_lane`): a straight block
+/// loses it on both sides, a routed one only on that side; one lane per side stays. Links into lanes that are
+/// gone are cut.
+pub fn remove_lane(g: &mut Obj, rid: &str, lane: &str) -> bool {
+    let Some(mut n) = graph::find(g, rid).filter(|(k, _)| *k == "relay").map(|(_, n)| n.clone()) else { return false };
+    if n["wireless"] == json!(true) {
+        return false;
+    }
+    let has = |side: &str| n[side].as_array().is_some_and(|a| a.iter().any(|x| x["id"] == json!(lane)));
+    let side = if has("inputs") { "inputs" } else if has("outputs") { "outputs" } else { return false };
+    if n[side].as_array().map_or(0, Vec::len) <= 1 {
+        return false;
+    }
+    let i = n[side].as_array().unwrap().iter().position(|x| x["id"] == json!(lane)).unwrap();
+    let sides: Vec<&str> = if n["routed"] == json!(true) { vec![side] } else { vec!["inputs", "outputs"] };
+    for s in sides {
+        if let Some(a) = n[s].as_array_mut().filter(|a| i < a.len()) {
+            a.remove(i);
+        }
+    }
+    let outs: Vec<Value> = n["outputs"].as_array().into_iter().flatten().map(|o| o["id"].clone()).collect();
+    for x in n["inputs"].as_array_mut().into_iter().flatten() {
+        if !outs.contains(&x["out"]) {
+            x["out"] = Value::Null;
+        }
+    }
+    *g = crate::form::with_node(g, "relay", &n);
+    true
+}
+
+fn item(action: &str, title: String) -> Value {
+    json!({"action": action, "title": title})
+}
+
+/// The right-click menu of the canvas block behind `key` (Python `CanvasInterface.context_menu` on a block), in the
+/// sections the window draws: `head` (the block's own entries), one submenu (`sub_title`, `sub`), then "Disconnect
+/// all links" (`cut`) and Duplicate / Delete (`tail`). Each entry's action goes back to the core (`node_action`);
+/// "toggle" is titled Run / Stop by the window (from the card's live state).
+pub fn block_menu(g: &Obj, key: &str) -> Value {
+    let menu = |head: Vec<Value>, sub_title: String, sub: Vec<Value>, cut: bool, tail: bool| {
+        json!({"head": head, "sub_title": sub_title, "sub": sub, "cut": cut, "tail": tail})
+    };
+    if key == "pc" {
+        return menu(vec![item("pc.restore", tr("Restore previous")), item("pc.off", tr("Off (default)"))], String::new(), vec![], false, false);
+    }
+    let (bid, out_half) = block_of(key);
+    let Some((kind, b)) = graph::find(g, bid) else { return menu(vec![], String::new(), vec![], false, false) };
+    let mut head = vec![item("edit", tr("Edit"))];
+    if b["wireless"] == json!(true) {
+        if b["broken"].as_str().is_some_and(|s| !s.is_empty()) {
+            head.push(item("wireless.repair", tr("Recreate the partner")));
+        } else {
+            head.push(item(if out_half { "wireless.partner.in" } else { "wireless.partner.out" }, tr("Go to the partner")));
+        }
+        return menu(head, String::new(), vec![], false, true);
+    }
+    let (mut sub_title, mut sub) = (String::new(), vec![]);
+    match kind {
+        "inbound" => {
+            head.push(item("toggle", String::new()));
+            head.push(item("copy", tr("Copy address/link for clients")));
+            if crate::platform::PC_INBOUND_TYPES.contains(&b["inbound"]["type"].as_str().unwrap_or("")) {
+                head.push(item("pc", tr("Use as the PC proxy")));
+            }
+            if !b["target"].is_null() {
+                head.push(item("disconnect", tr("Disconnect")));
+            }
+        }
+        "relay" => {
+            let routed = b["routed"] == json!(true);
+            head.push(item("lane.add.inputs", tr("Add a lane")));
+            if routed {
+                head.push(item("lane.add.outputs", tr("Add an output lane")));
+            }
+            for (side, label) in [("inputs", "Input {n}"), ("outputs", "Output {n}")] {
+                let lanes = b[side].as_array().cloned().unwrap_or_default();
+                if lanes.len() > 1 && (routed || side == "inputs") {
+                    for (i, l) in lanes.iter().enumerate() {
+                        let title = if routed { tr(label) } else { tr("Lane {n}") }.replace("{n}", &(i + 1).to_string());
+                        sub.push(item(&format!("lane.del.{}", l["id"].as_str().unwrap_or("")), title));
+                    }
+                }
+            }
+            if !sub.is_empty() {
+                sub_title = tr("Remove a lane");
+            }
+        }
+        "outbound" => {
+            let t = b["outbound"]["type"].as_str().unwrap_or("");
+            if t != "block" {
+                head.push(item("latency", tr("Test latency")));
+            }
+            if !b["via"].is_null() {
+                head.push(item("disconnect", tr("Disconnect")));
+            }
+            if t == "group" && b["outbound"]["group_mode"] == json!("select") {
+                let sel = b["outbound"]["group_selected"].as_str().unwrap_or("");
+                let members: Vec<&str> = b["members"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+                let cur = if members.contains(&sel) { sel } else { members.first().copied().unwrap_or("") };
+                for mid in &members {
+                    if let Some((_, n)) = graph::find(g, mid) {
+                        let name = n["name"].as_str().unwrap_or("");
+                        sub.push(item(&format!("member.{mid}"), if *mid == cur { format!("✓  {name}") } else { name.to_string() }));
+                    }
+                }
+                if !sub.is_empty() {
+                    sub_title = tr("Use member");
+                }
+            }
+        }
+        _ => {}
+    }
+    menu(head, sub_title, sub, true, true)
 }
