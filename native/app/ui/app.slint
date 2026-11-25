@@ -111,6 +111,13 @@ export struct FieldRow {
     busy: bool,
     // the description's colour: 0 normal, 1 success, 2 failure
     tone: int,
+    // its card's place in a group (the rows between headings): the group's outer corners are round;
+    // a heading: the first row shown (no room above it)
+    first: bool,
+    last: bool,
+    // it continues the row above on that row's card / the row below continues it
+    joined: bool,
+    held: bool,
 }
 
 export struct CardRow {
@@ -629,83 +636,140 @@ component AppSpinBox inherits Rectangle {
     }
 }
 
+// One field of the editor on its card (the settings' look): its name and what it does on the left,
+// its control on the right; a heading is the small coloured title of the group of cards under it.
 component FormRow inherits Rectangle {
     in property <FieldRow> f;
     callback changed(string, string);
     // a button (index -1) or an item's button n
     callback pressed(string, int);
+    property <bool> heading: f.kind == "heading";
+    property <length> top-r: f.joined ? 0px : f.first ? 24px : 6px;
+    property <length> bottom-r: f.held ? 0px : f.last ? 24px : 6px;
     height: lay.preferred-height;
-    lay := HorizontalLayout {
-        spacing: 16px;
-        padding-top: f.label != "" ? 10px : 2px;
-        // the label and the control centred on each other
-        VerticalLayout {
-            width: 260px;
-            spacing: 2px;
-            alignment: center;
+    lay := VerticalLayout {
+        padding-top: root.heading ? (f.first ? 4px : 20px) : (f.first || f.joined ? 0px : 3px);
+        padding-bottom: root.heading ? 8px : 0px;
+        if root.heading: HorizontalLayout {
+            padding-left: 20px;
             Text {
-                text: f.kind == "button" ? "" : f.label;
-                font-size: (f.kind == "heading" ? 18px : 14px) * Type.scale;
-                color: f.kind == "heading" ? M3.primary : M3.on-surface;
-                font-weight: f.kind == "heading" ? 700 : 600;
-                wrap: word-wrap;
-            }
-            if f.desc != "": Text {
-                text: f.desc;
-                font-size: 12px * Type.scale;
-                color: f.tone == 1 ? #1e7f3c : f.tone == 2 ? M3.error : M3.on-surface-variant;
+                text: f.label;
+                font-size: 14px * Type.scale;
+                font-weight: 600;
+                color: M3.primary;
                 wrap: word-wrap;
             }
         }
-        VerticalLayout {
-            alignment: center;
-            horizontal-stretch: 1;
-            if f.kind == "bool": HorizontalLayout {
-                alignment: start;
-                Switch {
-                    checked: f.checked;
-                    toggled => { root.changed(f.key, self.checked ? "true" : "false"); }
+        if !root.heading: Rectangle {
+            background: M3.surface-container-low;
+            border-top-left-radius: root.top-r;
+            border-top-right-radius: root.top-r;
+            border-bottom-left-radius: root.bottom-r;
+            border-bottom-right-radius: root.bottom-r;
+            HorizontalLayout {
+                padding-left: 20px;
+                padding-right: 20px;
+                // (a row and the one continuing it: 8 px between them on the shared card)
+                padding-top: f.joined ? 4px : 14px;
+                padding-bottom: f.held ? 4px : 14px;
+                spacing: 16px;
+                // the label and the control centred on each other
+                VerticalLayout {
+                    width: 240px;
+                    spacing: 4px;
+                    alignment: center;
+                    if f.kind != "button" && f.label != "": Text {
+                        text: f.label;
+                        font-size: 16px * Type.scale;
+                        font-weight: 500;
+                        color: M3.on-surface;
+                        wrap: word-wrap;
+                    }
+                    if f.desc != "": Text {
+                        text: f.desc;
+                        font-size: 13px * Type.scale;
+                        color: f.tone == 1 ? #1e7f3c : f.tone == 2 ? M3.error : M3.on-surface-variant;
+                        wrap: word-wrap;
+                    }
                 }
-            }
-            if f.kind == "choice": AppComboBox {
-                model: f.options;
-                current-index: f.index;
-                selected => { root.changed(f.key, self.current-index); }
-            }
-            if f.kind == "button": HorizontalLayout {
-                alignment: start;
-                Button {
-                    text: f.label;
-                    enabled: !f.busy;
-                    clicked => { root.pressed(f.key, -1); }
-                }
-            }
-            if f.kind == "item": HorizontalLayout {
-                spacing: 8px;
-                Text {
-                    text: f.text;
-                    color: M3.on-surface-variant;
-                    vertical-alignment: center;
+                VerticalLayout {
+                    alignment: center;
                     horizontal-stretch: 1;
-                    font-family: Type.mono;
+                    if f.kind == "bool": HorizontalLayout {
+                        alignment: end;
+                        Switch {
+                            checked: f.checked;
+                            toggled => { root.changed(f.key, self.checked ? "true" : "false"); }
+                        }
+                    }
+                    if f.kind == "choice": AppComboBox {
+                        model: f.options;
+                        current-index: f.index;
+                        selected => { root.changed(f.key, self.current-index); }
+                    }
+                    if f.kind == "button": HorizontalLayout {
+                        alignment: end;
+                        Button {
+                            text: f.label;
+                            enabled: !f.busy;
+                            clicked => { root.pressed(f.key, -1); }
+                        }
+                    }
+                    if f.kind == "item": HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: f.text;
+                            color: M3.on-surface-variant;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            font-family: Type.mono;
+                        }
+                        for b[i] in f.buttons: Button {
+                            text: b;
+                            clicked => { root.pressed(f.key, i); }
+                        }
+                    }
+                    if f.kind == "info": AppLineEdit {
+                        text: f.text;
+                        read-only: true;
+                        font-size: 12px * Type.scale;
+                        font-family: Type.mono;
+                    }
+                    if f.kind == "text" || f.kind == "secret" || f.kind == "int": AppLineEdit {
+                        text: f.text;
+                        input-type: f.kind == "secret" ? InputType.password : f.kind == "int" ? InputType.number : InputType.text;
+                        edited(t) => { root.changed(f.key, t); }
+                    }
                 }
-                for b[i] in f.buttons: Button {
-                    text: b;
-                    clicked => { root.pressed(f.key, i); }
-                }
-            }
-            if f.kind == "info": AppLineEdit {
-                text: f.text;
-                read-only: true;
-                font-size: 12px * Type.scale;
-                font-family: Type.mono;
-            }
-            if f.kind == "text" || f.kind == "secret" || f.kind == "int": AppLineEdit {
-                text: f.text;
-                input-type: f.kind == "secret" ? InputType.password : f.kind == "int" ? InputType.number : InputType.text;
-                edited(t) => { root.changed(f.key, t); }
             }
         }
+    }
+}
+
+// the page's buttons beside its title: the proxies' "stop all", the editor's cancel and save
+component PageActions inherits HorizontalLayout {
+    in property <int> page;
+    in property <bool> has-cards;
+    in property <string> t-stop-all;
+    in property <string> t-cancel;
+    in property <string> t-save;
+    callback stop-all();
+    callback cancel();
+    callback save();
+    alignment: end;
+    spacing: 8px;
+    if root.page == 1 && root.has-cards: Button {
+        text: root.t-stop-all;
+        clicked => { root.stop-all(); }
+    }
+    if root.page == 3: Button {
+        text: root.t-cancel;
+        clicked => { root.cancel(); }
+    }
+    if root.page == 3: Button {
+        text: root.t-save;
+        primary: true;
+        clicked => { root.save(); }
     }
 }
 
@@ -1360,15 +1424,8 @@ component Segmented inherits Rectangle {
 component StatsPage inherits VerticalLayout {
     spacing: 14px;
     HorizontalLayout {
+        alignment: end;
         spacing: 12px;
-        Text {
-            text: Stats.title;
-            font-size: 26px * Type.scale;
-            font-weight: 700;
-            color: M3.on-surface;
-            horizontal-stretch: 1;
-            vertical-alignment: center;
-        }
         AppComboBox {
             width: 240px;
             model: Stats.choices;
@@ -1548,16 +1605,11 @@ component ConnPage inherits VerticalLayout {
     spacing: 10px;
     // the region and address columns go when it gets narrow
     property <bool> wide: self.width >= 760px;
+    // (the window's title folds as this scrolls)
+    out property <length> scroll-y: conn-list.viewport-y;
     HorizontalLayout {
+        alignment: end;
         spacing: 12px;
-        Text {
-            text: Conn.title;
-            font-size: 26px * Type.scale;
-            font-weight: 700;
-            color: M3.on-surface;
-            horizontal-stretch: 1;
-            vertical-alignment: center;
-        }
         AppComboBox {
             width: 220px;
             model: Conn.proxies;
@@ -1777,13 +1829,9 @@ component HelpBlockView inherits VerticalLayout {
 }
 
 component HelpPage inherits VerticalLayout {
+    // (the window's title folds as this scrolls)
+    out property <length> scroll-y: help-scroll.viewport-y;
     spacing: 12px;
-    Text {
-        text: Info.help-title;
-        font-size: 26px * Type.scale;
-        font-weight: 700;
-        color: M3.on-surface;
-    }
     Rectangle {
         vertical-stretch: 1;
         help-scroll := ScrollView {
@@ -1811,6 +1859,8 @@ component HelpPage inherits VerticalLayout {
 }
 
 component AboutPage inherits VerticalLayout {
+    // (the window's title folds as this scrolls)
+    out property <length> scroll-y: about-scroll.viewport-y;
     spacing: 16px;
     Rectangle {
         vertical-stretch: 1;
@@ -1929,6 +1979,8 @@ component LicensePage inherits VerticalLayout {
     // another licence: from its top
     property <string> shown: Info.lic-text;
     changed shown => { lic-scroll.viewport-y = 0; }
+    // (the window's title folds as this scrolls)
+    out property <length> scroll-y: lic-scroll.viewport-y;
     spacing: 10px;
     HorizontalLayout {
         spacing: 8px;
@@ -1948,14 +2000,7 @@ component LicensePage inherits VerticalLayout {
             }
             back-ta := TouchArea { clicked => { root.back(); } }
         }
-        Text {
-            text: Info.licenses;
-            font-size: 26px * Type.scale;
-            font-weight: 700;
-            color: M3.on-surface;
-            horizontal-stretch: 1;
-            vertical-alignment: center;
-        }
+        Rectangle { horizontal-stretch: 1; }
         AppComboBox {
             width: 320px;
             y: (parent.height - self.height) / 2;
@@ -2246,6 +2291,29 @@ export component App inherits Window {
         log-view.content-y = min(0px, log-view.visible-height - log-view.content-height);
     }
 
+    // the page's title: large over the page, small in the band above once the page scrolls
+    property <string> page-title: root.page == 1 ? root.t-proxy : root.page == 2 ? root.t-logs
+        : root.page == 3 ? root.form-title : root.page == 4 ? Settings.text.title : root.page == 5 ? Stats.title
+        : root.page == 6 ? Conn.title : root.page == 7 ? Info.help-title : root.page == 8 ? root.t-about
+        : root.page == 9 ? Info.licenses : "";
+    property <length> page-scroll: root.page == 1 ? card-list.viewport-y : root.page == 2 ? log-view.viewport-y
+        : root.page == 3 ? form-scroll.viewport-y : root.page == 4 ? settings-scroll.viewport-y
+        : root.page == 6 ? conn-page.scroll-y : root.page == 7 ? help-page.scroll-y
+        : root.page == 8 ? about-page.scroll-y : root.page == 9 ? lic-page.scroll-y : 0px;
+    // (set when the scroll changes: a binding would loop, as folding changes the page's height and so its scroll)
+    property <bool> title-folded;
+    changed page-scroll => { root.title-folded = root.page-scroll < -1px; }
+    // the large title's room, the same as the band's (so the page keeps its place as the title folds)
+    property <length> big-title-h: max(44px, 26px * Type.scale * 1.45);
+    // where the title's buttons end: the editor's cards' right edge, else the page's (room: the page's width)
+    pure function actions-right(room: length) -> length {
+        root.page == 3 ? form-page.x + form-page.width - 16px : room - 12px
+    }
+    // in line with the page's content where that sits in the middle of the room
+    property <length> title-x: root.page == 3 ? form-page.x
+        : root.page == 4 ? settings-page.x + max(0px, (settings-scroll.visible-width - 16px - settings-scroll.used-w) / 2)
+        : root.page == 7 ? help-page.x : root.page == 8 ? about-page.x : 0px;
+
     title: "ProxyDock";
     preferred-width: 980px;
     preferred-height: 680px;
@@ -2314,6 +2382,41 @@ export component App inherits Window {
                 clicked => { root.page = 4; }
             }
         }
+        VerticalLayout {
+        // the band above the page: the page's title, small, once the page has scrolled
+        Rectangle {
+            height: root.page != 0 && root.title-folded ? root.big-title-h : 0px;
+            animate height { duration: 220ms; easing: ease-in-out; }
+            clip: true;
+            band-acts := PageActions {
+                x: 20px;
+                y: (root.big-title-h - 40px) / 2;
+                width: root.actions-right(parent.width - 40px);
+                height: 40px;
+                page: root.page;
+                has-cards: root.cards.length > 0;
+                t-stop-all: root.t-stop-all;
+                t-cancel: root.t-cancel;
+                t-save: root.t-save;
+                stop-all => { root.stop-all(); }
+                cancel => { root.form-cancel(); }
+                save => { root.form-save(); }
+            }
+            Text {
+                x: 20px + root.title-x;
+                y: 0;
+                height: root.big-title-h;
+                width: band-acts.x + band-acts.width - band-acts.preferred-width - 12px - self.x;
+                text: root.page-title;
+                font-size: 16px * Type.scale;
+                font-weight: 600;
+                color: M3.on-surface;
+                vertical-alignment: center;
+                overflow: elide;
+                opacity: root.title-folded ? 1 : 0;
+                animate opacity { duration: 220ms; }
+            }
+        }
         // page container
         Rectangle {
             border-radius: 28px;
@@ -2322,6 +2425,41 @@ export component App inherits Window {
             VerticalLayout {
                 padding: 20px;
                 spacing: 12px;
+                // the page's title, large; it folds into the band above as the page scrolls
+                // (the band and this together keep one height: the page does not jump)
+                if root.page != 0: Rectangle {
+                    height: root.title-folded ? 0px : root.big-title-h;
+                    animate height { duration: 220ms; easing: ease-in-out; }
+                    clip: true;
+                    big-acts := PageActions {
+                        x: 0;
+                        y: (root.big-title-h - 40px) / 2;
+                        width: root.actions-right(parent.width);
+                        height: 40px;
+                        page: root.page;
+                        has-cards: root.cards.length > 0;
+                        t-stop-all: root.t-stop-all;
+                        t-cancel: root.t-cancel;
+                        t-save: root.t-save;
+                        stop-all => { root.stop-all(); }
+                        cancel => { root.form-cancel(); }
+                        save => { root.form-save(); }
+                    }
+                    Text {
+                        x: root.title-x;
+                        y: 0;
+                        height: root.big-title-h;
+                        vertical-alignment: center;
+                        width: big-acts.width - big-acts.preferred-width - 12px - self.x;
+                        text: root.page-title;
+                        font-size: 26px * Type.scale;
+                        font-weight: 700;
+                        color: M3.on-surface;
+                        overflow: elide;
+                        opacity: root.title-folded ? 0 : 1;
+                        animate opacity { duration: 160ms; }
+                    }
+                }
                 if !root.connected: Rectangle {
                     height: 40px;
                     border-radius: 12px;
@@ -2476,20 +2614,6 @@ export component App inherits Window {
                     VerticalLayout {
                         visible: root.page == 1;
                         spacing: 12px;
-                        HorizontalLayout {
-                            Text {
-                                text: root.t-proxy;
-                                font-size: 26px * Type.scale;
-                                font-weight: 700;
-                                color: M3.on-surface;
-                                horizontal-stretch: 1;
-                                vertical-alignment: center;
-                            }
-                            if root.cards.length > 0: Button {
-                                text: root.t-stop-all;
-                                clicked => { root.stop-all(); }
-                            }
-                        }
                         if root.cards.length == 0: Text {
                             text: root.t-empty;
                             color: M3.on-surface-variant;
@@ -2518,26 +2642,12 @@ export component App inherits Window {
                             }
                         }
                     }
-                    VerticalLayout {
+                    form-page := VerticalLayout {
                         visible: root.page == 3;
                         // the editor in a readable width, in the middle of any room left over
                         width: min(parent.width, 916px);
                         x: (parent.width - self.width) / 2;
                         spacing: 12px;
-                        HorizontalLayout {
-                            spacing: 8px;
-                            Text {
-                                text: root.form-title;
-                                font-size: 26px * Type.scale;
-                                font-weight: 700;
-                                color: M3.on-surface;
-                                horizontal-stretch: 1;
-                                vertical-alignment: center;
-                                overflow: elide;
-                            }
-                            Button { text: root.t-cancel; clicked => { root.form-cancel(); } }
-                            Button { text: root.t-save; primary: true; clicked => { root.form-save(); } }
-                        }
                         if root.form-notice != "": Rectangle {
                             border-radius: 12px;
                             background: root.form-notice-ok ? M3.secondary-container : M3.error-container;
@@ -2591,39 +2701,28 @@ export component App inherits Window {
                             }
                         }
                     }
-                    StatsPage { visible: root.page == 5; }
+                    stats-page := StatsPage { visible: root.page == 5; }
                     // pages with a readable width sit in the middle of any room left over
-                    HelpPage {
+                    help-page := HelpPage {
                         visible: root.page == 7;
                         width: min(parent.width, 776px);
                         x: (parent.width - self.width) / 2;
                     }
-                    AboutPage {
+                    about-page := AboutPage {
                         visible: root.page == 8;
                         width: min(parent.width, 736px);
                         x: (parent.width - self.width) / 2;
                     }
-                    LicensePage {
+                    lic-page := LicensePage {
                         visible: root.page == 9;
                         back => { root.page = 8; }
                     }
-                    ConnPage { visible: root.page == 6; }
+                    conn-page := ConnPage { visible: root.page == 6; }
                     settings-page := VerticalLayout {
                         visible: root.page == 4;
                         width: min(parent.width, 1376px);
                         x: (parent.width - self.width) / 2;
                         spacing: 12px;
-                        HorizontalLayout {
-                            spacing: 8px;
-                            Text {
-                                text: Settings.text.title;
-                                font-size: 26px * Type.scale;
-                                font-weight: 700;
-                                color: M3.on-surface;
-                                horizontal-stretch: 1;
-                                vertical-alignment: center;
-                            }
-                        }
                         Rectangle {
                             vertical-stretch: 1;
                             settings-scroll := ScrollView {
@@ -2729,12 +2828,6 @@ export component App inherits Window {
                     VerticalLayout {
                         visible: root.page == 2;
                         spacing: 12px;
-                        Text {
-                            text: root.t-logs;
-                            font-size: 26px * Type.scale;
-                            font-weight: 700;
-                            color: M3.on-surface;
-                        }
                         Rectangle {
                             border-radius: 16px;
                             background: M3.surface-container-low;
@@ -2763,6 +2856,7 @@ export component App inherits Window {
                     }
                 }
             }
+        }
         }
     }
     UpdateDialogs { }

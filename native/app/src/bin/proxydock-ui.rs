@@ -309,7 +309,7 @@ thread_local! {
 }
 
 fn field_rows(fields: &[Value]) -> Vec<FieldRow> {
-    EDITOR.with(|e| {
+    let mut rows = EDITOR.with(|e| {
         let mut e = e.borrow_mut();
         e.options.clear();
         e.rerender.clear();
@@ -352,10 +352,37 @@ fn field_rows(fields: &[Value]) -> Vec<FieldRow> {
                     buttons: ModelRc::new(VecModel::from(buttons)),
                     busy: f["busy"] == json!(true),
                     tone: f["tone"].as_i64().unwrap_or(0) as i32,
+                    first: false,
+                    last: false,
+                    joined: false,
+                    held: false,
                 }
             })
-            .collect()
-    })
+            .collect::<Vec<_>>()
+    });
+    mark_groups(&mut rows);
+    rows
+}
+
+/// The cards' places in their groups: the rows shown between headings make one group (its first and
+/// last cards get round outer corners); a heading that is the first row shown has no room above it.
+/// A row that continues the one above (a second box, a button) shares its card.
+fn mark_groups(rows: &mut [FieldRow]) {
+    let shown: Vec<usize> = (0..rows.len()).filter(|&i| rows[i].visible).collect();
+    let heads: Vec<bool> = shown.iter().map(|&i| rows[i].kind == "heading").collect();
+    let joins: Vec<bool> = shown
+        .iter()
+        .enumerate()
+        .map(|(n, &i)| n > 0 && !heads[n] && !heads[n - 1] && (rows[i].label.is_empty() || rows[i].kind == "button"))
+        .collect();
+    for (n, &i) in shown.iter().enumerate() {
+        let prev_head = n.checked_sub(1).map(|m| heads[m]);
+        let next_head = heads.get(n + 1).copied();
+        rows[i].first = if heads[n] { prev_head.is_none() } else { prev_head.unwrap_or(true) };
+        rows[i].last = !heads[n] && next_head.unwrap_or(true);
+        rows[i].joined = joins[n];
+        rows[i].held = joins.get(n + 1).copied().unwrap_or(false);
+    }
 }
 
 thread_local! {
