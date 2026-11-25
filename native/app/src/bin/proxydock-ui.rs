@@ -111,6 +111,29 @@ fn traffic_text(st: &Value) -> String {
     format!("↑ {}  ↓ {}  ·  TCP {}  UDP {}", fmt_size(n("up") as f64), fmt_size(n("down") as f64), n("tcp"), n("udp"))
 }
 
+thread_local! {
+    /// the timer that waits for the native window (then colours and takes over its title bar)
+    static FIRST_PAINT: std::cell::RefCell<Option<slint::Timer>> = const { std::cell::RefCell::new(None) };
+}
+
+trait StopTimer {
+    fn stop(&self);
+}
+
+impl StopTimer for std::cell::RefCell<Option<slint::Timer>> {
+    fn stop(&self) {
+        if let Some(t) = self.borrow().as_ref() {
+            t.stop();
+        }
+    }
+}
+
+/// the native window exists (winit makes it after the event loop starts)
+fn has_native_window(w: &App) -> bool {
+    use raw_window_handle::HasWindowHandle;
+    w.window().window_handle().window_handle().is_ok()
+}
+
 /// Windows 11: caption, border and caption text in the app's colours (ignored before Windows 11)
 fn apply_title_bar(w: &App) {
     #[cfg(windows)]
@@ -1502,12 +1525,21 @@ fn main() -> Result<(), slint::PlatformError> {
     app.global::<NodeEditorComputations>().invoke_viewport_resized(app.get_width_(), app.get_height_());
     // the native window exists once the event loop runs: colour its title bar then, and again on theme changes
     {
+        // (winit makes the native window a moment after the loop starts: try until it is there, for 2 s)
         let weak = app.as_weak();
-        slint::Timer::single_shot(std::time::Duration::ZERO, move || {
-            if let Some(a) = weak.upgrade() {
+        let tries = std::cell::Cell::new(0);
+        let timer = slint::Timer::default();
+        timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(50), move || {
+            tries.set(tries.get() + 1);
+            let Some(a) = weak.upgrade() else { return };
+            if has_native_window(&a) || tries.get() > 40 {
                 apply_title_bar(&a);
+                #[cfg(windows)]
+                caption::install(&a);
+                FIRST_PAINT.with(|t| t.stop());
             }
         });
+        FIRST_PAINT.with(|t| *t.borrow_mut() = Some(timer));
         let weak = app.as_weak();
         app.on_theme_changed(move || {
             if let Some(a) = weak.upgrade() {
@@ -2232,4 +2264,236 @@ fn show_update(app: &App, v: &Value) {
     u.set_file(rel["asset"].as_str().unwrap_or("").into());
     let page = rel["url"].as_str().filter(|x| !x.is_empty()).unwrap_or(proxydock_core::update::RELEASES_URL);
     UPDATE_PAGE.with(|p| *p.borrow_mut() = (!installs).then(|| page.to_string()));
+}
+
+// --- the window's own title bar (Windows 11): taller, in the app's M3 colours, with Windows' snapping kept ---
+//
+// Windows draws no caption (WM_NCCALCSIZE gives its height to the client area) but keeps the borders, the
+// shadow and resizing. WM_NCHITTEST tells Windows where the bar and its buttons are: the bar moves the window
+// (drag, double-click, Aero Snap), and HTMAXBUTTON over the maximise button brings Windows 11's snap layouts.
+// Clicks on the buttons come as non-client messages, handled here; their hover and pressed looks go to the
+// window (caption-hover / caption-pressed). Windows 10 keeps its own bar (resizing a frame drawn this way
+// shakes there).
+#[cfg(windows)]
+mod caption {
+    use super::App;
+    use slint::ComponentHandle;
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+    use windows_sys::Win32::Graphics::Dwm::DwmExtendFrameIntoClientArea;
+    use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
+    use windows_sys::Win32::UI::Controls::MARGINS;
+    use windows_sys::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT};
+    use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetClientRect, IsZoomed, PostMessageW, SetWindowPos, ShowWindow, HTCAPTION, HTCLIENT, HTCLOSE, HTMAXBUTTON,
+        HTMINBUTTON, HTTOP, HTTOPLEFT, HTTOPRIGHT, NCCALCSIZE_PARAMS, SM_CXPADDEDBORDER, SM_CYFRAME, SWP_FRAMECHANGED,
+        SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, WM_ACTIVATE, WM_CLOSE,
+        WM_MOUSEMOVE, WM_NCCALCSIZE, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
+        WM_NCMOUSEMOVE, WM_SIZE,
+    };
+
+    /// the bar's height and each button's width (logical px, as in app.slint)
+    pub const HEIGHT: f32 = 48.0;
+    const BUTTON_W: f32 = 46.0;
+    const WM_NCMOUSELEAVE: u32 = 0x02A2;
+    const SIZE_MAXIMIZED: usize = 2;
+
+    thread_local! {
+        static APP: std::cell::RefCell<Option<slint::Weak<App>>> = const { std::cell::RefCell::new(None) };
+        static PRESSED: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
+    }
+
+    /// Windows 11 (build 22000 or later)
+    fn windows_11() -> bool {
+        use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
+        let key: Vec<u16> = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\0".encode_utf16().collect();
+        let name: Vec<u16> = "CurrentBuildNumber\0".encode_utf16().collect();
+        let mut buf = [0u16; 32];
+        let mut size = (buf.len() * 2) as u32;
+        let ok = unsafe {
+            RegGetValueW(HKEY_LOCAL_MACHINE, key.as_ptr(), name.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), buf.as_mut_ptr().cast(), &mut size)
+        } == 0;
+        let text = String::from_utf16_lossy(&buf[..buf.iter().position(|c| *c == 0).unwrap_or(0)]);
+        ok && text.parse::<u32>().is_ok_and(|b| b >= 22000)
+    }
+
+    fn hwnd_of(app: &App) -> Option<HWND> {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        let handle = app.window().window_handle();
+        let raw = handle.window_handle().ok()?.as_raw();
+        let RawWindowHandle::Win32(h) = raw else { return None };
+        Some(h.hwnd.get() as HWND)
+    }
+
+    /// Take over the caption (once, after the window exists). False: Windows keeps its own bar.
+    pub fn install(app: &App) -> bool {
+        if std::env::var_os("PROXYDOCK_NATIVE_CAPTION").is_some() || !windows_11() {
+            return false;
+        }
+        let Some(hwnd) = hwnd_of(app) else { return false };
+        APP.with(|a| *a.borrow_mut() = Some(app.as_weak()));
+        unsafe {
+            if SetWindowSubclass(hwnd, Some(proc_), 1, 0) == 0 {
+                return false;
+            }
+            // the shadow and the rounded corners stay with a frame extended one pixel into the client area
+            let margins = MARGINS { cxLeftWidth: 0, cxRightWidth: 0, cyTopHeight: 1, cyBottomHeight: 0 };
+            DwmExtendFrameIntoClientArea(hwnd, &margins);
+            SetWindowPos(hwnd, std::ptr::null_mut(), 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
+        }
+        app.set_caption_h(HEIGHT);
+        app.set_maximized(unsafe { IsZoomed(hwnd) } != 0);
+        true
+    }
+
+    fn with_app(f: impl FnOnce(&App)) {
+        APP.with(|a| {
+            if let Some(app) = a.borrow().as_ref().and_then(|w| w.upgrade()) {
+                f(&app);
+            }
+        });
+    }
+
+    /// the resize border's thickness (physical px)
+    fn frame(hwnd: HWND) -> i32 {
+        unsafe {
+            let dpi = GetDpiForWindow(hwnd);
+            GetSystemMetricsForDpi(SM_CYFRAME, dpi) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi)
+        }
+    }
+
+    /// 1 minimise, 2 maximise, 3 close, 0 another place
+    fn button_of(hit: u32) -> i32 {
+        match hit {
+            HTMINBUTTON => 1,
+            HTMAXBUTTON => 2,
+            HTCLOSE => 3,
+            _ => 0,
+        }
+    }
+
+    fn set_hover(b: i32) {
+        with_app(|a| {
+            if a.get_caption_hover() != b {
+                a.set_caption_hover(b);
+            }
+        });
+    }
+
+    fn set_pressed(b: i32) {
+        PRESSED.with(|p| p.set(b));
+        with_app(|a| {
+            if a.get_caption_pressed() != b {
+                a.set_caption_pressed(b);
+            }
+        });
+    }
+
+    unsafe extern "system" fn proc_(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _id: usize, _data: usize) -> LRESULT {
+        unsafe {
+            match msg {
+                // no caption: the client area reaches the window's top (a maximised window's top border is off the
+                // screen: keep the client below it)
+                WM_NCCALCSIZE if wp != 0 => {
+                    let params = lp as *mut NCCALCSIZE_PARAMS;
+                    let top = (*params).rgrc[0].top;
+                    let r = DefSubclassProc(hwnd, msg, wp, lp);
+                    (*params).rgrc[0].top = top + if IsZoomed(hwnd) != 0 { frame(hwnd) } else { 0 };
+                    r
+                }
+                WM_NCHITTEST => {
+                    let r = DefSubclassProc(hwnd, msg, wp, lp);
+                    if r != HTCLIENT as LRESULT {
+                        return r;
+                    }
+                    let mut pt = POINT { x: (lp & 0xffff) as i16 as i32, y: ((lp >> 16) & 0xffff) as i16 as i32 };
+                    ScreenToClient(hwnd, &mut pt);
+                    let mut rc = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+                    GetClientRect(hwnd, &mut rc);
+                    let mut scale = 1.0f32;
+                    with_app(|a| scale = a.window().scale_factor());
+                    let border = frame(hwnd);
+                    if IsZoomed(hwnd) == 0 && pt.y < border {
+                        return if pt.x < border * 2 {
+                            HTTOPLEFT
+                        } else if pt.x >= rc.right - border * 2 {
+                            HTTOPRIGHT
+                        } else {
+                            HTTOP
+                        } as LRESULT;
+                    }
+                    if (pt.y as f32) < HEIGHT * scale {
+                        let bw = BUTTON_W * scale;
+                        let from_right = (rc.right - pt.x) as f32;
+                        let hit = if from_right <= bw {
+                            HTCLOSE
+                        } else if from_right <= bw * 2.0 {
+                            HTMAXBUTTON
+                        } else if from_right <= bw * 3.0 {
+                            HTMINBUTTON
+                        } else {
+                            HTCAPTION
+                        };
+                        return hit as LRESULT;
+                    }
+                    HTCLIENT as LRESULT
+                }
+                WM_NCMOUSEMOVE => {
+                    let b = button_of(wp as u32);
+                    set_hover(b);
+                    let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE | TME_NONCLIENT, hwndTrack: hwnd, dwHoverTime: 0 };
+                    TrackMouseEvent(&mut t);
+                    if b != 0 { 0 } else { DefSubclassProc(hwnd, msg, wp, lp) }
+                }
+                WM_NCMOUSELEAVE => {
+                    set_hover(0);
+                    set_pressed(0);
+                    DefSubclassProc(hwnd, msg, wp, lp)
+                }
+                WM_NCLBUTTONDOWN | WM_NCLBUTTONDBLCLK if button_of(wp as u32) != 0 => {
+                    set_pressed(button_of(wp as u32));
+                    0
+                }
+                WM_NCLBUTTONUP if button_of(wp as u32) != 0 => {
+                    let b = button_of(wp as u32);
+                    let was = PRESSED.with(|p| p.get());
+                    set_pressed(0);
+                    if was == b {
+                        match b {
+                            1 => {
+                                ShowWindow(hwnd, SW_MINIMIZE);
+                            }
+                            2 => {
+                                ShowWindow(hwnd, if IsZoomed(hwnd) != 0 { SW_RESTORE } else { SW_MAXIMIZE });
+                            }
+                            _ => {
+                                PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                            }
+                        }
+                    }
+                    0
+                }
+                WM_MOUSEMOVE => {
+                    set_hover(0);
+                    DefSubclassProc(hwnd, msg, wp, lp)
+                }
+                WM_SIZE => {
+                    let max = wp == SIZE_MAXIMIZED;
+                    with_app(|a| {
+                        if a.get_maximized() != max {
+                            a.set_maximized(max);
+                        }
+                    });
+                    DefSubclassProc(hwnd, msg, wp, lp)
+                }
+                WM_ACTIVATE => {
+                    let active = (wp & 0xffff) != 0;
+                    with_app(|a| a.set_window_active(active));
+                    DefSubclassProc(hwnd, msg, wp, lp)
+                }
+                _ => DefSubclassProc(hwnd, msg, wp, lp),
+            }
+        }
+    }
 }

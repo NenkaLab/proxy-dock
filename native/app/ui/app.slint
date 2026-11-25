@@ -2756,12 +2756,20 @@ export component App inherits Window {
     in property <string> ui-font;
     default-font-family: root.ui-font;
 
+    // the window's own title bar (proxydock-ui.rs `caption`, Windows 11): its height (0 = Windows draws its
+    // own), the button under the mouse / pressed (1 minimise, 2 maximise, 3 close), the window's state
+    in property <length> caption-h: 0px;
+    in property <int> caption-hover;
+    in property <int> caption-pressed;
+    in property <bool> maximized;
+    in property <bool> window-active: true;
+
     // (placed: the window's minimum size is set above, not taken from the pages)
     HorizontalLayout {
         x: 0;
-        y: 0;
+        y: root.caption-h;
         width: root.width;
-        height: root.height;
+        height: root.height - root.caption-h;
         // navigation rail
         VerticalLayout {
             width: root.rail-w;
@@ -3247,10 +3255,94 @@ export component App inherits Window {
         }
         }
     }
+    // the window's title bar: the app, then minimise / maximise / close (Windows does what they do; it tells
+    // which one the mouse is on). Windows 11's snap layouts show over the maximise button.
+    if root.caption-h > 0: Rectangle {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.caption-h;
+        background: M3.surface-container;
+        HorizontalLayout {
+            padding-left: 18px;
+            spacing: 10px;
+            alignment: start;
+            Image {
+                width: 18px;
+                height: 18px;
+                y: (parent.height - self.height) / 2;
+                source: @image-url("icons/app.svg");
+            }
+            Text {
+                text: "ProxyDock";
+                font-size: 14px;
+                color: root.window-active ? M3.on-surface : M3.on-surface-variant;
+                vertical-alignment: center;
+            }
+        }
+        for i in 3: cap-btn := Rectangle {
+            property <bool> hover: root.caption-hover == i + 1;
+            property <bool> down: root.caption-pressed == i + 1;
+            out property <color> fg: i == 2 && (self.hover || self.down) ? #ffffff
+                : root.window-active ? M3.on-surface : M3.on-surface-variant;
+            x: parent.width - (3 - i) * 46px;
+            width: 46px;
+            height: parent.height;
+            background: i == 2
+                ? (self.down ? #b22a1c : self.hover ? #c42b1c : transparent)
+                : (self.down ? M3.on-surface.with-alpha(0.12) : self.hover ? M3.on-surface.with-alpha(0.08) : transparent);
+            animate background { duration: 80ms; }
+            if i == 0: Rectangle {
+                width: 10px;
+                height: 1px;
+                background: cap-btn.fg;
+            }
+            if i == 1 && !root.maximized: Rectangle {
+                width: 10px;
+                height: 10px;
+                border-width: 1px;
+                border-radius: 2px;
+                border-color: cap-btn.fg;
+            }
+            // restore: two windows, one behind the other
+            if i == 1 && root.maximized: Rectangle {
+                width: 10px;
+                height: 10px;
+                Rectangle {
+                    x: 2px;
+                    y: 0;
+                    width: 8px;
+                    height: 8px;
+                    border-width: 1px;
+                    border-radius: 2px;
+                    border-color: cap-btn.fg;
+                }
+                Rectangle {
+                    x: 0;
+                    y: 2px;
+                    width: 8px;
+                    height: 8px;
+                    border-width: 1px;
+                    border-radius: 2px;
+                    border-color: cap-btn.fg;
+                    background: M3.surface-container;
+                }
+            }
+            if i == 2: Path {
+                width: 10px;
+                height: 10px;
+                viewbox-width: 10;
+                viewbox-height: 10;
+                commands: "M 0 0 L 10 10 M 10 0 L 0 10";
+                stroke: cap-btn.fg;
+                stroke-width: 1px;
+            }
+        }
+    }
     // the title bar's title and the page's actions
     Rectangle {
         x: root.rail-w + 24px;
-        y: 0;
+        y: root.caption-h;
         width: root.width - root.rail-w - 48px;
         height: root.bar-h;
         title-acts := PageActions {
