@@ -1935,6 +1935,14 @@ impl Controller {
             "toggle" => self.toggle(id),
             "stop_all" => self.stop_all(),
             "route_of" => self.route_of(n, id, v["message"].as_str().unwrap_or("")),
+            // the log page's Clear: one card's lines ("" = all of them) are forgotten
+            "log_clear" => {
+                if id.is_empty() {
+                    self.logs.clear();
+                } else {
+                    self.logs.retain(|e| e.proxy_id != id);
+                }
+            }
             // the address or link a client app needs for card `id` (Python `proxies.copy_url`)
             "copy_client" => {
                 let url = self.proxy(id).map(|p| proxydock_core::links::client_url(p, &proxydock_core::wg::local_lan_ip())).unwrap_or_default();

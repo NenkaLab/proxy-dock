@@ -205,6 +205,20 @@ export struct LogRow {
     card: string,
     message: string,
     routable: bool,
+    // its level tag (TCP, UDP, BLOCK, AUTH, FAIL, ERROR, WARN, SET, INFO): its colour
+    level: string,
+}
+
+// the log's colours by level (Python `LOG_COLORS_DARK / LIGHT`)
+global LogColors {
+    pure public function of(level: string) -> color {
+        if M3.dark {
+            return level == "TCP" ? #6ccb5f : level == "UDP" ? #60cdff : level == "BLOCK" ? #ffb86c : level == "AUTH" ? #d7a6ff
+                : level == "FAIL" ? #f7a8b8 : level == "ERROR" ? #ff6b6b : level == "WARN" ? #fce100 : level == "SET" ? #e8d44d : #a8a8a8;
+        }
+        return level == "TCP" ? #107c10 : level == "UDP" ? #005fb8 : level == "BLOCK" ? #c25e00 : level == "AUTH" ? #8764b8
+            : level == "FAIL" ? #a4262c : level == "ERROR" ? #c42b1c : level == "WARN" ? #8a7400 : level == "SET" ? #7a6a00 : #5c5c5c;
+    }
 }
 
 // A block on the canvas. Pin ids: input lane i = node * 64 + i * 2, output lane o = node * 64 + o * 2 + 1
@@ -1094,11 +1108,25 @@ component PageActions inherits HorizontalLayout {
     in property <string> t-new-proxy;
     in property <string> t-new-outbound;
     callback add(string, string);
+    in property <string> t-copy-log;
+    in property <string> t-clear-log;
+    callback log-copy();
+    callback log-clear();
     alignment: end;
     spacing: 8px;
     if root.page == 1 && root.has-cards: AppButton {
         text: root.t-stop-all;
         clicked => { root.stop-all(); }
+    }
+    if root.page == 2: AppButton {
+        text: root.t-clear-log;
+        icon: @image-url("icons/delete.svg");
+        clicked => { root.log-clear(); }
+    }
+    if root.page == 2: AppButton {
+        text: root.t-copy-log;
+        icon: @image-url("icons/content_copy.svg");
+        clicked => { root.log-copy(); }
     }
     // the list page's "add" buttons open menus (Python's drop-down buttons)
     if root.page == 1: AppButton {
@@ -3051,9 +3079,25 @@ export component App inherits Window {
     changed dark => { root.theme-changed(); }
     // the log follows new lines (scroll position kept while reading back is for later)
     in property <int> log-count;
+    // new lines are followed only while the log is at its end (reading back stays where it is)
+    property <bool> log-follow: true;
     changed log-count => {
-        log-view.content-y = min(0px, log-view.visible-height - log-view.content-height);
+        if root.log-follow {
+            log-view.content-y = min(0px, log-view.visible-height - log-view.content-height);
+        }
     }
+    // the log's filters (proxydock-ui.rs applies them): the card ("" = all), the level group, the words
+    in property <[string]> log-sources;
+    in-out property <int> log-source;
+    in property <[string]> log-levels;
+    in-out property <int> log-level;
+    in-out property <string> log-search;
+    in property <string> t-search: "Search";
+    in property <string> t-copy-log: "Copy";
+    in property <string> t-clear-log: "Clear";
+    callback log-filter();
+    callback log-copy();
+    callback log-clear();
 
     // settings and the app's help, about and licences: one page, a category list on the left
     property <bool> in-settings: root.page == 4 || root.page >= 7;
@@ -3644,12 +3688,37 @@ export component App inherits Window {
                         visible: root.page == 2;
                         width: min(parent.width, root.content-max);
                         x: (parent.width - self.width) / 2;
-                        spacing: 12px;
+                        spacing: 16px;
+                        // which lines: a card (or all), a level group, words (Python's log filters)
+                        HorizontalLayout {
+                            spacing: 12px;
+                            AppComboBox {
+                                width: 260px;
+                                model: root.log-sources;
+                                current-index <=> root.log-source;
+                                selected => { root.log-filter(); }
+                            }
+                            AppComboBox {
+                                width: 220px;
+                                model: root.log-levels;
+                                current-index <=> root.log-level;
+                                selected => { root.log-filter(); }
+                            }
+                            AppLineEdit {
+                                horizontal-stretch: 1;
+                                text <=> root.log-search;
+                                placeholder-text: root.t-search;
+                                edited => { root.log-filter(); }
+                            }
+                        }
                         Rectangle {
                             border-radius: 16px;
                             background: M3.surface-container-low;
                             clip: true;
                             log-view := ListView {
+                                changed content-y => {
+                                    root.log-follow = self.content-y <= self.visible-height - self.content-height + 4px;
+                                }
                                 for line in root.logs: Rectangle {
                                     height: max(20px, root.log-px * 1.65px);
                                     // a connection's line: click to see its way on the canvas
@@ -3659,7 +3728,7 @@ export component App inherits Window {
                                         text: line.text;
                                         font-family: Type.mono;
                                         font-size: root.log-px * 1px;
-                                        color: line.tone == 2 ? M3.error : line.tone == 1 ? #b26a00 : line.tone == 3 ? M3.on-surface-variant : M3.on-surface;
+                                        color: LogColors.of(line.level);
                                         vertical-alignment: center;
                                     }
                                     row-ta := TouchArea {
@@ -3791,6 +3860,10 @@ export component App inherits Window {
             t-new-proxy: root.t-new-proxy;
             t-new-outbound: root.t-new-outbound;
             add(what, t) => { root.list-add(what, t); }
+            t-copy-log: root.t-copy-log;
+            t-clear-log: root.t-clear-log;
+            log-copy => { root.log-copy(); }
+            log-clear => { root.log-clear(); }
         }
         Text {
             x: 0;

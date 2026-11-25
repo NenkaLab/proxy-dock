@@ -105,6 +105,7 @@ fn log_row(e: &Value) -> LogRow {
         card: s("id").into(),
         message: s("message").into(),
         routable,
+        level: level.into(),
     }
 }
 
@@ -688,6 +689,76 @@ fn ask_delete(weak: &slint::Weak<App>, names: &[String], then: Value) {
     a.set_confirm_text(tr("Delete '{name}'? It will be stopped if it is running.").replace("{name}", &list).into());
 }
 
+// --- the log's filters (Python `logs.LogsInterface._matcher`) ---
+
+/// the level groups (Python `LEVEL_FILTERS`): name, level tags ([] = all)
+fn level_filters() -> Vec<(String, &'static [&'static str])> {
+    vec![
+        (tr("All"), &[]),
+        (tr("Connections (TCP+UDP)"), &["TCP", "UDP"]),
+        ("TCP".into(), &["TCP"]),
+        ("UDP".into(), &["UDP"]),
+        (tr("All problems"), &["BLOCK", "AUTH", "FAIL", "ERROR", "WARN"]),
+        (tr("Blocked"), &["BLOCK"]),
+        (tr("Auth failures"), &["AUTH"]),
+        (tr("Connection failures"), &["FAIL"]),
+        (tr("Errors & warnings"), &["ERROR", "WARN"]),
+        (tr("Settings"), &["SET"]),
+        (tr("Info"), &["INFO"]),
+    ]
+}
+
+#[derive(Default)]
+struct LogFilter {
+    /// the card shown ("" = the app and every card), the level group, the words (lower case)
+    card: String,
+    levels: Vec<&'static str>,
+    words: String,
+    /// the cards in the source list (after "All"), by id
+    cards: Vec<String>,
+}
+
+thread_local! {
+    static LOG_FILTER: std::cell::RefCell<LogFilter> = std::cell::RefCell::new(LogFilter::default());
+    static LOG_VIEW: std::cell::RefCell<Option<Rc<slint::FilterModel<ModelRc<LogRow>, Box<dyn Fn(&LogRow) -> bool>>>>> = const { std::cell::RefCell::new(None) };
+}
+
+fn log_shown(r: &LogRow) -> bool {
+    LOG_FILTER.with(|f| {
+        let f = f.borrow();
+        (f.card.is_empty() || r.card == f.card.as_str())
+            && (f.levels.is_empty() || f.levels.contains(&r.level.as_str()))
+            && (f.words.is_empty() || r.text.to_lowercase().contains(&f.words) || r.level.to_lowercase() == f.words)
+    })
+}
+
+/// the filters from the page's controls, then the view again
+fn apply_log_filter(app: &App) {
+    LOG_FILTER.with(|f| {
+        let mut f = f.borrow_mut();
+        let src = app.get_log_source();
+        f.card = if src <= 0 { String::new() } else { f.cards.get(src as usize - 1).cloned().unwrap_or_default() };
+        f.levels = level_filters().get(app.get_log_level().max(0) as usize).map(|l| l.1.to_vec()).unwrap_or_default();
+        f.words = app.get_log_search().trim().to_lowercase();
+    });
+    LOG_VIEW.with(|v| {
+        if let Some(v) = v.borrow().as_ref() {
+            v.reset();
+        }
+    });
+}
+
+/// the card list of the source filter (kept on the same card when it is still there)
+fn log_sources(app: &App, cards: &[(String, String)]) {
+    let keep = LOG_FILTER.with(|f| f.borrow().card.clone());
+    let mut names = vec![SharedString::from(tr("All (app + all proxies)"))];
+    names.extend(cards.iter().map(|(_, n)| SharedString::from(n.as_str())));
+    app.set_log_sources(ModelRc::new(VecModel::from(names)));
+    LOG_FILTER.with(|f| f.borrow_mut().cards = cards.iter().map(|(id, _)| id.clone()).collect());
+    let pos = cards.iter().position(|(id, _)| *id == keep).map_or(0, |i| i as i32 + 1);
+    app.set_log_source(pos);
+}
+
 /// a message at the bottom of the canvas for `secs` (a newer one replaces it and its timer)
 fn show_toast(app: &App, text: &str, info: bool, secs: f32) {
     app.set_toast(text.into());
@@ -1071,6 +1142,12 @@ fn labels(app: &App) {
         t.set_delete(tr("Delete").into());
     }
     app.set_t_copy(tr("Copy address/link for clients").into());
+    app.set_t_search(tr("Search").into());
+    // (the level groups' names: in the language set by now)
+    let levels: Vec<SharedString> = level_filters().into_iter().map(|(n, _)| SharedString::from(n)).collect();
+    app.set_log_levels(ModelRc::new(VecModel::from(levels)));
+    app.set_t_copy_log(tr("Copy").into());
+    app.set_t_clear_log(tr("Clear").into());
     app.set_t_sec_inbound(tr("Inbound").into());
     app.set_t_sec_outbound(tr("Outbound").into());
     app.set_t_sec_routers(tr("Routers").into());
@@ -1122,7 +1199,13 @@ fn main() -> Result<(), slint::PlatformError> {
         router_rows: Rc::new(VecModel::default()),
     });
     app.set_cards(ModelRc::from(models.cards.clone()));
-    app.set_logs(ModelRc::from(models.logs.clone()));
+    {
+        // the log page shows the lines its filters let through
+        let view: Box<dyn Fn(&LogRow) -> bool> = Box::new(log_shown);
+        let filtered = Rc::new(slint::FilterModel::new(ModelRc::from(models.logs.clone()), view));
+        app.set_logs(ModelRc::from(filtered.clone()));
+        LOG_VIEW.with(|v| *v.borrow_mut() = Some(filtered));
+    }
     app.set_nodes(ModelRc::from(models.nodes.clone()));
     let send = {
         let w = writer.clone();
@@ -1219,6 +1302,34 @@ fn main() -> Result<(), slint::PlatformError> {
         app.on_edit_card(move |id| send2(json!({"cmd": "edit_open", "id": id.as_str()})));
         let send3 = send.clone();
         app.on_copy_card(move |id| send3(json!({"cmd": "copy_client", "id": id.as_str()})));
+        // the log page: filters, copy what is shown, clear (one card's lines, or all)
+        let weak11 = app.as_weak();
+        app.on_log_filter(move || {
+            if let Some(a) = weak11.upgrade() {
+                apply_log_filter(&a);
+            }
+        });
+        let weak12 = app.as_weak();
+        app.on_log_copy(move || {
+            let Some(a) = weak12.upgrade() else { return };
+            let text = LOG_VIEW.with(|v| v.borrow().as_ref().map(|v| v.iter().map(|r| r.text.to_string()).collect::<Vec<_>>().join("\n")).unwrap_or_default());
+            if set_clipboard_text(&text) {
+                show_toast(&a, &tr("Copied the visible log to the clipboard."), true, 2.5);
+            } else {
+                show_toast(&a, &tr("Cannot use the clipboard"), false, 5.0);
+            }
+        });
+        let (send13, models13, weak13) = (send.clone(), models.clone(), app.as_weak());
+        app.on_log_clear(move || {
+            let card = LOG_FILTER.with(|f| f.borrow().card.clone());
+            // (the core forgets them too: a window opened later does not get them back)
+            send13(json!({"cmd": "log_clear", "id": card}));
+            let kept: Vec<LogRow> = if card.is_empty() { vec![] } else { models13.logs.iter().filter(|r| r.card != card.as_str()).collect() };
+            models13.logs.set_vec(kept);
+            if let Some(a) = weak13.upgrade() {
+                a.set_log_count(models13.logs.row_count() as i32);
+            }
+        });
         // the question box's "yes"
         let send4 = send.clone();
         app.on_confirm_yes(move || {
@@ -1659,6 +1770,7 @@ fn main() -> Result<(), slint::PlatformError> {
                             apply_fonts(&app, v["language"].as_str().unwrap_or("en"));
                             labels(&app);
                             m.cards.set_vec(v["cards"].as_array().into_iter().flatten().map(card_row).collect::<Vec<_>>());
+                            log_sources(&app, &m.cards.iter().map(|c| (c.id.to_string(), c.name.to_string())).collect::<Vec<_>>());
                             m.add_logs(v["logs"].as_array().map(Vec::as_slice).unwrap_or(&[]));
                             m.set_stats(&v["stats"]);
                             show_latency(&app, &m, &v["latency"]);
@@ -1687,6 +1799,7 @@ fn main() -> Result<(), slint::PlatformError> {
                         "graph" => {
                             m.cards.set_vec(v["cards"].as_array().into_iter().flatten().map(card_row).collect::<Vec<_>>());
                             m.set_canvas(&v["canvas"]);
+                            log_sources(&app, &m.cards.iter().map(|c| (c.id.to_string(), c.name.to_string())).collect::<Vec<_>>());
                             stats_meta(&v["stat_meta"]);
                             conn_cards(&app, &m);
                         }
