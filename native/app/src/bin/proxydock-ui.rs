@@ -474,6 +474,26 @@ fn show_latency(app: &App, m: &Models, v: &Value) {
     app.set_latency_progress(v["progress"].as_str().unwrap_or("").into());
 }
 
+/// The system font for a language whose characters Pretendard lacks or draws Korean-style (Python
+/// `_CJK_UI_FONTS`; the system's fonts cost no memory, the bundled ones would). None: Pretendard.
+fn cjk_font(code: &str) -> Option<&'static str> {
+    let windows = cfg!(windows);
+    let mac = cfg!(target_os = "macos");
+    Some(match code {
+        "ja" => if windows { "Yu Gothic UI" } else if mac { "Hiragino Sans" } else { "Noto Sans CJK JP" },
+        "zh_CN" => if windows { "Microsoft YaHei UI" } else if mac { "PingFang SC" } else { "Noto Sans CJK SC" },
+        "zh_TW" => if windows { "Microsoft JhengHei UI" } else if mac { "PingFang TC" } else { "Noto Sans CJK TC" },
+        _ => return None,
+    })
+}
+
+/// the window's font for the language, and each language's name in its own font
+fn apply_fonts(app: &App, code: &str) {
+    app.set_ui_font(cjk_font(code).unwrap_or("Pretendard Variable").into());
+    let fonts: Vec<SharedString> = proxydock_core::i18n::LANGUAGES.iter().map(|(c, _)| SharedString::from(cjk_font(c).unwrap_or(""))).collect();
+    app.global::<Settings>().set_language_fonts(ModelRc::new(VecModel::from(fonts)));
+}
+
 fn strings_of(v: &Value) -> Vec<SharedString> {
     v.as_array().into_iter().flatten().filter_map(Value::as_str).map(SharedString::from).collect()
 }
@@ -879,6 +899,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     match v["ev"].as_str().unwrap_or("") {
                         "hello" => {
                             set_language(v["language"].as_str().unwrap_or("en"));
+                            apply_fonts(&app, v["language"].as_str().unwrap_or("en"));
                             labels(&app);
                             m.cards.set_vec(v["cards"].as_array().into_iter().flatten().map(card_row).collect::<Vec<_>>());
                             m.add_logs(v["logs"].as_array().map(Vec::as_slice).unwrap_or(&[]));
@@ -965,6 +986,7 @@ fn main() -> Result<(), slint::PlatformError> {
                         "settings" => show_settings(&app, &v["settings"]),
                         "language" => {
                             set_language(v["language"].as_str().unwrap_or("en"));
+                            apply_fonts(&app, v["language"].as_str().unwrap_or("en"));
                             labels(&app);
                         }
                         "undo" => {

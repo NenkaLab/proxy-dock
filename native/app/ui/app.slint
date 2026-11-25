@@ -412,6 +412,8 @@ component AppLineEdit inherits Rectangle {
 // one entry of a drop-down list
 component ComboItem inherits Rectangle {
     in property <string> text;
+    // its own font ("" = the window's): a language's name in that language's font
+    in property <string> font;
     in property <bool> current;
     callback picked();
     height: 38px;
@@ -422,6 +424,7 @@ component ComboItem inherits Rectangle {
         width: parent.width - 44px;
         text: root.text;
         font-size: 14px;
+        font-family: root.font;
         color: root.current ? M3.on-secondary-container : M3.on-surface;
         vertical-alignment: center;
         overflow: elide;
@@ -439,6 +442,8 @@ component ComboItem inherits Rectangle {
 // a drop-down list
 component AppComboBox inherits Rectangle {
     in property <[string]> model;
+    // a font per entry (optional)
+    in property <[string]> fonts;
     in-out property <int> current-index;
     in property <bool> enabled: true;
     callback selected(string);
@@ -456,6 +461,7 @@ component AppComboBox inherits Rectangle {
         width: parent.width - 48px;
         text: root.model[root.current-index];
         font-size: 14px;
+        font-family: root.current-index < root.fonts.length ? root.fonts[root.current-index] : "";
         color: M3.on-surface;
         vertical-alignment: center;
         overflow: elide;
@@ -493,6 +499,7 @@ component AppComboBox inherits Rectangle {
                 alignment: start;
                 for item[i] in root.model: ComboItem {
                     text: item;
+                    font: i < root.fonts.length ? root.fonts[i] : "";
                     current: i == root.current-index;
                     picked => {
                         root.current-index = i;
@@ -507,6 +514,7 @@ component AppComboBox inherits Rectangle {
                 height: parent.height - 12px;
                 for item[i] in root.model: ComboItem {
                     text: item;
+                    font: i < root.fonts.length ? root.fonts[i] : "";
                     current: i == root.current-index;
                     picked => {
                         root.current-index = i;
@@ -791,6 +799,7 @@ export global Settings {
     in-out property <bool> close;
     in-out property <bool> latest;
     in property <[string]> languages;
+    in property <[string]> language-fonts;
     in property <[string]> themes;
     in property <[string]> scales;
     in property <string> engine;
@@ -995,6 +1004,7 @@ component SettingsDisplay inherits SettingsSection {
         AppComboBox {
             width: 170px;
             model: Settings.languages;
+            fonts: Settings.language-fonts;
             current-index <=> Settings.language;
         }
     }
@@ -1593,7 +1603,9 @@ export component App inherits Window {
     min-width: 560px;
     min-height: 400px;
     background: M3.surface-container;
-    default-font-family: "Pretendard Variable";
+    // Pretendard; Japanese and Chinese use their own language's font (proxydock-ui.rs `ui_font`)
+    in property <string> ui-font: "Pretendard Variable";
+    default-font-family: root.ui-font;
 
     HorizontalLayout {
         // navigation rail
