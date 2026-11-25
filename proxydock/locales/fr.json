@@ -1060,5 +1060,6 @@
  "Downloaded sing-box {version}; each proxy uses it from its next start": "sing-box {version} téléchargé ; chaque proxy l'utilise à partir de son prochain démarrage",
  "Scales text and UI elements together (applies after the window is opened again)": "Met à l'échelle le texte et l'interface ensemble (s'applique à la réouverture de la fenêtre)",
  "Settings have unsaved changes": "Des modifications ne sont pas appliquées",
- "Revert": "Annuler"
+ "Revert": "Annuler",
+ "Several servers (separated by commas): all are asked at once and the first answer is used.": "Plusieurs serveurs (séparés par des virgules) : tous sont interrogés en même temps et la première réponse est utilisée."
 }

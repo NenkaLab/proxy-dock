@@ -473,7 +473,8 @@ impl Controller {
         json!({
             "values": {
                 "allowed_domains": domains.join(", "), "block_private": g["block_private"], "timeout": g["timeout"],
-                "log_connections": g["log_connections"], "log_close": g["log_close"], "dns_server": g["dns_server"],
+                "log_connections": g["log_connections"], "log_close": g["log_close"],
+                "dns_server": config::dns_list_text(g["dns_server"].as_str().unwrap_or(""), &g["dns_extra"]),
                 "dns_via_outbound": g["dns_via_outbound"], "log_to_file": g["log_to_file"],
                 "language": index(&codes, &g["language"]), "theme": index(&config::THEMES, &g["theme"]), "ui_scale": scale,
                 "log_font_size": g["log_font_size"], "close_exits": g["close_exits"], "singbox_latest": g["singbox_latest"],
@@ -509,11 +510,12 @@ impl Controller {
             self.broadcast(&msg);
             return;
         }
-        if config::dns_server_spec(&text("dns_server")).is_none() {
+        // the main DNS server and the extra ones that race it
+        let Ok((dns_main, dns_extra)) = config::parse_dns_list(&text("dns_server")) else {
             let msg = json!({"ev": "error", "message": tr("DNS server: use an address like 1.1.1.1, tls://dns.google or https://cloudflare-dns.com/dns-query")});
             self.broadcast(&msg);
             return;
-        }
+        };
         if !self.can_save {
             self.broadcast(&json!({"ev": "error", "message": tr("Save failed")}));
             return;
@@ -530,7 +532,8 @@ impl Controller {
             }
         }
         g.insert("allowed_domains".into(), json!(domains));
-        g.insert("dns_server".into(), json!(proxydock_core::py::strip(&text("dns_server"))));
+        g.insert("dns_server".into(), json!(dns_main));
+        g.insert("dns_extra".into(), json!(dns_extra));
         g.insert("language".into(), json!(pick(&codes, "language")));
         g.insert("theme".into(), json!(pick(&config::THEMES, "theme")));
         let scale = config::UI_SCALES.get(vals["ui_scale"].as_u64().unwrap_or(1) as usize).copied().unwrap_or(100);

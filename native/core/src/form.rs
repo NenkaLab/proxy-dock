@@ -176,6 +176,7 @@ pub const OVERRIDABLE: [(&str, &str, &str); 7] = [
     ("log_connections", "Log connections", ""),
     ("log_close", "Log connection close details", ""),
     ("dns_server", "DNS server", "Empty = the PC's DNS. Otherwise 1.1.1.1 (UDP), tcp://, tls:// (DoT), https://…/dns-query (DoH), quic:// or h3://. Used where ProxyDock looks names up itself (Direct, IP rules, TUN). Needs the sing-box engine"),
+    // (several servers in the same field: the extra ones go to dns_extra)
     ("dns_via_outbound", "DNS through the outbound", "The card's own lookups go through its tunnel or upstream instead of leaving this PC directly (needs a DNS server above)"),
 ];
 
@@ -253,11 +254,18 @@ pub fn inbound_form(g: &Obj, glob: &Map<String, Value>, node: &Value) -> Vec<Fie
         let f = b.push(field(&format!("follow.{key}"), label, desc, Kind::Bool, json!(follow), true));
         f.rerender = true;
         f.desc = if f.desc.is_empty() { tr("Use global") } else { format!("{} · {}", tr("Use global"), f.desc) };
+        if key == "dns_server" {
+            f.desc = format!("{} {}", f.desc, tr("Several servers (separated by commas): all are asked at once and the first answer is used."));
+        }
         let value = if follow { glob.get(key).cloned().unwrap_or(Value::Null) } else { own.clone() };
         let (kind, value) = match key {
             "allowed_domains" => (Kind::Text, json!(value.as_array().map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")).unwrap_or_default())),
             "timeout" => (Kind::Int { min: 10, max: 86400 }, value),
-            "dns_server" => (Kind::Text, value),
+            // the main DNS server and the extra ones (they race it) in one field
+            "dns_server" => {
+                let extra = if follow { glob.get("dns_extra").cloned().unwrap_or(Value::Null) } else { node["overrides"]["dns_extra"].clone() };
+                (Kind::Text, json!(crate::config::dns_list_text(value.as_str().unwrap_or(""), &extra)))
+            }
             _ => (Kind::Bool, value),
         };
         b.push(field(&format!("overrides.{key}"), "", "", kind, value, !follow));
@@ -589,7 +597,20 @@ pub fn apply(kind: &str, node: &Value, values: &Map<String, Value>) -> Value {
                         if items.is_empty() { json!(["*"]) } else { json!(items) }
                     }
                     "timeout" => typed(&json!(0), v),
-                    "dns_server" => json!(crate::py::strip(v.as_str().unwrap_or(""))),
+                    "dns_server" => {
+                        let text = v.as_str().unwrap_or("");
+                        match crate::config::parse_dns_list(text) {
+                            Ok((main, extra)) => {
+                                n["overrides"]["dns_extra"] = json!(extra);
+                                json!(main)
+                            }
+                            // (kept as typed: the check names it)
+                            Err(_) => {
+                                n["overrides"]["dns_extra"] = json!([]);
+                                json!(crate::py::strip(text))
+                            }
+                        }
+                    }
                     _ => json!(truth(v)),
                 };
                 n["overrides"][*k] = value;
@@ -619,8 +640,14 @@ pub fn apply(kind: &str, node: &Value, values: &Map<String, Value>) -> Value {
     for (k, follow) in follows {
         if follow {
             n["overrides"][&k] = Value::Null;
+            if k == "dns_server" {
+                n["overrides"]["dns_extra"] = Value::Null;
+            }
         } else if n["overrides"][&k].is_null() {
             n["overrides"][&k] = values.get(&format!("overrides.{k}")).cloned().unwrap_or(json!(""));
+            if k == "dns_server" && n["overrides"]["dns_extra"].is_null() {
+                n["overrides"]["dns_extra"] = json!([]);
+            }
         }
     }
     for (side, count) in lanes {

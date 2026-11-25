@@ -704,27 +704,58 @@ pub fn dns(proxy: &Value, cfg: &Value) -> (Option<Value>, Option<String>) {
     }
     let mut servers = vec![json!({"type": "local", "tag": LOCAL_DNS})];
     let mut real = LOCAL_DNS.to_string();
+    let extra = if spec.is_empty() { vec![] } else { dns_extra_specs(cfg) };
     if !spec.is_empty() {
-        let mut d = Value::Object(spec);
-        d["tag"] = json!(DNS_TAG);
-        if !is_ip_literal(st(&d["server"])) {
-            d["domain_resolver"] = json!(LOCAL_DNS);
-        }
         let ob_type = st(&proxy["outbound"]["type"]);
-        if cfg.get("dns_via_outbound").is_some_and(truthy) && ob_type != "direct" && ob_type != "block" {
-            d["detour"] = json!("out0");
+        let via = cfg.get("dns_via_outbound").is_some_and(truthy) && ob_type != "direct" && ob_type != "block";
+        for (i, sp) in std::iter::once(spec).chain(extra.iter().cloned()).enumerate() {
+            let mut d = Value::Object(sp);
+            d["tag"] = json!(if i == 0 { DNS_TAG.to_string() } else { format!("{DNS_TAG}{i}") });
+            if !is_ip_literal(st(&d["server"])) {
+                d["domain_resolver"] = json!(LOCAL_DNS);
+            }
+            if via {
+                d["detour"] = json!("out0");
+            }
+            servers.push(d);
         }
-        servers.push(d);
         real = DNS_TAG.into();
     }
     let mut conf = json!({"servers": servers, "final": real});
+    let mut rules: Vec<Value> = vec![];
     if fakeip {
         conf["servers"].as_array_mut().unwrap().push(
             json!({"type": "fakeip", "tag": FAKEIP_TAG, "inet4_range": FAKEIP_V4, "inet6_range": FAKEIP_V6}),
         );
-        conf["rules"] = json!([{"query_type": ["A", "AAAA"], "server": FAKEIP_TAG}]);
+        rules.push(json!({"query_type": ["A", "AAAA"], "server": FAKEIP_TAG}));
+    }
+    if !extra.is_empty() {
+        // every server asked at the same time; the first real answer (an address, or "no such name") wins, and
+        // when none gives one the main server is asked again (sing-box 1.14 evaluate / race)
+        let tags: Vec<String> = (0..=extra.len()).map(|i| if i == 0 { DNS_TAG.to_string() } else { format!("{DNS_TAG}{i}") }).collect();
+        for t in &tags {
+            rules.push(json!({"action": "evaluate", "server": t, "tag": format!("r_{t}")}));
+        }
+        for t in &tags {
+            for code in ["NOERROR", "NXDOMAIN"] {
+                rules.push(json!({"match_response": format!("r_{t}"), "response_rcode": code, "action": "respond", "race": true}));
+            }
+        }
+        rules.push(json!({"action": "route", "server": DNS_TAG}));
+    }
+    if !rules.is_empty() {
+        conf["rules"] = json!(rules);
     }
     (Some(conf), Some(real))
+}
+
+/// the extra DNS servers of the card's settings (they race the main one), as sing-box server fields
+pub fn dns_extra_specs(cfg: &Value) -> Vec<Map<String, Value>> {
+    crate::config::clean_dns_extra(cfg.get("dns_extra").unwrap_or(&Value::Null))
+        .iter()
+        .filter_map(|x| dns_server_spec(x))
+        .filter(|d| !d.is_empty())
+        .collect()
 }
 
 /// {router target block id: its outbound tag prefix}, in order (one chain per target block, shared by its rules)
@@ -764,12 +795,15 @@ pub fn route(
     let mut rules: Vec<Value> = vec![];
     let mut reasons: Vec<Option<Reason>> = vec![];
     let (_, resolver) = dns(proxy, cfg);
-    let resolve = match &resolver {
-        Some(r) => json!({"action": "resolve", "server": r}),
-        None => json!({"action": "resolve"}),
-    };
     let tun = ib["type"] == json!("tun");
     let fakeip = tun && ib.get("tun_fakeip").is_some_and(truthy);
+    // several DNS servers: lookups go through the DNS rules, where they race (not with Fake-IP: its rule would
+    // answer with a fake address)
+    let race = resolver.as_deref() == Some(DNS_TAG) && !dns_extra_specs(cfg).is_empty() && !fakeip;
+    let resolve = match &resolver {
+        Some(r) if !race => json!({"action": "resolve", "server": r}),
+        _ => json!({"action": "resolve"}),
+    };
     let mut add = |rule: Value, reason: Option<Reason>| {
         rules.push(rule);
         reasons.push(reason);
@@ -834,6 +868,10 @@ pub fn route(
     if ob["type"] == json!("block") {
         // the router's default is Block: refuse everything else
         add(json!({"action": "reject"}), Some(Reason::Rule("default".into())));
+    }
+    if race && ob["type"] == json!("direct") {
+        // a Direct exit would look the name up with the main server only: resolved through the race first
+        add(resolve.clone(), None);
     }
     let mut sets = vec![json!({"type": "local", "tag": BANS_TAG, "format": "source", "path": bans_path})];
     let mut sorted = rulesets.to_vec();

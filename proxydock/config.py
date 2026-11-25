@@ -82,9 +82,21 @@ GLOBAL_DEFAULTS = {
     "log_close": False,
     "dns_server": "",           # "" = the PC's DNS; else 1.1.1.1, tcp://, tls://, https://host/path, quic://, h3:// (sing-box)
     "dns_via_outbound": False,  # send this card's own DNS lookups through its outbound (custom server only)
+    "dns_extra": [],            # more DNS servers asked at the same time as dns_server (Rust app; first answer wins)
 }
 OVERRIDABLE = ("allowed_domains", "block_private", "timeout", "log_connections", "log_close", "dns_server",
-               "dns_via_outbound")
+               "dns_via_outbound", "dns_extra")
+MAX_DNS_EXTRA = 4
+
+
+def clean_dns_extra(servers):
+    """The extra DNS servers that are valid, each once, at most MAX_DNS_EXTRA."""
+    out = []
+    for x in servers:
+        x = x.strip()
+        if x and dns_server_spec(x) and x not in out:
+            out.append(x)
+    return out[:MAX_DNS_EXTRA]
 VMESS_CIPHERS = ("auto", "aes-128-gcm", "chacha20-poly1305", "none", "zero")
 DNS_PRESETS = ["", "https://cloudflare-dns.com/dns-query", "https://dns.google/dns-query", "https://dns.quad9.net/dns-query",
                "tls://1.1.1.1", "1.1.1.1"]
@@ -282,6 +294,7 @@ def validate_global(raw):
         g["engine"] = "sing-box"
     if dns_server_spec(g["dns_server"]) is None:
         g["dns_server"] = ""
+    g["dns_extra"] = clean_dns_extra(g["dns_extra"]) if g["dns_server"] else []
     return g
 
 
@@ -318,6 +331,8 @@ def validate_proxy(raw):
         p["overrides"][k] = typed[k] if ov.get(k) is not None else None
     if p["overrides"]["timeout"] is not None:
         p["overrides"]["timeout"] = min(max(p["overrides"]["timeout"], 10), 86400)
+    if p["overrides"]["dns_extra"] is not None:
+        p["overrides"]["dns_extra"] = clean_dns_extra(p["overrides"]["dns_extra"])
     return p
 
 

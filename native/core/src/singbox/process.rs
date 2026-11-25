@@ -519,7 +519,7 @@ impl Engine {
     pub fn needs_restart(&self, proxy: &Value, glob: &serde_json::Map<String, Value>) -> bool {
         let st = self.shared.state.lock().unwrap();
         let new = config::resolve(proxy, glob);
-        ["allowed_domains", "block_private", "timeout", "dns_server", "dns_via_outbound"]
+        ["allowed_domains", "block_private", "timeout", "dns_server", "dns_via_outbound", "dns_extra"]
             .iter()
             .any(|k| new[*k] != st.cfg[*k])
             || proxy.get("routes") != st.proxy.get("routes")

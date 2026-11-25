@@ -534,7 +534,7 @@ fn settings_text() -> SettingsText {
         logclose: t("Log connection close details"),
         logclose_desc: t("Upload/download amount, duration and reason when a connection ends"),
         dns: t("DNS server"),
-        dns_desc: t("Empty = the PC's DNS. Otherwise 1.1.1.1 (UDP), tcp://, tls:// (DoT), https://…/dns-query (DoH), quic:// or h3://. Used where ProxyDock looks names up itself (Direct, IP rules, TUN). Needs the sing-box engine"),
+        dns_desc: SharedString::from(format!("{} {}", tr("Empty = the PC's DNS. Otherwise 1.1.1.1 (UDP), tcp://, tls:// (DoT), https://…/dns-query (DoH), quic:// or h3://. Used where ProxyDock looks names up itself (Direct, IP rules, TUN). Needs the sing-box engine"), tr("Several servers (separated by commas): all are asked at once and the first answer is used."))),
         dnsvia: t("DNS through the outbound"),
         dnsvia_desc: t("The card's own lookups go through its tunnel or upstream instead of leaving this PC directly (needs a DNS server above)"),
         engine: t("Proxy engine"),

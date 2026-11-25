@@ -1060,5 +1060,6 @@
  "Downloaded sing-box {version}; each proxy uses it from its next start": "已下載 sing-box {version}，各代理將在下次啟動時使用",
  "Scales text and UI elements together (applies after the window is opened again)": "同時縮放文字和介面元素（重新開啟視窗後生效）",
  "Settings have unsaved changes": "有尚未套用的變更",
- "Revert": "還原"
+ "Revert": "還原",
+ "Several servers (separated by commas): all are asked at once and the first answer is used.": "可填寫多個伺服器（以逗號分隔）：同時向所有伺服器查詢，使用最先傳回的回應。"
 }

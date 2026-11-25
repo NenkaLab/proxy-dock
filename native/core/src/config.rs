@@ -14,8 +14,12 @@ pub const UI_SCALES: [i64; 5] = [90, 100, 110, 125, 150];
 pub const TEXT_SIZES: [i64; 4] = [100, 115, 130, 150];
 pub const ENGINES: [&str; 2] = ["sing-box", "python"];
 pub const MAX_TEST_SITES: usize = 30;
-pub const OVERRIDABLE: [&str; 7] =
-    ["allowed_domains", "block_private", "timeout", "log_connections", "log_close", "dns_server", "dns_via_outbound"];
+pub const OVERRIDABLE: [&str; 8] = [
+    "allowed_domains", "block_private", "timeout", "log_connections", "log_close", "dns_server", "dns_via_outbound",
+    "dns_extra",
+];
+/// more DNS servers asked at the same time as dns_server (the first answer wins)
+pub const MAX_DNS_EXTRA: usize = 4;
 pub const VMESS_CIPHERS: [&str; 5] = ["auto", "aes-128-gcm", "chacha20-poly1305", "none", "zero"];
 pub const INBOUND_TYPES: [&str; 9] =
     ["socks5", "socks4", "http", "https", "shadowsocks", "hysteria2", "wireguard", "forward", "tun"];
@@ -44,7 +48,7 @@ pub fn global_defaults() -> Map<String, Value> {
         "test_sites": [],
         "check_updates": true, "update_checked": 0,
         "allowed_domains": ["*"], "block_private": false, "timeout": 120, "log_connections": true,
-        "log_close": false, "dns_server": "", "dns_via_outbound": false,
+        "log_close": false, "dns_server": "", "dns_via_outbound": false, "dns_extra": [],
     }))
 }
 
@@ -228,7 +232,50 @@ pub fn validate_global(raw: &Value) -> Map<String, Value> {
     if dns_server_spec(&s(&g, "dns_server")).is_none() {
         g.insert("dns_server".into(), json!(""));
     }
+    let extra = if s(&g, "dns_server").is_empty() { vec![] } else { clean_dns_extra(&g["dns_extra"]) };
+    g.insert("dns_extra".into(), json!(extra));
     g
+}
+
+/// The extra DNS servers that are valid, each once, at most MAX_DNS_EXTRA (Python `clean_dns_extra`)
+pub fn clean_dns_extra(v: &Value) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    for x in v.as_array().into_iter().flatten().filter_map(Value::as_str) {
+        let x = crate::py::strip(x).to_string();
+        if !x.is_empty() && dns_server_spec(&x).is_some_and(|d| !d.is_empty()) && !out.contains(&x) {
+            out.push(x);
+        }
+    }
+    out.truncate(MAX_DNS_EXTRA);
+    out
+}
+
+/// What the user typed in a DNS field ("1.1.1.1, tls://dns.google ..."): (the main server, the extra ones), or
+/// the first entry that is no DNS server. Commas, semicolons and spaces separate them.
+pub fn parse_dns_list(text: &str) -> Result<(String, Vec<String>), String> {
+    let mut all: Vec<String> = vec![];
+    for x in text.split([',', ';', ' ', '\t', '\n', '\r']).map(str::trim).filter(|x| !x.is_empty()) {
+        if dns_server_spec(x).is_none() {
+            return Err(x.to_string());
+        }
+        if !all.iter().any(|a| a == x) {
+            all.push(x.to_string());
+        }
+    }
+    if all.len() > MAX_DNS_EXTRA + 1 {
+        all.truncate(MAX_DNS_EXTRA + 1);
+    }
+    let first = if all.is_empty() { String::new() } else { all.remove(0) };
+    Ok((first, all))
+}
+
+/// the main and extra servers as the DNS field shows them
+pub fn dns_list_text(main: &str, extra: &Value) -> String {
+    std::iter::once(main.to_string())
+        .chain(extra.as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from))
+        .filter(|x| !x.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The inbound settings of an inbound block (Python: the inbound part of `config.validate_proxy`).
@@ -298,6 +345,10 @@ pub fn validate_proxy(raw: &Value) -> Map<String, Value> {
     }
     if let Some(t) = overrides["timeout"].as_i64() {
         overrides.insert("timeout".into(), json!(t.clamp(10, 86400)));
+    }
+    if !overrides["dns_extra"].is_null() {
+        let extra = clean_dns_extra(&overrides["dns_extra"]);
+        overrides.insert("dns_extra".into(), json!(extra));
     }
     let mut p = Map::new();
     p.insert("id".into(), json!(id));
@@ -411,6 +462,25 @@ pub fn load_from(path: &std::path::Path) -> Result<Loaded, LoadError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn several_dns_servers() {
+        assert_eq!(parse_dns_list(""), Ok((String::new(), vec![])));
+        assert_eq!(
+            parse_dns_list(" tls://dns.google,1.1.1.1; 1.1.1.1  https://cloudflare-dns.com/dns-query"),
+            Ok(("tls://dns.google".into(), vec!["1.1.1.1".into(), "https://cloudflare-dns.com/dns-query".into()]))
+        );
+        assert_eq!(parse_dns_list("1.1.1.1, ftp://x"), Err("ftp://x".into()));
+        assert_eq!(parse_dns_list("1.1.1.1 2.2.2.2 3.3.3.3 4.4.4.4 5.5.5.5 6.6.6.6").unwrap().1.len(), MAX_DNS_EXTRA);
+        let g = validate_global(&json!({"dns_server": "1.1.1.1", "dns_extra": ["8.8.8.8", "bad://", "8.8.8.8", ""]}));
+        assert_eq!(g["dns_extra"], json!(["8.8.8.8"]));
+        // no main server: no extra ones
+        assert_eq!(validate_global(&json!({"dns_extra": ["8.8.8.8"]}))["dns_extra"], json!([]));
+        assert_eq!(dns_list_text("1.1.1.1", &json!(["8.8.8.8"])), "1.1.1.1, 8.8.8.8");
+        let p = validate_proxy(&json!({"overrides": {"dns_server": "1.1.1.1", "dns_extra": ["9.9.9.9", "x y"]}}));
+        assert_eq!(p["overrides"]["dns_extra"], json!(["9.9.9.9"]));
+        assert_eq!(validate_proxy(&json!({}))["overrides"]["dns_extra"], Value::Null);
+    }
+
 
     #[test]
     fn typed_keeps_only_values_of_the_right_type() {

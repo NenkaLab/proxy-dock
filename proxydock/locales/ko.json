@@ -1060,5 +1060,6 @@
  "Downloaded sing-box {version}; each proxy uses it from its next start": "sing-box {version}을(를) 받았습니다. 각 프록시는 다음에 시작할 때부터 사용합니다",
  "Scales text and UI elements together (applies after the window is opened again)": "글자와 UI 요소의 크기를 함께 조절합니다(창을 다시 열면 적용)",
  "Settings have unsaved changes": "적용하지 않은 변경 사항이 있습니다",
- "Revert": "되돌리기"
+ "Revert": "되돌리기",
+ "Several servers (separated by commas): all are asked at once and the first answer is used.": "여러 개를 쉼표로 구분해 넣으면 모두에 동시에 묻고 가장 먼저 온 답을 씁니다."
 }

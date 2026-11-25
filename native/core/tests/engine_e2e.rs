@@ -431,3 +431,76 @@ fn detect_sni_over_quic() {
     assert_eq!(d.sni, "localhost");
     assert_eq!(d.sha256, want);
 }
+
+/// a DNS server on loopback: A queries for `name` get 127.0.0.1, everything else an empty answer
+fn fake_dns(name: &str) -> u16 {
+    let s = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let port = s.local_addr().unwrap().port();
+    let want: Vec<u8> = name.split('.').flat_map(|p| std::iter::once(p.len() as u8).chain(p.bytes())).chain([0]).collect();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 1500];
+        while let Ok((n, from)) = s.recv_from(&mut buf) {
+            let q = &buf[..n];
+            let qname_end = 12 + q[12..].iter().position(|b| *b == 0).unwrap_or(0) + 1;
+            let qtype = u16::from_be_bytes([q[qname_end], q[qname_end + 1]]);
+            let hit = q[12..qname_end].eq_ignore_ascii_case(&want) && qtype == 1;
+            let mut out = q[..2].to_vec();
+            out.extend_from_slice(&[0x81, 0x80, 0, 1, 0, u8::from(hit), 0, 0, 0, 0]);
+            out.extend_from_slice(&q[12..qname_end + 4]);
+            if hit {
+                out.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 127, 0, 0, 1]);
+            }
+            let _ = s.send_to(&out, from);
+        }
+    });
+    port
+}
+
+/// SOCKS5 CONNECT (no auth) to a domain name
+fn socks5_domain(proxy: u16, host: &str, dest_port: u16) -> std::io::Result<TcpStream> {
+    let mut s = TcpStream::connect(("127.0.0.1", proxy))?;
+    s.set_read_timeout(Some(Duration::from_secs(15)))?;
+    s.write_all(&[5, 1, 0])?;
+    let mut r = [0u8; 2];
+    s.read_exact(&mut r)?;
+    let mut req = vec![5, 1, 0, 3, host.len() as u8];
+    req.extend_from_slice(host.as_bytes());
+    req.extend_from_slice(&dest_port.to_be_bytes());
+    s.write_all(&req)?;
+    let mut rep = [0u8; 10];
+    s.read_exact(&mut rep)?;
+    if rep[1] != 0 {
+        return Err(std::io::Error::other(format!("connect refused ({})", rep[1])));
+    }
+    Ok(s)
+}
+
+#[test]
+fn several_dns_servers_race() {
+    let _serial = serial();
+    if exe().is_none() {
+        eprintln!("sing-box not found: skipped");
+        return;
+    }
+    let dir = temp_dir("dnsrace");
+    let port = free_port();
+    let echo = echo_server();
+    // the main server never answers; the extra one does
+    let silent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let dead = silent.local_addr().unwrap().port();
+    let good = fake_dns("race.test");
+    let p = card(json!({"type": "socks5", "host": "127.0.0.1", "port": port}), json!({"type": "direct"}));
+    let glob = config::validate_global(&json!({"dns_server": format!("127.0.0.1:{dead}"), "dns_extra": [format!("127.0.0.1:{good}")]}));
+    assert_eq!(glob["dns_extra"], json!([format!("127.0.0.1:{good}")]));
+    let (hooks, log, _) = Log::hooks();
+    let mut engine = Engine::start(&p, &glob, &env(&dir), hooks).expect("start");
+    let t0 = Instant::now();
+    let mut s = socks5_domain(port, "race.test", echo).unwrap_or_else(|e| panic!("{e}: {:?}", log.0.lock().unwrap()));
+    s.write_all(b"hi").unwrap();
+    let mut got = [0u8; 8];
+    s.read_exact(&mut got).unwrap();
+    assert_eq!(&got, b"echo: hi");
+    // answered by the extra server, not after the main one's timeout
+    assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
+    engine.stop();
+}

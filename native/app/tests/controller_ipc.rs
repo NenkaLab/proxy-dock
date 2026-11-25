@@ -640,7 +640,7 @@ fn settings_page_and_latency() {
     assert!(expect(&rx, 5, |v| v["ev"] == "error" && v["message"].as_str().unwrap().starts_with("DNS server: ")).is_some());
 
     // saved: Korean, a bigger window, quit with X
-    vals["dns_server"] = json!(" 1.1.1.1 ");
+    vals["dns_server"] = json!(" 1.1.1.1 ,tls://dns.google");
     vals["language"] = json!(1);
     vals["ui_scale"] = json!(3);
     vals["close_exits"] = json!(true);
@@ -650,10 +650,12 @@ fn settings_page_and_latency() {
     assert!(expect(&rx, 5, |v| v["ev"] == "language" && v["language"] == "ko").is_some());
     let s2 = expect(&rx, 5, |v| v["ev"] == "settings").expect("settings");
     assert_eq!(s2["settings"]["values"]["allowed_domains"], "a.com, *.b.com");
+    assert_eq!(s2["settings"]["values"]["dns_server"], "1.1.1.1, tls://dns.google");
     assert_eq!(s2["settings"]["themes"][0], "기기 설정");
     let g = saved(&path)["global"].clone();
     assert_eq!((g["language"].clone(), g["ui_scale"].clone(), g["close_exits"].clone(), g["timeout"].clone(), g["dns_server"].clone()),
                (json!("ko"), json!(125), json!(true), json!(300), json!("1.1.1.1")));
+    assert_eq!(saved(&path)["global"]["dns_extra"], json!(["tls://dns.google"]));
     assert_eq!(h.setting("ui_scale"), json!(125));
 
     h.quit(Duration::from_secs(10));
