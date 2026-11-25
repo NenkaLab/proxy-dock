@@ -78,6 +78,8 @@ export struct SettingsText {
     logs: string, logfile: string, open-folder: string,
     display: string, language: string, language-desc: string, theme: string, theme-desc: string,
     scale: string, scale-desc: string, logsize: string, logsize-desc: string, close: string, close-desc: string,
+    startup: string, login: string, login-desc: string, hidden: string, hidden-desc: string, admin: string, admin-desc: string,
+    firewall: string, fw-block: string, fw-block-desc: string, fw-on: string, fw-off: string,
 }
 
 // one field of the block editor (src/bin/proxydock-ui.rs fills it from core::form)
@@ -834,6 +836,17 @@ export global Settings {
     in-out property <int> logsize: 10;
     in-out property <bool> close;
     in-out property <bool> latest;
+    in-out property <bool> admin;
+    in property <bool> saved-admin;
+    // Windows only: start at login (applied at once), the firewall rule (text, and whether it is on; -1 = checking)
+    in property <bool> windows;
+    in-out property <bool> login;
+    in-out property <bool> hidden;
+    in property <string> fw-text;
+    in property <int> fw-state: -1;
+    callback set-login(bool);
+    callback set-hidden(bool);
+    callback firewall(bool);
     in property <[string]> languages;
     in property <[string]> language-fonts;
     in property <[string]> themes;
@@ -855,7 +868,7 @@ export global Settings {
     in property <int> saved-logsize;
     in property <bool> saved-close;
     in property <bool> saved-latest;
-    out property <bool> dirty: allowed != saved-allowed || private != saved-private || timeout != saved-timeout || logconn != saved-logconn || logclose != saved-logclose || dns != saved-dns || dnsvia != saved-dnsvia || logfile != saved-logfile || language != saved-language || theme != saved-theme || scale != saved-scale || logsize != saved-logsize || close != saved-close || latest != saved-latest;
+    out property <bool> dirty: admin != saved-admin || allowed != saved-allowed || private != saved-private || timeout != saved-timeout || logconn != saved-logconn || logclose != saved-logclose || dns != saved-dns || dnsvia != saved-dnsvia || logfile != saved-logfile || language != saved-language || theme != saved-theme || scale != saved-scale || logsize != saved-logsize || close != saved-close || latest != saved-latest;
     public function revert() {
         self.allowed = self.saved-allowed;
         self.private = self.saved-private;
@@ -871,6 +884,7 @@ export global Settings {
         self.logsize = self.saved-logsize;
         self.close = self.saved-close;
         self.latest = self.saved-latest;
+        self.admin = self.saved-admin;
     }
     callback apply();
     callback open-log-dir();
@@ -1028,6 +1042,65 @@ component SettingsDefaults inherits SettingsSection {
         label: Settings.text.dnsvia;
         desc: Settings.text.dnsvia-desc;
         Switch { checked <=> Settings.dnsvia; }
+    }
+}
+
+
+component SettingsStartup inherits SettingsSection {
+    title: Settings.text.startup;
+    icon: @image-url("icons/login.svg");
+    SettingRow {
+        label: Settings.text.login;
+        desc: Settings.text.login-desc;
+        Switch {
+            checked <=> Settings.login;
+            toggled => { Settings.set-login(self.checked); }
+        }
+    }
+    SettingRow {
+        label: Settings.text.hidden;
+        desc: Settings.text.hidden-desc;
+        Switch {
+            enabled: Settings.login;
+            checked <=> Settings.hidden;
+            toggled => { Settings.set-hidden(self.checked); }
+        }
+    }
+    SettingRow {
+        label: Settings.text.admin;
+        desc: Settings.text.admin-desc;
+        Switch { checked <=> Settings.admin; }
+    }
+}
+
+component SettingsFirewall inherits SettingsSection {
+    title: Settings.text.firewall;
+    icon: @image-url("icons/shield.svg");
+    SettingRow {
+        label: Settings.text.fw-block;
+        desc: Settings.text.fw-block-desc;
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        alignment: end;
+        Text {
+            text: Settings.fw-text;
+            font-size: 14px;
+            font-weight: 600;
+            color: Settings.fw-state == 1 ? #2e9d4a : M3.on-surface-variant;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        Button {
+            text: Settings.text.fw-on;
+            enabled: Settings.fw-state == 0;
+            clicked => { Settings.firewall(true); }
+        }
+        Button {
+            text: Settings.text.fw-off;
+            enabled: Settings.fw-state == 1;
+            clicked => { Settings.firewall(false); }
+        }
     }
 }
 
@@ -1651,8 +1724,8 @@ export component App inherits Window {
     min-width: 560px;
     min-height: 400px;
     background: M3.surface-container;
-    // Pretendard; Japanese and Chinese use their own language's font (proxydock-ui.rs `ui_font`)
-    in property <string> ui-font: "Pretendard Variable";
+    // the language's usual UI font ("" = the system's; proxydock-ui.rs `lang_font`)
+    in property <string> ui-font;
     default-font-family: root.ui-font;
 
     HorizontalLayout {
@@ -2010,6 +2083,8 @@ export component App inherits Window {
                                             spacing: 16px;
                                             alignment: start;
                                             SettingsDefaults {}
+                                            if Settings.windows: SettingsStartup {}
+                                            if Settings.windows: SettingsFirewall {}
                                         }
                                         VerticalLayout {
                                             // equal halves (long texts would otherwise widen one column)
@@ -2025,6 +2100,8 @@ export component App inherits Window {
                                         width: min(settings-scroll.content-w, 720px);
                                         spacing: 16px;
                                         SettingsDefaults {}
+                                        if Settings.windows: SettingsStartup {}
+                                        if Settings.windows: SettingsFirewall {}
                                         SettingsDisplay {}
                                         SettingsEngine {}
                                         SettingsLogs {}

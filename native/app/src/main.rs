@@ -142,6 +142,9 @@ const ID_OPEN: u32 = 1;
 const ID_LOG: u32 = 2;
 const ID_STOP_ALL: u32 = 3;
 const ID_QUIT: u32 = 4;
+const ID_PC_OFF: u32 = 5;
+const ID_STARTUP: u32 = 6;
+const ID_STARTUP_HIDDEN: u32 = 7;
 const ID_CARD: u32 = 100;
 /// as many cards as the Python tray lists
 const MENU_CARDS: usize = 15;
@@ -167,6 +170,18 @@ fn show_menu(x: i32, y: i32) {
         }
         entries.push(Entry::Item { label: tr("Stop all proxies"), id: ID_STOP_ALL });
     }
+    // quick controls without the window (Python `_tray_quick_actions`, the startup items)
+    if let Some(name) = core.pc_card() {
+        entries.push(Entry::Divider);
+        entries.push(Entry::Item { label: tr("PC proxy: {name} - turn off").replace("{name}", &name), id: ID_PC_OFF });
+    }
+    let (registered, hidden) = proxydock_core::platform::startup_state();
+    let on_off = |b: bool| tr(if b { "On" } else { "Off" });
+    entries.push(Entry::Divider);
+    entries.push(Entry::Item { label: tr("Start at login  ·  {value}").replace("{value}", &on_off(registered)), id: ID_STARTUP });
+    if registered {
+        entries.push(Entry::Item { label: tr("Hide startup notification  ·  {value}").replace("{value}", &on_off(hidden)), id: ID_STARTUP_HIDDEN });
+    }
     entries.push(Entry::Divider);
     entries.push(Entry::Item { label: tr("Quit"), id: ID_QUIT });
     menu::show(x, y, entries, move |id| match id {
@@ -174,6 +189,9 @@ fn show_menu(x: i32, y: i32) {
         ID_LOG => open_ui(2),
         ID_STOP_ALL => core.stop_all(),
         ID_QUIT => quit(),
+        ID_PC_OFF => core.tray(serde_json::json!({"cmd": "pc_off"})),
+        ID_STARTUP => core.tray(serde_json::json!({"cmd": "startup", "on": !registered})),
+        ID_STARTUP_HIDDEN => core.tray(serde_json::json!({"cmd": "startup_hidden", "on": !hidden})),
         id if id >= ID_CARD => {
             if let Some(c) = cards.get((id - ID_CARD) as usize) {
                 core.toggle(&c.id);
@@ -183,16 +201,40 @@ fn show_menu(x: i32, y: i32) {
     });
 }
 
-/// only one core process per user (a second one would start the autostart cards again)
-fn first_instance() -> bool {
-    use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+/// Only one core process per user (a second one would start the autostart cards again): the mutex that says so,
+/// or None when another one has it.
+fn first_instance() -> Option<windows_sys::Win32::Foundation::HANDLE> {
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS};
     use windows_sys::Win32::System::Threading::CreateMutexW;
     let name: Vec<u16> = "Local\\ProxyDockRustCore".encode_utf16().chain(Some(0)).collect();
     let h = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
-    !h.is_null() && unsafe { GetLastError() } != ERROR_ALREADY_EXISTS
+    if h.is_null() {
+        return None;
+    }
+    if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        unsafe { CloseHandle(h) };
+        return None;
+    }
+    Some(h)
 }
 
-fn run_tray(show_at_start: Option<u32>) {
+/// "Run as administrator" (Python `relaunch_elevated`): an elevated copy through UAC takes over. Ok(true): it
+/// started, this one ends; Err: the prompt was cancelled (this one goes on without the rights).
+fn relaunch_elevated(args: &[String], mutex: windows_sys::Win32::Foundation::HANDLE) -> Result<bool, String> {
+    let glob = proxydock_core::config::load_from(&proxydock_core::paths::config_path()).map(|l| l.global).unwrap_or_default();
+    let elevated = args.iter().any(|a| a == "--elevated");
+    if glob.get("run_as_admin") != Some(&serde_json::json!(true)) || elevated || proxydock_core::manager::is_admin() {
+        return Ok(false);
+    }
+    // (the copy must get the single-instance mutex; on an error this one takes it again)
+    unsafe { windows_sys::Win32::Foundation::CloseHandle(mutex) };
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mut extra = vec!["--elevated".to_string()];
+    extra.extend(args.iter().filter(|a| *a == "--hidden" || *a == "--logs").cloned());
+    proxydock_core::singbox::helper::runas(&exe, &extra).map(|()| true)
+}
+
+fn run_tray(show_at_start: Option<u32>, note: Option<String>) {
     use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
     use windows_sys::Win32::UI::{HiDpi::*, WindowsAndMessaging::*};
 
@@ -213,6 +255,9 @@ fn run_tray(show_at_start: Option<u32>) {
             return;
         }
     };
+    if let Some(n) = note {
+        core.warn(&n);
+    }
     let _ = CORE.set(core);
 
     let _tray = TrayIconBuilder::new()
@@ -255,9 +300,18 @@ fn main() {
     if args.first().map(String::as_str) == Some(proxydock_core::singbox::helper::ARG) {
         std::process::exit(proxydock_core::singbox::helper::main(&args[1..]));
     }
-    if !first_instance() {
-        return;
-    }
+    let Some(mutex) = first_instance() else { return };
+    let note = match relaunch_elevated(&args, mutex) {
+        Ok(true) => return,
+        Ok(false) => None,
+        Err(e) => {
+            // the prompt was cancelled: carry on without the rights (the mutex again)
+            if first_instance().is_none() {
+                return;
+            }
+            Some(tr("Not running as administrator: {e}").replace("{e}", &e))
+        }
+    };
     let has = |f: &str| args.iter().any(|a| a == f);
-    run_tray(if has("--hidden") { None } else if has("--logs") { Some(2) } else { Some(0) });
+    run_tray(if has("--hidden") { None } else if has("--logs") { Some(2) } else { Some(0) }, note);
 }

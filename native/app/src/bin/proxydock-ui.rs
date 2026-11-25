@@ -453,6 +453,18 @@ fn show_settings(app: &App, v: &Value) {
     st.set_saved_logsize(i("log_font_size"));
     st.set_saved_close(b("close_exits"));
     st.set_saved_latest(b("singbox_latest"));
+    st.set_saved_admin(b("run_as_admin"));
+    st.set_admin(b("run_as_admin"));
+    st.set_windows(v["windows"] == json!(true));
+    st.set_login(v["startup"]["registered"] == json!(true));
+    st.set_hidden(v["startup"]["hidden"] == json!(true));
+    let fw = match v["firewall"].as_bool() {
+        Some(true) => 1,
+        Some(false) => 0,
+        None => -1,
+    };
+    st.set_fw_state(fw);
+    st.set_fw_text(tr(match fw { 1 => "On", 0 => "Off", _ => "Checking…" }).into());
     st.set_engine(v["engine"].as_str().unwrap_or("").into());
     st.set_log_dir(v["log_dir"].as_str().unwrap_or("").into());
     // what applies to this window right away
@@ -474,23 +486,26 @@ fn show_latency(app: &App, m: &Models, v: &Value) {
     app.set_latency_progress(v["progress"].as_str().unwrap_or("").into());
 }
 
-/// The system font for a language whose characters Pretendard lacks or draws Korean-style (Python
-/// `_CJK_UI_FONTS`; the system's fonts cost no memory, the bundled ones would). None: Pretendard.
-fn cjk_font(code: &str) -> Option<&'static str> {
+/// The font a language's UI is usually set in, in its country: Korean Pretendard (bundled), Japanese and Chinese
+/// the system's UI font for them (Python `_CJK_UI_FONTS`; the bundled ones would cost 13-17 MB each), the other
+/// languages the system's own UI font (""). Characters a font lacks come from the system's fallback fonts.
+fn lang_font(code: &str) -> &'static str {
     let windows = cfg!(windows);
     let mac = cfg!(target_os = "macos");
-    Some(match code {
+    match code {
+        "ko" => "Pretendard Variable",
         "ja" => if windows { "Yu Gothic UI" } else if mac { "Hiragino Sans" } else { "Noto Sans CJK JP" },
         "zh_CN" => if windows { "Microsoft YaHei UI" } else if mac { "PingFang SC" } else { "Noto Sans CJK SC" },
         "zh_TW" => if windows { "Microsoft JhengHei UI" } else if mac { "PingFang TC" } else { "Noto Sans CJK TC" },
-        _ => return None,
-    })
+        // Segoe UI on Windows, San Francisco on macOS, the desktop's font elsewhere
+        _ => "",
+    }
 }
 
 /// the window's font for the language, and each language's name in its own font
 fn apply_fonts(app: &App, code: &str) {
-    app.set_ui_font(cjk_font(code).unwrap_or("Pretendard Variable").into());
-    let fonts: Vec<SharedString> = proxydock_core::i18n::LANGUAGES.iter().map(|(c, _)| SharedString::from(cjk_font(c).unwrap_or(""))).collect();
+    app.set_ui_font(lang_font(code).into());
+    let fonts: Vec<SharedString> = proxydock_core::i18n::LANGUAGES.iter().map(|(c, _)| SharedString::from(lang_font(c))).collect();
     app.global::<Settings>().set_language_fonts(ModelRc::new(VecModel::from(fonts)));
 }
 
@@ -540,6 +555,18 @@ fn settings_text() -> SettingsText {
         logsize_desc: t("Font size of the log and license views (pt)"),
         close: t("Quit with the X button"),
         close_desc: t("When off, the app keeps running in the tray after X"),
+        startup: t("Startup (applied immediately)"),
+        login: t("Start at login"),
+        login_desc: t("Runs ProxyDock automatically when you sign in"),
+        hidden: t("Hide startup notification"),
+        hidden_desc: t("Do not show the 'running' notification when started automatically"),
+        admin: t("Run as administrator"),
+        admin_desc: t("ProxyDock restarts itself with administrator rights (UAC prompt) when it starts, so TUN cards start without asking. Applies from the next start."),
+        firewall: t("Windows Firewall"),
+        fw_block: t("Block external access"),
+        fw_block_desc: t("Blocks connections from other PCs to ProxyDock (all proxies, needs administrator rights). Turn off to use servers for other devices (Shadowsocks, Hysteria2, etc.)"),
+        fw_on: t("Turn block on"),
+        fw_off: t("Turn block off"),
     }
 }
 
@@ -799,6 +826,12 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     {
         let st = app.global::<Settings>();
+        let send_l = send.clone();
+        st.on_set_login(move |on| send_l(json!({"cmd": "startup", "on": on})));
+        let send_h = send.clone();
+        st.on_set_hidden(move |on| send_h(json!({"cmd": "startup_hidden", "on": on})));
+        let send_f = send.clone();
+        st.on_firewall(move |on| send_f(json!({"cmd": "firewall", "on": on})));
         let (send, weak) = (send.clone(), app.as_weak());
         st.on_apply(move || {
             let Some(a) = weak.upgrade() else { return };
@@ -808,7 +841,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 "log_connections": st.get_logconn(), "log_close": st.get_logclose(), "dns_server": st.get_dns().as_str(),
                 "dns_via_outbound": st.get_dnsvia(), "log_to_file": st.get_logfile(), "language": st.get_language(),
                 "theme": st.get_theme(), "ui_scale": st.get_scale(), "log_font_size": st.get_logsize(),
-                "close_exits": st.get_close(), "singbox_latest": st.get_latest(),
+                "close_exits": st.get_close(), "singbox_latest": st.get_latest(), "run_as_admin": st.get_admin(),
             }}));
         });
         let weak = app.as_weak();

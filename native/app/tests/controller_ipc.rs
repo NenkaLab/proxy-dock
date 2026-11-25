@@ -10,6 +10,15 @@ use std::time::{Duration, Instant};
 /// the run folder is process-wide: the tests of this file take turns
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// One test at a time, and the registry keys of start at login and the system proxy pointed at a test key
+/// (never the real settings).
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let base = format!(r"Software\ProxyDockTest\ipc{}", std::process::id());
+    proxydock_core::platform::set_test_keys(&format!(r"{base}\Run"), &format!(r"{base}\Inet"));
+    g
+}
+
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
 }
@@ -50,7 +59,7 @@ fn expect(rx: &Receiver<Value>, secs: u64, f: impl Fn(&Value) -> bool) -> Option
 
 #[test]
 fn window_protocol() {
-    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let _serial = serial();
     let Some(exe) = singbox() else {
         eprintln!("sing-box not found: skipped");
         return;
@@ -118,7 +127,7 @@ fn saved(path: &std::path::Path) -> Value {
 
 #[test]
 fn editing_saves_and_applies() {
-    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let _serial = serial();
     let Some(exe) = singbox() else {
         eprintln!("sing-box not found: skipped");
         return;
@@ -204,7 +213,7 @@ fn editing_saves_and_applies() {
 
 #[test]
 fn block_editor() {
-    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let _serial = serial();
     let Some(exe) = singbox() else {
         eprintln!("sing-box not found: skipped");
         return;
@@ -349,7 +358,7 @@ fn tls_once(name: &str) -> u16 {
 
 #[test]
 fn share_links_and_subscriptions() {
-    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let _serial = serial();
     let home = std::env::temp_dir().join(format!("proxydock-links-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).unwrap();
@@ -426,7 +435,7 @@ fn share_links_and_subscriptions() {
 
 #[test]
 fn connection_check_and_port_check() {
-    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let _serial = serial();
     let Some(exe) = singbox() else {
         eprintln!("sing-box not found: skipped");
         return;
@@ -486,7 +495,7 @@ fn connection_check_and_port_check() {
 
 #[test]
 fn undo_rename_duplicate_and_notices() {
-    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let _serial = serial();
     let home = std::env::temp_dir().join(format!("proxydock-undo-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).unwrap();
@@ -569,7 +578,7 @@ fn undo_rename_duplicate_and_notices() {
 
 #[test]
 fn settings_page_and_latency() {
-    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let _serial = serial();
     let Some(exe) = singbox() else {
         eprintln!("sing-box not found: skipped");
         return;
@@ -653,7 +662,7 @@ fn settings_page_and_latency() {
 
 #[test]
 fn statistics_and_connection_test() {
-    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let _serial = serial();
     let Some(exe) = singbox() else {
         eprintln!("sing-box not found: skipped");
         return;
@@ -720,4 +729,93 @@ fn statistics_and_connection_test() {
     assert!(done["summary"].as_str().unwrap().starts_with("Succeeded "));
     h.quit(Duration::from_secs(10));
     let _ = std::fs::remove_dir_all(&home);
+}
+
+#[cfg(windows)]
+#[test]
+fn pc_block_and_start_at_login() {
+    use proxydock_core::platform;
+    let _serial = serial();
+    let Some(exe) = singbox() else {
+        eprintln!("sing-box not found: skipped");
+        return;
+    };
+    let home = std::env::temp_dir().join(format!("proxydock-pc-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let port = free_port();
+    // the PC's own settings before ProxyDock
+    let mut before = serde_json::Map::new();
+    before.insert("ProxyEnable".into(), json!(0));
+    before.insert("ProxyServer".into(), json!("old.example:3128"));
+    platform::set_system_proxy(&before).unwrap();
+    let settings = json!({
+        "version": 3,
+        "global": {"singbox_path": exe.display().to_string()},
+        "graph": {
+            "inbounds": [
+                {"id": "h", "name": "web", "autostart": true, "inbound": {"type": "http", "host": "127.0.0.1", "port": port}, "target": "d"},
+                {"id": "s", "name": "socks", "inbound": {"type": "socks5", "host": "127.0.0.1", "port": free_port()}, "target": "d"},
+            ],
+            "outbounds": [{"id": "d", "name": "Direct", "outbound": {"type": "direct"}}],
+            "pc": {"inbound": "h"},
+        },
+    });
+    let path = home.join("config.json");
+    std::fs::write(&path, settings.to_string()).unwrap();
+    proxydock_core::singbox::guard::set_run_dir(home.join("run"));
+    let h = controller::spawn(path.clone()).unwrap();
+    let (mut w, rx) = connect(&h, &h.token);
+    expect(&rx, 5, |v| v["ev"] == "hello").expect("hello");
+
+    // the card runs: the system proxy is ours, the PC's own values kept as the backup
+    let server = format!("127.0.0.1:{port}");
+    let until = Instant::now() + Duration::from_secs(10);
+    while platform::get_system_proxy().unwrap()["ProxyServer"] != json!(server) && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let now = platform::get_system_proxy().unwrap();
+    assert_eq!((now["ProxyEnable"].clone(), now["ProxyServer"].clone()), (json!(1), json!(server)));
+    assert_eq!(now["ProxyOverride"], json!("localhost;127.*;<local>"));
+    let pc = saved(&path)["graph"]["pc"].clone();
+    assert_eq!((pc["applied"].clone(), pc["backup"]["ProxyServer"].clone()), (json!(true), json!("old.example:3128")));
+    assert_eq!(h.pc_card().as_deref(), Some("web"));
+
+    // the card stops: the PC's own settings come back
+    ipc::send(&mut w, &json!({"cmd": "stop", "id": "h"})).unwrap();
+    let until = Instant::now() + Duration::from_secs(10);
+    while platform::get_system_proxy().unwrap()["ProxyServer"] != json!("old.example:3128") && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(platform::get_system_proxy().unwrap()["ProxyEnable"], json!(0));
+    assert_eq!(saved(&path)["graph"]["pc"]["applied"], json!(false));
+
+    // a SOCKS5 card cannot be the system proxy: said so
+    ipc::send(&mut w, &json!({"cmd": "connect", "from": "pc", "out": 0, "to": "s", "in": 0})).unwrap();
+    assert!(expect(&rx, 5, |v| v["ev"] == "error" && v["message"].as_str().unwrap().contains("HTTP")).is_some());
+    // "turn off": disconnected and the proxy off
+    ipc::send(&mut w, &json!({"cmd": "pc_off"})).unwrap();
+    assert!(expect(&rx, 5, |v| v["ev"] == "log" && v["entries"][0]["message"] == "System proxy turned off").is_some());
+    assert!(expect(&rx, 5, |v| v["ev"] == "graph").is_some());
+    assert_eq!(saved(&path)["graph"]["pc"]["inbound"], Value::Null);
+
+    // start at login: on, hidden, off (the test Run key)
+    ipc::send(&mut w, &json!({"cmd": "startup", "on": true})).unwrap();
+    let st = expect(&rx, 5, |v| v["ev"] == "settings" && v["settings"]["startup"]["registered"] == true).expect("registered");
+    assert_eq!(st["settings"]["startup"]["hidden"], false);
+    let me = std::env::current_exe().unwrap();
+    assert_eq!(platform::startup_command(), Some(format!("\"{}\"", me.display())));
+    ipc::send(&mut w, &json!({"cmd": "startup_hidden", "on": true})).unwrap();
+    assert!(expect(&rx, 5, |v| v["ev"] == "settings" && v["settings"]["startup"]["hidden"] == true).is_some());
+    assert!(platform::startup_command().unwrap().ends_with(" --hidden"));
+    ipc::send(&mut w, &json!({"cmd": "startup", "on": false})).unwrap();
+    assert!(expect(&rx, 5, |v| v["ev"] == "settings" && v["settings"]["startup"]["registered"] == false).is_some());
+    assert_eq!(platform::startup_command(), None);
+
+    h.quit(Duration::from_secs(10));
+    let _ = std::fs::remove_dir_all(&home);
+    unsafe {
+        let w: Vec<u16> = r"Software\ProxyDockTest".encode_utf16().chain(Some(0)).collect();
+        windows_sys::Win32::System::Registry::RegDeleteTreeW(windows_sys::Win32::System::Registry::HKEY_CURRENT_USER, w.as_ptr());
+    }
 }

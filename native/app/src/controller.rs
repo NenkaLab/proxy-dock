@@ -30,6 +30,8 @@ enum Msg {
     Tick,
     Toggle(String),
     StopAll,
+    /// a command from the tray menu (start at login, the PC block)
+    Tray(Value),
     Quit(Sender<()>),
     /// the result of work done on another thread (a network check, a download), applied on the controller's
     Work(Box<dyn FnOnce(&mut Controller) + Send>),
@@ -99,6 +101,7 @@ pub struct Handle {
     pub token: String,
     cards: Arc<Mutex<Vec<CardInfo>>>,
     glob: Arc<Mutex<Map<String, Value>>>,
+    pc: Arc<Mutex<Option<String>>>,
 }
 
 impl Handle {
@@ -118,6 +121,22 @@ impl Handle {
 
     pub fn stop_all(&self) {
         let _ = self.tx.send(Msg::StopAll);
+    }
+
+    /// a warning in the log (from the tray process)
+    pub fn warn(&self, message: &str) {
+        let m = message.to_string();
+        let _ = self.tx.send(Msg::Work(Box::new(move |c: &mut Controller| c.app_log(Level::Warn, &m))));
+    }
+
+    /// the tray menu: "startup" {on}, "startup_hidden" {on}, "pc_off"
+    pub fn tray(&self, cmd: Value) {
+        let _ = self.tx.send(Msg::Tray(cmd));
+    }
+
+    /// the card the PC block uses as the system proxy (its name), if any
+    pub fn pc_card(&self) -> Option<String> {
+        self.pc.lock().unwrap().clone()
     }
 
     /// stop every card and the controller (waits at most `timeout`)
@@ -174,6 +193,7 @@ pub fn spawn_with(config_path: PathBuf, hooks: Hooks) -> std::io::Result<Handle>
     }
     let cards = Arc::new(Mutex::new(vec![]));
     let shared_glob = Arc::new(Mutex::new(config::validate_global(&json!({}))));
+    let pc = Arc::new(Mutex::new(None));
     let events = {
         let (a, b) = (tx.clone(), tx.clone());
         Events {
@@ -211,6 +231,9 @@ pub fn spawn_with(config_path: PathBuf, hooks: Hooks) -> std::io::Result<Handle>
         probe_text: HashMap::new(),
         hooks,
         shared_glob: shared_glob.clone(),
+        pc_card: pc.clone(),
+        firewall: None,
+        fw_busy: false,
         engine_text: String::new(),
         latency: HashMap::new(),
         latency_busy: std::collections::HashSet::new(),
@@ -232,7 +255,7 @@ pub fn spawn_with(config_path: PathBuf, hooks: Hooks) -> std::io::Result<Handle>
     };
     c.load();
     std::thread::Builder::new().name("controller".into()).spawn(move || c.run(rx))?;
-    Ok(Handle { tx, port, token, cards, glob: shared_glob })
+    Ok(Handle { tx, port, token, cards, glob: shared_glob, pc })
 }
 
 struct Client {
@@ -276,6 +299,11 @@ struct Controller {
     hooks: Hooks,
     /// the global settings as the tray reads them
     shared_glob: Arc<Mutex<Map<String, Value>>>,
+    /// the PC block's card (its name) for the tray menu
+    pc_card: Arc<Mutex<Option<String>>>,
+    /// the firewall block rule: None while it is being checked or changed
+    firewall: Option<bool>,
+    fw_busy: bool,
     /// the settings page's sing-box line (path and version)
     engine_text: String,
     /// latency of outbound blocks: id -> (ok, ms, error, what it depends on)
@@ -449,11 +477,15 @@ impl Controller {
                 "dns_via_outbound": g["dns_via_outbound"], "log_to_file": g["log_to_file"],
                 "language": index(&codes, &g["language"]), "theme": index(&config::THEMES, &g["theme"]), "ui_scale": scale,
                 "log_font_size": g["log_font_size"], "close_exits": g["close_exits"], "singbox_latest": g["singbox_latest"],
+                "run_as_admin": g["run_as_admin"],
             },
             "languages": proxydock_core::i18n::LANGUAGES.iter().map(|(_, n)| *n).collect::<Vec<_>>(),
             "themes": [tr("System"), tr("Light"), tr("Dark")],
             "scales": config::UI_SCALES.iter().map(|s| format!("{s}%") + &if *s == 100 { tr(" (default)") } else { String::new() }).collect::<Vec<_>>(),
             "engine": self.engine_text,
+            "windows": proxydock_core::platform::supported(),
+            "startup": {"registered": proxydock_core::platform::startup_state().0, "hidden": proxydock_core::platform::startup_state().1},
+            "firewall": self.firewall,
             "log_dir": self.log_dir().display().to_string(),
         })
     }
@@ -489,7 +521,7 @@ impl Controller {
         let pick = |list: &[&str], k: &str| list.get(vals[k].as_u64().unwrap_or(0) as usize).copied().unwrap_or(list[0]).to_string();
         let codes: Vec<&str> = proxydock_core::i18n::LANGUAGES.iter().map(|(c, _)| *c).collect();
         let mut g = self.glob.clone();
-        for k in ["block_private", "log_connections", "log_close", "dns_via_outbound", "log_to_file", "close_exits", "singbox_latest"] {
+        for k in ["block_private", "log_connections", "log_close", "dns_via_outbound", "log_to_file", "close_exits", "singbox_latest", "run_as_admin"] {
             g.insert(k.into(), json!(vals[k] == json!(true)));
         }
         for k in ["timeout", "log_font_size"] {
@@ -650,6 +682,194 @@ impl Controller {
         self.broadcast(&msg);
     }
 
+    /// The PC block's state (Python `pc_status`): (off | waiting | applied | error | unsupported, text)
+    fn pc_status(&self) -> (&'static str, String) {
+        let pc = &self.graph["pc"];
+        if !proxydock_core::platform::supported() {
+            return ("unsupported", tr("Windows only for now"));
+        }
+        let Some(p) = pc["inbound"].as_str().and_then(|id| self.proxy(id)) else {
+            return ("off", tr("Not connected - the PC uses its own settings"));
+        };
+        if let Err(e) = proxydock_core::platform::system_proxy_server(&p["inbound"]) {
+            return ("error", e);
+        }
+        if pc["applied"] == json!(true) {
+            let text = tr("In use: {name} ({server})").replace("{name}", &name_of(p)).replace("{server}", pc["server"].as_str().unwrap_or(""));
+            return ("applied", text);
+        }
+        ("waiting", tr("Applied while '{name}' is running").replace("{name}", &name_of(p)))
+    }
+
+    /// The system proxy follows the PC block (Python `_sync_pc`): set while its card runs, put back otherwise.
+    /// True when it changed (the caller saves).
+    fn sync_pc(&mut self) -> bool {
+        use proxydock_core::platform;
+        if !platform::supported() {
+            return false;
+        }
+        let card = self.graph["pc"]["inbound"].as_str().and_then(|id| self.proxy(id)).cloned();
+        let server = card
+            .filter(|p| self.manager.state(p["id"].as_str().unwrap_or("")) == State::Running)
+            .and_then(|p| platform::system_proxy_server(&p["inbound"]).ok());
+        let applied = self.graph["pc"]["applied"] == json!(true);
+        let result = match server {
+            Some(server) => {
+                if applied && self.graph["pc"]["server"] == json!(server) {
+                    return false;
+                }
+                let backup = if applied {
+                    Ok(self.graph["pc"]["backup"].clone())
+                } else {
+                    platform::get_system_proxy().map(Value::Object)
+                };
+                backup.and_then(|b| {
+                    platform::set_system_proxy(&platform::proxy_values_for(&server, &b))?;
+                    let pc = self.graph.get_mut("pc").unwrap();
+                    pc["backup"] = b;
+                    pc["applied"] = json!(true);
+                    pc["server"] = json!(server);
+                    Ok(tr("System proxy set to {server}").replace("{server}", &server))
+                })
+            }
+            None if applied => {
+                self.pc_restore_backup();
+                Ok(tr("System proxy restored to the previous settings"))
+            }
+            None => return false,
+        };
+        match result {
+            Ok(msg) => {
+                self.app_log(Level::Setting, &msg);
+                true
+            }
+            Err(e) => {
+                self.app_log(Level::Error, &tr("Could not change the system proxy: {e}").replace("{e}", &e));
+                false
+            }
+        }
+    }
+
+    /// the PC's settings from before ProxyDock changed them (Python `_pc_restore_backup`)
+    fn pc_restore_backup(&mut self) {
+        let backup = self.graph["pc"]["backup"].clone();
+        if let Value::Object(b) = &backup {
+            if let Err(e) = proxydock_core::platform::set_system_proxy(b) {
+                self.app_log(Level::Error, &tr("Could not change the system proxy: {e}").replace("{e}", &e));
+            }
+        }
+        let pc = self.graph.get_mut("pc").unwrap();
+        pc["applied"] = json!(false);
+        pc["server"] = json!("");
+    }
+
+    /// start at login, the PC block's off / restore, the firewall rule (from the window or the tray)
+    fn platform_command(&mut self, v: &Value) {
+        use proxydock_core::platform;
+        let on = v["on"] == json!(true);
+        match v["cmd"].as_str().unwrap_or("") {
+            // Python `set_startup` / `set_hidden`
+            "startup" | "startup_hidden" => {
+                let (registered, hidden) = platform::startup_state();
+                let startup = v["cmd"] == json!("startup");
+                if !startup && !registered {
+                    self.send_settings();
+                    return;
+                }
+                let exe = std::env::current_exe().unwrap_or_default();
+                let (reg, hid) = if startup { (on, hidden) } else { (true, on) };
+                match platform::set_startup(&exe, reg, hid) {
+                    Ok(()) => {
+                        let msg = if startup {
+                            tr(if on { "Start at login" } else { "Removed from startup" })
+                        } else {
+                            tr("Hide startup notification {value}").replace("{value}", if on { "ON" } else { "OFF" })
+                        };
+                        self.app_log(Level::Setting, &msg);
+                    }
+                    Err(e) => self.app_log(Level::Error, &tr("Startup registration error: {e}").replace("{e}", &e)),
+                }
+                self.send_settings();
+            }
+            // Python `pc_off`: the PC block disconnected and the system proxy turned off
+            "pc_off" | "pc_restore" => {
+                let off = v["cmd"] == json!("pc_off");
+                let mut values = Map::new();
+                values.insert("ProxyEnable".into(), json!(0));
+                let backup = self.graph["pc"]["backup"].clone();
+                let r = if off {
+                    platform::set_system_proxy(&values).map(|()| tr("System proxy turned off"))
+                } else if let Value::Object(b) = &backup {
+                    platform::set_system_proxy(b).map(|()| tr("System proxy restored to the previous settings"))
+                } else {
+                    Ok(String::new())
+                };
+                match r {
+                    Ok(msg) if !msg.is_empty() => self.app_log(Level::Setting, &msg),
+                    Ok(_) => {}
+                    Err(e) => self.app_log(Level::Error, &tr("Could not change the system proxy: {e}").replace("{e}", &e)),
+                }
+                let pc = self.graph.get_mut("pc").unwrap();
+                pc["inbound"] = Value::Null;
+                pc["applied"] = json!(false);
+                pc["server"] = json!("");
+                pc["backup"] = Value::Null;
+                self.graph_changed();
+            }
+            // Python `firewall`: the rule changes through UAC, in the background
+            "firewall" => {
+                if self.fw_busy || !platform::supported() {
+                    return;
+                }
+                self.fw_busy = true;
+                self.firewall = None;
+                self.send_settings();
+                let mut programs: Vec<std::path::PathBuf> = std::env::current_exe().into_iter().collect();
+                programs.extend(proxydock_core::singbox::find_binary(&self.glob));
+                programs.extend(proxydock_core::singbox::find_hysteria(&self.glob));
+                let tx = self.tx.clone();
+                std::thread::spawn(move || {
+                    let r = platform::firewall_apply(on, &programs);
+                    let exists = platform::firewall_rule_exists();
+                    let _ = tx.send(Msg::Work(Box::new(move |c: &mut Controller| {
+                        c.fw_busy = false;
+                        c.firewall = Some(exists);
+                        match r {
+                            Ok(msg) => c.app_log(Level::Setting, &tr("Firewall: {msg}").replace("{msg}", &msg)),
+                            Err(e) => {
+                                let msg = json!({"ev": "error", "message": format!("{}: {e}", tr("Firewall change failed"))});
+                                c.broadcast(&msg);
+                            }
+                        }
+                        c.send_settings();
+                    })));
+                });
+            }
+            _ => {}
+        }
+    }
+
+    /// whether the firewall rule exists, checked in the background (Python `refresh_firewall`)
+    fn refresh_firewall(&mut self) {
+        if !proxydock_core::platform::supported() {
+            return;
+        }
+        self.firewall = None;
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let exists = proxydock_core::platform::firewall_rule_exists();
+            let _ = tx.send(Msg::Work(Box::new(move |c: &mut Controller| {
+                c.firewall = Some(exists);
+                c.send_settings();
+            })));
+        });
+    }
+
+    fn send_settings(&mut self) {
+        let msg = json!({"ev": "settings", "settings": self.settings_json()});
+        self.broadcast(&msg);
+    }
+
     /// settings file -> global settings and the compiled cards; then the autostart cards start
     fn load(&mut self) {
         match config::load_from(&self.config_path) {
@@ -679,9 +899,14 @@ impl Controller {
                 self.app_log(Level::Error, &msg);
             }
         }
+        if self.graph["pc"]["applied"] == json!(true) {
+            // left applied by a crash: the PC's own settings come back first (Python `_pc_restore_backup`)
+            self.pc_restore_backup();
+        }
         self.rebuild();
         self.undo_base = self.snapshot();
         *self.shared_glob.lock().unwrap() = self.glob.clone();
+        self.refresh_firewall();
         self.engine_text = engine_text(&self.glob);
         if self.glob["singbox_latest"] == json!(true) {
             self.update_latest_singbox();
@@ -698,6 +923,10 @@ impl Controller {
         let summaries: HashMap<String, String> =
             self.proxies.iter().map(|p| (p["id"].as_str().unwrap_or("").to_string(), manager::summary(p))).collect();
         self.view = canvas::build(&self.graph, &|id| summaries.get(id).cloned().unwrap_or_default());
+        let (_, pc_text) = self.pc_status();
+        if let Some(n) = self.view.nodes.iter_mut().find(|n| n.key == "pc") {
+            n.detail = pc_text;
+        }
         self.publish_cards();
     }
 
@@ -739,6 +968,7 @@ impl Controller {
             self.restart_at.remove(id);
             let _ = self.manager.stop(id);
         }
+        self.sync_pc();
         self.save();
         self.send_canvas();
         self.send_latency();
@@ -1081,7 +1311,15 @@ impl Controller {
                 self.save();
                 return;
             }
-            "connect" => edit::connect(&mut self.graph, &s("from"), n("out"), &s("to"), n("in")),
+            "connect" => {
+                let r = edit::connect(&mut self.graph, &s("from"), n("out"), &s("to"), n("in"));
+                if r.is_ok() && s("from") == "pc" {
+                    if let Some(Err(e)) = graph::find(&self.graph, &s("to")).map(|(_, b)| proxydock_core::platform::system_proxy_server(&b["inbound"])) {
+                        self.broadcast(&json!({"ev": "error", "message": format!("{}: {e}", tr("PC (system proxy)"))}));
+                    }
+                }
+                r
+            }
             "disconnect" => edit::disconnect(&mut self.graph, &s("from"), n("out"), &s("to"), n("in")),
             "delete" => {
                 // selected links are cut first (a refused one is skipped), then the selected blocks deleted
@@ -1143,6 +1381,8 @@ impl Controller {
     }
 
     fn publish_cards(&self) {
+        let pc = self.graph["pc"]["inbound"].as_str().and_then(|id| self.proxy(id)).map(name_of);
+        *self.pc_card.lock().unwrap() = pc;
         *self.cards.lock().unwrap() = self
             .proxies
             .iter()
@@ -1181,9 +1421,15 @@ impl Controller {
                 Msg::Work(f) => f(&mut self),
                 Msg::Toggle(id) => self.toggle(&id),
                 Msg::StopAll => self.stop_all(),
+                Msg::Tray(v) => self.platform_command(&v),
                 Msg::Quit(done) => {
                     self.restart_at.clear();
                     self.manager.stop_all(Duration::from_secs(10));
+                    if self.graph["pc"]["applied"] == json!(true) {
+                        self.pc_restore_backup();
+                        self.app_log(Level::Setting, &tr("System proxy restored to the previous settings"));
+                        self.save();
+                    }
                     let _ = done.send(());
                     break;
                 }
@@ -1248,6 +1494,7 @@ impl Controller {
                 self.test_latency(&keys);
             }
             "quit" => (self.hooks.quit)(),
+            "startup" | "startup_hidden" | "pc_off" | "pc_restore" | "firewall" => self.platform_command(v),
             "conn_test" => self.conn_test(id),
             "test_site_add" => {
                 let text = v["text"].as_str().unwrap_or("").to_string();
@@ -1306,6 +1553,11 @@ impl Controller {
         if let Some(p) = self.proxy(id).cloned() {
             let card = self.card_json(&p);
             self.broadcast(&json!({"ev": "card", "card": card}));
+        }
+        if self.graph["pc"]["inbound"] == json!(id) && self.sync_pc() {
+            self.save();
+            self.rebuild();
+            self.send_canvas();
         }
         self.publish_cards();
     }
