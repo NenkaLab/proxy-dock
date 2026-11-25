@@ -919,112 +919,137 @@ export global Settings {
     callback open-log-dir();
 }
 
-// A group of settings: a rounded container with an icon and a title
-component SettingsSection inherits Rectangle {
+// A group of settings (M3 list): a small title in the primary colour, then each setting on a card of its own;
+// the group's outer corners are round, the cards are 3 px apart.
+component SettingsSection inherits VerticalLayout {
     in property <string> title;
+    // (kept for the callers; the group title stands without an icon)
     in property <image> icon;
-    border-radius: 24px;
-    background: M3.surface-container-low;
-    VerticalLayout {
-        padding: 20px;
-        padding-top: 16px;
-        spacing: 6px;
-        HorizontalLayout {
-            spacing: 10px;
-            padding-bottom: 4px;
-            Image {
-                width: 22px;
-                height: 22px;
-                y: (parent.height - self.height) / 2;
-                source: root.icon;
-                colorize: M3.primary;
-            }
-            Text {
-                text: root.title;
-                font-size: 16px * Type.scale;
-                font-weight: 700;
-                color: M3.on-surface;
-                wrap: word-wrap;
-                horizontal-stretch: 1;
-                vertical-alignment: center;
-            }
-        }
-        @children
-    }
-}
-
-// One setting: what it is on the left, its control on the right (below it when the description runs long)
-component SettingRow inherits HorizontalLayout {
-    in property <string> label;
-    in property <string> desc;
-    in property <string> badge;
-    spacing: 16px;
-    padding-top: 8px;
-    padding-bottom: 8px;
-    VerticalLayout {
-        horizontal-stretch: 1;
-        spacing: 2px;
-        alignment: center;
-        HorizontalLayout {
-            spacing: 8px;
-            Text {
-                text: root.label;
-                font-size: 14px * Type.scale;
-                font-weight: 600;
-                color: M3.on-surface;
-                wrap: word-wrap;
-                horizontal-stretch: 1;
-                vertical-alignment: center;
-            }
-            if root.badge != "": Rectangle {
-                width: badge-label.preferred-width + 16px;
-                height: 22px;
-                border-radius: 11px;
-                background: M3.tertiary-container;
-                badge-label := Text {
-                    text: root.badge;
-                    font-size: 11px * Type.scale;
-                    font-weight: 700;
-                    color: M3.on-tertiary-container;
-                }
-            }
-        }
-        if root.desc != "": Text {
-            text: root.desc;
-            font-size: 12px * Type.scale;
-            color: M3.on-surface-variant;
+    spacing: 8px;
+    // in line with the cards' text
+    HorizontalLayout {
+        padding-left: 20px;
+        Text {
+            text: root.title;
+            font-size: 14px * Type.scale;
+            font-weight: 600;
+            color: M3.primary;
             wrap: word-wrap;
         }
     }
-    // the controls in the middle of the row's height, like the text beside them
-    VerticalLayout {
-        alignment: center;
-        HorizontalLayout {
-            alignment: end;
-            spacing: 8px;
+    Rectangle {
+        border-radius: 24px;
+        clip: true;
+        VerticalLayout {
+            spacing: 3px;
             @children
         }
     }
 }
 
+// a card in a settings group, for content that is not a single row
+component SettingTile inherits Rectangle {
+    background: M3.surface-container-low;
+    border-radius: 6px;
+    VerticalLayout {
+        padding: 20px;
+        padding-top: 16px;
+        padding-bottom: 16px;
+        spacing: 8px;
+        @children
+    }
+}
+
+// One setting on its card: its name and what it does on the left, its control on the right
+component SettingRow inherits Rectangle {
+    in property <string> label;
+    in property <string> desc;
+    in property <string> badge;
+    // the description is a path (or the like): monospace, wrapped at any character
+    in property <bool> desc-path;
+    background: M3.surface-container-low;
+    border-radius: 6px;
+    HorizontalLayout {
+        padding-left: 20px;
+        padding-right: 20px;
+        padding-top: 16px;
+        padding-bottom: 16px;
+        spacing: 16px;
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 4px;
+            alignment: center;
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: root.label;
+                    font-size: 16px * Type.scale;
+                    font-weight: 500;
+                    color: M3.on-surface;
+                    wrap: word-wrap;
+                    horizontal-stretch: 1;
+                    vertical-alignment: center;
+                }
+                if root.badge != "": Rectangle {
+                    width: badge-label.preferred-width + 16px;
+                    height: 22px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 11px;
+                    background: M3.tertiary-container;
+                    badge-label := Text {
+                        text: root.badge;
+                        font-size: 11px * Type.scale;
+                        font-weight: 700;
+                        color: M3.on-tertiary-container;
+                    }
+                }
+            }
+            if root.desc != "": Text {
+                text: root.desc;
+                font-size: (root.desc-path ? 12px : 13px) * Type.scale;
+                font-family: root.desc-path ? Type.mono : "";
+                color: M3.on-surface-variant;
+                wrap: root.desc-path ? char-wrap : word-wrap;
+            }
+        }
+        // the controls in the middle of the card's height
+        VerticalLayout {
+            alignment: center;
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                @children
+            }
+        }
+    }
+}
+
+// A setting whose field takes the card's width: name, the field, then what it does
+component SettingField inherits SettingTile {
+    in property <string> label;
+    in property <string> desc;
+    Text {
+        text: root.label;
+        font-size: 16px * Type.scale;
+        font-weight: 500;
+        color: M3.on-surface;
+        wrap: word-wrap;
+    }
+    @children
+    if root.desc != "": Text {
+        text: root.desc;
+        font-size: 13px * Type.scale;
+        color: M3.on-surface-variant;
+        wrap: word-wrap;
+    }
+}
+
 component SettingsDefaults inherits SettingsSection {
     title: Settings.text.defaults;
-    icon: @image-url("icons/tune.svg");
-    VerticalLayout {
-        spacing: 4px;
-        Text {
-            text: Settings.text.allowed;
-            font-size: 14px * Type.scale;
-            font-weight: 600;
-            color: M3.on-surface;
-        }
+    SettingField {
+        label: Settings.text.allowed;
+        desc: Settings.text.allowed-desc;
         AppLineEdit { text <=> Settings.allowed; }
-        Text {
-            text: Settings.text.allowed-desc;
-            font-size: 12px * Type.scale;
-            color: M3.on-surface-variant;
-            wrap: word-wrap;
-        }
     }
     SettingRow {
         label: Settings.text.private;
@@ -1051,24 +1076,12 @@ component SettingsDefaults inherits SettingsSection {
         desc: Settings.text.logclose-desc;
         Switch { checked <=> Settings.logclose; }
     }
-    VerticalLayout {
-        spacing: 4px;
-        padding-top: 8px;
-        Text {
-            text: Settings.text.dns;
-            font-size: 14px * Type.scale;
-            font-weight: 600;
-            color: M3.on-surface;
-        }
+    SettingField {
+        label: Settings.text.dns;
+        desc: Settings.text.dns-desc;
         AppLineEdit {
             text <=> Settings.dns;
             placeholder-text: "https://cloudflare-dns.com/dns-query, tls://dns.google, 1.1.1.1";
-        }
-        Text {
-            text: Settings.text.dns-desc;
-            font-size: 12px * Type.scale;
-            color: M3.on-surface-variant;
-            wrap: word-wrap;
         }
     }
     SettingRow {
@@ -1078,10 +1091,8 @@ component SettingsDefaults inherits SettingsSection {
     }
 }
 
-
 component SettingsStartup inherits SettingsSection {
     title: Settings.text.startup;
-    icon: @image-url("icons/login.svg");
     SettingRow {
         label: Settings.text.login;
         desc: Settings.text.login-desc;
@@ -1108,7 +1119,6 @@ component SettingsStartup inherits SettingsSection {
 
 component SettingsUpdates inherits SettingsSection {
     title: Settings.text.updates;
-    icon: @image-url("icons/sync.svg");
     SettingRow {
         label: Settings.text.check-updates;
         desc: Settings.text.check-updates-desc;
@@ -1118,38 +1128,35 @@ component SettingsUpdates inherits SettingsSection {
 
 component SettingsFirewall inherits SettingsSection {
     title: Settings.text.firewall;
-    icon: @image-url("icons/shield.svg");
-    SettingRow {
+    SettingField {
         label: Settings.text.fw-block;
         desc: Settings.text.fw-block-desc;
-    }
-    HorizontalLayout {
-        spacing: 8px;
-        alignment: end;
-        Text {
-            text: Settings.fw-text;
-            font-size: 14px * Type.scale;
-            font-weight: 600;
-            color: Settings.fw-state == 1 ? #2e9d4a : M3.on-surface-variant;
-            vertical-alignment: center;
-            horizontal-stretch: 1;
-        }
-        Button {
-            text: Settings.text.fw-on;
-            enabled: Settings.fw-state == 0;
-            clicked => { Settings.firewall(true); }
-        }
-        Button {
-            text: Settings.text.fw-off;
-            enabled: Settings.fw-state == 1;
-            clicked => { Settings.firewall(false); }
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: Settings.fw-text;
+                font-size: 14px * Type.scale;
+                font-weight: 600;
+                color: Settings.fw-state == 1 ? #2e9d4a : M3.on-surface-variant;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            Button {
+                text: Settings.text.fw-on;
+                enabled: Settings.fw-state == 0;
+                clicked => { Settings.firewall(true); }
+            }
+            Button {
+                text: Settings.text.fw-off;
+                enabled: Settings.fw-state == 1;
+                clicked => { Settings.firewall(false); }
+            }
         }
     }
 }
 
 component SettingsDisplay inherits SettingsSection {
     title: Settings.text.display;
-    icon: @image-url("icons/palette.svg");
     SettingRow {
         label: Settings.text.language;
         desc: Settings.text.language-desc;
@@ -1206,7 +1213,6 @@ component SettingsDisplay inherits SettingsSection {
 
 component SettingsFonts inherits SettingsSection {
     title: Settings.text.fonts;
-    icon: @image-url("icons/text_fields.svg");
     SettingRow {
         label: Settings.text.ui-font;
         desc: Settings.text.ui-font-desc;
@@ -1229,13 +1235,14 @@ component SettingsFonts inherits SettingsSection {
 
 component SettingsEngine inherits SettingsSection {
     title: Settings.text.engine;
-    icon: @image-url("icons/memory.svg");
-    Text {
-        text: Settings.engine;
-        font-size: 12px * Type.scale;
-        font-family: Type.mono;
-        color: M3.on-surface-variant;
-        wrap: char-wrap;
+    SettingTile {
+        Text {
+            text: Settings.engine;
+            font-size: 13px * Type.scale;
+            font-family: Type.mono;
+            color: M3.on-surface-variant;
+            wrap: char-wrap;
+        }
     }
     SettingRow {
         label: Settings.text.latest;
@@ -1247,9 +1254,10 @@ component SettingsEngine inherits SettingsSection {
 
 component SettingsLogs inherits SettingsSection {
     title: Settings.text.logs;
-    icon: @image-url("icons/description.svg");
     SettingRow {
         label: Settings.text.logfile;
+        desc: Settings.log-dir;
+        desc-path: true;
         Button {
             text: Settings.text.open-folder;
             icon: @image-url("icons/folder_open.svg");
@@ -1257,14 +1265,6 @@ component SettingsLogs inherits SettingsSection {
             clicked => { Settings.open-log-dir(); }
         }
         Switch { checked <=> Settings.logfile; }
-    }
-    // a path has no spaces to wrap at
-    Text {
-        text: Settings.log-dir;
-        font-size: 12px * Type.scale;
-        font-family: Type.mono;
-        color: M3.on-surface-variant;
-        wrap: char-wrap;
     }
 }
 
@@ -1867,19 +1867,14 @@ component AboutPage inherits VerticalLayout {
                     icon: @image-url("icons/folder_open.svg");
                     SettingRow {
                         label: Info.folder-label;
+                        desc: Info.app-dir;
+                        desc-path: true;
                         Button {
                             text: Info.open-folder;
                             icon: @image-url("icons/folder_open.svg");
                             colorize-icon: true;
                             clicked => { Info.open-dir(Info.app-dir); }
                         }
-                    }
-                    Text {
-                        text: Info.app-dir;
-                        font-size: 12px * Type.scale;
-                        font-family: Type.mono;
-                        color: M3.on-surface-variant;
-                        wrap: char-wrap;
                     }
                 }
                 SettingsSection {
