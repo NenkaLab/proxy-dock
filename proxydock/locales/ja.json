@@ -1063,5 +1063,6 @@
  "Revert": "元に戻す",
  "Several servers (separated by commas): all are asked at once and the first answer is used.": "複数のサーバー（カンマ区切り）を指定すると、すべてに同時に問い合わせ、最初の応答を使います。",
  "Back": "戻る",
- "Rust crates (list)": "Rust クレート（一覧）"
+ "Rust crates (list)": "Rust クレート（一覧）",
+ "Menus, settings and the whole window": "メニュー、設定などウィンドウ全体"
 }

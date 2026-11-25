@@ -1063,5 +1063,6 @@
  "Revert": "还原",
  "Several servers (separated by commas): all are asked at once and the first answer is used.": "可填写多个服务器（用逗号分隔）：同时向所有服务器查询，使用最先返回的应答。",
  "Back": "返回",
- "Rust crates (list)": "Rust crate（列表）"
+ "Rust crates (list)": "Rust crate（列表）",
+ "Menus, settings and the whole window": "菜单、设置等整个窗口"
 }

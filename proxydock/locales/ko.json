@@ -1063,5 +1063,6 @@
  "Revert": "되돌리기",
  "Several servers (separated by commas): all are asked at once and the first answer is used.": "여러 개를 쉼표로 구분해 넣으면 모두에 동시에 묻고 가장 먼저 온 답을 씁니다.",
  "Back": "뒤로",
- "Rust crates (list)": "Rust 크레이트(목록)"
+ "Rust crates (list)": "Rust 크레이트(목록)",
+ "Menus, settings and the whole window": "메뉴, 설정 등 창 전체"
 }
