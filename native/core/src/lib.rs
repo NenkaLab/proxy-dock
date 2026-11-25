@@ -16,6 +16,7 @@ pub mod links;
 pub mod log;
 pub mod manager;
 pub mod net;
+pub mod netinfo;
 pub mod paths;
 pub mod platform;
 pub mod probe;

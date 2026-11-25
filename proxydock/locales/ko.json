@@ -1071,5 +1071,6 @@
  "The connection's way is lit on the canvas": "캔버스에 이 연결의 경로를 표시했습니다",
  "Waterfall": "워터폴",
  "Waiting": "응답 대기",
- "Response": "응답"
+ "Response": "응답",
+ "Public key": "공개 키"
 }

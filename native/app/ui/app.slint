@@ -53,6 +53,8 @@ export struct Wire { i: int, o: int }
 
 // an entry of a right-click menu (`action` goes back to the core)
 export struct MenuLeaf { action: string, title: string }
+// a program in the program picker (Python `ProgramPicker`)
+export struct PickItem { name: string, checked: bool }
 
 export struct NodeData {
     id: int,
@@ -774,7 +776,8 @@ component AppButton inherits Rectangle {
     property <color> fg: !root.enabled ? M3.on-surface.with-alpha(0.38) : root.primary ? M3.on-primary : M3.on-secondary-container;
     height: 40px;
     preferred-width: lay.preferred-width;
-    min-width: lay.min-width;
+    // (a button's text is never cut short)
+    min-width: lay.preferred-width;
     horizontal-stretch: 0;
     border-radius: ta.pressed && root.enabled ? 8px : 20px;
     animate border-radius { duration: Motion.fast-spatial; easing: cubic-bezier(0.42, 1.67, 0.21, 0.90); }
@@ -923,8 +926,12 @@ component FormRow inherits Rectangle {
                         }
                     }
                     VerticalLayout {
-                        alignment: center;
+                      alignment: center;
+                      HorizontalLayout {
+                        alignment: end;
+                        spacing: 8px;
                         if f.kind == "bool": AppSwitch {
+                            y: (parent.height - self.height) / 2;
                             checked: f.checked;
                             toggled => { root.changed(f.key, self.checked ? "true" : "false"); }
                         }
@@ -945,13 +952,12 @@ component FormRow inherits Rectangle {
                             enabled: !f.busy;
                             clicked => { root.pressed(f.key, -1); }
                         }
-                        if f.kind == "item": HorizontalLayout {
-                            spacing: 8px;
-                            for b[i] in f.buttons: AppButton {
-                                text: b;
-                                clicked => { root.pressed(f.key, i); }
-                            }
+                        // an item's buttons, or the buttons that belong to this field (Browse, Refresh, Add...)
+                        for b[i] in f.buttons: AppButton {
+                            text: b;
+                            clicked => { root.pressed(f.key, i); }
                         }
+                      }
                     }
                 }
                 // a field that needs the width: the name, the field, then what it does
@@ -973,10 +979,18 @@ component FormRow inherits Rectangle {
                     font-size: 12px * Type.scale;
                     font-family: Type.mono;
                 }
-                if !root.inline && (f.kind == "text" || f.kind == "secret" || f.kind == "int"): AppLineEdit {
-                    text: f.text;
-                    input-type: f.kind == "secret" ? InputType.password : f.kind == "int" ? InputType.number : InputType.text;
-                    edited(t) => { root.changed(f.key, t); }
+                if !root.inline && (f.kind == "text" || f.kind == "secret" || f.kind == "int"): HorizontalLayout {
+                    spacing: 8px;
+                    AppLineEdit {
+                        horizontal-stretch: 1;
+                        text: f.text;
+                        input-type: f.kind == "secret" ? InputType.password : f.kind == "int" ? InputType.number : InputType.text;
+                        edited(t) => { root.changed(f.key, t); }
+                    }
+                    for b[i] in f.buttons: AppButton {
+                        text: b;
+                        clicked => { root.pressed(f.key, i); }
+                    }
                 }
                 if !root.inline && f.kind == "choice": AppComboBox {
                     model: f.options;
@@ -3015,6 +3029,19 @@ export component App inherits Window {
     in-out property <length> canvas-pan-y <=> editor.pan-y;
     // a question before something that cannot be taken back (delete): its text, and the answer yes
     in-out property <string> confirm-text;
+    // the program picker (a router rule's "Choose..."): the running programs, a search, a program file
+    in-out property <bool> picker-open;
+    in property <[PickItem]> picker-items;
+    in-out property <string> picker-search;
+    in property <string> t-pick-title: "Choose programs";
+    in property <string> t-pick-search: "Search running programs";
+    in property <string> t-pick-file: "Choose a program file...";
+    in property <string> t-pick-note: "Rules match the program's file name, so it does not need to be running now.";
+    in property <string> t-add: "Add";
+    callback picker-filter();
+    callback picker-toggle(string);
+    callback picker-browse();
+    callback picker-done();
     in property <string> t-yes: "Delete";
     callback confirm-yes();
     // block editor (page 3)
@@ -3502,10 +3529,11 @@ export component App inherits Window {
                         if root.form-notice != "": Rectangle {
                             border-radius: 12px;
                             background: root.form-notice-ok ? M3.secondary-container : M3.error-container;
-                            height: notice-text.preferred-height + 20px;
+                            height: notice-text.preferred-height + 28px;
                             notice-text := Text {
                                 x: 16px;
                                 width: parent.width - 32px;
+                                font-size: 14px * Type.scale;
                                 text: root.form-notice;
                                 color: root.form-notice-ok ? M3.on-secondary-container : M3.on-error-container;
                                 wrap: word-wrap;
@@ -3514,12 +3542,14 @@ export component App inherits Window {
                         if root.form-errors.length > 0: Rectangle {
                             border-radius: 12px;
                             background: M3.error-container;
-                            height: errs.preferred-height + 20px;
+                            height: errs.preferred-height + 28px;
                             errs := VerticalLayout {
                                 x: 16px;
-                                y: 10px;
+                                y: 14px;
+                                spacing: 4px;
                                 width: parent.width - 32px;
                                 for e in root.form-errors: Text {
+                                    font-size: 14px * Type.scale;
                                     text: "• " + e;
                                     color: M3.on-error-container;
                                     wrap: word-wrap;
@@ -3890,10 +3920,117 @@ export component App inherits Window {
         drop-shadow-color: #00000030;
         toast-text := Text {
             width: parent.width - 40px;
+            font-size: 14px * Type.scale;
             text: root.toast;
             wrap: word-wrap;
             color: root.toast-info ? M3.on-secondary-container : M3.on-error-container;
             horizontal-alignment: center;
+        }
+    }
+    if root.picker-open: Rectangle {
+        background: #00000060;
+        TouchArea {
+            clicked => { root.picker-open = false; }
+        }
+        FocusScope {
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    root.picker-open = false;
+                    return accept;
+                }
+                reject
+            }
+            Rectangle {
+                width: min(parent.width - 80px, 520px);
+                height: min(parent.height - 80px, 640px);
+                border-radius: 28px;
+                background: M3.surface-container-high;
+                TouchArea { }
+                VerticalLayout {
+                    padding: 24px;
+                    spacing: 16px;
+                    Text {
+                        text: root.t-pick-title;
+                        font-size: 24px * Type.scale;
+                        color: M3.on-surface;
+                    }
+                    AppLineEdit {
+                        text <=> root.picker-search;
+                        placeholder-text: root.t-pick-search;
+                        edited => { root.picker-filter(); }
+                    }
+                    Rectangle {
+                        vertical-stretch: 1;
+                        border-radius: 16px;
+                        background: M3.surface-container;
+                        clip: true;
+                        ListView {
+                            for item in root.picker-items: Rectangle {
+                                height: 56px;
+                                background: pick-touch.has-hover ? M3.on-surface.with-alpha(0.08) : transparent;
+                                pick-touch := TouchArea {
+                                    clicked => { root.picker-toggle(item.name); }
+                                }
+                                HorizontalLayout {
+                                    padding-left: 16px;
+                                    padding-right: 16px;
+                                    spacing: 16px;
+                                    Rectangle {
+                                        width: 18px;
+                                        height: 18px;
+                                        y: (parent.height - self.height) / 2;
+                                        border-radius: 2px;
+                                        border-width: item.checked ? 0px : 2px;
+                                        border-color: M3.on-surface-variant;
+                                        background: item.checked ? M3.primary : transparent;
+                                        Image {
+                                            visible: item.checked;
+                                            width: 16px;
+                                            height: 16px;
+                                            source: @image-url("icons/check.svg");
+                                            colorize: M3.on-primary;
+                                        }
+                                    }
+                                    Text {
+                                        text: item.name;
+                                        vertical-alignment: center;
+                                        font-size: 16px * Type.scale;
+                                        color: M3.on-surface;
+                                        overflow: elide;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Text {
+                        text: root.t-pick-note;
+                        font-size: 14px * Type.scale;
+                        color: M3.on-surface-variant;
+                        wrap: word-wrap;
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        AppButton {
+                            text: root.t-pick-file;
+                            icon: @image-url("icons/folder_open.svg");
+                            clicked => { root.picker-browse(); }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        AppButton {
+                            text: root.t-cancel;
+                            clicked => { root.picker-open = false; }
+                        }
+                        AppButton {
+                            text: root.t-add;
+                            primary: true;
+                            clicked => {
+                                root.picker-open = false;
+                                root.picker-done();
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
     if root.confirm-text != "": Rectangle {

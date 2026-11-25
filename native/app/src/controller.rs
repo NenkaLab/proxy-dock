@@ -1297,12 +1297,21 @@ impl Controller {
             }
             let mut node = node;
             form::on_open(kind, &mut node);
+            if kind == "outbound" {
+                form::refresh_ifaces();
+            }
             self.drafts.insert(client, (kind, node));
             self.probe_text.remove(&client);
         }
         let Some((kind, draft)) = self.drafts.get(&client).cloned() else { return };
         let mut node = form::apply(kind, &draft, &values);
         let id = node["id"].as_str().unwrap_or("").to_string();
+        // a card picked that has no default route (e.g. a Hyper-V / VMware switch): only its own network is reachable
+        let iface = node["outbound"]["interface"].as_str().unwrap_or("").to_string();
+        if kind == "outbound" && !iface.is_empty() && draft["outbound"]["interface"] != json!(iface) && form::iface_unrouted(&iface) {
+            let text = tr("'{name}' has no gateway, so it only reaches its own network (e.g. VMs or a LAN). Connections to the internet through it will fail.").replace("{name}", &iface);
+            reply(self, json!({"ev": "notice", "ok": false, "title": tr("No internet route"), "text": text}));
+        }
         let action = v["action"].as_str().unwrap_or("");
         if cmd == "edit_action" && action == "port.check" {
             self.check_port(client, &node);
@@ -1314,9 +1323,15 @@ impl Controller {
             return;
         }
         if cmd == "edit_action" {
-            match form::act(kind, &node, action, &values) {
+            match form::act(&self.graph, kind, &node, action, &values) {
                 Ok(done) => {
                     node = done.node;
+                    if let Some((name, text)) = done.save {
+                        reply(self, json!({"ev": "save_file", "name": name, "text": text}));
+                    }
+                    if let Some(key) = done.pick {
+                        reply(self, json!({"ev": "pick_programs", "key": key}));
+                    }
                     if let Some((title, text)) = done.show {
                         reply(self, json!({"ev": "show_text", "title": title, "text": text}));
                     }
@@ -1342,19 +1357,21 @@ impl Controller {
             reply(self, json!({"ev": "form_errors", "errors": errs}));
             return;
         }
-        if kind == "inbound" {
-            let ib = &node["inbound"];
-            let host = ib["host"].as_str().unwrap_or("");
-            let local = host.eq_ignore_ascii_case("localhost") || proxydock_core::singbox::guard::is_loopback_ip(host);
-            if !local && matches!(ib["type"].as_str(), Some("socks5" | "http" | "https")) && ib["auth_enabled"] != json!(true) {
-                self.app_log(Level::Warn, &tr("Anyone on the same network can use this proxy. Turning on user authentication is recommended."));
-            }
-        }
         self.graph = form::with_node(&self.graph, kind, &node);
         self.drafts.remove(&client);
         let name = node["name"].as_str().unwrap_or("").to_string();
         self.app_log(Level::Setting, &tr("Saved proxy '{name}'").replace("{name}", &name));
         self.graph_changed();
+        if kind == "inbound" {
+            let ib = &node["inbound"];
+            let host = ib["host"].as_str().unwrap_or("");
+            let local = host.eq_ignore_ascii_case("localhost") || proxydock_core::singbox::guard::is_loopback_ip(host);
+            if !local && matches!(ib["type"].as_str(), Some("socks5" | "http" | "https")) && ib["auth_enabled"] != json!(true) {
+                // (Python: a warning bar over the window as the editor closes; sent after the "saved" message so it stays)
+                let text = format!("{}\n{}", tr("Exposed without authentication"), tr("Anyone on the same network can use this proxy. Turning on user authentication is recommended."));
+                reply(self, json!({"ev": "warn", "message": text}));
+            }
+        }
         reply(self, json!({"ev": "form_saved", "id": id}));
     }
 

@@ -9,6 +9,93 @@
 use crate::graph::{self, Obj};
 use crate::i18n::tr;
 use serde_json::{json, Map, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+
+/// the router editor's view, shared by every router while the app runs (Python `router.MODE`): false = simple
+/// (a row per condition in use), true = advanced (every condition field)
+pub static ROUTER_ADVANCED: AtomicBool = AtomicBool::new(false);
+/// conditions added in the simple view that are still empty: (rule id, condition key)
+static SHOWN: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+/// the network interfaces the outbound editor offers (read again by `refresh_ifaces`)
+static IFACES: Mutex<Vec<crate::netinfo::Iface>> = Mutex::new(Vec::new());
+
+/// read the PC's network interfaces again (when an editor opens and on "Refresh the list")
+pub fn refresh_ifaces() {
+    *IFACES.lock().unwrap() = crate::netinfo::interfaces();
+}
+
+/// the interface `name` is up but has no route to the internet (Python `ifaces_unrouted`)
+pub fn iface_unrouted(name: &str) -> bool {
+    IFACES.lock().unwrap().iter().any(|i| i.name == name && !i.routed)
+}
+
+/// the "Network interface" choices: automatic, the ones up (with their IPv4 and a warning when they have no
+/// internet route), and the saved one when it is not up now (Python `_fill_ifaces`)
+fn iface_choices(current: &str) -> Kind {
+    let mut o = vec![(String::new(), tr("Automatic"))];
+    for i in IFACES.lock().unwrap().iter() {
+        let mut label = if i.ip.is_empty() { i.name.clone() } else { format!("{} · {}", i.name, i.ip) };
+        if !i.routed {
+            label += &format!(" · ⚠ {}", tr("no internet route"));
+        }
+        o.push((i.name.clone(), label));
+    }
+    if !current.is_empty() && !o.iter().any(|(v, _)| v == current) {
+        o.push((current.to_string(), tr("{name} (not connected)").replace("{name}", current)));
+    }
+    Kind::Choice(o)
+}
+
+/// the router conditions: (key, label, example) as the Python router editor
+const CONDS: [(&str, &str, &str); 8] = [
+    ("domain_suffix", "Domain (with subdomains)", "example.com, ads.example.net"),
+    ("domain", "Domain (exact)", "www.example.com"),
+    ("domain_keyword", "Domain keyword", "google"),
+    ("ip_cidr", "IP / range", "10.0.0.0/8, 1.1.1.1"),
+    ("geoip", "GeoIP country", "kr, jp, us"),
+    ("geosite", "Geosite category", "google, netflix, category-ads-all"),
+    ("port", "Destination port", "443, 8000-9000"),
+    ("process_name", "Program", "chrome.exe, game.exe"),
+];
+
+/// "Add rule"'s templates (Python `router.templates`): menu label, rule name, conditions, target block type
+type Template = (String, Option<String>, Value, Option<&'static str>);
+
+fn rule_templates() -> Vec<Template> {
+    vec![
+        (tr("Empty rule"), None, json!({}), None),
+        (tr("Programs..."), Some(tr("Programs")), json!({"process_name": []}), None),
+        (tr("Ads and trackers (Geosite)"), Some(tr("Ads")), json!({"geosite": ["category-ads-all"]}), Some("block")),
+        (tr("Local network (LAN, private IPs)"), Some(tr("Local network")), json!({"ip_private": true}), Some("direct")),
+        (tr("Sites of one country (GeoIP + Geosite)"), Some(tr("Country")), json!({"geoip": ["kr"], "geosite": ["kr"]}), None),
+    ]
+}
+
+/// the outbound blocks a group can still take as members (not itself, groups, Block or ones it has)
+fn addable_members(g: &Obj, node: &Value) -> Vec<(String, String)> {
+    let id = s(node, "id");
+    let members: Vec<&str> = node["members"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    list(g, "outbounds")
+        .filter(|x| s(x, "id") != id && !members.contains(&s(x, "id")) && !matches!(x["outbound"]["type"].as_str(), Some("group" | "block")))
+        .map(|x| (s(x, "id").into(), s(x, "name").into()))
+        .collect()
+}
+
+/// the conditions a rule shows in the simple view: the ones in use and the ones just added (a new rule: domain)
+fn simple_conds(r: &Value) -> Vec<&'static str> {
+    let rid = s(r, "id");
+    let shown = SHOWN.lock().unwrap();
+    let on = |k: &str| shown.iter().any(|(id, c)| id == rid && c == k);
+    let mut out: Vec<&'static str> = CONDS.iter().map(|c| c.0).filter(|k| r["match"][*k].as_array().is_some_and(|a| !a.is_empty()) || on(k)).collect();
+    if r["match"]["ip_private"] == json!(true) || on("ip_private") {
+        out.push("ip_private");
+    }
+    if out.is_empty() {
+        out.push("domain_suffix");
+    }
+    out
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Kind {
@@ -218,18 +305,21 @@ pub fn inbound_form(g: &Obj, glob: &Map<String, Value>, node: &Value) -> Vec<Fie
     let devices = peers(ib);
     b.push(field("", "Devices", "Each phone or PC gets its own key. Copy or save its config and import it in the WireGuard app on that device", Kind::Heading, json!(null), wg));
     for (i, p) in devices.iter().enumerate() {
-        let buttons = vec![(format!("wgdev.conf.{i}"), tr("Copy config")), (format!("wgdev.del.{i}"), tr("Remove"))];
+        let buttons = vec![(format!("wgdev.conf.{i}"), tr("Copy config")), (format!("wgdev.save.{i}"), tr("Save .conf")), (format!("wgdev.del.{i}"), tr("Remove"))];
         let name = p.get("name").map_or_else(|| "?".to_string(), crate::singbox::compile::py_str);
         b.push(Field { key: format!("wgdev.{i}"), label: name, desc: String::new(), kind: Kind::Item(buttons), value: p["address"].clone(), visible: wg, rerender: false });
     }
-    b.push(field("wg_new_name", "Add a device", "", Kind::Text, json!(""), wg));
+    b.push(field("wg_new_name", "Add device", "", Kind::Text, json!(""), wg));
     b.push(field("wgdev.add", "Add", "", Kind::Button, json!(null), wg));
     // accounts and secrets
     b.add("auth_enabled", "User authentication", "", Kind::Bool, can_auth).rerender = true;
     b.add("username", "Account", "", Kind::Text, can_auth && auth);
     b.add("password", "", "", Kind::Secret, can_auth && auth);
-    b.add("tls_cert", "TLS certificate", "PEM format. If empty, a self-signed certificate is generated (clients must skip certificate verification)", Kind::Text, matches!(it, "https" | "hysteria2"));
-    b.add("tls_key", "TLS private key", "", Kind::Text, matches!(it, "https" | "hysteria2"));
+    let tls_files = matches!(it, "https" | "hysteria2");
+    b.add("tls_cert", "TLS certificate", "PEM format. If empty, a self-signed certificate is generated (clients must skip certificate verification)", Kind::Text, tls_files);
+    b.push(field("ui.browse.inbound.tls_cert", "Browse", "", Kind::Button, json!(null), tls_files));
+    b.add("tls_key", "TLS private key", "", Kind::Text, tls_files);
+    b.push(field("ui.browse.inbound.tls_key", "Browse", "", Kind::Button, json!(null), tls_files));
     b.add("ss_method", "Cipher", "Must match the client", ss_methods(), it == "shadowsocks");
     b.add("ss_password", "Shadowsocks password", "2022 ciphers use a base64 key - click 'Generate' after changing the cipher", Kind::Secret, it == "shadowsocks");
     b.push(field("gen.inbound.ss_password", "Generate", "", Kind::Button, json!(null), it == "shadowsocks"));
@@ -300,7 +390,9 @@ pub fn outbound_form(g: &Obj, node: &Value) -> Vec<Field> {
     b.push(field("via", "Through", "Connect to this server through another outbound block (e.g. a tunnel through the company proxy). Also editable on the canvas.",
         Kind::Choice(vias), json!(node["via"].as_str().unwrap_or("")), !matches!(ot, "direct" | "hysteria2" | "block" | "subscription" | "group"))).rerender = true;
     b.add("bind", "Source address", "Connect from this IP of the PC (choose a network card / VPN). Empty = automatic", Kind::Text, ot == "direct");
-    b.add("interface", "Network interface", "Leave through this network card, e.g. Tailscale, WireGuard, a VPN app or Wi-Fi, without changing the PC's routes. Needs the sing-box engine.", Kind::Text, !matches!(ot, "block" | "group") && !has_via);
+    let iface_shown = !matches!(ot, "block" | "group") && !has_via;
+    b.add("interface", "Network interface", "Leave through this network card, e.g. Tailscale, WireGuard, a VPN app or Wi-Fi, without changing the PC's routes. Needs the sing-box engine.", iface_choices(&st("interface")), iface_shown).rerender = true;
+    b.push(field("iface.refresh", "Refresh the list", "", Kind::Button, json!(null), iface_shown));
     let user_shown = matches!(ot, "http" | "https" | "socks4" | "socks5");
     b.add("username", "Upstream proxy account", "", Kind::Text, user_shown);
     b.add("password", if user_shown { "" } else { "Password" }, "", Kind::Secret, matches!(ot, "http" | "https" | "socks5" | "trojan" | "tuic"));
@@ -329,11 +421,9 @@ pub fn outbound_form(g: &Obj, node: &Value) -> Vec<Field> {
         let buttons = vec![(format!("member.up.{i}"), "↑".into()), (format!("member.down.{i}"), "↓".into()), (format!("member.del.{i}"), tr("Remove"))];
         b.push(Field { key: format!("member.{i}"), label: format!("{}. {}", i + 1, name_of(g, m)), desc: String::new(), kind: Kind::Item(buttons), value: json!(""), visible: grp, rerender: false });
     }
-    let addable: Vec<(String, String)> = list(g, "outbounds")
-        .filter(|x| s(x, "id") != id && !members.iter().any(|m| m == s(x, "id")) && !matches!(x["outbound"]["type"].as_str(), Some("group" | "block")))
-        .map(|x| (s(x, "id").into(), s(x, "name").into()))
-        .collect();
-    b.push(field("member_new", "Add a member", "", Kind::Choice(addable), json!(""), grp));
+    let addable = addable_members(g, node);
+    let first = addable.first().map_or(String::new(), |a| a.0.clone());
+    b.push(field("member_new", "Add a member", "", Kind::Choice(addable), json!(first), grp));
     b.push(field("member.add", "Add", "", Kind::Button, json!(null), grp));
     b.add("group_test_url", "Test address · interval (s)", "Each member is measured by loading this address through it", Kind::Text, grp && gm != "select");
     b.add("group_interval", "", "", Kind::Int { min: 10, max: 3600 }, grp && gm != "select");
@@ -379,6 +469,7 @@ pub fn outbound_form(g: &Obj, node: &Value) -> Vec<Field> {
     b.add("hy2_hop_interval", "", "", Kind::Int { min: 5, max: 3600 }, ot == "hysteria2");
     // WireGuard
     let wg = ot == "wireguard";
+    b.push(field("ui.wg.import", "Import .conf…", "Fill everything in from a .conf file from your VPN provider or WireGuard server", Kind::Button, json!(null), wg));
     b.add("wg_private_key", "Private key", "", Kind::Secret, wg);
     b.push(field("gen.outbound.wg_private_key", "Generate", "", Kind::Button, json!(null), wg));
     b.push(field("wg_public", "Public key", "", Kind::Info, json!(crate::wg::public_of(&st("wg_private_key"))), wg));
@@ -405,17 +496,15 @@ pub fn router_form(g: &Obj, node: &Value) -> Vec<Field> {
         out.last_mut().unwrap().rerender = true;
         out.push(field("switch_on", "Switched on", "", Kind::Bool, json!(node["switch_on"] == json!(true)), switch));
     }
-    // (key, label, example) as the Python router editor
-    let conds = [
-        ("domain_suffix", "Domain (with subdomains)", "example.com, ads.example.net"),
-        ("domain", "Domain (exact)", "www.example.com"),
-        ("domain_keyword", "Domain keyword", "google"),
-        ("ip_cidr", "IP / range", "10.0.0.0/8, 1.1.1.1"),
-        ("geoip", "GeoIP country", "kr, jp, us"),
-        ("geosite", "Geosite category", "google, netflix, category-ads-all"),
-        ("port", "Destination port", "443, 8000-9000"),
-        ("process_name", "Program", "chrome.exe, game.exe"),
-    ];
+    let advanced = ROUTER_ADVANCED.load(Ordering::Relaxed);
+    // Simple / Advanced (Python's segmented switch above the rules); advanced shows the long note
+    let mut view = field("router_view", if is_if { "Condition" } else { "Rules (checked from the top; the first match wins)" }, "",
+        choice(&[("simple", tr("Simple")), ("advanced", tr("Advanced"))]), json!(if advanced { "advanced" } else { "simple" }), !switch);
+    if advanced {
+        view.desc = tr("Inside one rule, any one of the address conditions (domains, IPs, GeoIP, Geosite, private network) is enough; port and program must also match. Separate several values with commas. Program rules work for connections from this PC. GeoIP and Geosite data is downloaded once a day.");
+    }
+    view.rerender = true;
+    out.push(view);
     let rules: Vec<&Value> = node["rules"].as_array().into_iter().flatten().collect();
     for (i, r) in rules.iter().enumerate() {
         let base = format!("rules.{i}");
@@ -429,15 +518,46 @@ pub fn router_form(g: &Obj, node: &Value) -> Vec<Field> {
         if !is_if {
             out.push(field(&format!("{base}.name"), "Name", "", Kind::Text, r["name"].clone(), true));
         }
-        for (k, label, example) in conds {
-            let text = r["match"][k].as_array().map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")).unwrap_or_default();
-            out.push(Field { key: format!("{base}.match.{k}"), label: tr(label), desc: example.into(), kind: Kind::Text, value: json!(text), visible: !switch, rerender: false });
+        let text_of = |k: &str| r["match"][k].as_array().map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+        let private = json!(r["match"]["ip_private"] == json!(true));
+        if advanced {
+            for (k, label, example) in CONDS {
+                out.push(Field { key: format!("{base}.match.{k}"), label: tr(label), desc: example.into(), kind: Kind::Text, value: json!(text_of(k)), visible: !switch, rerender: false });
+                if k == "process_name" {
+                    out.push(field(&format!("ui.pick.{base}.match.process_name"), "Choose...", "", Kind::Button, json!(null), !switch));
+                }
+            }
+            out.push(field(&format!("{base}.match.ip_private"), "Private network addresses", "", Kind::Bool, private, !switch));
+        } else {
+            // a row per condition in use, each with its remove button (Python `CondRow`)
+            let used = simple_conds(r);
+            for k in &used {
+                if *k == "ip_private" {
+                    out.push(field(&format!("{base}.match.ip_private"), "Private network addresses", "LAN, loopback and other private IPs", Kind::Bool, private.clone(), !switch));
+                } else {
+                    let (_, label, example) = CONDS.iter().find(|c| c.0 == *k).copied().unwrap();
+                    out.push(Field { key: format!("{base}.match.{k}"), label: tr(label), desc: example.into(), kind: Kind::Text, value: json!(text_of(k)), visible: !switch, rerender: false });
+                    if *k == "process_name" {
+                        out.push(field(&format!("ui.pick.{base}.match.process_name"), "Choose...", "", Kind::Button, json!(null), !switch));
+                    }
+                }
+                out.push(field(&format!("rule.cond.del.{i}.{k}"), "Remove condition", "", Kind::Button, json!(null), !switch));
+            }
+            let free: Vec<(String, String)> = CONDS.iter().filter(|c| !used.contains(&c.0)).map(|c| (c.0.to_string(), tr(c.1)))
+                .chain((!used.contains(&"ip_private")).then(|| ("ip_private".to_string(), tr("Private network addresses"))))
+                .collect();
+            if !free.is_empty() {
+                let first = free[0].0.clone();
+                out.push(field(&format!("{base}.cond_new"), "Add condition", "One matching website / IP / country condition is enough; ports and programs must also match.", Kind::Choice(free), json!(first), !switch));
+                out.push(field(&format!("rule.cond.add.{i}"), "Add", "", Kind::Button, json!(null), !switch));
+            }
         }
-        out.push(field(&format!("{base}.match.ip_private"), "Local network", "", Kind::Bool, json!(r["match"]["ip_private"] == json!(true)), !switch));
         out.push(field(&format!("{base}.target"), if is_if { "then" } else { "then →" }, "", targets.clone(), json!(r["target"].as_str().unwrap_or("")), true));
     }
     if !is_if {
-        out.push(field("rule.add", "Add rule", "", Kind::Button, json!(null), true));
+        let templates: Vec<(String, String)> = rule_templates().into_iter().enumerate().map(|(i, t)| (i.to_string(), t.0)).collect();
+        out.push(field("rule_template", "Add rule", "", Kind::Choice(templates), json!("0"), true));
+        out.push(field("rule.add", "Add", "", Kind::Button, json!(null), true));
     }
     out.push(field("default", if is_if { "else" } else { "Default" }, "Where traffic goes when no rule matches", targets, json!(node["default"].as_str().unwrap_or("")), true));
     out
@@ -567,6 +687,7 @@ pub fn apply(kind: &str, node: &Value, values: &Map<String, Value>) -> Value {
                     }
                 }
             }
+            ["router_view"] => ROUTER_ADVANCED.store(v.as_str() == Some("advanced"), Ordering::Relaxed),
             ["lanes_in"] => lanes.push(("inputs", typed(&json!(0), v).as_u64().unwrap_or(1) as usize)),
             ["lanes_out"] => lanes.push(("outputs", typed(&json!(0), v).as_u64().unwrap_or(1) as usize)),
             [k @ ("target" | "via" | "default")] => n[*k] = opt_id(v),
@@ -743,6 +864,10 @@ pub struct Acted {
     pub node: Value,
     pub show: Option<(String, String)>,
     pub notice: Option<(bool, String, String)>,
+    /// a file for the window to save: suggested name, text (a WireGuard device's .conf)
+    pub save: Option<(String, String)>,
+    /// the window opens the program picker for this field (the "Programs..." rule template)
+    pub pick: Option<String>,
 }
 
 /// "Paste share link": the outbound from the link (the subscription's servers stay), the link's name when the
@@ -780,10 +905,12 @@ fn py_strip(t: &str) -> String {
 }
 
 /// A button of the editor (`action` = the button field's key), on the draft with the typed values already in.
-pub fn act(kind: &str, node: &Value, action: &str, values: &Map<String, Value>) -> Result<Acted, String> {
+pub fn act(g: &Obj, kind: &str, node: &Value, action: &str, values: &Map<String, Value>) -> Result<Acted, String> {
     let mut n = node.clone();
     let mut show = None;
     let mut notice = None;
+    let mut save = None;
+    let mut pick = None;
     let parts: Vec<&str> = action.split('.').collect();
     let idx = |p: &str| p.parse::<usize>().ok();
     match parts.as_slice() {
@@ -825,8 +952,72 @@ pub fn act(kind: &str, node: &Value, action: &str, values: &Map<String, Value>) 
             let title = p.get("name").map_or_else(|| "?".to_string(), crate::singbox::compile::py_str);
             show = Some((title, crate::wg::client_conf(&n["inbound"], p, &endpoint)));
         }
+        ["wgdev", "save", i] => {
+            let devs = peers(&n["inbound"]);
+            let Some(p) = idx(i).and_then(|i| devs.get(i)) else { return Err(String::new()) };
+            let endpoint = match s(&n["inbound"], "wg_endpoint") {
+                "" => crate::wg::local_lan_ip(),
+                e => e.to_string(),
+            };
+            // (Python `_wgi_save`: the device name with only letters, digits, - and _)
+            let name = p.get("name").map_or_else(String::new, crate::singbox::compile::py_str);
+            let safe: String = name.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+            let safe = if safe.is_empty() { "device".to_string() } else { safe };
+            save = Some((format!("{safe}.conf"), crate::wg::client_conf(&n["inbound"], p, &endpoint)));
+        }
+        ["wg", "import"] => {
+            let text = values.get("conf_text").and_then(Value::as_str).unwrap_or("");
+            let file = values.get("conf_name").and_then(Value::as_str).unwrap_or("");
+            match crate::wg::parse_conf(text.strip_prefix('\u{feff}').unwrap_or(text)) {
+                Ok((fields, notes)) => {
+                    for (k, v) in fields {
+                        n["outbound"][&k] = v;
+                    }
+                    // a new block still named after its type takes the file's name (Python `_wg_import`)
+                    let current = py_strip(s(&n, "name"));
+                    if current.is_empty() || current.starts_with(&graph::outbound_label("wireguard")) {
+                        let stem = std::path::Path::new(file).file_stem().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default();
+                        n["name"] = json!(crate::py::head(&stem, 60));
+                    }
+                    let text = if notes.is_empty() { file.to_string() } else { notes.join("\n") };
+                    notice = Some((true, tr("Imported"), text));
+                }
+                Err(e) => notice = Some((false, tr("Cannot import"), e)),
+            }
+        }
+        ["iface", "refresh"] => refresh_ifaces(),
+        ["rule", "cond", "add", i] => {
+            let Some(r) = idx(i).and_then(|i| n["rules"].get_mut(i)) else { return Err(String::new()) };
+            // (untouched, the list shows its first condition not in use)
+            let used = simple_conds(r);
+            let first_free = CONDS.iter().map(|c| c.0).chain(["ip_private"]).find(|c| !used.contains(c)).unwrap_or("");
+            let k = values.get(&format!("rules.{i}.cond_new")).and_then(Value::as_str).unwrap_or(first_free).to_string();
+            if k == "ip_private" {
+                r["match"]["ip_private"] = json!(true);
+            } else if CONDS.iter().any(|c| c.0 == k) {
+                // the rule's current rows stay shown even while empty
+                let rid = s(r, "id").to_string();
+                let current = simple_conds(r);
+                let mut shown = SHOWN.lock().unwrap();
+                for c in current {
+                    if !shown.contains(&(rid.clone(), c.to_string())) {
+                        shown.push((rid.clone(), c.to_string()));
+                    }
+                }
+                shown.push((rid, k));
+            }
+        }
+        ["rule", "cond", "del", i, k] => {
+            let Some(r) = idx(i).and_then(|i| n["rules"].get_mut(i)) else { return Err(String::new()) };
+            r["match"][*k] = if *k == "ip_private" { json!(false) } else { json!([]) };
+            let rid = s(r, "id").to_string();
+            SHOWN.lock().unwrap().retain(|(id, c)| !(*id == rid && c == k));
+        }
         ["member", "add"] => {
-            if let Some(m) = values.get("member_new").and_then(Value::as_str).filter(|m| !m.is_empty()) {
+            // (untouched, the list shows the first block it can add)
+            let first = addable_members(g, &n).first().map_or(String::new(), |a| a.0.clone());
+            if let Some(m) = values.get("member_new").and_then(Value::as_str).or(Some(first.as_str())).filter(|m| !m.is_empty()).map(String::from) {
+                let m = m.as_str();
                 let members = n["members"].as_array_mut().unwrap();
                 if !members.contains(&json!(m)) {
                     members.push(json!(m));
@@ -851,13 +1042,23 @@ pub fn act(kind: &str, node: &Value, action: &str, values: &Map<String, Value>) 
             notice = Some(paste_link(&mut n, values.get("clipboard").and_then(Value::as_str).unwrap_or("")));
         }
         ["rule", "add"] => {
-            let k = n["rules"].as_array().map_or(0, Vec::len) + 1;
-            n["rules"].as_array_mut().unwrap().push(json!({"id": crate::ids::new_id(), "name": tr("Rule {n}").replace("{n}", &k.to_string()), "match": {}, "target": null, "color": ""}));
+            // from the chosen template (Python `RouterSection.add_rule`): its target is the first block of its type
+            let k = n["rules"].as_array().map_or(0, Vec::len);
+            let pick_t = values.get("rule_template").and_then(Value::as_str).and_then(|t| t.parse::<usize>().ok()).unwrap_or(0);
+            let (_, name, m, target_type) = rule_templates().into_iter().nth(pick_t).unwrap_or_else(|| rule_templates().remove(0));
+            let target = target_type.and_then(|t| list(g, "outbounds").find(|x| x["outbound"]["type"] == json!(t))).map_or(Value::Null, |x| x["id"].clone());
+            let id = crate::ids::new_id();
+            if m.get("process_name").is_some() {
+                SHOWN.lock().unwrap().push((id.clone(), "process_name".into()));
+                pick = Some(format!("rules.{k}.match.process_name"));
+            }
+            let name = name.unwrap_or_else(|| tr("Rule {n}").replace("{n}", &(k + 1).to_string()));
+            n["rules"].as_array_mut().unwrap().push(json!({"id": id, "name": name, "match": m, "target": target, "color": ""}));
         }
         _ => return Err(String::new()),
     }
     let node = apply(kind, &n, &Map::new());
-    Ok(Acted { node, show, notice })
+    Ok(Acted { node, show, notice, save, pick })
 }
 
 /// The graph with node replaced (same id).
@@ -1074,34 +1275,67 @@ mod tests {
         let mut n = apply("inbound", &node(&g, "a"), &vals(&[("inbound.type", json!("wireguard")), ("inbound.port", json!("51820"))]));
         on_open("inbound", &mut n);
         assert!(crate::checks::valid_wg_key(n["inbound"]["wg_private_key"].as_str().unwrap()));
-        let n = act("inbound", &n, "wgdev.add", &vals(&[("wg_new_name", json!("phone"))])).unwrap().node;
-        let n = act("inbound", &n, "wgdev.add", &Map::new()).unwrap().node;
+        let n = act(&g, "inbound", &n, "wgdev.add", &vals(&[("wg_new_name", json!("phone"))])).unwrap().node;
+        let n = act(&g, "inbound", &n, "wgdev.add", &Map::new()).unwrap().node;
         let devs = peers(&n["inbound"]);
         assert_eq!((devs[0]["name"].as_str(), devs[0]["address"].as_str()), (Some("phone"), Some("10.66.0.2/32")));
         assert_eq!(devs[1]["address"], "10.66.0.3/32");
-        let conf = act("inbound", &n, "wgdev.conf.0", &Map::new()).unwrap().show.unwrap().1;
+        let conf = act(&g, "inbound", &n, "wgdev.conf.0", &Map::new()).unwrap().show.unwrap().1;
         assert!(conf.contains("Address = 10.66.0.2/32") && conf.contains(":51820") && conf.contains(&crate::wg::public_of(n["inbound"]["wg_private_key"].as_str().unwrap())));
         assert!(errors(&g, "inbound", &n).iter().all(|e| !e.contains("WireGuard")), "{:?}", errors(&g, "inbound", &n));
-        let n = act("inbound", &n, "wgdev.del.0", &Map::new()).unwrap().node;
+        let n = act(&g, "inbound", &n, "wgdev.del.0", &Map::new()).unwrap().node;
         assert_eq!(peers(&n["inbound"]).len(), 1);
         // 2022 key of the right length
         let ss = apply("inbound", &node(&g, "a"), &vals(&[("inbound.type", json!("shadowsocks")), ("inbound.ss_method", json!("2022-blake3-aes-128-gcm"))]));
-        let ss = act("inbound", &ss, "gen.inbound.ss_password", &Map::new()).unwrap().node;
+        let ss = act(&g, "inbound", &ss, "gen.inbound.ss_password", &Map::new()).unwrap().node;
         assert!(crate::checks::ss_key_error("2022-blake3-aes-128-gcm", ss["inbound"]["ss_password"].as_str().unwrap()).is_none());
         // group members: add, order, remove
-        let gn = act("outbound", &node(&g, "grp"), "member.add", &vals(&[("member_new", json!("v"))])).unwrap().node;
+        let gn = act(&g, "outbound", &node(&g, "grp"), "member.add", &vals(&[("member_new", json!("v"))])).unwrap().node;
         assert_eq!(gn["members"], json!(["d", "v"]));
-        let gn = act("outbound", &gn, "member.up.1", &Map::new()).unwrap().node;
+        let gn = act(&g, "outbound", &gn, "member.up.1", &Map::new()).unwrap().node;
         assert_eq!(gn["members"], json!(["v", "d"]));
         // rules: add, name, target, order, delete
-        let r = act("router", &node(&g, "r"), "rule.add", &Map::new()).unwrap().node;
+        let r = act(&g, "router", &node(&g, "r"), "rule.add", &Map::new()).unwrap().node;
         let r = apply("router", &r, &vals(&[("rules.1.match.domain_suffix", json!("ads.example")), ("rules.1.target", json!("v"))]));
-        let r = act("router", &r, "rule.up.1", &Map::new()).unwrap().node;
+        let r = act(&g, "router", &r, "rule.up.1", &Map::new()).unwrap().node;
         assert_eq!(r["rules"][0]["target"], "v");
         assert_eq!(r["rules"][0]["match"]["domain_suffix"], json!(["ads.example"]));
-        let r = act("router", &r, "rule.del.1", &Map::new()).unwrap().node;
+        let r = act(&g, "router", &r, "rule.del.1", &Map::new()).unwrap().node;
         assert_eq!(r["rules"].as_array().unwrap().len(), 1);
         assert!(errors(&g, "router", &r).is_empty(), "{:?}", errors(&g, "router", &r));
+    }
+
+    #[test]
+    fn rule_templates_simple_view_wg_files() {
+        let g = g();
+        // "Local network": private addresses to the first Direct block
+        let r = act(&g, "router", &node(&g, "r"), "rule.add", &vals(&[("rule_template", json!("3"))])).unwrap().node;
+        let last = r["rules"].as_array().unwrap().last().unwrap().clone();
+        assert_eq!((last["match"]["ip_private"].clone(), last["target"].clone()), (json!(true), json!("d")));
+        // "Programs...": the window is asked to open the picker; the simple view shows the program row
+        let n = r["rules"].as_array().unwrap().len();
+        let a = act(&g, "router", &r, "rule.add", &vals(&[("rule_template", json!("1"))])).unwrap();
+        assert_eq!(a.pick, Some(format!("rules.{n}.match.process_name")));
+        let has = |node: &Value, key: &str| router_form(&g, node).iter().any(|x| x.key == key);
+        assert!(has(&a.node, &format!("ui.pick.rules.{n}.match.process_name")));
+        // a condition added stays while empty, and goes again with its remove button
+        let b = act(&g, "router", &a.node, &format!("rule.cond.add.{n}"), &vals(&[(&format!("rules.{n}.cond_new"), json!("geoip"))])).unwrap().node;
+        assert!(has(&b, &format!("rules.{n}.match.geoip")) && has(&b, &format!("rules.{n}.match.process_name")));
+        let c = act(&g, "router", &b, &format!("rule.cond.del.{n}.geoip"), &Map::new()).unwrap().node;
+        assert!(!has(&c, &format!("rules.{n}.match.geoip")));
+        // a .conf fills a WireGuard outbound and names a new block after the file
+        let w = apply("outbound", &node(&g, "v"), &vals(&[("outbound.type", json!("wireguard")), ("name", json!(""))]));
+        let conf = "[Interface]\nPrivateKey = k\nAddress = 10.0.0.2/32\n[Peer]\nPublicKey = p\nEndpoint = vpn.example:51820\n";
+        let w = act(&g, "outbound", &w, "wg.import", &vals(&[("conf_text", json!(conf)), ("conf_name", json!("home-vpn.conf"))])).unwrap();
+        assert_eq!((w.node["outbound"]["host"].clone(), w.node["outbound"]["port"].clone(), w.node["name"].clone()), (json!("vpn.example"), json!(51820), json!("home-vpn")));
+        assert!(w.notice.unwrap().0);
+        // a server's device saved as a file, named after the device
+        let mut s = apply("inbound", &node(&g, "a"), &vals(&[("inbound.type", json!("wireguard"))]));
+        on_open("inbound", &mut s);
+        let s = act(&g, "inbound", &s, "wgdev.add", &vals(&[("wg_new_name", json!("my phone"))])).unwrap().node;
+        let saved = act(&g, "inbound", &s, "wgdev.save.0", &Map::new()).unwrap().save.unwrap();
+        assert_eq!(saved.0, "my_phone.conf");
+        assert!(saved.1.starts_with("[Interface]"));
     }
 
     #[test]

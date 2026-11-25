@@ -177,6 +177,103 @@ impl StopTimer for std::cell::RefCell<Option<slint::Timer>> {
     }
 }
 
+/// the window's HWND as a number (0 = none yet), the owner of the file dialogs
+fn owner_hwnd(w: &App) -> usize {
+    #[cfg(windows)]
+    {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        let slint_handle = w.window().window_handle();
+        if let Ok(handle) = slint_handle.window_handle() {
+            if let RawWindowHandle::Win32(h) = handle.as_raw() {
+                return h.hwnd.get() as usize;
+            }
+        }
+    }
+    let _ = w;
+    0
+}
+
+/// an editor field's text now: as typed, else as the core sent it
+fn field_text(app: &App, key: &str) -> String {
+    if let Some(v) = EDITOR.with(|e| e.borrow().values.get(key).cloned()) {
+        return v.as_str().map(String::from).unwrap_or_else(|| v.to_string());
+    }
+    app.get_form_fields().iter().find(|r| r.key == key).map(|r| r.text.to_string()).unwrap_or_default()
+}
+
+/// put a value into an editor field (a chosen file, programs) and ask the core for the form again
+fn preview_with(send: &dyn Fn(Value), key: &str, value: &str) {
+    let msg = EDITOR.with(|e| {
+        let mut e = e.borrow_mut();
+        e.values.insert(key.to_string(), json!(value));
+        json!({"cmd": "edit_preview", "id": e.id, "values": e.values})
+    });
+    send(msg);
+}
+
+/// the file types a "Browse" button offers, by its field
+fn browse_filter(key: &str) -> String {
+    if key.ends_with("tls_key") {
+        tr("Private keys (*.key *.pem);;All files (*)")
+    } else {
+        tr("Certificates (*.crt *.pem *.cer);;All files (*)")
+    }
+}
+
+#[derive(Default)]
+struct Picker {
+    /// the field the programs go into, the running programs, the chosen ones
+    key: String,
+    all: Vec<String>,
+    chosen: Vec<String>,
+}
+
+thread_local! {
+    static PICKER: std::cell::RefCell<Picker> = std::cell::RefCell::new(Picker::default());
+}
+
+fn split_list(text: &str) -> Vec<String> {
+    text.replace(';', ",").split(',').map(str::trim).filter(|x| !x.is_empty()).map(String::from).collect()
+}
+
+/// the program picker for field `key` (Python `ProgramPicker`): the programs running now, the ones already in
+/// the field checked
+fn open_picker(app: &App, key: &str) {
+    let have: Vec<String> = split_list(&field_text(app, key)).iter().map(|x| x.to_lowercase()).collect();
+    let all = proxydock_core::netinfo::running_programs();
+    let chosen = all.iter().filter(|n| have.contains(&n.to_lowercase())).cloned().collect();
+    PICKER.with(|p| *p.borrow_mut() = Picker { key: key.to_string(), all, chosen });
+    app.set_picker_search(SharedString::new());
+    picker_rows(app);
+    app.set_picker_open(true);
+}
+
+fn picker_rows(app: &App) {
+    let words = app.get_picker_search().trim().to_lowercase();
+    let rows: Vec<PickItem> = PICKER.with(|p| {
+        let p = p.borrow();
+        p.all.iter().filter(|n| words.is_empty() || n.to_lowercase().contains(&words)).map(|n| PickItem { name: n.into(), checked: p.chosen.contains(n) }).collect()
+    });
+    app.set_picker_items(ModelRc::new(VecModel::from(rows)));
+}
+
+/// the field with the chosen programs added (Python `add_programs`: the ones there stay, no doubles)
+fn picker_apply(app: &App, send: &dyn Fn(Value), extra: &[String]) {
+    let (key, chosen) = PICKER.with(|p| {
+        let p = p.borrow();
+        (p.key.clone(), p.chosen.clone())
+    });
+    let mut cur = split_list(&field_text(app, &key));
+    let mut low: Vec<String> = cur.iter().map(|x| x.to_lowercase()).collect();
+    for x in chosen.iter().chain(extra) {
+        if !low.contains(&x.to_lowercase()) {
+            low.push(x.to_lowercase());
+            cur.push(x.clone());
+        }
+    }
+    preview_with(send, &key, &cur.join(", "));
+}
+
 /// the native window exists (winit makes it after the event loop starts)
 fn has_native_window(w: &App) -> bool {
     use raw_window_handle::HasWindowHandle;
@@ -440,6 +537,8 @@ struct Editor {
     options: HashMap<String, Vec<String>>,
     rerender: std::collections::HashSet<String>,
     kinds: HashMap<String, String>,
+    /// a row's buttons' actions (an item's, or the buttons drawn on a field's row)
+    actions: HashMap<String, Vec<String>>,
 }
 
 thread_local! {
@@ -453,6 +552,7 @@ fn field_rows(fields: &[Value]) -> Vec<FieldRow> {
         e.options.clear();
         e.rerender.clear();
         e.kinds.clear();
+        e.actions.clear();
         fields
             .iter()
             .map(|f| {
@@ -477,6 +577,9 @@ fn field_rows(fields: &[Value]) -> Vec<FieldRow> {
                     e.rerender.insert(key.clone());
                 }
                 e.options.insert(key.clone(), opts.iter().map(|(v, _)| v.clone()).collect());
+                if kind == "item" {
+                    e.actions.insert(key.clone(), opts.iter().map(|(v, _)| v.clone()).collect());
+                }
                 e.kinds.insert(key.clone(), kind.clone());
                 FieldRow {
                     key: key.into(),
@@ -500,7 +603,36 @@ fn field_rows(fields: &[Value]) -> Vec<FieldRow> {
             .collect::<Vec<_>>()
     });
     mark_groups(&mut rows);
+    merge_buttons(&mut rows);
+    mark_groups(&mut rows);
     rows
+}
+
+/// A button that continues a field's card (Generate, Browse, Refresh, Add...) is drawn on that field's row,
+/// beside its box, instead of on a line of its own.
+fn merge_buttons(rows: &mut [FieldRow]) {
+    let shown: Vec<usize> = (0..rows.len()).filter(|&i| rows[i].visible).collect();
+    let mut target: Option<usize> = None;
+    let mut added: HashMap<usize, Vec<(String, String)>> = HashMap::new();
+    for &i in &shown {
+        let r = &rows[i];
+        if r.kind == "button" && r.joined {
+            if let Some(t) = target {
+                added.entry(t).or_default().push((r.key.to_string(), r.label.to_string()));
+                rows[i].visible = false;
+                continue;
+            }
+        }
+        target = matches!(r.kind.as_str(), "text" | "secret" | "int" | "choice" | "bool").then_some(i);
+    }
+    EDITOR.with(|e| {
+        let mut e = e.borrow_mut();
+        for (t, buttons) in added {
+            let key = rows[t].key.to_string();
+            e.actions.insert(key, buttons.iter().map(|(a, _)| a.clone()).collect());
+            rows[t].buttons = ModelRc::new(VecModel::from(buttons.into_iter().map(|(_, l)| SharedString::from(l)).collect::<Vec<_>>()));
+        }
+    });
 }
 
 /// The cards' places in their groups: the rows shown between headings make one group (its first and
@@ -512,7 +644,7 @@ fn mark_groups(rows: &mut [FieldRow]) {
     let joins: Vec<bool> = shown
         .iter()
         .enumerate()
-        .map(|(n, &i)| n > 0 && !heads[n] && !heads[n - 1] && (rows[i].label.is_empty() || rows[i].kind == "button"))
+        .map(|(n, &i)| n > 0 && !heads[n] && !heads[n - 1] && (rows[i].label.is_empty() || (rows[i].kind == "button" && rows[i].desc.is_empty())))
         .collect();
     for (n, &i) in shown.iter().enumerate() {
         let prev_head = n.checked_sub(1).map(|m| heads[m]);
@@ -1143,6 +1275,11 @@ fn labels(app: &App) {
     }
     app.set_t_copy(tr("Copy address/link for clients").into());
     app.set_t_search(tr("Search").into());
+    app.set_t_pick_title(tr("Choose programs").into());
+    app.set_t_pick_search(tr("Search running programs").into());
+    app.set_t_pick_file(tr("Choose a program file...").into());
+    app.set_t_pick_note(tr("Rules match the program's file name, so it does not need to be running now.").into());
+    app.set_t_add(tr("Add").into());
     // (the level groups' names: in the language set by now)
     let levels: Vec<SharedString> = level_filters().into_iter().map(|(n, _)| SharedString::from(n)).collect();
     app.set_log_levels(ModelRc::new(VecModel::from(levels)));
@@ -1437,11 +1574,49 @@ fn main() -> Result<(), slint::PlatformError> {
             send_s(msg);
         });
         let send_p = send.clone();
+        let weak_p = app.as_weak();
         app.on_form_pressed(move |key, i| {
+            // a plain button's key is its action; a row's button n has its action kept here
+            let action = if i < 0 { key.to_string() } else { EDITOR.with(|e| e.borrow().actions.get(key.as_str()).and_then(|o| o.get(i as usize)).cloned().unwrap_or_default()) };
+            // "ui.…": done here (a file dialog, the program picker), the result goes into the draft
+            if let Some(what) = action.strip_prefix("ui.") {
+                let Some(a) = weak_p.upgrade() else { return };
+                let owner = owner_hwnd(&a);
+                if let Some(field) = what.strip_prefix("pick.") {
+                    open_picker(&a, field);
+                } else if let Some(field) = what.strip_prefix("browse.") {
+                    let (field, send, weak) = (field.to_string(), send_p.clone(), weak_p.clone());
+                    let (title, filter) = (tr("Choose file"), browse_filter(&field));
+                    std::thread::spawn(move || {
+                        if let Some(path) = proxydock::filedlg::open(owner, &title, &filter) {
+                            let _ = weak.upgrade_in_event_loop(move |_| preview_with(&send, &field, &path.to_string_lossy()));
+                        }
+                    });
+                } else if what == "wg.import" {
+                    let (send, weak) = (send_p.clone(), weak_p.clone());
+                    let (title, filter) = (tr("Choose file"), tr("WireGuard config (*.conf);;All files (*)"));
+                    std::thread::spawn(move || {
+                        let Some(path) = proxydock::filedlg::open(owner, &title, &filter) else { return };
+                        let read = std::fs::read(&path).map(|b| String::from_utf8_lossy(&b).into_owned());
+                        let _ = weak.upgrade_in_event_loop(move |a| match read {
+                            Ok(text) => {
+                                let msg = EDITOR.with(|e| {
+                                    let e = e.borrow();
+                                    let mut values = e.values.clone();
+                                    values.insert("conf_text".into(), json!(text));
+                                    values.insert("conf_name".into(), json!(path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+                                    json!({"cmd": "edit_action", "id": e.id, "action": "wg.import", "values": values})
+                                });
+                                send(msg);
+                            }
+                            Err(err) => show_toast(&a, &format!("{}\n{err}", tr("Cannot import")), false, 6.0),
+                        });
+                    });
+                }
+                return;
+            }
             let msg = EDITOR.with(|e| {
                 let e = e.borrow();
-                // a plain button's key is its action; an item's button n has the action in its options
-                let action = if i < 0 { key.to_string() } else { e.options.get(key.as_str()).and_then(|o| o.get(i as usize)).cloned().unwrap_or_default() };
                 let mut values = e.values.clone();
                 if action == "link.paste" {
                     values.insert("clipboard".into(), json!(clipboard_text()));
@@ -1449,6 +1624,49 @@ fn main() -> Result<(), slint::PlatformError> {
                 json!({"cmd": "edit_action", "id": e.id, "action": action, "values": values})
             });
             send_p(msg);
+        });
+        let weak_f = app.as_weak();
+        app.on_picker_filter(move || {
+            if let Some(a) = weak_f.upgrade() {
+                picker_rows(&a);
+            }
+        });
+        let weak_t = app.as_weak();
+        app.on_picker_toggle(move |name| {
+            PICKER.with(|p| {
+                let mut p = p.borrow_mut();
+                let name = name.to_string();
+                if let Some(i) = p.chosen.iter().position(|n| *n == name) {
+                    p.chosen.remove(i);
+                } else {
+                    p.chosen.push(name);
+                }
+            });
+            if let Some(a) = weak_t.upgrade() {
+                picker_rows(&a);
+            }
+        });
+        let (send_d, weak_d) = (send.clone(), app.as_weak());
+        app.on_picker_done(move || {
+            if let Some(a) = weak_d.upgrade() {
+                picker_apply(&a, &send_d, &[]);
+            }
+        });
+        // "Choose a program file...": its file name is added and the picker closes
+        let (send_b, weak_b) = (send.clone(), app.as_weak());
+        app.on_picker_browse(move || {
+            let Some(a) = weak_b.upgrade() else { return };
+            let owner = owner_hwnd(&a);
+            let (send, weak) = (send_b.clone(), weak_b.clone());
+            let (title, filter) = (tr("Choose a program file..."), tr("Programs (*.exe);;All files (*)"));
+            std::thread::spawn(move || {
+                let Some(path) = proxydock::filedlg::open(owner, &title, &filter) else { return };
+                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let _ = weak.upgrade_in_event_loop(move |a| {
+                    a.set_picker_open(false);
+                    picker_apply(&a, &send, &[name]);
+                });
+            });
         });
         let send_c = send.clone();
         let weak = app.as_weak();
@@ -1842,6 +2060,21 @@ fn main() -> Result<(), slint::PlatformError> {
                                 }
                             });
                         }
+                        // a file to save (a WireGuard device's .conf): Windows' save dialog, then written
+                        "save_file" => {
+                            let (name, text) = (v["name"].as_str().unwrap_or("").to_string(), v["text"].as_str().unwrap_or("").to_string());
+                            let (owner, weak) = (owner_hwnd(&app), app.as_weak());
+                            std::thread::spawn(move || {
+                                let Some(path) = proxydock::filedlg::save(owner, &tr("Save .conf"), "WireGuard (*.conf)", &name) else { return };
+                                let result = std::fs::write(&path, text);
+                                let _ = weak.upgrade_in_event_loop(move |a| match result {
+                                    Ok(()) => show_toast(&a, &format!("{}\n{}", tr("Saved"), path.display()), true, 3.0),
+                                    Err(e) => show_toast(&a, &e.to_string(), false, 6.0),
+                                });
+                            });
+                        }
+                        "pick_programs" => open_picker(&app, v["key"].as_str().unwrap_or("")),
+                        "warn" => show_toast(&app, v["message"].as_str().unwrap_or(""), false, 6.0),
                         // text to hand to another program (a WireGuard device's config): onto the clipboard
                         "show_text" => {
                             if set_clipboard_text(v["text"].as_str().unwrap_or("")) {

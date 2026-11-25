@@ -1071,5 +1071,6 @@
  "The connection's way is lit on the canvas": "キャンバスにこの接続の経路を表示しました",
  "Waterfall": "ウォーターフォール",
  "Waiting": "応答待ち",
- "Response": "応答"
+ "Response": "応答",
+ "Public key": "公開鍵"
 }

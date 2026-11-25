@@ -3,5 +3,6 @@
 
 pub mod canvas;
 pub mod controller;
+pub mod filedlg;
 pub mod icon;
 pub mod ipc;

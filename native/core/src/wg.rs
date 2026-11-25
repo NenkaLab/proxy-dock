@@ -105,3 +105,99 @@ mod tests {
         (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
     }
 }
+
+/// Python `wgconf.parse_conf`: a WireGuard .conf (the kind VPN providers hand out) → (outbound fields, notes).
+/// Only the first [Peer] is used; DNS is not (ProxyDock is not a system VPN).
+pub fn parse_conf(text: &str) -> Result<(serde_json::Map<String, Value>, Vec<String>), String> {
+    use crate::i18n::tr;
+    use crate::py::strip;
+    use serde_json::json;
+    use std::collections::HashMap;
+    let mut section = String::new();
+    let mut iface: HashMap<String, String> = HashMap::new();
+    let mut peers: Vec<HashMap<String, String>> = vec![];
+    let add = |m: &mut HashMap<String, String>, k: String, v: &str| {
+        let joined = match m.get(&k) {
+            Some(old) => format!("{old}, {v}"),
+            None => v.to_string(),
+        };
+        m.insert(k, joined);
+    };
+    for raw in text.lines() {
+        let line = strip(raw.split('#').next().unwrap_or(""));
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            section = strip(&line[1..line.len() - 1]).to_lowercase();
+            if section == "peer" {
+                peers.push(HashMap::new());
+            }
+            continue;
+        }
+        let Some((k, v)) = line.split_once('=') else { continue };
+        let (k, v) = (strip(k).to_lowercase(), strip(v));
+        if section == "interface" {
+            add(&mut iface, k, v);
+        } else if section == "peer" {
+            if let Some(p) = peers.last_mut() {
+                add(p, k, v);
+            }
+        }
+    }
+    let usable = iface.contains_key("privatekey") && peers.first().is_some_and(|p| p.contains_key("publickey") && p.contains_key("endpoint"));
+    if !usable {
+        return Err(tr("Not a WireGuard client config (needs [Interface] PrivateKey and a [Peer] with PublicKey and Endpoint)"));
+    }
+    let peer = &peers[0];
+    let ep = peer["endpoint"].as_str();
+    let (host, port) = match ep.strip_prefix('[') {
+        Some(rest) => rest.split_once("]:").unwrap_or((rest, "")),
+        None => ep.rsplit_once(':').unwrap_or(("", ep)),
+    };
+    let digits = |t: &str| !t.is_empty() && t.chars().all(|c| c.is_ascii_digit());
+    if host.is_empty() || !digits(port) {
+        return Err(tr("Cannot read the Endpoint '{value}'").replace("{value}", ep));
+    }
+    let get = |m: &HashMap<String, String>, k: &str| m.get(k).cloned().unwrap_or_default();
+    let num = |t: String, default: i64| if digits(&t) { t.parse::<i64>().unwrap_or(default) } else { default };
+    let mut out = serde_json::Map::new();
+    out.insert("type".into(), json!("wireguard"));
+    out.insert("host".into(), json!(host));
+    out.insert("port".into(), json!(port.parse::<i64>().unwrap_or(0)));
+    out.insert("wg_private_key".into(), json!(iface["privatekey"]));
+    out.insert("wg_address".into(), json!(get(&iface, "address")));
+    out.insert("wg_peer_public_key".into(), json!(peer["publickey"]));
+    out.insert("wg_preshared_key".into(), json!(get(peer, "presharedkey")));
+    out.insert("wg_allowed_ips".into(), json!(peer.get("allowedips").cloned().unwrap_or_else(|| "0.0.0.0/0, ::/0".into())));
+    out.insert("wg_mtu".into(), json!(num(get(&iface, "mtu"), 1408)));
+    out.insert("wg_keepalive".into(), json!(num(get(peer, "persistentkeepalive"), 0)));
+    let mut notes = vec![];
+    if peers.len() > 1 {
+        notes.push(tr("The file has {count} peers; only the first is used").replace("{count}", &peers.len().to_string()));
+    }
+    if !get(&iface, "dns").is_empty() {
+        notes.push(tr("DNS from the file is not used (domains are resolved by ProxyDock)"));
+    }
+    Ok((out, notes))
+}
+
+#[cfg(test)]
+mod conf_tests {
+    use super::parse_conf;
+
+    #[test]
+    fn reads_a_provider_conf() {
+        let text = "[Interface]\nPrivateKey = aaa=\nAddress = 10.2.0.2/32\nAddress = fd00::2/128\nDNS = 10.2.0.1\nMTU = 1380\n\n[Peer]\nPublicKey = bbb=\nAllowedIPs = 0.0.0.0/0 # all\nEndpoint = [2001:db8::1]:51820\nPersistentKeepalive = 25\n[Peer]\nPublicKey = c\nEndpoint = h:1\n";
+        let (ob, notes) = parse_conf(text).unwrap();
+        assert_eq!(ob["host"], "2001:db8::1");
+        assert_eq!(ob["port"], 51820);
+        assert_eq!(ob["wg_address"], "10.2.0.2/32, fd00::2/128");
+        assert_eq!(ob["wg_mtu"], 1380);
+        assert_eq!(ob["wg_keepalive"], 25);
+        assert_eq!(ob["wg_allowed_ips"], "0.0.0.0/0");
+        assert_eq!(notes.len(), 2);
+        assert!(parse_conf("[Interface]\nPrivateKey = x\n").is_err());
+        assert!(parse_conf("[Interface]\nPrivateKey = x\n[Peer]\nPublicKey = y\nEndpoint = host\n").is_err());
+    }
+}

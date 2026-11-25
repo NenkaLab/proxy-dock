@@ -1071,5 +1071,6 @@
  "The connection's way is lit on the canvas": "已在畫布上標出此連線的路徑",
  "Waterfall": "瀑布圖",
  "Waiting": "等待回應",
- "Response": "回應"
+ "Response": "回應",
+ "Public key": "公鑰"
 }
