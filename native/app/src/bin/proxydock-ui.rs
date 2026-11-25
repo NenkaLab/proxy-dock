@@ -588,6 +588,43 @@ fn show_toast(app: &App, text: &str, info: bool, secs: f32) {
     });
 }
 
+/// puts `text` on the clipboard; false if it could not
+fn set_clipboard_text(text: &str) -> bool {
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
+        use windows_sys::Win32::Foundation::GlobalFree;
+        use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+        const CF_UNICODETEXT: u32 = 13;
+        let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+        if OpenClipboard(std::ptr::null_mut()) == 0 {
+            return false;
+        }
+        EmptyClipboard();
+        let h = GlobalAlloc(GMEM_MOVEABLE, wide.len() * 2);
+        let mut ok = false;
+        if !h.is_null() {
+            let p = GlobalLock(h) as *mut u16;
+            if !p.is_null() {
+                std::ptr::copy_nonoverlapping(wide.as_ptr(), p, wide.len());
+                GlobalUnlock(h);
+                // the clipboard owns the memory once it takes it
+                ok = !SetClipboardData(CF_UNICODETEXT, h).is_null();
+            }
+            if !ok {
+                GlobalFree(h);
+            }
+        }
+        CloseClipboard();
+        ok
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = text;
+        false
+    }
+}
+
 /// the text on the clipboard ("" if there is none)
 fn clipboard_text() -> String {
     #[cfg(windows)]
@@ -1436,9 +1473,13 @@ fn main() -> Result<(), slint::PlatformError> {
                                 }
                             });
                         }
+                        // text to hand to another program (a WireGuard device's config): onto the clipboard
                         "show_text" => {
-                            app.set_popup_title(v["title"].as_str().unwrap_or("").into());
-                            app.set_popup_text(v["text"].as_str().unwrap_or("").into());
+                            if set_clipboard_text(v["text"].as_str().unwrap_or("")) {
+                                show_toast(&app, &tr("Copied"), true, 2.5);
+                            } else {
+                                show_toast(&app, &tr("Cannot use the clipboard"), false, 5.0);
+                            }
                         }
                         "form_errors" => {
                             let errs: Vec<SharedString> = v["errors"].as_array().into_iter().flatten().filter_map(Value::as_str).map(SharedString::from).collect();

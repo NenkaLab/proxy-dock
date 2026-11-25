@@ -1,6 +1,6 @@
 // ProxyDock window (proxydock-ui.exe): Material 3 Expressive on Slint's "material" style (build.rs), same look as
 // the prototype. Pages so far: the proxy cards and the log; everything comes from the core process over ipc.
-import { ListView, Palette, ScrollView, TextEdit } from "std-widgets.slint";
+import { ListView, Palette, ScrollView } from "std-widgets.slint";
 import {
     NodeEditor, BaseNode, Pin, PinTypes, NodeEditorEvents, NodeEditorInternalCallbacks, NodeEditorComputations, LinkData,
 } from "@nodeeditor";
@@ -208,7 +208,7 @@ component ProxyNode inherits BaseNode {
         }
         Text {
             x: root.state != "" ? 30px : 20px; y: 12px;
-            width: root.node-width - self.x - (root.state != "" ? 76px : root.kind <= 2 ? 44px : 14px);
+            width: root.node-width - self.x - (root.state != "" ? 76px : root.kind <= 3 ? 44px : 14px);
             text: root.title;
             font-size: 15px * Type.scale;
             font-weight: 700;
@@ -253,8 +253,8 @@ component ProxyNode inherits BaseNode {
             font-weight: 600;
             color: root.on-container;
         }
-        // the editor (blocks that have settings)
-        if root.kind <= 2: Rectangle {
+        // the editor (blocks that have settings: all but the PC block)
+        if root.kind <= 3: Rectangle {
             x: root.node-width - (root.state != "" ? 70px : 38px); y: 8px;
             width: 30px; height: 30px; border-radius: 15px;
             background: edit-ta.has-hover ? root.on-container.with-alpha(0.14) : transparent;
@@ -2672,8 +2672,6 @@ export component App inherits Window {
     callback form-save();
     callback form-pressed(string, int);
     // text to read or copy (a WireGuard device's config)
-    in-out property <string> popup-title;
-    in-out property <string> popup-text;
     in property <string> t-close: "Close";
     callback form-cancel();
     callback delete-selected();
@@ -2697,8 +2695,6 @@ export component App inherits Window {
     in property <string> t-conn: "Connection test";
     in property <string> t-stop-all: "Stop all proxies";
     in property <string> t-empty: "No proxies yet.";
-    in property <bool> connected: true;
-    in property <string> t-disconnected: "";
     out property <bool> dark: M3.dark;
     out property <color> caption-color: M3.surface-container;
     out property <color> caption-text: M3.on-surface;
@@ -2827,17 +2823,6 @@ export component App inherits Window {
             VerticalLayout {
                 padding: 24px;
                 spacing: 12px;
-                if !root.connected: Rectangle {
-                    height: 40px;
-                    border-radius: 12px;
-                    background: M3.error-container;
-                    Text {
-                        text: root.t-disconnected;
-                        color: M3.on-error-container;
-                        vertical-alignment: center;
-                        horizontal-alignment: center;
-                    }
-                }
                 // both pages stay (the log keeps its scroll position); the hidden one is not drawn
                 Rectangle {
                     // canvas: edge to edge in the page container
@@ -3444,38 +3429,6 @@ export component App inherits Window {
                                 root.rename-apply(root.rename-text);
                             }
                         }
-                    }
-                }
-            }
-        }
-    }
-    if root.popup-text != "": Rectangle {
-        background: #00000080;
-        TouchArea { }
-        Rectangle {
-            width: min(parent.width - 80px, 640px);
-            height: min(parent.height - 80px, 480px);
-            border-radius: 28px;
-            background: M3.surface-container-high;
-            VerticalLayout {
-                padding: 24px;
-                spacing: 12px;
-                Text {
-                    text: root.popup-title;
-                    font-size: 20px * Type.scale;
-                    font-weight: 700;
-                    color: M3.on-surface;
-                }
-                TextEdit {
-                    text: root.popup-text;
-                    read-only: true;
-                    font-size: 13px * Type.scale;
-                }
-                HorizontalLayout {
-                    alignment: end;
-                    AppButton {
-                        text: root.t-close;
-                        clicked => { root.popup-text = ""; }
                     }
                 }
             }

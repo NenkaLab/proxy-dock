@@ -107,6 +107,52 @@ fn quit() {
 
 /// a thread message: quit the app (sent by the controller)
 const WM_QUIT_APP: u32 = 0x8000 + 1;
+/// a thread message: open the window (wparam: the page), from a second start
+const WM_SHOW_UI: u32 = 0x8000 + 2;
+/// named events a second start sets (the window / the log page)
+const SHOW_EVENTS: [&str; 2] = ["Local\\ProxyDockRustShow", "Local\\ProxyDockRustShowLogs"];
+
+/// A second start: ask the running ProxyDock to show its window (the log page with --logs), then end
+fn wake_first_instance(logs: bool) {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenEventW, SetEvent, EVENT_MODIFY_STATE};
+    let name: Vec<u16> = SHOW_EVENTS[logs as usize].encode_utf16().chain(Some(0)).collect();
+    unsafe {
+        let h = OpenEventW(EVENT_MODIFY_STATE, 0, name.as_ptr());
+        if !h.is_null() {
+            SetEvent(h);
+            CloseHandle(h);
+        }
+    }
+}
+
+/// The first start: a thread waits for a second start's request and passes it to the tray's thread
+fn listen_for_second_start(main_thread: u32) {
+    use windows_sys::Win32::System::Threading::{CreateEventW, WaitForMultipleObjects, INFINITE};
+    let handles: Vec<_> = SHOW_EVENTS
+        .iter()
+        .map(|n| {
+            let name: Vec<u16> = n.encode_utf16().chain(Some(0)).collect();
+            unsafe { CreateEventW(std::ptr::null(), 0, 0, name.as_ptr()) }
+        })
+        .collect();
+    if handles.iter().any(|h| h.is_null()) {
+        return;
+    }
+    let handles: Vec<usize> = handles.into_iter().map(|h| h as usize).collect();
+    std::thread::spawn(move || {
+        let hs: Vec<windows_sys::Win32::Foundation::HANDLE> = handles.iter().map(|h| *h as _).collect();
+        loop {
+            let r = unsafe { WaitForMultipleObjects(hs.len() as u32, hs.as_ptr(), 0, INFINITE) };
+            if (r as usize) >= hs.len() {
+                return;
+            }
+            // the window, or the log page (page 2)
+            let page = if r == 1 { 2 } else { 0 };
+            unsafe { windows_sys::Win32::UI::WindowsAndMessaging::PostThreadMessageW(main_thread, WM_SHOW_UI, page, 0) };
+        }
+    });
+}
 
 const ID_OPEN: u32 = 1;
 const ID_LOG: u32 = 2;
@@ -254,6 +300,7 @@ fn run_tray(show_at_start: Option<u32>, note: Option<String>) {
         core.warn(&n);
     }
     let _ = CORE.set(core);
+    listen_for_second_start(main_thread);
 
     let _tray = TrayIconBuilder::new()
         .with_tooltip("ProxyDock")
@@ -284,6 +331,10 @@ fn run_tray(show_at_start: Option<u32>, note: Option<String>) {
                 quit();
                 continue;
             }
+            if msg.hwnd.is_null() && msg.message == WM_SHOW_UI {
+                open_ui(msg.wParam as u32);
+                continue;
+            }
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
@@ -295,7 +346,11 @@ fn main() {
     if args.first().map(String::as_str) == Some(proxydock_core::singbox::helper::ARG) {
         std::process::exit(proxydock_core::singbox::helper::main(&args[1..]));
     }
-    let Some(mutex) = first_instance() else { return };
+    let Some(mutex) = first_instance() else {
+        // already running: show its window instead (Python `_on_second_instance`)
+        wake_first_instance(args.iter().any(|a| a == "--logs"));
+        return;
+    };
     let note = match relaunch_elevated(&args, mutex) {
         Ok(true) => return,
         Ok(false) => None,
