@@ -3,4 +3,5 @@
 
 pub mod canvas;
 pub mod controller;
+pub mod icon;
 pub mod ipc;

@@ -42,44 +42,6 @@ fn tray_message(text: &str) {
     unsafe { Shell_NotifyIconW(NIM_MODIFY, &nid) };
 }
 
-/// 32x32 RGBA of the app icon (icon.svg at the project root: a blue square, three bars on a dock),
-/// drawn with anti-aliasing
-fn icon_rgba() -> Vec<u8> {
-    use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Rect, Transform};
-    const SIZE: u32 = 32;
-    // icon.svg is 163 units wide
-    let k = SIZE as f32 / 163.0;
-    let rounded = |x: f32, y: f32, w: f32, h: f32, r: f32| {
-        // a rounded rectangle (cubic corners)
-        let c = r * 0.552_284_8;
-        let mut pb = PathBuilder::new();
-        pb.move_to(x + r, y);
-        pb.line_to(x + w - r, y);
-        pb.cubic_to(x + w - r + c, y, x + w, y + r - c, x + w, y + r);
-        pb.line_to(x + w, y + h - r);
-        pb.cubic_to(x + w, y + h - r + c, x + w - r + c, y + h, x + w - r, y + h);
-        pb.line_to(x + r, y + h);
-        pb.cubic_to(x + r - c, y + h, x, y + h - r + c, x, y + h - r);
-        pb.line_to(x, y + r);
-        pb.cubic_to(x, y + r - c, x + r - c, y, x + r, y);
-        pb.close();
-        pb.finish()
-    };
-    let mut pm = Pixmap::new(SIZE, SIZE).unwrap();
-    let mut paint = Paint::default();
-    paint.anti_alias = true;
-    paint.set_color_rgba8(0x00, 0x78, 0xD4, 255);
-    pm.fill_rect(Rect::from_xywh(0.0, 0.0, SIZE as f32, SIZE as f32).unwrap(), &paint, Transform::identity(), None);
-    paint.set_color_rgba8(0xD9, 0xD9, 0xD9, 255);
-    for (x, y, w, h) in [(24.0, 106.0, 116.0, 20.0), (104.0, 65.0, 20.0, 35.0), (72.0, 49.0, 20.0, 51.0), (40.0, 37.0, 20.0, 63.0)] {
-        if let Some(path) = rounded(x * k, y * k, w * k, h * k, 6.0 * k) {
-            pm.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
-        }
-    }
-    // (every pixel is opaque: premultiplied and straight alpha are the same)
-    pm.take()
-}
-
 /// Bring the first visible top-level window of process `pid` to the front. True if one was found.
 fn focus_process_window(pid: u32) -> bool {
     use windows_sys::Win32::{Foundation::*, UI::WindowsAndMessaging::*};
@@ -295,7 +257,7 @@ fn run_tray(show_at_start: Option<u32>, note: Option<String>) {
 
     let _tray = TrayIconBuilder::new()
         .with_tooltip("ProxyDock")
-        .with_icon(Icon::from_rgba(icon_rgba(), 32, 32).unwrap())
+        .with_icon(Icon::from_rgba(proxydock::icon::rgba(32), 32, 32).unwrap())
         .build()
         .unwrap();
     TRAY_HWND.store(_tray.window_handle() as usize, std::sync::atomic::Ordering::Relaxed);

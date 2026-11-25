@@ -39,6 +39,10 @@ windows-sys = { version = "0.61", features = [
 [build-dependencies]
 slint-build = { version = "1.19", features = ["experimental-module-builds"] }
 
+[target.'cfg(windows)'.build-dependencies]
+# the exe files' icon (app.rc)
+embed-resource = "3"
+
 [dev-dependencies]
 base64 = "0.22"
 rcgen = "0.14"
