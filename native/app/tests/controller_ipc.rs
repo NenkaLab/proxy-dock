@@ -821,3 +821,51 @@ fn pc_block_and_start_at_login() {
         windows_sys::Win32::System::Registry::RegDeleteTreeW(windows_sys::Win32::System::Registry::HKEY_CURRENT_USER, w.as_ptr());
     }
 }
+
+#[test]
+fn tray_switches_and_group_members() {
+    let _serial = serial();
+    let home = std::env::temp_dir().join(format!("proxydock-quick-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let settings = json!({
+        "version": 3,
+        "graph": {
+            "inbounds": [{"id": "c", "name": "card", "inbound": {"type": "socks5", "host": "127.0.0.1", "port": free_port()}, "target": "k"}],
+            "routers": [{"id": "k", "name": "Kill", "style": "if", "switch": true, "switch_on": false, "rules": [{"name": "then", "match": {}, "target": "g"}], "default": "d1"}],
+            "outbounds": [
+                {"id": "d1", "name": "One", "outbound": {"type": "direct"}},
+                {"id": "d2", "name": "Two", "outbound": {"type": "direct"}},
+                {"id": "g", "name": "Pick", "outbound": {"type": "group", "group_mode": "select"}, "members": ["d1", "d2"]},
+            ],
+        },
+    });
+    let path = home.join("config.json");
+    std::fs::write(&path, settings.to_string()).unwrap();
+    let h = controller::spawn(path.clone()).unwrap();
+    let until = Instant::now() + Duration::from_secs(5);
+    while h.quick().switches.is_empty() && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let q = h.quick();
+    assert_eq!(q.switches, vec![("k".to_string(), "Kill".to_string(), false)]);
+    assert_eq!(q.groups.len(), 1);
+    assert_eq!((q.groups[0].1.as_str(), q.groups[0].2.len(), q.groups[0].3.as_str()), ("Pick", 2, "d1"));
+
+    // from the tray: the switch on, the other member
+    h.tray(json!({"cmd": "set_switch", "id": "k", "on": true}));
+    h.tray(json!({"cmd": "select_member", "group": "g", "member": "d2"}));
+    let until = Instant::now() + Duration::from_secs(5);
+    while (h.quick().switches.first().map(|s| s.2) != Some(true) || h.quick().groups[0].3 != "d2") && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let g = saved(&path)["graph"].clone();
+    assert_eq!(g["routers"][0]["switch_on"], json!(true));
+    assert_eq!(g["outbounds"][2]["outbound"]["group_selected"], json!("d2"));
+    // not a member: nothing changes
+    h.tray(json!({"cmd": "select_member", "group": "g", "member": "c"}));
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(saved(&path)["graph"]["outbounds"][2]["outbound"]["group_selected"], json!("d2"));
+    h.quit(Duration::from_secs(10));
+    let _ = std::fs::remove_dir_all(&home);
+}

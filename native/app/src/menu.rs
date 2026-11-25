@@ -17,11 +17,27 @@ use windows_sys::Win32::{
 
 pub enum Entry {
     Item { label: String, id: u32 },
+    /// a small caption over the choices that follow (not clickable)
+    Header { label: String },
+    /// one of several choices; `on` gets a check mark
+    Choice { label: String, id: u32, on: bool },
     Divider,
+}
+
+impl Entry {
+    fn id(&self) -> Option<u32> {
+        match self {
+            Entry::Item { id, .. } | Entry::Choice { id, .. } => Some(*id),
+            _ => None,
+        }
+    }
 }
 
 // sizes in logical px (scaled by the monitor DPI)
 const WIDTH: f32 = 208.0;
+/// at most this wide, however long a label is
+const MAX_WIDTH: f32 = 420.0;
+const HEADER_H: f32 = 30.0;
 const ITEM_H: f32 = 40.0;
 const DIVIDER_H: f32 = 9.0;
 const PAD: f32 = 6.0; // above the first / below the last entry
@@ -37,6 +53,8 @@ struct State {
     scale: f32,
     dark: bool,
     font: FontVec,
+    /// the menu surface's width (physical px)
+    width: f32,
     on_pick: Box<dyn Fn(u32)>,
     size: (i32, i32),
     tracking: bool,
@@ -89,7 +107,8 @@ fn layout(entries: &[Entry], s: f32) -> Vec<(f32, f32)> {
         .iter()
         .map(|e| {
             let h = match e {
-                Entry::Item { .. } => ITEM_H * s,
+                Entry::Item { .. } | Entry::Choice { .. } => ITEM_H * s,
+                Entry::Header { .. } => HEADER_H * s,
                 Entry::Divider => DIVIDER_H * s,
             };
             let r = (y, h);
@@ -99,9 +118,27 @@ fn layout(entries: &[Entry], s: f32) -> Vec<(f32, f32)> {
         .collect()
 }
 
-fn surface_size(entries: &[Entry], s: f32) -> (f32, f32) {
+fn surface_size(entries: &[Entry], s: f32, width: f32) -> (f32, f32) {
     let h: f32 = layout(entries, s).iter().map(|(_, h)| h).sum::<f32>() + PAD * 2.0 * s;
-    (WIDTH * s, h)
+    (width, h)
+}
+
+fn text_width(font: &FontVec, text: &str, px: f32) -> f32 {
+    let sf = font.as_scaled(PxScale::from(px));
+    text.chars().map(|c| sf.h_advance(font.glyph_id(c))).sum()
+}
+
+/// wide enough for the longest label (choices are indented), between WIDTH and MAX_WIDTH
+fn menu_width(font: &FontVec, entries: &[Entry], s: f32) -> f32 {
+    let need = entries
+        .iter()
+        .map(|e| match e {
+            Entry::Item { label, .. } | Entry::Header { label } => text_width(font, label, FONT_PX * s) + 40.0 * s,
+            Entry::Choice { label, .. } => text_width(font, label, FONT_PX * s) + 64.0 * s,
+            Entry::Divider => 0.0,
+        })
+        .fold(WIDTH * s, f32::max);
+    need.min(MAX_WIDTH * s).ceil()
 }
 
 fn rrect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<Path> {
@@ -168,7 +205,7 @@ fn render(st: &State) {
     let s = st.scale;
     let (w, h) = st.size;
     let Some(mut pm) = Pixmap::new(w as u32, h as u32) else { return };
-    let (sw, sh) = surface_size(&st.entries, s);
+    let (sw, sh) = surface_size(&st.entries, s, st.width);
     let (ox, oy) = (SHADOW * s, SHADOW * s);
 
     // M3 roles for the blue seed (same as the UI): surface-container, on-surface, outline-variant
@@ -210,6 +247,35 @@ fn render(st: &State) {
                     );
                 }
                 draw_text(&mut pm, &st.font, label, ox + 20.0 * s, oy + top + eh / 2.0, FONT_PX * s, on_surface);
+            }
+            Entry::Header { label } => {
+                let muted = if st.dark { (0xc3, 0xc7, 0xcf) } else { (0x43, 0x47, 0x4e) };
+                draw_text(&mut pm, &st.font, label, ox + 20.0 * s, oy + top + eh / 2.0 + 2.0 * s, 12.0 * s, muted);
+            }
+            Entry::Choice { label, on, .. } => {
+                if st.hover == Some(idx) {
+                    fill(
+                        &mut pm,
+                        rrect(ox + 6.0 * s, oy + top + 2.0 * s, sw - 12.0 * s, eh - 4.0 * s, (eh - 4.0 * s) / 2.0),
+                        (on_surface.0, on_surface.1, on_surface.2, 26),
+                    );
+                }
+                if *on {
+                    // a check mark (drawn: the menu's font may not have one)
+                    let (cx, cy) = (ox + 26.0 * s, oy + top + eh / 2.0);
+                    let mut pb = PathBuilder::new();
+                    pb.move_to(cx - 5.0 * s, cy);
+                    pb.line_to(cx - 1.5 * s, cy + 3.5 * s);
+                    pb.line_to(cx + 5.5 * s, cy - 4.0 * s);
+                    if let Some(path) = pb.finish() {
+                        let mut paint = Paint::default();
+                        paint.set_color(Color::from_rgba8(on_surface.0, on_surface.1, on_surface.2, 255));
+                        paint.anti_alias = true;
+                        let stroke = tiny_skia::Stroke { width: 2.0 * s, line_cap: tiny_skia::LineCap::Round, line_join: tiny_skia::LineJoin::Round, ..Default::default() };
+                        pm.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+                    }
+                }
+                draw_text(&mut pm, &st.font, label, ox + 44.0 * s, oy + top + eh / 2.0, FONT_PX * s, on_surface);
             }
         }
     }
@@ -260,7 +326,7 @@ fn hit(st: &State, y_px: i32) -> Option<usize> {
     layout(&st.entries, st.scale)
         .iter()
         .position(|&(top, h)| y >= top && y < top + h)
-        .filter(|&i| matches!(st.entries[i], Entry::Item { .. }))
+        .filter(|&i| st.entries[i].id().is_some())
 }
 
 fn close() {
@@ -274,8 +340,8 @@ fn pick(index: usize) {
     let st = MENU.with(|m| m.try_borrow_mut().ok().and_then(|mut m| m.take()));
     if let Some(st) = st {
         unsafe { DestroyWindow(st.hwnd) };
-        if let Some(Entry::Item { id, .. }) = st.entries.get(index) {
-            (st.on_pick)(*id);
+        if let Some(id) = st.entries.get(index).and_then(Entry::id) {
+            (st.on_pick)(id);
         }
     }
 }
@@ -295,7 +361,7 @@ fn move_hover(st: &mut State, step: i32) {
     let mut i = st.hover.map(|h| h as i32).unwrap_or(if step > 0 { -1 } else { n });
     for _ in 0..n {
         i = (i + step).rem_euclid(n);
-        if matches!(st.entries[i as usize], Entry::Item { .. }) {
+        if st.entries[i as usize].id().is_some() {
             st.hover = Some(i as usize);
             return;
         }
@@ -420,7 +486,8 @@ pub fn show(x: i32, y: i32, entries: Vec<Entry>, on_pick: impl Fn(u32) + 'static
             return;
         }
         let scale = GetDpiForWindow(hwnd).max(96) as f32 / 96.0;
-        let (sw, sh) = surface_size(&entries, scale);
+        let width = menu_width(&font, &entries, scale);
+        let (sw, sh) = surface_size(&entries, scale, width);
         let margin = SHADOW * scale;
         let (w, h) = ((sw + margin * 2.0).ceil() as i32, (sh + margin * 2.0).ceil() as i32);
 
@@ -449,6 +516,7 @@ pub fn show(x: i32, y: i32, entries: Vec<Entry>, on_pick: impl Fn(u32) + 'static
             scale,
             dark: apps_dark(),
             font,
+            width,
             on_pick: Box::new(on_pick),
             size: (w, h),
             tracking: false,

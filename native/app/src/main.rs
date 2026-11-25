@@ -146,6 +146,8 @@ const ID_PC_OFF: u32 = 5;
 const ID_STARTUP: u32 = 6;
 const ID_STARTUP_HIDDEN: u32 = 7;
 const ID_CARD: u32 = 100;
+/// the IF switches' and groups' choices
+const ID_QUICK: u32 = 1000;
 /// as many cards as the Python tray lists
 const MENU_CARDS: usize = 15;
 
@@ -171,6 +173,24 @@ fn show_menu(x: i32, y: i32) {
         entries.push(Entry::Item { label: tr("Stop all proxies"), id: ID_STOP_ALL });
     }
     // quick controls without the window (Python `_tray_quick_actions`, the startup items)
+    let quick = core.quick();
+    let mut actions: Vec<serde_json::Value> = vec![];
+    for (id, name, on) in &quick.switches {
+        entries.push(Entry::Divider);
+        entries.push(Entry::Header { label: tr("{name}: switch {state}").replace("{name}", name).replace("{state}", &tr(if *on { "Switched on" } else { "Switched off" })) });
+        for state in [true, false] {
+            entries.push(Entry::Choice { label: tr(if state { "On" } else { "Off" }), id: ID_QUICK + actions.len() as u32, on: *on == state });
+            actions.push(serde_json::json!({"cmd": "set_switch", "id": id, "on": state}));
+        }
+    }
+    for (gid, name, members, cur) in &quick.groups {
+        entries.push(Entry::Divider);
+        entries.push(Entry::Header { label: tr("{name}: use member").replace("{name}", name) });
+        for (mid, mname) in members {
+            entries.push(Entry::Choice { label: mname.clone(), id: ID_QUICK + actions.len() as u32, on: mid == cur });
+            actions.push(serde_json::json!({"cmd": "select_member", "group": gid, "member": mid}));
+        }
+    }
     if let Some(name) = core.pc_card() {
         entries.push(Entry::Divider);
         entries.push(Entry::Item { label: tr("PC proxy: {name} - turn off").replace("{name}", &name), id: ID_PC_OFF });
@@ -192,6 +212,11 @@ fn show_menu(x: i32, y: i32) {
         ID_PC_OFF => core.tray(serde_json::json!({"cmd": "pc_off"})),
         ID_STARTUP => core.tray(serde_json::json!({"cmd": "startup", "on": !registered})),
         ID_STARTUP_HIDDEN => core.tray(serde_json::json!({"cmd": "startup_hidden", "on": !hidden})),
+        id if id >= ID_QUICK => {
+            if let Some(a) = actions.get((id - ID_QUICK) as usize) {
+                core.tray(a.clone());
+            }
+        }
         id if id >= ID_CARD => {
             if let Some(c) = cards.get((id - ID_CARD) as usize) {
                 core.toggle(&c.id);

@@ -84,6 +84,15 @@ fn busy_label(action: &str) -> &'static str {
     }
 }
 
+/// What the tray menu can change without the window (Python `_tray_quick_actions`)
+#[derive(Clone, Debug, Default)]
+pub struct Quick {
+    /// IF blocks in switch mode: (id, name, on)
+    pub switches: Vec<(String, String, bool)>,
+    /// groups that use the member picked by hand: (id, name, [(member id, name)], the member in use)
+    pub groups: Vec<(String, String, Vec<(String, String)>, String)>,
+}
+
 /// a card as the tray menu shows it
 #[derive(Clone, Debug)]
 pub struct CardInfo {
@@ -102,6 +111,7 @@ pub struct Handle {
     cards: Arc<Mutex<Vec<CardInfo>>>,
     glob: Arc<Mutex<Map<String, Value>>>,
     pc: Arc<Mutex<Option<String>>>,
+    quick: Arc<Mutex<Quick>>,
 }
 
 impl Handle {
@@ -137,6 +147,11 @@ impl Handle {
     /// the card the PC block uses as the system proxy (its name), if any
     pub fn pc_card(&self) -> Option<String> {
         self.pc.lock().unwrap().clone()
+    }
+
+    /// the IF switches and hand-picked groups for the tray menu
+    pub fn quick(&self) -> Quick {
+        self.quick.lock().unwrap().clone()
     }
 
     /// stop every card and the controller (waits at most `timeout`)
@@ -194,6 +209,7 @@ pub fn spawn_with(config_path: PathBuf, hooks: Hooks) -> std::io::Result<Handle>
     let cards = Arc::new(Mutex::new(vec![]));
     let shared_glob = Arc::new(Mutex::new(config::validate_global(&json!({}))));
     let pc = Arc::new(Mutex::new(None));
+    let quick = Arc::new(Mutex::new(Quick::default()));
     let events = {
         let (a, b) = (tx.clone(), tx.clone());
         Events {
@@ -232,6 +248,7 @@ pub fn spawn_with(config_path: PathBuf, hooks: Hooks) -> std::io::Result<Handle>
         hooks,
         shared_glob: shared_glob.clone(),
         pc_card: pc.clone(),
+        quick: quick.clone(),
         firewall: None,
         fw_busy: false,
         engines: None,
@@ -256,7 +273,7 @@ pub fn spawn_with(config_path: PathBuf, hooks: Hooks) -> std::io::Result<Handle>
     };
     c.load();
     std::thread::Builder::new().name("controller".into()).spawn(move || c.run(rx))?;
-    Ok(Handle { tx, port, token, cards, glob: shared_glob, pc })
+    Ok(Handle { tx, port, token, cards, glob: shared_glob, pc, quick })
 }
 
 struct Client {
@@ -302,6 +319,7 @@ struct Controller {
     shared_glob: Arc<Mutex<Map<String, Value>>>,
     /// the PC block's card (its name) for the tray menu
     pc_card: Arc<Mutex<Option<String>>>,
+    quick: Arc<Mutex<Quick>>,
     /// the firewall block rule: None while it is being checked or changed
     firewall: Option<bool>,
     fw_busy: bool,
@@ -820,6 +838,32 @@ impl Controller {
                 pc["applied"] = json!(false);
                 pc["server"] = json!("");
                 pc["backup"] = Value::Null;
+                self.graph_changed();
+            }
+            // Python `set_switch`: an IF block in switch mode, everything to "then" (on) or "else" (off)
+            "set_switch" => {
+                let id = v["id"].as_str().unwrap_or("").to_string();
+                let Some(r) = self.graph.get_mut("routers").and_then(Value::as_array_mut).and_then(|a| a.iter_mut().find(|r| r["id"] == json!(id))) else { return };
+                if r["switch"] != json!(true) || r["switch_on"] == json!(on) {
+                    return;
+                }
+                r["switch_on"] = json!(on);
+                let msg = tr("Switch '{name}' turned {state}").replace("{name}", r["name"].as_str().unwrap_or("")).replace("{state}", &tr(if on { "on" } else { "off" }));
+                self.app_log(Level::Setting, &msg);
+                self.graph_changed();
+            }
+            // Python `select_member`: a hand-picked group uses another member (its cards restart with it)
+            "select_member" => {
+                let (gid, mid) = (v["group"].as_str().unwrap_or("").to_string(), v["member"].clone());
+                let member = graph::find(&self.graph, mid.as_str().unwrap_or("")).map(|(_, m)| name_of(m)).unwrap_or_else(|| "?".into());
+                let Some(g) = self.graph.get_mut("outbounds").and_then(Value::as_array_mut).and_then(|a| a.iter_mut().find(|n| n["id"] == json!(gid))) else { return };
+                let is_member = g["members"].as_array().is_some_and(|m| m.contains(&mid));
+                if !is_member || g["outbound"]["group_selected"] == mid {
+                    return;
+                }
+                g["outbound"]["group_selected"] = mid;
+                let msg = tr("Group '{group}' now uses '{name}'").replace("{group}", g["name"].as_str().unwrap_or("")).replace("{name}", &member);
+                self.app_log(Level::Setting, &msg);
                 self.graph_changed();
             }
             // Python `firewall`: the rule changes through UAC, in the background
@@ -1417,6 +1461,31 @@ impl Controller {
     fn publish_cards(&self) {
         let pc = self.graph["pc"]["inbound"].as_str().and_then(|id| self.proxy(id)).map(name_of);
         *self.pc_card.lock().unwrap() = pc;
+        let list = |k: &str| self.graph.get(k).and_then(Value::as_array).cloned().unwrap_or_default();
+        let st = |v: &Value| v.as_str().unwrap_or("").to_string();
+        let switches = list("routers")
+            .iter()
+            .filter(|r| r["style"] == json!("if") && r["switch"] == json!(true))
+            .map(|r| (st(&r["id"]), st(&r["name"]), r["switch_on"] == json!(true)))
+            .collect();
+        let groups = list("outbounds")
+            .iter()
+            .filter(|n| n["outbound"]["type"] == json!("group") && n["outbound"]["group_mode"] == json!("select"))
+            .filter_map(|n| {
+                let members: Vec<(String, String)> = n["members"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|m| m.as_str())
+                    .filter_map(|m| graph::find(&self.graph, m).map(|(_, b)| (m.to_string(), st(&b["name"]))))
+                    .collect();
+                let first = members.first()?.0.clone();
+                let sel = st(&n["outbound"]["group_selected"]);
+                let cur = if members.iter().any(|(m, _)| *m == sel) { sel } else { first };
+                Some((st(&n["id"]), st(&n["name"]), members, cur))
+            })
+            .collect();
+        *self.quick.lock().unwrap() = Quick { switches, groups };
         *self.cards.lock().unwrap() = self
             .proxies
             .iter()
@@ -1528,7 +1597,7 @@ impl Controller {
                 self.test_latency(&keys);
             }
             "quit" => (self.hooks.quit)(),
-            "startup" | "startup_hidden" | "pc_off" | "pc_restore" | "firewall" => self.platform_command(v),
+            "startup" | "startup_hidden" | "pc_off" | "pc_restore" | "firewall" | "set_switch" | "select_member" => self.platform_command(v),
             "conn_test" => self.conn_test(id),
             "test_site_add" => {
                 let text = v["text"].as_str().unwrap_or("").to_string();
