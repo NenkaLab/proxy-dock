@@ -1064,5 +1064,7 @@
  "Several servers (separated by commas): all are asked at once and the first answer is used.": "Varios servidores (separados por comas): se consultan todos a la vez y se usa la primera respuesta.",
  "Back": "Atrás",
  "Rust crates (list)": "Crates de Rust (lista)",
- "Menus, settings and the whole window": "Menús, ajustes y toda la ventana"
+ "Menus, settings and the whole window": "Menús, ajustes y toda la ventana",
+ "Proxy defaults": "Valores predeterminados del proxy",
+ "Startup": "Inicio"
 }

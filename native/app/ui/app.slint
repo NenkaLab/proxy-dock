@@ -1,6 +1,6 @@
 // ProxyDock window (proxydock-ui.exe): Material 3 Expressive on Slint's "material" style (build.rs), same look as
 // the prototype. Pages so far: the proxy cards and the log; everything comes from the core process over ipc.
-import { Button, ListView, Palette, ScrollView, Switch, TextEdit } from "std-widgets.slint";
+import { Button, ListView, Palette, ScrollView, TextEdit } from "std-widgets.slint";
 import {
     NodeEditor, BaseNode, Pin, PinTypes, NodeEditorEvents, NodeEditorInternalCallbacks, NodeEditorComputations, LinkData,
 } from "@nodeeditor";
@@ -90,6 +90,9 @@ export struct SettingsText {
     startup: string, login: string, login-desc: string, hidden: string, hidden-desc: string, admin: string, admin-desc: string,
     updates: string, check-updates: string, check-updates-desc: string,
     firewall: string, fw-block: string, fw-block-desc: string, fw-on: string, fw-off: string,
+    // the settings' categories (short names)
+    cat-defaults: string,
+    cat-startup: string,
 }
 
 // one field of the block editor (src/bin/proxydock-ui.rs fills it from core::form)
@@ -638,6 +641,42 @@ component AppSpinBox inherits Rectangle {
 
 // One field of the editor on its card (the settings' look): its name and what it does on the left,
 // its control on the right; a heading is the small coloured title of the group of cards under it.
+// M3 switch: a 52x32 track, the thumb grows when on
+component AppSwitch inherits Rectangle {
+    in-out property <bool> checked;
+    in property <bool> enabled: true;
+    callback toggled();
+    width: 52px;
+    height: 32px;
+    border-radius: 16px;
+    background: root.checked ? M3.primary : M3.surface-container-highest;
+    border-width: root.checked ? 0px : 2px;
+    border-color: M3.on-surface-variant;
+    opacity: root.enabled ? 1 : 0.38;
+    animate background { duration: 150ms; }
+    accessible-role: switch;
+    accessible-checked: root.checked;
+    accessible-action-default => { ta.clicked(); }
+    Rectangle {
+        property <length> d: ta.pressed ? 28px : root.checked ? 24px : 16px;
+        width: self.d;
+        height: self.d;
+        border-radius: self.d / 2;
+        x: (root.checked ? 36px : 16px) - self.d / 2;
+        y: (root.height - self.d) / 2;
+        background: root.checked ? M3.on-primary : M3.on-surface-variant;
+        animate x, width, height { duration: 150ms; easing: ease-out; }
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => {
+            root.checked = !root.checked;
+            root.toggled();
+        }
+    }
+}
+
 component FormRow inherits Rectangle {
     in property <FieldRow> f;
     callback changed(string, string);
@@ -697,7 +736,7 @@ component FormRow inherits Rectangle {
                     horizontal-stretch: 1;
                     if f.kind == "bool": HorizontalLayout {
                         alignment: end;
-                        Switch {
+                        AppSwitch {
                             checked: f.checked;
                             toggled => { root.changed(f.key, self.checked ? "true" : "false"); }
                         }
@@ -770,6 +809,82 @@ component PageActions inherits HorizontalLayout {
         text: root.t-save;
         primary: true;
         clicked => { root.save(); }
+    }
+    if root.page == 5: AppComboBox {
+        width: 240px;
+        model: Stats.choices;
+        current-index <=> Stats.choice;
+        selected => { Stats.changed(); }
+    }
+    if root.page == 6: AppComboBox {
+        width: 220px;
+        model: Conn.proxies;
+        current-index <=> Conn.proxy;
+        enabled: Conn.proxies.length > 0;
+        selected => { Conn.proxy-changed(); }
+    }
+    if root.page == 6: Button {
+        min-width: 190px;
+        text: Conn.button;
+        icon: @image-url("icons/network_check.svg");
+        colorize-icon: true;
+        primary: true;
+        enabled: Conn.button-enabled;
+        clicked => { Conn.start(); }
+    }
+}
+
+// a settings category (or a group's name) in the list left of the settings
+export struct SettingsCat { label: string, icon: image, page: int, cat: int, header: bool, show: bool }
+
+component CatItem inherits Rectangle {
+    in property <SettingsCat> item;
+    // only the icon (a narrow window); the groups' names go
+    in property <bool> compact;
+    in property <bool> active;
+    callback clicked;
+    visible: root.item.show && !(root.item.header && root.compact);
+    height: !self.visible ? 0px : root.item.header ? 36px : 40px;
+    border-radius: 20px;
+    background: root.item.header ? transparent : root.active ? M3.secondary-container : ta.has-hover ? M3.surface-container-high : transparent;
+    animate background { duration: Motion.fast-effects; }
+    accessible-role: button;
+    accessible-label: root.item.label;
+    if root.item.header: Text {
+        x: 16px;
+        y: parent.height - self.height - 6px;
+        width: parent.width - 16px;
+        text: root.item.label;
+        font-size: 13px * Type.scale;
+        font-weight: 600;
+        color: M3.on-surface-variant;
+        overflow: elide;
+    }
+    if !root.item.header: HorizontalLayout {
+        padding-left: root.compact ? 0px : 16px;
+        padding-right: root.compact ? 0px : 12px;
+        alignment: root.compact ? center : start;
+        spacing: 12px;
+        Image {
+            width: 20px;
+            height: 20px;
+            y: (parent.height - self.height) / 2;
+            source: root.item.icon;
+            colorize: root.active ? M3.on-secondary-container : M3.on-surface-variant;
+        }
+        if !root.compact: Text {
+            text: root.item.label;
+            font-size: 14px * Type.scale;
+            font-weight: root.active ? 600 : 500;
+            color: root.active ? M3.on-secondary-container : M3.on-surface;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+    }
+    ta := TouchArea {
+        enabled: !root.item.header;
+        clicked => { root.clicked(); }
     }
 }
 
@@ -1044,6 +1159,8 @@ component SettingRow inherits Rectangle {
             spacing: 4px;
             alignment: center;
             HorizontalLayout {
+                // the badge right after the name
+                alignment: start;
                 spacing: 8px;
                 Text {
                     text: root.label;
@@ -1051,7 +1168,6 @@ component SettingRow inherits Rectangle {
                     font-weight: 500;
                     color: M3.on-surface;
                     wrap: word-wrap;
-                    horizontal-stretch: 1;
                     vertical-alignment: center;
                 }
                 if root.badge != "": Rectangle {
@@ -1118,7 +1234,7 @@ component SettingsDefaults inherits SettingsSection {
     SettingRow {
         label: Settings.text.private;
         desc: Settings.text.private-desc;
-        Switch { checked <=> Settings.private; }
+        AppSwitch { checked <=> Settings.private; }
     }
     SettingRow {
         label: Settings.text.timeout;
@@ -1133,12 +1249,12 @@ component SettingsDefaults inherits SettingsSection {
     SettingRow {
         label: Settings.text.logconn;
         desc: Settings.text.logconn-desc;
-        Switch { checked <=> Settings.logconn; }
+        AppSwitch { checked <=> Settings.logconn; }
     }
     SettingRow {
         label: Settings.text.logclose;
         desc: Settings.text.logclose-desc;
-        Switch { checked <=> Settings.logclose; }
+        AppSwitch { checked <=> Settings.logclose; }
     }
     SettingField {
         label: Settings.text.dns;
@@ -1151,7 +1267,7 @@ component SettingsDefaults inherits SettingsSection {
     SettingRow {
         label: Settings.text.dnsvia;
         desc: Settings.text.dnsvia-desc;
-        Switch { checked <=> Settings.dnsvia; }
+        AppSwitch { checked <=> Settings.dnsvia; }
     }
 }
 
@@ -1160,7 +1276,7 @@ component SettingsStartup inherits SettingsSection {
     SettingRow {
         label: Settings.text.login;
         desc: Settings.text.login-desc;
-        Switch {
+        AppSwitch {
             checked <=> Settings.login;
             toggled => { Settings.set-login(self.checked); }
         }
@@ -1168,7 +1284,7 @@ component SettingsStartup inherits SettingsSection {
     SettingRow {
         label: Settings.text.hidden;
         desc: Settings.text.hidden-desc;
-        Switch {
+        AppSwitch {
             enabled: Settings.login;
             checked <=> Settings.hidden;
             toggled => { Settings.set-hidden(self.checked); }
@@ -1177,7 +1293,7 @@ component SettingsStartup inherits SettingsSection {
     SettingRow {
         label: Settings.text.admin;
         desc: Settings.text.admin-desc;
-        Switch { checked <=> Settings.admin; }
+        AppSwitch { checked <=> Settings.admin; }
     }
 }
 
@@ -1186,7 +1302,7 @@ component SettingsUpdates inherits SettingsSection {
     SettingRow {
         label: Settings.text.check-updates;
         desc: Settings.text.check-updates-desc;
-        Switch { checked <=> Settings.check-updates; }
+        AppSwitch { checked <=> Settings.check-updates; }
     }
 }
 
@@ -1271,7 +1387,7 @@ component SettingsDisplay inherits SettingsSection {
     SettingRow {
         label: Settings.text.close;
         desc: Settings.text.close-desc;
-        Switch { checked <=> Settings.close; }
+        AppSwitch { checked <=> Settings.close; }
     }
 }
 
@@ -1312,7 +1428,7 @@ component SettingsEngine inherits SettingsSection {
         label: Settings.text.latest;
         badge: Settings.text.latest-badge;
         desc: Settings.text.latest-desc;
-        Switch { checked <=> Settings.latest; }
+        AppSwitch { checked <=> Settings.latest; }
     }
 }
 
@@ -1328,7 +1444,7 @@ component SettingsLogs inherits SettingsSection {
             colorize-icon: true;
             clicked => { Settings.open-log-dir(); }
         }
-        Switch { checked <=> Settings.logfile; }
+        AppSwitch { checked <=> Settings.logfile; }
     }
 }
 
@@ -1423,16 +1539,6 @@ component Segmented inherits Rectangle {
 
 component StatsPage inherits VerticalLayout {
     spacing: 14px;
-    HorizontalLayout {
-        alignment: end;
-        spacing: 12px;
-        AppComboBox {
-            width: 240px;
-            model: Stats.choices;
-            current-index <=> Stats.choice;
-            selected => { Stats.changed(); }
-        }
-    }
     // tiles: three a row when there is room, two otherwise
     property <bool> wide: self.width >= 640px;
     if root.wide: VerticalLayout {
@@ -1605,28 +1711,6 @@ component ConnPage inherits VerticalLayout {
     spacing: 10px;
     // the region and address columns go when it gets narrow
     property <bool> wide: self.width >= 760px;
-    // (the window's title folds as this scrolls)
-    out property <length> scroll-y: conn-list.viewport-y;
-    HorizontalLayout {
-        alignment: end;
-        spacing: 12px;
-        AppComboBox {
-            width: 220px;
-            model: Conn.proxies;
-            current-index <=> Conn.proxy;
-            enabled: Conn.proxies.length > 0;
-            selected => { Conn.proxy-changed(); }
-        }
-        Button {
-            min-width: 190px;
-            text: Conn.button;
-            icon: @image-url("icons/network_check.svg");
-            colorize-icon: true;
-            primary: true;
-            enabled: Conn.button-enabled;
-            clicked => { Conn.start(); }
-        }
-    }
     HorizontalLayout {
         spacing: 8px;
         Text {
@@ -1829,8 +1913,6 @@ component HelpBlockView inherits VerticalLayout {
 }
 
 component HelpPage inherits VerticalLayout {
-    // (the window's title folds as this scrolls)
-    out property <length> scroll-y: help-scroll.viewport-y;
     spacing: 12px;
     Rectangle {
         vertical-stretch: 1;
@@ -1859,8 +1941,6 @@ component HelpPage inherits VerticalLayout {
 }
 
 component AboutPage inherits VerticalLayout {
-    // (the window's title folds as this scrolls)
-    out property <length> scroll-y: about-scroll.viewport-y;
     spacing: 16px;
     Rectangle {
         vertical-stretch: 1;
@@ -1978,9 +2058,7 @@ component LicensePage inherits VerticalLayout {
     callback back();
     // another licence: from its top
     property <string> shown: Info.lic-text;
-    changed shown => { lic-scroll.viewport-y = 0; }
-    // (the window's title folds as this scrolls)
-    out property <length> scroll-y: lic-scroll.viewport-y;
+    changed shown => { lic-scroll.content-y = 0; }
     spacing: 10px;
     HorizontalLayout {
         spacing: 8px;
@@ -2291,28 +2369,37 @@ export component App inherits Window {
         log-view.content-y = min(0px, log-view.visible-height - log-view.content-height);
     }
 
-    // the page's title: large over the page, small in the band above once the page scrolls
-    property <string> page-title: root.page == 1 ? root.t-proxy : root.page == 2 ? root.t-logs
-        : root.page == 3 ? root.form-title : root.page == 4 ? Settings.text.title : root.page == 5 ? Stats.title
-        : root.page == 6 ? Conn.title : root.page == 7 ? Info.help-title : root.page == 8 ? root.t-about
-        : root.page == 9 ? Info.licenses : "";
-    property <length> page-scroll: root.page == 1 ? card-list.viewport-y : root.page == 2 ? log-view.viewport-y
-        : root.page == 3 ? form-scroll.viewport-y : root.page == 4 ? settings-scroll.viewport-y
-        : root.page == 6 ? conn-page.scroll-y : root.page == 7 ? help-page.scroll-y
-        : root.page == 8 ? about-page.scroll-y : root.page == 9 ? lic-page.scroll-y : 0px;
-    // (set when the scroll changes: a binding would loop, as folding changes the page's height and so its scroll)
-    property <bool> title-folded;
-    changed page-scroll => { root.title-folded = root.page-scroll < -1px; }
-    // the large title's room, the same as the band's (so the page keeps its place as the title folds)
-    property <length> big-title-h: max(44px, 26px * Type.scale * 1.45);
+    // settings and the app's help, about and licences: one page, a category list on the left
+    property <bool> in-settings: root.page == 4 || root.page >= 7;
+    in-out property <int> settings-cat: 0;
+    property <[SettingsCat]> cats: [
+        { label: Settings.text.title, header: true, show: true },
+        { label: Settings.text.cat-defaults, icon: @image-url("icons/tune.svg"), page: 4, cat: 0, show: true },
+        { label: Settings.text.cat-startup, icon: @image-url("icons/power_settings_new.svg"), page: 4, cat: 1, show: Settings.windows },
+        { label: Settings.text.firewall, icon: @image-url("icons/shield.svg"), page: 4, cat: 2, show: Settings.windows },
+        { label: Settings.text.updates, icon: @image-url("icons/sync.svg"), page: 4, cat: 3, show: true },
+        { label: Settings.text.display, icon: @image-url("icons/palette.svg"), page: 4, cat: 4, show: true },
+        { label: Settings.text.fonts, icon: @image-url("icons/text_fields.svg"), page: 4, cat: 5, show: true },
+        { label: Settings.text.engine, icon: @image-url("icons/memory.svg"), page: 4, cat: 6, show: true },
+        { label: Settings.text.logs, icon: @image-url("icons/receipt_long.svg"), page: 4, cat: 7, show: true },
+        { label: "ProxyDock", header: true, show: true },
+        { label: root.t-help, icon: @image-url("icons/help.svg"), page: 7, show: true },
+        { label: root.t-about, icon: @image-url("icons/info.svg"), page: 8, show: true },
+        { label: Info.licenses, icon: @image-url("icons/description.svg"), page: 9, show: true },
+    ];
+    property <string> page-title: root.page == 0 ? root.t-canvas : root.page == 1 ? root.t-proxy : root.page == 2 ? root.t-logs
+        : root.page == 3 ? root.form-title : root.page == 4 ? root.cats[root.settings-cat + 1].label
+        : root.page == 5 ? Stats.title : root.page == 6 ? Conn.title
+        : root.page == 7 ? root.cats[10].label : root.page == 8 ? root.cats[11].label : root.page == 9 ? root.cats[12].label : "";
+    // the title bar's height (Android's top app bar: the page's title, its actions on the right)
+    property <length> bar-h: max(52px, 18px * Type.scale * 2.4);
     // where the title's buttons end: the editor's cards' right edge, else the page's (room: the page's width)
     pure function actions-right(room: length) -> length {
-        root.page == 3 ? form-page.x + form-page.width - 16px : room - 12px
+        root.page == 3 ? form-page.x + form-page.width - 16px : root.page == 1 ? room - 12px : room
     }
     // in line with the page's content where that sits in the middle of the room
     property <length> title-x: root.page == 3 ? form-page.x
-        : root.page == 4 ? settings-page.x + max(0px, (settings-scroll.visible-width - 16px - settings-scroll.used-w) / 2)
-        : root.page == 7 ? help-page.x : root.page == 8 ? about-page.x : 0px;
+        : root.in-settings ? settings-shell.x + settings-shell.cat-w + 24px : 0px;
 
     title: "ProxyDock";
     preferred-width: 980px;
@@ -2325,7 +2412,12 @@ export component App inherits Window {
     in property <string> ui-font;
     default-font-family: root.ui-font;
 
+    // (placed: the window's minimum size is set above, not taken from the pages)
     HorizontalLayout {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
         // navigation rail
         VerticalLayout {
             width: 88px;
@@ -2364,58 +2456,16 @@ export component App inherits Window {
             }
             Rectangle { vertical-stretch: 1; }
             RailItem {
-                icon: @image-url("icons/help.svg");
-                label: root.t-help;
-                active: root.page == 7;
-                clicked => { root.page = 7; }
-            }
-            RailItem {
-                icon: @image-url("icons/info.svg");
-                label: root.t-about;
-                active: root.page == 8 || root.page == 9;
-                clicked => { root.page = 8; }
-            }
-            RailItem {
                 icon: @image-url("icons/settings.svg");
                 label: Settings.text.title;
-                active: root.page == 4;
+                active: root.in-settings;
                 clicked => { root.page = 4; }
             }
         }
         VerticalLayout {
-        // the band above the page: the page's title, small, once the page has scrolled
+        // the title bar above the page (its title and actions are drawn over it, below)
         Rectangle {
-            height: root.page != 0 && root.title-folded ? root.big-title-h : 0px;
-            animate height { duration: 220ms; easing: ease-in-out; }
-            clip: true;
-            band-acts := PageActions {
-                x: 20px;
-                y: (root.big-title-h - 40px) / 2;
-                width: root.actions-right(parent.width - 40px);
-                height: 40px;
-                page: root.page;
-                has-cards: root.cards.length > 0;
-                t-stop-all: root.t-stop-all;
-                t-cancel: root.t-cancel;
-                t-save: root.t-save;
-                stop-all => { root.stop-all(); }
-                cancel => { root.form-cancel(); }
-                save => { root.form-save(); }
-            }
-            Text {
-                x: 20px + root.title-x;
-                y: 0;
-                height: root.big-title-h;
-                width: band-acts.x + band-acts.width - band-acts.preferred-width - 12px - self.x;
-                text: root.page-title;
-                font-size: 16px * Type.scale;
-                font-weight: 600;
-                color: M3.on-surface;
-                vertical-alignment: center;
-                overflow: elide;
-                opacity: root.title-folded ? 1 : 0;
-                animate opacity { duration: 220ms; }
-            }
+            height: root.bar-h;
         }
         // page container
         Rectangle {
@@ -2425,41 +2475,6 @@ export component App inherits Window {
             VerticalLayout {
                 padding: 20px;
                 spacing: 12px;
-                // the page's title, large; it folds into the band above as the page scrolls
-                // (the band and this together keep one height: the page does not jump)
-                if root.page != 0: Rectangle {
-                    height: root.title-folded ? 0px : root.big-title-h;
-                    animate height { duration: 220ms; easing: ease-in-out; }
-                    clip: true;
-                    big-acts := PageActions {
-                        x: 0;
-                        y: (root.big-title-h - 40px) / 2;
-                        width: root.actions-right(parent.width);
-                        height: 40px;
-                        page: root.page;
-                        has-cards: root.cards.length > 0;
-                        t-stop-all: root.t-stop-all;
-                        t-cancel: root.t-cancel;
-                        t-save: root.t-save;
-                        stop-all => { root.stop-all(); }
-                        cancel => { root.form-cancel(); }
-                        save => { root.form-save(); }
-                    }
-                    Text {
-                        x: root.title-x;
-                        y: 0;
-                        height: root.big-title-h;
-                        vertical-alignment: center;
-                        width: big-acts.width - big-acts.preferred-width - 12px - self.x;
-                        text: root.page-title;
-                        font-size: 26px * Type.scale;
-                        font-weight: 700;
-                        color: M3.on-surface;
-                        overflow: elide;
-                        opacity: root.title-folded ? 0 : 1;
-                        animate opacity { duration: 160ms; }
-                    }
-                }
                 if !root.connected: Rectangle {
                     height: 40px;
                     border-radius: 12px;
@@ -2701,89 +2716,87 @@ export component App inherits Window {
                             }
                         }
                     }
-                    stats-page := StatsPage { visible: root.page == 5; }
-                    // pages with a readable width sit in the middle of any room left over
-                    help-page := HelpPage {
-                        visible: root.page == 7;
-                        width: min(parent.width, 776px);
+                    stats-page := StatsPage { x: 0; y: 0; visible: root.page == 5; }
+                    conn-page := ConnPage { x: 0; y: 0; visible: root.page == 6; }
+                    // settings: the categories (and the app's help, about, licences) on the left, the chosen one on the right
+                    settings-shell := Rectangle {
+                        visible: root.in-settings;
+                        width: min(parent.width, 1060px);
                         x: (parent.width - self.width) / 2;
-                    }
-                    about-page := AboutPage {
-                        visible: root.page == 8;
-                        width: min(parent.width, 736px);
-                        x: (parent.width - self.width) / 2;
-                    }
-                    lic-page := LicensePage {
-                        visible: root.page == 9;
-                        back => { root.page = 8; }
-                    }
-                    conn-page := ConnPage { visible: root.page == 6; }
-                    settings-page := VerticalLayout {
-                        visible: root.page == 4;
-                        width: min(parent.width, 1376px);
-                        x: (parent.width - self.width) / 2;
-                        spacing: 12px;
-                        Rectangle {
-                            vertical-stretch: 1;
-                            settings-scroll := ScrollView {
-                                // two columns of sections when there is room, one otherwise; never wider than reads well
-                                out property <bool> wide: self.visible-width >= 720px;
-                                out property <length> content-w: min(self.visible-width - 16px, 1360px);
-                                // the sections' width; any room left over goes evenly to both sides
-                                out property <length> used-w: self.wide ? self.content-w : min(self.content-w, 720px);
-                                VerticalLayout {
-                                    x: max(0px, (settings-scroll.visible-width - 16px - settings-scroll.used-w) / 2);
-                                    width: settings-scroll.used-w + 16px;
-                                    padding-right: 16px;
-                                    // room for the apply bar
-                                    padding-bottom: 96px;
-                                    alignment: start;
-                                    if settings-scroll.wide: HorizontalLayout {
-                                        width: settings-scroll.content-w;
-                                        spacing: 16px;
-                                        VerticalLayout {
-                                            // equal halves (long texts would otherwise widen one column)
-                                            width: (settings-scroll.content-w - 16px) / 2;
-                                            spacing: 16px;
-                                            alignment: start;
-                                            SettingsDefaults {}
-                                            if Settings.windows: SettingsStartup {}
-                                            if Settings.windows: SettingsFirewall {}
-                                            SettingsUpdates {}
+                        // only the icons when narrow
+                        property <bool> narrow: self.width < 720px;
+                        out property <length> cat-w: self.narrow ? 56px : 232px;
+                        cat-scroll := ScrollView {
+                            x: 0;
+                            y: 0;
+                            width: parent.cat-w;
+                            height: parent.height;
+                            VerticalLayout {
+                                width: cat-scroll.visible-width;
+                                alignment: start;
+                                spacing: 2px;
+                                padding-bottom: 12px;
+                                for c in root.cats: CatItem {
+                                    item: c;
+                                    compact: settings-shell.narrow;
+                                    active: !c.header && root.page == c.page && (c.page != 4 || root.settings-cat == c.cat);
+                                    clicked => {
+                                        root.page = c.page;
+                                        if c.page == 4 {
+                                            root.settings-cat = c.cat;
                                         }
-                                        VerticalLayout {
-                                            // equal halves (long texts would otherwise widen one column)
-                                            width: (settings-scroll.content-w - 16px) / 2;
-                                            spacing: 16px;
-                                            alignment: start;
-                                            SettingsDisplay {}
-                                            SettingsFonts {}
-                                            SettingsEngine {}
-                                            SettingsLogs {}
-                                        }
-                                    }
-                                    if !settings-scroll.wide: VerticalLayout {
-                                        width: min(settings-scroll.content-w, 720px);
-                                        spacing: 16px;
-                                        SettingsDefaults {}
-                                        if Settings.windows: SettingsStartup {}
-                                        if Settings.windows: SettingsFirewall {}
-                                        SettingsUpdates {}
-                                        SettingsDisplay {}
-                                        SettingsFonts {}
-                                        SettingsEngine {}
-                                        SettingsLogs {}
                                     }
                                 }
                             }
-                            EdgeFade {
-                                // (not over the scroll bar)
+                        }
+                        Rectangle {
+                            x: parent.cat-w + 24px;
+                            width: parent.width - self.x;
+                            // the chosen settings
+                            Rectangle {
+                                visible: root.page == 4;
+                                settings-scroll := ScrollView {
+                                    // (a readable width)
+                                    out property <length> used-w: min(self.visible-width - 16px, 760px);
+                                    VerticalLayout {
+                                        width: settings-scroll.used-w + 16px;
+                                        padding-right: 16px;
+                                        // room for the apply bar
+                                        padding-bottom: 96px;
+                                        alignment: start;
+                                        if root.settings-cat == 0: SettingsDefaults {}
+                                        if root.settings-cat == 1: SettingsStartup {}
+                                        if root.settings-cat == 2: SettingsFirewall {}
+                                        if root.settings-cat == 3: SettingsUpdates {}
+                                        if root.settings-cat == 4: SettingsDisplay {}
+                                        if root.settings-cat == 5: SettingsFonts {}
+                                        if root.settings-cat == 6: SettingsEngine {}
+                                        if root.settings-cat == 7: SettingsLogs {}
+                                    }
+                                }
+                                EdgeFade {
+                                    // (not over the scroll bar)
+                                    x: 0;
+                                    width: parent.width - 14px;
+                                    offset: settings-scroll.content-y;
+                                    content: settings-scroll.content-height;
+                                    view: settings-scroll.visible-height;
+                                    fade-color: M3.surface;
+                                }
+                            }
+                            help-page := HelpPage {
+                                visible: root.page == 7;
                                 x: 0;
-                                width: parent.width - 14px;
-                                offset: settings-scroll.content-y;
-                                content: settings-scroll.content-height;
-                                view: settings-scroll.visible-height;
-                                fade-color: M3.surface;
+                                width: min(parent.width, 776px);
+                            }
+                            about-page := AboutPage {
+                                visible: root.page == 8;
+                                x: 0;
+                                width: min(parent.width, 776px);
+                            }
+                            lic-page := LicensePage {
+                                visible: root.page == 9;
+                                back => { root.page = 8; }
                             }
                         }
                     }
@@ -2857,6 +2870,38 @@ export component App inherits Window {
                 }
             }
         }
+        }
+    }
+    // the title bar's title and the page's actions
+    Rectangle {
+        x: 88px + 20px;
+        y: 0;
+        width: root.width - 88px - 40px;
+        height: root.bar-h;
+        title-acts := PageActions {
+            x: 0;
+            y: (parent.height - 40px) / 2;
+            width: root.actions-right(parent.width);
+            height: 40px;
+            page: root.page;
+            has-cards: root.cards.length > 0;
+            t-stop-all: root.t-stop-all;
+            t-cancel: root.t-cancel;
+            t-save: root.t-save;
+            stop-all => { root.stop-all(); }
+            cancel => { root.form-cancel(); }
+            save => { root.form-save(); }
+        }
+        Text {
+            x: root.title-x;
+            height: parent.height;
+            width: max(0px, title-acts.width - title-acts.preferred-width - 12px - self.x);
+            text: root.page-title;
+            font-size: 18px * Type.scale;
+            font-weight: 600;
+            color: M3.on-surface;
+            vertical-alignment: center;
+            overflow: elide;
         }
     }
     UpdateDialogs { }

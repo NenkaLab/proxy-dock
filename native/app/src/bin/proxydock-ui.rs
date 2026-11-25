@@ -684,6 +684,8 @@ fn settings_text() -> SettingsText {
         fw_block_desc: t("Blocks connections from other PCs to ProxyDock (all proxies, needs administrator rights). Turn off to use servers for other devices (Shadowsocks, Hysteria2, etc.)"),
         fw_on: t("Turn block on"),
         fw_off: t("Turn block off"),
+        cat_defaults: t("Proxy defaults"),
+        cat_startup: t("Startup"),
     }
 }
 
