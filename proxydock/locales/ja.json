@@ -1061,5 +1061,7 @@
  "Scales text and UI elements together (applies after the window is opened again)": "文字と UI 要素をまとめて拡大縮小します（ウィンドウを開き直すと適用）",
  "Settings have unsaved changes": "適用していない変更があります",
  "Revert": "元に戻す",
- "Several servers (separated by commas): all are asked at once and the first answer is used.": "複数のサーバー（カンマ区切り）を指定すると、すべてに同時に問い合わせ、最初の応答を使います。"
+ "Several servers (separated by commas): all are asked at once and the first answer is used.": "複数のサーバー（カンマ区切り）を指定すると、すべてに同時に問い合わせ、最初の応答を使います。",
+ "Back": "戻る",
+ "Rust crates (list)": "Rust クレート（一覧）"
 }

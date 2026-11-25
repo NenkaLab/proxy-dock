@@ -139,3 +139,55 @@ pub fn engine_for(proxy: &serde_json::Value, glob: &serde_json::Map<String, serd
     }
     Ok((Kind::SingBox, exe))
 }
+
+/// The version in `sing-box version` ("sing-box version 1.14.4") or `hysteria version` ("Version:\tv2.14.0")
+/// output (Python `parse_core_version`)
+pub fn parse_core_version(text: &str) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    let mut from = 0;
+    while let Some(i) = lower[from..].find("version") {
+        let rest = &text[from + i + 7..];
+        let gap = rest.len() - rest.trim_start_matches([':', ' ', '\t', '\r', '\n']).len();
+        if gap > 0 {
+            let v = rest[gap..].strip_prefix(['v', 'V']).unwrap_or(&rest[gap..]);
+            let end = v.find(|c: char| !(c.is_alphanumeric() || "._+-".contains(c))).unwrap_or(v.len());
+            let cand = &v[..end];
+            let mut parts = cand.splitn(3, '.');
+            let digits = |s: Option<&str>| s.is_some_and(|p| p.chars().next().is_some_and(|c| c.is_ascii_digit()));
+            let (a, b, c) = (parts.next(), parts.next(), parts.next());
+            if a.is_some_and(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+                && b.is_some_and(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+                && digits(c)
+            {
+                return Some(cand.to_string());
+            }
+        }
+        from += i + 7;
+    }
+    None
+}
+
+/// Run `<exe> version` and read its version number (Python `core_version`; blocks, call it off the UI thread)
+pub fn core_version(exe: &Path) -> Option<String> {
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("version").stdin(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    let out = cmd.output().ok()?;
+    parse_core_version(&format!("{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
+}
+
+#[cfg(test)]
+mod version_text_tests {
+    #[test]
+    fn core_versions() {
+        use super::parse_core_version as p;
+        assert_eq!(p("sing-box version 1.14.4\n\nEnvironment: go1.24").as_deref(), Some("1.14.4"));
+        assert_eq!(p("Version:\tv2.6.1\nBuildDate:").as_deref(), Some("2.6.1"));
+        assert_eq!(p("sing-box version 1.15.0-alpha.13").as_deref(), Some("1.15.0-alpha.13"));
+        assert_eq!(p("no version here"), None);
+    }
+}

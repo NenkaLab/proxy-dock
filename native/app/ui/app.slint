@@ -1610,6 +1610,316 @@ component ConnPage inherits VerticalLayout {
     }
 }
 
+// --- how to use, about, licenses (Python ui/help.py, about.py, license.py) ---
+
+// a piece of the how-to: 0 a heading (text), 1 a paragraph or list (styled), 2 a table row (a, b; header = first row)
+export struct HelpBlock { kind: int, title: string, text: styled-text, a: styled-text, b: styled-text, header: bool }
+export struct EngineRow { name: string, text: string }
+
+export global Info {
+    // how to use
+    in property <string> help-title;
+    in property <[HelpBlock]> help;
+    // about
+    in property <string> about-title;
+    in property <string> app-name: "ProxyDock";
+    in property <string> version-text;
+    in property <string> desc;
+    in property <string> s-version;
+    in property <string> s-engines;
+    in property <string> s-folder;
+    in property <string> folder-label;
+    in property <string> app-dir;
+    in property <string> open-folder;
+    in property <string> s-links;
+    in property <string> repo-label;
+    in property <string> repo-url;
+    in property <string> releases-label;
+    in property <string> releases-url;
+    in property <string> open;
+    in property <string> licenses;
+    in property <string> licenses-desc;
+    in property <string> app-version;
+    in property <[EngineRow]> engines;
+    callback open-url(string);
+    callback open-dir(string);
+    callback show-licenses();
+    // licenses
+    in property <string> lic-desc;
+    in property <string> back;
+    in property <[string]> lic-names;
+    in-out property <int> lic-index;
+    in property <string> lic-text;
+    callback lic-picked();
+    callback lic-open-folder();
+}
+
+component HelpBlockView inherits VerticalLayout {
+    in property <HelpBlock> block;
+    if root.block.kind == 0: Text {
+        text: root.block.title;
+        font-size: 18px;
+        font-weight: 700;
+        color: M3.primary;
+        wrap: word-wrap;
+    }
+    if root.block.kind == 1: StyledText {
+        text: root.block.text;
+        default-color: M3.on-surface;
+        default-font-size: 14px;
+        link-color: M3.primary;
+        selectable: true;
+        link-clicked(link) => { Info.open-url(link); }
+    }
+    if root.block.kind == 2: Rectangle {
+        height: row.preferred-height;
+        background: root.block.header ? M3.surface-container-high : transparent;
+        border-radius: root.block.header ? 8px : 0px;
+        row := HorizontalLayout {
+            padding: 8px;
+            padding-left: 12px;
+            spacing: 24px;
+            StyledText {
+                width: 240px;
+                text: root.block.a;
+                default-color: root.block.header ? M3.on-surface-variant : M3.on-surface;
+                default-font-size: 13px;
+            }
+            StyledText {
+                horizontal-stretch: 1;
+                text: root.block.b;
+                default-color: root.block.header ? M3.on-surface-variant : M3.on-surface;
+                default-font-size: 13px;
+            }
+        }
+        Rectangle {
+            y: parent.height - 1px;
+            height: 1px;
+            background: M3.outline-variant.with-alpha(0.6);
+            visible: !root.block.header;
+        }
+    }
+}
+
+component HelpPage inherits VerticalLayout {
+    spacing: 12px;
+    Text {
+        text: Info.help-title;
+        font-size: 26px;
+        font-weight: 700;
+        color: M3.on-surface;
+    }
+    Rectangle {
+        vertical-stretch: 1;
+        help-scroll := ScrollView {
+            VerticalLayout {
+                x: 0;
+                width: min(help-scroll.visible-width - 16px, 760px);
+                padding-right: 16px;
+                padding-bottom: 24px;
+                spacing: 8px;
+                alignment: start;
+                for b in Info.help: HelpBlockView {
+                    block: b;
+                    padding-top: b.kind == 0 ? 14px : 0px;
+                }
+            }
+        }
+        EdgeFade {
+            x: 0;
+            width: parent.width - 14px;
+            offset: help-scroll.content-y;
+            content: help-scroll.content-height;
+            view: help-scroll.visible-height;
+            fade-color: M3.surface;
+        }
+    }
+}
+
+component AboutPage inherits VerticalLayout {
+    spacing: 16px;
+    Rectangle {
+        vertical-stretch: 1;
+        about-scroll := ScrollView {
+            VerticalLayout {
+                x: 0;
+                width: min(about-scroll.visible-width - 16px, 720px);
+                padding-right: 16px;
+                padding-bottom: 24px;
+                spacing: 16px;
+                alignment: start;
+                // the app
+                HorizontalLayout {
+                    spacing: 16px;
+                    Image {
+                        width: 64px;
+                        height: 64px;
+                        source: @image-url("icons/app.svg");
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 2px;
+                        Text { text: Info.app-name; font-size: 26px; font-weight: 700; color: M3.on-surface; }
+                        Text { text: Info.version-text; font-size: 14px; color: M3.on-surface; }
+                        Text { text: Info.desc; font-size: 12px; color: M3.on-surface-variant; wrap: word-wrap; }
+                    }
+                }
+                SettingsSection {
+                    title: Info.s-engines;
+                    icon: @image-url("icons/memory.svg");
+                    for e in Info.engines: SettingRow {
+                        label: e.name;
+                        desc: e.text;
+                    }
+                }
+                SettingsSection {
+                    title: Info.s-folder;
+                    icon: @image-url("icons/folder_open.svg");
+                    SettingRow {
+                        label: Info.folder-label;
+                        Button {
+                            text: Info.open-folder;
+                            icon: @image-url("icons/folder_open.svg");
+                            colorize-icon: true;
+                            clicked => { Info.open-dir(Info.app-dir); }
+                        }
+                    }
+                    Text {
+                        text: Info.app-dir;
+                        font-size: 12px;
+                        font-family: "JetBrains Mono";
+                        color: M3.on-surface-variant;
+                        wrap: char-wrap;
+                    }
+                }
+                SettingsSection {
+                    title: Info.s-links;
+                    icon: @image-url("icons/open_in_new.svg");
+                    SettingRow {
+                        label: Info.repo-label;
+                        desc: Info.repo-url;
+                        Button {
+                            text: Info.open;
+                            icon: @image-url("icons/open_in_new.svg");
+                            colorize-icon: true;
+                            clicked => { Info.open-url(Info.repo-url); }
+                        }
+                    }
+                    SettingRow {
+                        label: Info.releases-label;
+                        desc: Info.releases-url;
+                        Button {
+                            text: Info.open;
+                            icon: @image-url("icons/open_in_new.svg");
+                            colorize-icon: true;
+                            clicked => { Info.open-url(Info.releases-url); }
+                        }
+                    }
+                    SettingRow {
+                        label: Info.licenses;
+                        desc: Info.licenses-desc;
+                        Button {
+                            text: Info.licenses;
+                            icon: @image-url("icons/description.svg");
+                            colorize-icon: true;
+                            clicked => { Info.show-licenses(); }
+                        }
+                    }
+                }
+            }
+        }
+        EdgeFade {
+            x: 0;
+            width: parent.width - 14px;
+            offset: about-scroll.content-y;
+            content: about-scroll.content-height;
+            view: about-scroll.visible-height;
+            fade-color: M3.surface;
+        }
+    }
+}
+
+component LicensePage inherits VerticalLayout {
+    callback back();
+    // another licence: from its top
+    property <string> shown: Info.lic-text;
+    changed shown => { lic-scroll.viewport-y = 0; }
+    spacing: 10px;
+    HorizontalLayout {
+        spacing: 8px;
+        Rectangle {
+            width: 40px;
+            height: 40px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 20px;
+            background: back-ta.has-hover ? M3.on-surface.with-alpha(0.08) : transparent;
+            accessible-role: button;
+            accessible-label: Info.back;
+            Image {
+                width: 22px;
+                height: 22px;
+                source: @image-url("icons/arrow_back.svg");
+                colorize: M3.on-surface;
+            }
+            back-ta := TouchArea { clicked => { root.back(); } }
+        }
+        Text {
+            text: Info.licenses;
+            font-size: 26px;
+            font-weight: 700;
+            color: M3.on-surface;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+        }
+        AppComboBox {
+            width: 320px;
+            y: (parent.height - self.height) / 2;
+            model: Info.lic-names;
+            current-index <=> Info.lic-index;
+            selected => { Info.lic-picked(); }
+        }
+        Button {
+            text: Info.open-folder;
+            icon: @image-url("icons/folder_open.svg");
+            colorize-icon: true;
+            clicked => { Info.lic-open-folder(); }
+        }
+    }
+    Text {
+        text: Info.lic-desc;
+        font-size: 12px;
+        color: M3.on-surface-variant;
+        wrap: word-wrap;
+    }
+    Rectangle {
+        vertical-stretch: 1;
+        border-radius: 16px;
+        background: M3.surface-container-low;
+        clip: true;
+        lic-scroll := ScrollView {
+            Text {
+                x: 16px;
+                y: 12px;
+                width: lic-scroll.visible-width - 32px;
+                height: self.preferred-height + 24px;
+                text: Info.lic-text;
+                font-family: "JetBrains Mono";
+                font-size: 12px;
+                color: M3.on-surface;
+                wrap: word-wrap;
+            }
+        }
+        EdgeFade {
+            x: 0;
+            width: parent.width - 14px;
+            offset: lic-scroll.content-y;
+            content: lic-scroll.content-height;
+            view: lic-scroll.visible-height;
+            fade-color: M3.surface-container-low;
+        }
+    }
+}
+
 export component App inherits Window {
     // canvas
     in property <[NodeData]> nodes;
@@ -1699,6 +2009,8 @@ export component App inherits Window {
     in property <string> t-proxy: "Proxy";
     in property <string> t-logs: "Logs";
     in property <string> t-stats: "Statistics";
+    in property <string> t-help: "How to use";
+    in property <string> t-about: "About";
     in property <string> t-conn: "Connection test";
     in property <string> t-stop-all: "Stop all proxies";
     in property <string> t-empty: "No proxies yet.";
@@ -1722,7 +2034,8 @@ export component App inherits Window {
     preferred-width: 980px;
     preferred-height: 680px;
     min-width: 560px;
-    min-height: 400px;
+    // (the navigation rail's eight items)
+    min-height: 580px;
     background: M3.surface-container;
     // the language's usual UI font ("" = the system's; proxydock-ui.rs `lang_font`)
     in property <string> ui-font;
@@ -1766,6 +2079,18 @@ export component App inherits Window {
                 clicked => { root.page = 2; }
             }
             Rectangle { vertical-stretch: 1; }
+            RailItem {
+                icon: @image-url("icons/help.svg");
+                label: root.t-help;
+                active: root.page == 7;
+                clicked => { root.page = 7; }
+            }
+            RailItem {
+                icon: @image-url("icons/info.svg");
+                label: root.t-about;
+                active: root.page == 8 || root.page == 9;
+                clicked => { root.page = 8; }
+            }
             RailItem {
                 icon: @image-url("icons/settings.svg");
                 label: Settings.text.title;
@@ -2048,6 +2373,12 @@ export component App inherits Window {
                         }
                     }
                     StatsPage { visible: root.page == 5; }
+                    HelpPage { visible: root.page == 7; }
+                    AboutPage { visible: root.page == 8; }
+                    LicensePage {
+                        visible: root.page == 9;
+                        back => { root.page = 8; }
+                    }
                     ConnPage { visible: root.page == 6; }
                     settings-page := VerticalLayout {
                         visible: root.page == 4;

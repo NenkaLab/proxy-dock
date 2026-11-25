@@ -1061,5 +1061,7 @@
  "Scales text and UI elements together (applies after the window is opened again)": "글자와 UI 요소의 크기를 함께 조절합니다(창을 다시 열면 적용)",
  "Settings have unsaved changes": "적용하지 않은 변경 사항이 있습니다",
  "Revert": "되돌리기",
- "Several servers (separated by commas): all are asked at once and the first answer is used.": "여러 개를 쉼표로 구분해 넣으면 모두에 동시에 묻고 가장 먼저 온 답을 씁니다."
+ "Several servers (separated by commas): all are asked at once and the first answer is used.": "여러 개를 쉼표로 구분해 넣으면 모두에 동시에 묻고 가장 먼저 온 답을 씁니다.",
+ "Back": "뒤로",
+ "Rust crates (list)": "Rust 크레이트(목록)"
 }

@@ -574,6 +574,7 @@ fn labels(app: &App) {
     app.global::<Settings>().set_text(settings_text());
     stats_labels(app);
     conn_labels(app);
+    info_labels(app, &proxydock_core::i18n::current());
     app.set_t_latency(tr("Test latency").into());
     app.set_t_close(tr("Close").into());
     app.set_t_save(tr("Save").into());
@@ -914,6 +915,45 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
     {
+        // how to use, about, licenses
+        let i = app.global::<Info>();
+        let weak = app.as_weak();
+        i.on_open_url(move |url| {
+            // only web addresses (the how-to's links and the project's pages)
+            if url.starts_with("https://") {
+                if let (Err(e), Some(a)) = (open_with_system(&url), weak.upgrade()) {
+                    show_toast(&a, &e.to_string(), false, 5.0);
+                }
+            }
+        });
+        let weak = app.as_weak();
+        i.on_open_dir(move |dir| {
+            let _ = std::fs::create_dir_all(dir.as_str());
+            if let (Err(e), Some(a)) = (open_with_system(&dir), weak.upgrade()) {
+                show_toast(&a, &format!("{}: {e}", tr("Cannot open the folder")), false, 5.0);
+            }
+        });
+        let weak = app.as_weak();
+        i.on_show_licenses(move || {
+            if let Some(a) = weak.upgrade() {
+                show_license(&a);
+                a.set_page(9);
+            }
+        });
+        let weak = app.as_weak();
+        i.on_lic_picked(move || {
+            if let Some(a) = weak.upgrade() {
+                show_license(&a);
+            }
+        });
+        let weak = app.as_weak();
+        i.on_lic_open_folder(move || {
+            if let (Err(e), Some(a)) = (open_with_system(&license_dir().display().to_string()), weak.upgrade()) {
+                show_toast(&a, &format!("{}: {e}", tr("Cannot open the folder")), false, 5.0);
+            }
+        });
+    }
+    {
         let w = writer.clone();
         app.on_stop_all(move || {
             let _ = ipc::send(&mut w.lock().unwrap(), &json!({"cmd": "stop_all"}));
@@ -944,6 +984,7 @@ fn main() -> Result<(), slint::PlatformError> {
                             stats_push(&v["stats"], &Value::Null);
                             conn_sites(&app, &v["conn"]);
                             conn_cards(&app, &m);
+                            show_about(&app, &v["about"]);
                             stats_render(&app, &running_cards(&m));
                             app.set_can_undo(v["undo"] == json!(true));
                             app.set_can_redo(v["redo"] == json!(true));
@@ -1036,6 +1077,7 @@ fn main() -> Result<(), slint::PlatformError> {
                             stats_render(&app, &running_cards(&m));
                         }
                         "conn_sites" => conn_sites(&app, &v["conn"]),
+                        "about" => show_about(&app, &v["about"]),
                         "conn_start" | "conn_result" | "conn_done" => conn_event(&app, &v),
                         "log" => m.add_logs(v["entries"].as_array().map(Vec::as_slice).unwrap_or(&[])),
                         _ => {}
@@ -1523,4 +1565,150 @@ fn conn_event(app: &App, v: &Value) {
         }
         _ => {}
     }
+}
+
+// --- how to use, about, licenses (Python ui/help.py, about.py, license.py) ---
+
+const REPO_URL: &str = "https://github.com/NenkaLab/proxy-dock";
+
+/// the how-to text of a language (English when it has none)
+fn help_markdown(code: &str) -> &'static str {
+    match code {
+        "ko" => include_str!("../../../../proxydock/locales/help/ko.md"),
+        "ja" => include_str!("../../../../proxydock/locales/help/ja.md"),
+        "zh_CN" => include_str!("../../../../proxydock/locales/help/zh_CN.md"),
+        "zh_TW" => include_str!("../../../../proxydock/locales/help/zh_TW.md"),
+        "de" => include_str!("../../../../proxydock/locales/help/de.md"),
+        "fr" => include_str!("../../../../proxydock/locales/help/fr.md"),
+        "es" => include_str!("../../../../proxydock/locales/help/es.md"),
+        _ => include_str!("../../../../proxydock/locales/help/en.md"),
+    }
+}
+
+fn styled(md: &str) -> slint::StyledText {
+    slint::StyledText::from_markdown(md).unwrap_or_else(|_| slint::StyledText::from_plain_text(md))
+}
+
+/// The how-to as blocks the window draws: headings and table rows itself, the rest as styled text (Slint's
+/// styled text has no headings or tables).
+fn help_blocks(md: &str) -> Vec<HelpBlock> {
+    let mut out = vec![];
+    let mut para: Vec<&str> = vec![];
+    let mut table_row = 0;
+    let flush = |para: &mut Vec<&str>, out: &mut Vec<HelpBlock>| {
+        if !para.is_empty() {
+            out.push(HelpBlock { kind: 1, text: styled(&para.join("\n")), ..Default::default() });
+            para.clear();
+        }
+    };
+    for line in md.lines() {
+        let t = line.trim();
+        if let Some(h) = t.strip_prefix('#') {
+            flush(&mut para, &mut out);
+            out.push(HelpBlock { kind: 0, title: h.trim_start_matches('#').trim().into(), ..Default::default() });
+            table_row = 0;
+        } else if t.starts_with('|') {
+            flush(&mut para, &mut out);
+            let cells: Vec<&str> = t.trim_matches('|').split('|').map(str::trim).collect();
+            if cells.iter().all(|c| !c.is_empty() && c.chars().all(|ch| "-: ".contains(ch))) {
+                continue; // |---|---|
+            }
+            let cell = |i: usize| styled(cells.get(i).copied().unwrap_or(""));
+            out.push(HelpBlock { kind: 2, a: cell(0), b: cell(1), header: table_row == 0, ..Default::default() });
+            table_row += 1;
+        } else if t.is_empty() {
+            flush(&mut para, &mut out);
+            table_row = 0;
+        } else {
+            para.push(line);
+        }
+    }
+    flush(&mut para, &mut out);
+    out
+}
+
+/// the licences the window shows: (name, text) (Python `LICENSES`, for the Rust app's own parts)
+fn licenses() -> Vec<(String, &'static str)> {
+    vec![
+        ("ProxyDock · GPL v3".into(), include_str!("../../../../LICENSE")),
+        (tr("Rust crates (list)"), include_str!("../../../../licenses/rust-crates.txt")),
+        ("sing-box · GPL v3".into(), include_str!("../../../../licenses/sing-box-GPL-3.0.txt")),
+        ("Hysteria2 · MIT".into(), include_str!("../../../../licenses/Hysteria-MIT.txt")),
+        ("Pretendard · OFL 1.1".into(), include_str!("../../../../licenses/Pretendard-OFL-1.1.txt")),
+        ("JetBrains Mono · OFL 1.1".into(), include_str!("../../../../licenses/JetBrainsMono-OFL-1.1.txt")),
+        ("Material Symbols · Apache 2.0".into(), include_str!("../../../../licenses/MaterialSymbols-Apache-2.0.txt")),
+    ]
+}
+
+/// the licences folder: next to the program, else the repository's (a build from the source)
+fn license_dir() -> std::path::PathBuf {
+    let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("licenses")));
+    match beside {
+        Some(d) if d.is_dir() => d,
+        _ => std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("licenses"),
+    }
+}
+
+/// Open a folder or a web address with the system (Explorer, the default browser)
+fn open_with_system(target: &str) -> std::io::Result<()> {
+    std::process::Command::new("explorer").arg(target).spawn().map(|_| ())
+}
+
+fn info_labels(app: &App, code: &str) {
+    let i = app.global::<Info>();
+    let t = |s: &str| SharedString::from(tr(s));
+    i.set_help_title(t("How to use"));
+    i.set_help(ModelRc::new(VecModel::from(help_blocks(help_markdown(code)))));
+    i.set_about_title(t("About"));
+    i.set_desc(t("Creates and runs proxies from inbound and outbound blocks."));
+    i.set_s_version(t("Version"));
+    i.set_s_engines(t("Engines"));
+    i.set_s_folder(t("Settings folder"));
+    i.set_folder_label(t("Settings and data"));
+    i.set_open_folder(t("Open folder"));
+    i.set_s_links(t("Links"));
+    i.set_repo_label(t("Source code (GitHub)"));
+    i.set_repo_url(REPO_URL.into());
+    i.set_releases_label(t("Releases"));
+    i.set_releases_url(format!("{REPO_URL}/releases").into());
+    i.set_open(t("Open"));
+    i.set_licenses(t("Licenses"));
+    i.set_licenses_desc(t("Licenses of the fonts and open source components included in this program"));
+    i.set_lic_desc(t("Fonts and open source components included in ProxyDock (also in the {LICENSE_DIR} folder).").replace("{LICENSE_DIR}", "licenses").into());
+    i.set_back(t("Back"));
+    let names: Vec<SharedString> = licenses().into_iter().map(|(n, _)| SharedString::from(n)).collect();
+    i.set_lic_names(ModelRc::new(VecModel::from(names)));
+    app.set_t_help(t("How to use"));
+    app.set_t_about(t("About"));
+}
+
+/// the About page from the core's "about"
+fn show_about(app: &App, v: &Value) {
+    let i = app.global::<Info>();
+    let version = v["version"].as_str().unwrap_or("");
+    i.set_app_version(version.into());
+    i.set_version_text(tr("Version {version}").replace("{version}", version).into());
+    i.set_app_dir(v["app_dir"].as_str().unwrap_or("").into());
+    let rows: Vec<EngineRow> = match v["engines"].as_array() {
+        None => vec![EngineRow { name: "sing-box".into(), text: tr("Checking…").into() }, EngineRow { name: "Hysteria2".into(), text: tr("Checking…").into() }],
+        Some(list) => list
+            .iter()
+            .map(|e| {
+                let text = match (e[1].as_str(), e[2].as_str()) {
+                    (None, _) => tr("Not found"),
+                    (Some(path), Some(ver)) => format!("{}\n{path}", tr("Version {version}").replace("{version}", ver)),
+                    (Some(path), None) => format!("{}\n{path}", tr("Version unknown")),
+                };
+                EngineRow { name: e[0].as_str().unwrap_or("").into(), text: text.into() }
+            })
+            .collect(),
+    };
+    i.set_engines(ModelRc::new(VecModel::from(rows)));
+}
+
+fn show_license(app: &App) {
+    let i = app.global::<Info>();
+    let list = licenses();
+    let k = (i.get_lic_index().max(0) as usize).min(list.len() - 1);
+    i.set_lic_text(list[k].1.into());
 }

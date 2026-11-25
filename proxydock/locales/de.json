@@ -1061,5 +1061,7 @@
  "Scales text and UI elements together (applies after the window is opened again)": "Skaliert Text und Oberfläche gemeinsam (gilt, wenn das Fenster neu geöffnet wird)",
  "Settings have unsaved changes": "Es gibt nicht übernommene Änderungen",
  "Revert": "Zurücksetzen",
- "Several servers (separated by commas): all are asked at once and the first answer is used.": "Mehrere Server (durch Kommas getrennt): Alle werden gleichzeitig gefragt, die erste Antwort wird verwendet."
+ "Several servers (separated by commas): all are asked at once and the first answer is used.": "Mehrere Server (durch Kommas getrennt): Alle werden gleichzeitig gefragt, die erste Antwort wird verwendet.",
+ "Back": "Zurück",
+ "Rust crates (list)": "Rust-Crates (Liste)"
 }

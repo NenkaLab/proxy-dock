@@ -234,6 +234,7 @@ pub fn spawn_with(config_path: PathBuf, hooks: Hooks) -> std::io::Result<Handle>
         pc_card: pc.clone(),
         firewall: None,
         fw_busy: false,
+        engines: None,
         engine_text: String::new(),
         latency: HashMap::new(),
         latency_busy: std::collections::HashSet::new(),
@@ -304,6 +305,8 @@ struct Controller {
     /// the firewall block rule: None while it is being checked or changed
     firewall: Option<bool>,
     fw_busy: bool,
+    /// the About page's engines: [name, program, version] (None while they are being asked)
+    engines: Option<Vec<Value>>,
     /// the settings page's sing-box line (path and version)
     engine_text: String,
     /// latency of outbound blocks: id -> (ok, ms, error, what it depends on)
@@ -868,6 +871,33 @@ impl Controller {
         });
     }
 
+    /// the sing-box and Hysteria programs and their versions, asked in the background (Python `probe_cores`)
+    fn refresh_engines(&mut self) {
+        let glob = self.glob.clone();
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let mut out = vec![];
+            for (name, exe) in [("sing-box", proxydock_core::singbox::find_binary(&glob)), ("Hysteria2", proxydock_core::singbox::find_hysteria(&glob))] {
+                let version = exe.as_deref().and_then(proxydock_core::singbox::core_version);
+                out.push(json!([name, exe.map(|e| e.display().to_string()), version]));
+            }
+            let _ = tx.send(Msg::Work(Box::new(move |c: &mut Controller| {
+                c.engines = Some(out);
+                let msg = json!({"ev": "about", "about": c.about_json()});
+                c.broadcast(&msg);
+            })));
+        });
+    }
+
+    /// the About page (Python `AboutInterface`)
+    fn about_json(&self) -> Value {
+        json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "app_dir": self.config_path.parent().map(|d| d.display().to_string()).unwrap_or_default(),
+            "engines": self.engines,
+        })
+    }
+
     fn send_settings(&mut self) {
         let msg = json!({"ev": "settings", "settings": self.settings_json()});
         self.broadcast(&msg);
@@ -910,6 +940,7 @@ impl Controller {
         self.undo_base = self.snapshot();
         *self.shared_glob.lock().unwrap() = self.glob.clone();
         self.refresh_firewall();
+        self.refresh_engines();
         self.engine_text = engine_text(&self.glob);
         if self.glob["singbox_latest"] == json!(true) {
             self.update_latest_singbox();
@@ -1467,7 +1498,7 @@ impl Controller {
                 let canvas = canvas::to_json(&self.view, &|id| state_name(&self.manager.state(id)));
                 let hello = json!({"ev": "hello", "language": self.glob["language"], "cards": cards, "logs": logs, "stats": self.stats_json(), "canvas": canvas, "undo": !self.undo.is_empty(), "redo": !self.redo.is_empty(),
                     "settings": self.settings_json(), "latency": self.latency_json(),
-                    "history": self.stat_history_json(), "conn": self.conn_sites_json()});
+                    "history": self.stat_history_json(), "conn": self.conn_sites_json(), "about": self.about_json()});
                 if let Some(c) = self.clients.get_mut(&n) {
                     c.ready = ipc::send(&mut c.stream, &hello).is_ok();
                 }
