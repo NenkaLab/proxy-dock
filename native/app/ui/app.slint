@@ -843,6 +843,410 @@ component SettingsLogs inherits SettingsSection {
     }
 }
 
+// --- statistics page (Python ui/stats.py) ---
+
+export struct StatTileData { title: string, value: string, sub: string }
+// one graph line: its colour, the SVG path in a 0..59 x 0..1000 box (y down), and the filled area ("" = none)
+export struct ChartLine { name: string, color: color, commands: string, area: string }
+
+export global Stats {
+    in property <string> title;
+    in property <[string]> choices;
+    in-out property <int> choice;
+    in property <[string]> modes;
+    in-out property <int> mode;
+    in property <[StatTileData]> tiles;
+    in property <string> chart-title;
+    in property <string> max-text;
+    in property <[ChartLine]> lines;
+    in property <string> empty;
+    // the graph's size in px (the paths are drawn in it: a Path keeps its view box's aspect ratio)
+    in-out property <float> chart-w: 600;
+    in-out property <float> chart-h: 240;
+    callback changed();
+}
+
+component StatTile inherits Rectangle {
+    in property <StatTileData> data;
+    border-radius: 20px;
+    background: M3.surface-container-low;
+    min-height: 92px;
+    // equal shares of the row (not by the length of their text)
+    preferred-width: 100px;
+    horizontal-stretch: 1;
+    VerticalLayout {
+        padding: 16px;
+        padding-left: 20px;
+        spacing: 2px;
+        alignment: center;
+        Text {
+            text: root.data.title;
+            font-size: 12px;
+            color: M3.on-surface-variant;
+            overflow: elide;
+        }
+        Text {
+            text: root.data.value;
+            font-size: 22px;
+            font-weight: 700;
+            color: M3.on-surface;
+            overflow: elide;
+        }
+        Text {
+            text: root.data.sub;
+            font-size: 12px;
+            color: M3.on-surface-variant;
+            overflow: elide;
+        }
+    }
+}
+
+// a pill segmented button row (M3 segmented buttons)
+component Segmented inherits Rectangle {
+    in property <[string]> items;
+    in-out property <int> current;
+    callback picked();
+    height: 36px;
+    width: seg-row.preferred-width;
+    border-radius: 18px;
+    border-width: 1px;
+    border-color: M3.outline-variant;
+    clip: true;
+    seg-row := HorizontalLayout {
+        for item[i] in root.items: Rectangle {
+            width: seg-label.preferred-width + 28px;
+            background: i == root.current ? M3.secondary-container : seg-ta.has-hover ? M3.on-surface.with-alpha(0.06) : transparent;
+            seg-label := Text {
+                text: item;
+                font-size: 13px;
+                font-weight: i == root.current ? 700 : 500;
+                color: i == root.current ? M3.on-secondary-container : M3.on-surface;
+            }
+            seg-ta := TouchArea {
+                clicked => {
+                    root.current = i;
+                    root.picked();
+                }
+            }
+        }
+    }
+}
+
+component StatsPage inherits VerticalLayout {
+    spacing: 14px;
+    HorizontalLayout {
+        spacing: 12px;
+        Text {
+            text: Stats.title;
+            font-size: 26px;
+            font-weight: 700;
+            color: M3.on-surface;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+        }
+        ComboBox {
+            width: 240px;
+            model: Stats.choices;
+            current-index <=> Stats.choice;
+            selected => { Stats.changed(); }
+        }
+    }
+    // tiles: three a row when there is room, two otherwise
+    property <bool> wide: self.width >= 640px;
+    if root.wide: VerticalLayout {
+        spacing: 12px;
+        HorizontalLayout {
+            spacing: 12px;
+            StatTile { data: Stats.tiles[0]; }
+            StatTile { data: Stats.tiles[1]; }
+            StatTile { data: Stats.tiles[2]; }
+        }
+        HorizontalLayout {
+            spacing: 12px;
+            StatTile { data: Stats.tiles[3]; }
+            StatTile { data: Stats.tiles[4]; }
+            StatTile { data: Stats.tiles[5]; }
+        }
+    }
+    if !root.wide: VerticalLayout {
+        spacing: 12px;
+        HorizontalLayout {
+            spacing: 12px;
+            StatTile { data: Stats.tiles[0]; }
+            StatTile { data: Stats.tiles[1]; }
+        }
+        HorizontalLayout {
+            spacing: 12px;
+            StatTile { data: Stats.tiles[2]; }
+            StatTile { data: Stats.tiles[5]; }
+        }
+        HorizontalLayout {
+            spacing: 12px;
+            StatTile { data: Stats.tiles[3]; }
+            StatTile { data: Stats.tiles[4]; }
+        }
+    }
+    Rectangle {
+        vertical-stretch: 1;
+        min-height: 220px;
+        border-radius: 20px;
+        background: M3.surface-container-low;
+        VerticalLayout {
+            padding: 16px;
+            padding-left: 20px;
+            spacing: 8px;
+            HorizontalLayout {
+                spacing: 12px;
+                Text {
+                    text: Stats.chart-title;
+                    font-size: 13px;
+                    font-weight: 600;
+                    color: M3.on-surface;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                }
+                Segmented {
+                    items: Stats.modes;
+                    current <=> Stats.mode;
+                    picked => { Stats.changed(); }
+                }
+            }
+            // legend, then the graph
+            HorizontalLayout {
+                spacing: 14px;
+                Text {
+                    text: Stats.max-text;
+                    font-size: 12px;
+                    color: M3.on-surface-variant;
+                    horizontal-stretch: 1;
+                }
+                for l in Stats.lines: HorizontalLayout {
+                    horizontal-stretch: 0;
+                    spacing: 6px;
+                    Rectangle {
+                        width: 10px;
+                        height: 10px;
+                        y: (parent.height - self.height) / 2;
+                        border-radius: 3px;
+                        background: l.color;
+                    }
+                    Text {
+                        text: l.name;
+                        font-size: 12px;
+                        color: M3.on-surface-variant;
+                        max-width: 160px;
+                        overflow: elide;
+                    }
+                }
+            }
+            chart := Rectangle {
+                vertical-stretch: 1;
+                init => {
+                    Stats.chart-w = self.width / 1px;
+                    Stats.chart-h = self.height / 1px;
+                }
+                changed width => {
+                    Stats.chart-w = self.width / 1px;
+                    Stats.changed();
+                }
+                changed height => {
+                    Stats.chart-h = self.height / 1px;
+                    Stats.changed();
+                }
+                for i in 5: Rectangle {
+                    y: chart.height * i / 4;
+                    height: 1px;
+                    background: M3.on-surface.with-alpha(0.10);
+                }
+                for l in Stats.lines: Path {
+                    width: chart.width;
+                    height: chart.height;
+                    viewbox-x: 0;
+                    viewbox-y: 0;
+                    viewbox-width: Stats.chart-w;
+                    viewbox-height: Stats.chart-h;
+                    commands: l.area;
+                    fill: l.color.with-alpha(0.20);
+                    visible: l.area != "";
+                }
+                for l in Stats.lines: Path {
+                    width: chart.width;
+                    height: chart.height;
+                    viewbox-x: 0;
+                    viewbox-y: 0;
+                    viewbox-width: Stats.chart-w;
+                    viewbox-height: Stats.chart-h;
+                    commands: l.commands;
+                    stroke: l.color;
+                    stroke-width: 2px;
+                }
+                if Stats.empty != "": Text {
+                    text: Stats.empty;
+                    color: M3.on-surface-variant;
+                    font-size: 14px;
+                }
+            }
+        }
+    }
+}
+
+// --- connection test page (Python ui/conntest.py) ---
+
+export struct ConnRow {
+    region: string, name: string, host: string, added: bool,
+    result: string, conn: string, total: string,
+    // 0 not tested / waiting, 1 answered, 2 failed
+    tone: int,
+}
+
+export global Conn {
+    in property <string> title;
+    in property <[string]> proxies;
+    in-out property <int> proxy;
+    in property <string> button;
+    in property <bool> button-enabled;
+    in property <string> summary;
+    in property <string> placeholder;
+    in property <string> add-text;
+    in-out property <string> site;
+    in property <bool> editable: true;
+    in property <[string]> columns;
+    in property <[ConnRow]> rows;
+    callback start();
+    callback add();
+    callback remove(string);
+    callback proxy-changed();
+}
+
+component ConnPage inherits VerticalLayout {
+    spacing: 10px;
+    // the region and address columns go when it gets narrow
+    property <bool> wide: self.width >= 760px;
+    HorizontalLayout {
+        spacing: 12px;
+        Text {
+            text: Conn.title;
+            font-size: 26px;
+            font-weight: 700;
+            color: M3.on-surface;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+        }
+        ComboBox {
+            width: 220px;
+            model: Conn.proxies;
+            current-index <=> Conn.proxy;
+            enabled: Conn.proxies.length > 0;
+            selected => { Conn.proxy-changed(); }
+        }
+        Button {
+            min-width: 190px;
+            text: Conn.button;
+            icon: @image-url("icons/network_check.svg");
+            colorize-icon: true;
+            primary: true;
+            enabled: Conn.button-enabled;
+            clicked => { Conn.start(); }
+        }
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        Text {
+            text: Conn.summary;
+            font-size: 12px;
+            color: M3.on-surface-variant;
+            wrap: word-wrap;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+        }
+        LineEdit {
+            width: 260px;
+            text <=> Conn.site;
+            placeholder-text: Conn.placeholder;
+            enabled: Conn.editable;
+            accepted => { Conn.add(); }
+        }
+        Button {
+            text: Conn.add-text;
+            icon: @image-url("icons/add.svg");
+            colorize-icon: true;
+            enabled: Conn.editable;
+            clicked => { Conn.add(); }
+        }
+    }
+    Rectangle {
+        vertical-stretch: 1;
+        border-radius: 16px;
+        background: M3.surface-container-low;
+        clip: true;
+        VerticalLayout {
+            // header
+            Rectangle {
+                height: 40px;
+                background: M3.surface-container-high;
+                HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 12px;
+                    spacing: 12px;
+                    if root.wide: Text { width: 90px; text: Conn.columns[0]; font-size: 12px; font-weight: 700; color: M3.on-surface-variant; vertical-alignment: center; }
+                    Text { width: 120px; text: Conn.columns[1]; font-size: 12px; font-weight: 700; color: M3.on-surface-variant; vertical-alignment: center; }
+                    if root.wide: Text { width: 170px; text: Conn.columns[2]; font-size: 12px; font-weight: 700; color: M3.on-surface-variant; vertical-alignment: center; }
+                    Text { horizontal-stretch: 1; text: Conn.columns[3]; font-size: 12px; font-weight: 700; color: M3.on-surface-variant; vertical-alignment: center; }
+                    Text { width: 70px; text: Conn.columns[4]; font-size: 12px; font-weight: 700; color: M3.on-surface-variant; vertical-alignment: center; horizontal-alignment: right; }
+                    Text { width: 70px; text: Conn.columns[5]; font-size: 12px; font-weight: 700; color: M3.on-surface-variant; vertical-alignment: center; horizontal-alignment: right; }
+                    Rectangle { width: 28px; }
+                }
+            }
+            ListView {
+                for r[i] in Conn.rows: Rectangle {
+                    height: 36px;
+                    background: mod(i, 2) == 1 ? M3.on-surface.with-alpha(0.03) : transparent;
+                    HorizontalLayout {
+                        padding-left: 16px;
+                        padding-right: 12px;
+                        spacing: 12px;
+                        if root.wide: Text { width: 90px; text: r.region; font-size: 13px; color: M3.on-surface-variant; vertical-alignment: center; overflow: elide; }
+                        Text { width: 120px; text: r.name; font-size: 13px; font-weight: 600; color: M3.on-surface; vertical-alignment: center; overflow: elide; }
+                        if root.wide: Text { width: 170px; text: r.host; font-size: 12px; font-family: "JetBrains Mono"; color: M3.on-surface-variant; vertical-alignment: center; overflow: elide; }
+                        Text {
+                            horizontal-stretch: 1;
+                            text: r.result;
+                            font-size: 13px;
+                            color: r.tone == 1 ? #2e9d4a : r.tone == 2 ? M3.error : M3.on-surface-variant;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        Text { width: 70px; text: r.conn; font-size: 12px; font-family: "JetBrains Mono"; color: M3.on-surface; vertical-alignment: center; horizontal-alignment: right; }
+                        Text { width: 70px; text: r.total; font-size: 12px; font-family: "JetBrains Mono"; color: M3.on-surface; vertical-alignment: center; horizontal-alignment: right; }
+                        // a site the user added can be taken out again
+                        Rectangle {
+                            width: 28px;
+                            if r.added: Rectangle {
+                                width: 28px;
+                                height: 28px;
+                                border-radius: 14px;
+                                background: rm-ta.has-hover && Conn.editable ? M3.on-surface.with-alpha(0.10) : transparent;
+                                opacity: Conn.editable ? 1 : 0.38;
+                                Image {
+                                    width: 16px;
+                                    height: 16px;
+                                    source: @image-url("icons/close.svg");
+                                    colorize: M3.on-surface-variant;
+                                }
+                                rm-ta := TouchArea {
+                                    enabled: Conn.editable;
+                                    clicked => { Conn.remove(r.host); }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 export component App inherits Window {
     // canvas
     in property <[NodeData]> nodes;
@@ -931,6 +1335,8 @@ export component App inherits Window {
     in-out property <int> page: 0;
     in property <string> t-proxy: "Proxy";
     in property <string> t-logs: "Logs";
+    in property <string> t-stats: "Statistics";
+    in property <string> t-conn: "Connection test";
     in property <string> t-stop-all: "Stop all proxies";
     in property <string> t-empty: "No proxies yet.";
     in property <bool> connected: true;
@@ -975,6 +1381,18 @@ export component App inherits Window {
                 label: root.t-proxy;
                 active: root.page == 1;
                 clicked => { root.page = 1; }
+            }
+            RailItem {
+                icon: @image-url("icons/monitoring.svg");
+                label: root.t-stats;
+                active: root.page == 5;
+                clicked => { root.page = 5; }
+            }
+            RailItem {
+                icon: @image-url("icons/network_check.svg");
+                label: root.t-conn;
+                active: root.page == 6;
+                clicked => { root.page = 6; }
             }
             RailItem {
                 icon: @image-url("icons/receipt_long.svg");
@@ -1240,6 +1658,8 @@ export component App inherits Window {
                             }
                         }
                     }
+                    StatsPage { visible: root.page == 5; }
+                    ConnPage { visible: root.page == 6; }
                     settings-page := VerticalLayout {
                         visible: root.page == 4;
                         spacing: 12px;

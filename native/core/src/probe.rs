@@ -495,3 +495,83 @@ pub fn outbound_proxy(g: &crate::graph::Obj, oid: &str) -> Value {
 pub fn latency_key(g: &crate::graph::Obj, oid: &str) -> Value {
     crate::graph::resolve_outbound(g, oid)
 }
+
+// --- the connection test page (Python `ui/conntest.py`) ---
+
+/// sites tried at the same time, seconds before the test can run again, the temporary bridge card's id
+pub const PROBE_WORKERS: usize = 6;
+pub const PROBE_COOLDOWN: u64 = 15;
+pub const BRIDGE_ID: &str = "__probe__";
+
+/// the built-in test sites: (region, name, host); the region is translated with tr (Python `TEST_SITES`)
+pub const TEST_SITES: [(&str, &str, &str); 21] = [
+    ("Global", "Google", "www.google.com"),
+    ("Global", "YouTube", "www.youtube.com"),
+    ("Global", "Microsoft", "www.microsoft.com"),
+    ("Global", "Apple", "www.apple.com"),
+    ("Global", "Amazon", "www.amazon.com"),
+    ("Global", "Cloudflare", "www.cloudflare.com"),
+    ("Global", "GitHub", "github.com"),
+    ("Global", "Wikipedia", "www.wikipedia.org"),
+    ("Global", "Netflix", "www.netflix.com"),
+    ("Korea", "NAVER", "www.naver.com"),
+    ("Japan", "Yahoo! JAPAN", "www.yahoo.co.jp"),
+    ("China", "Baidu", "www.baidu.com"),
+    ("USA", "CNN", "www.cnn.com"),
+    ("UK", "BBC", "www.bbc.co.uk"),
+    ("Germany", "DER SPIEGEL", "www.spiegel.de"),
+    ("France", "Le Monde", "www.lemonde.fr"),
+    ("Brazil", "Globo", "www.globo.com"),
+    ("India", "Flipkart", "www.flipkart.com"),
+    ("Australia", "ABC", "www.abc.net.au"),
+    ("Canada", "CBC", "www.cbc.ca"),
+    ("Russia", "Yandex", "ya.ru"),
+];
+
+/// Every site of the test: (region, name, host, added by the user) (Python `ConnTestInterface.sites`)
+pub fn test_sites(glob: &Map<String, Value>) -> Vec<(String, String, String, bool)> {
+    let mut out: Vec<_> = TEST_SITES.iter().map(|(g, n, h)| (tr(g), n.to_string(), h.to_string(), false)).collect();
+    for h in glob.get("test_sites").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+        out.push((tr("Added"), h.to_string(), h.to_string(), true));
+    }
+    out
+}
+
+/// The temporary SOCKS5 card on 127.0.0.1:`port` that leads to the card under test (Python `bridge_for`)
+pub fn bridge_for(proxy: &Value, port: u16) -> Value {
+    let ob = crate::graph::chain_outbound(&proxy["inbound"]);
+    let mut p = crate::config::validate_proxy(&json!({
+        "id": BRIDGE_ID, "name": tr("Connection test"),
+        "inbound": {"type": "socks5", "host": "127.0.0.1", "port": 1}, "outbound": ob,
+    }));
+    p["inbound"]["port"] = json!(port);
+    if let Some(ov) = p.get_mut("overrides").and_then(Value::as_object_mut) {
+        ov.insert("allowed_domains".into(), json!(["*"]));
+        ov.insert("block_private".into(), json!(false));
+        ov.insert("log_connections".into(), json!(false));
+        ov.insert("log_close".into(), json!(false));
+    }
+    Value::Object(p)
+}
+
+/// A free loopback port (for a temporary card)
+pub fn free_local_port() -> u16 {
+    free_port()
+}
+
+/// One row's result columns: (result, connect, total, ok) (Python `ConnTestInterface._on_result`)
+pub fn site_result(res: &Map<String, Value>) -> (String, String, String, bool) {
+    let ms = |k: &str| res.get(k).and_then(Value::as_f64).map_or("-".to_string(), |v| format!("{v:.0} ms"));
+    let g = |k: &str| res.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let ok = res.get("ok") == Some(&json!(true));
+    let text = if ok {
+        if !g("note").is_empty() {
+            tr("Connected · {note}").replace("{note}", &g("note"))
+        } else {
+            tr("OK · HTTP {status}").replace("{status}", &g("status"))
+        }
+    } else {
+        tr("Failed · {error}").replace("{error}", &g("error"))
+    };
+    (text, ms("connect_ms"), ms("total_ms"), ok)
+}

@@ -650,3 +650,74 @@ fn settings_page_and_latency() {
     h.quit(Duration::from_secs(10));
     let _ = std::fs::remove_dir_all(&home);
 }
+
+#[test]
+fn statistics_and_connection_test() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(exe) = singbox() else {
+        eprintln!("sing-box not found: skipped");
+        return;
+    };
+    let home = std::env::temp_dir().join(format!("proxydock-conn-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let port = free_port();
+    let settings = json!({
+        "version": 3,
+        "global": {"singbox_path": exe.display().to_string()},
+        "graph": {
+            "inbounds": [{"id": "c", "name": "card", "autostart": true, "inbound": {"type": "http", "host": "127.0.0.1", "port": port}, "target": "d"}],
+            "outbounds": [{"id": "d", "name": "Direct", "outbound": {"type": "direct"}}],
+        },
+    });
+    let path = home.join("config.json");
+    std::fs::write(&path, settings.to_string()).unwrap();
+    proxydock_core::singbox::guard::set_run_dir(home.join("run"));
+    let h = controller::spawn(path.clone()).unwrap();
+    let (mut w, rx) = connect(&h, &h.token);
+    let hello = expect(&rx, 5, |v| v["ev"] == "hello").expect("hello");
+    assert_eq!(hello["conn"]["sites"].as_array().unwrap().len(), 21);
+    assert_eq!(hello["conn"]["sites"][0], json!(["Global", "Google", "www.google.com", false]));
+    assert_eq!(hello["history"]["meta"]["exits"][0], json!(["d", "Direct", ""]));
+
+    // sites: refused, added, already there, removed
+    ipc::send(&mut w, &json!({"cmd": "test_site_add", "text": "localhost"})).unwrap();
+    assert!(expect(&rx, 5, |v| v["ev"] == "error" && v["message"].as_str().unwrap().starts_with("Cannot add: ")).is_some());
+    ipc::send(&mut w, &json!({"cmd": "test_site_add", "text": "https://Example.COM/x"})).unwrap();
+    let sites = expect(&rx, 5, |v| v["ev"] == "conn_sites").expect("sites");
+    assert_eq!(sites["conn"]["sites"][21], json!(["Added", "example.com", "example.com", true]));
+    assert_eq!(saved(&path)["global"]["test_sites"], json!(["example.com"]));
+    ipc::send(&mut w, &json!({"cmd": "test_site_add", "text": "www.google.com"})).unwrap();
+    assert!(expect(&rx, 5, |v| v["ev"] == "info" && v["message"] == "Already in the list: www.google.com").is_some());
+    ipc::send(&mut w, &json!({"cmd": "test_site_remove", "host": "example.com"})).unwrap();
+    let sites = expect(&rx, 5, |v| v["ev"] == "conn_sites").expect("sites");
+    assert_eq!(sites["conn"]["sites"].as_array().unwrap().len(), 21);
+
+    // the card runs: each second a point with every card, the total and the exit blocks
+    let until = Instant::now() + Duration::from_secs(10);
+    while !h.cards().iter().any(|c| c.state == proxydock_core::manager::State::Running) && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let st = expect(&rx, 5, |v| v["ev"] == "stats").expect("stats");
+    assert!(st["point"]["cards"]["c"].is_array() && st["point"]["cards"][""].is_array(), "{st}");
+    assert!(st["stats"][""]["tcp"].is_number());
+
+    // the connection test through the card: every site answers or fails, then the summary
+    ipc::send(&mut w, &json!({"cmd": "conn_test", "id": "c"})).unwrap();
+    let start = expect(&rx, 10, |v| v["ev"] == "conn_start").expect("start");
+    assert_eq!(start["total"], 21);
+    let mut rows = std::collections::HashSet::new();
+    let done = loop {
+        let v = expect(&rx, 60, |v| v["ev"] == "conn_result" || v["ev"] == "conn_done").expect("results");
+        if v["ev"] == "conn_done" {
+            break v;
+        }
+        rows.insert(v["row"].as_u64().unwrap());
+    };
+    assert_eq!(rows.len(), 21);
+    assert_eq!(done["error"], "");
+    eprintln!("{}", done["summary"]);
+    assert!(done["summary"].as_str().unwrap().starts_with("Succeeded "));
+    h.quit(Duration::from_secs(10));
+    let _ = std::fs::remove_dir_all(&home);
+}

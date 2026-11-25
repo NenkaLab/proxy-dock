@@ -63,6 +63,9 @@ impl Default for Hooks {
     }
 }
 
+/// seconds of throughput the statistics graph shows (Python `stats.POINTS`)
+pub const STAT_POINTS: usize = 60;
+
 /// outbound blocks measured at the same time (Python: a pool of 4)
 const LATENCY_WORKERS: usize = 4;
 
@@ -212,6 +215,14 @@ pub fn spawn_with(config_path: PathBuf, hooks: Hooks) -> std::io::Result<Handle>
         latency: HashMap::new(),
         latency_busy: std::collections::HashSet::new(),
         latency_round: None,
+        stat_last: HashMap::new(),
+        stat_last_t: Instant::now(),
+        stat_hist: HashMap::new(),
+        exit_last: HashMap::new(),
+        exit_hist: HashMap::new(),
+        conn_running: false,
+        conn_ok: vec![],
+        conn_total: 0,
         file_log: None,
         undo: vec![],
         redo: vec![],
@@ -272,6 +283,17 @@ struct Controller {
     latency_busy: std::collections::HashSet<String>,
     /// the running test: (total, done, ok)
     latency_round: Option<(usize, usize, usize)>,
+    /// statistics: each card's up / down bytes at the last tick, and the last minute per second of each card
+    /// ("" = all of them: up, down) and of each outbound block (up + down)
+    stat_last: HashMap<String, (f64, f64)>,
+    stat_last_t: Instant,
+    stat_hist: HashMap<String, VecDeque<(f64, f64)>>,
+    exit_last: HashMap<String, (f64, f64)>,
+    exit_hist: HashMap<String, VecDeque<f64>>,
+    /// a connection test runs; the times of the sites that answered and how many sites
+    conn_running: bool,
+    conn_ok: Vec<f64>,
+    conn_total: usize,
     /// "Save the log to a file" (global setting `log_to_file`)
     file_log: Option<log::FileLog>,
     /// undo / redo: the graph before each change; the changes one message makes are one step
@@ -510,6 +532,7 @@ impl Controller {
             self.rebuild();
             self.send_canvas();
             self.app_log(Level::Setting, &tr("Language changed"));
+            self.send_conn_sites();
         }
         let settings = json!({"ev": "settings", "settings": self.settings_json()});
         self.broadcast(&settings);
@@ -724,7 +747,7 @@ impl Controller {
     fn send_canvas(&mut self) {
         let cards: Vec<Value> = self.proxies.iter().map(|p| self.card_json(p)).collect();
         let canvas = canvas::to_json(&self.view, &|id| state_name(&self.manager.state(id)));
-        self.broadcast(&json!({"ev": "graph", "cards": cards, "canvas": canvas}));
+        self.broadcast(&json!({"ev": "graph", "cards": cards, "canvas": canvas, "stat_meta": self.stat_meta()}));
     }
 
     /// The block editor. open: a draft of the block and its fields; preview: the typed values go into the draft and
@@ -1194,7 +1217,8 @@ impl Controller {
                 let logs: Vec<Value> = self.logs.iter().skip(skip).map(entry_json).collect();
                 let canvas = canvas::to_json(&self.view, &|id| state_name(&self.manager.state(id)));
                 let hello = json!({"ev": "hello", "language": self.glob["language"], "cards": cards, "logs": logs, "stats": self.stats_json(), "canvas": canvas, "undo": !self.undo.is_empty(), "redo": !self.redo.is_empty(),
-                    "settings": self.settings_json(), "latency": self.latency_json()});
+                    "settings": self.settings_json(), "latency": self.latency_json(),
+                    "history": self.stat_history_json(), "conn": self.conn_sites_json()});
                 if let Some(c) = self.clients.get_mut(&n) {
                     c.ready = ipc::send(&mut c.stream, &hello).is_ok();
                 }
@@ -1224,6 +1248,18 @@ impl Controller {
                 self.test_latency(&keys);
             }
             "quit" => (self.hooks.quit)(),
+            "conn_test" => self.conn_test(id),
+            "test_site_add" => {
+                let text = v["text"].as_str().unwrap_or("").to_string();
+                self.add_test_site(&text);
+            }
+            "test_site_remove" => {
+                if !self.conn_running {
+                    let host = v["host"].clone();
+                    let list: Vec<Value> = self.glob["test_sites"].as_array().cloned().unwrap_or_default().into_iter().filter(|h| *h != host).collect();
+                    self.set_test_sites(list);
+                }
+            }
             "undo" => self.undo_step(false),
             "redo" => self.undo_step(true),
             "edit_open" | "edit_preview" | "edit_action" | "edit_save" => self.editor(n, cmd, v),
@@ -1295,12 +1331,222 @@ impl Controller {
 
     fn stats_json(&self) -> Value {
         let mut out = Map::new();
+        let mut sum = [0.0f64; 2];
+        let mut counts = [0u64; 5];
         for p in &self.proxies {
             let id = p["id"].as_str().unwrap_or("");
             let s = self.manager.stats(id);
+            sum[0] += s.up as f64;
+            sum[1] += s.down as f64;
+            for (c, v) in counts.iter_mut().zip([s.tcp_active, s.udp_active, s.total, s.failed, s.blocked]) {
+                *c += v as u64;
+            }
             out.insert(id.into(), json!({"up": s.up, "down": s.down, "tcp": s.tcp_active, "udp": s.udp_active, "total": s.total, "failed": s.failed, "blocked": s.blocked}));
         }
+        // "" = every card together (Python `Stats.sum`)
+        out.insert("".into(), json!({"up": sum[0], "down": sum[1], "tcp": counts[0], "udp": counts[1], "total": counts[2], "failed": counts[3], "blocked": counts[4]}));
         Value::Object(out)
+    }
+
+    /// Once a second (Python `_tick` / `_exit_rates`): each card's and every exit block's rate since the last tick,
+    /// kept for the last minute. Returns this second's point for the window.
+    fn stat_tick(&mut self) -> Value {
+        let now = Instant::now();
+        let dt = now.duration_since(self.stat_last_t).as_secs_f64().max(1e-3);
+        self.stat_last_t = now;
+        let mut cards = Map::new();
+        let (mut up_all, mut down_all) = (0.0, 0.0);
+        let mut seen = std::collections::HashSet::new();
+        let mut exits_now: HashMap<String, (f64, f64)> = HashMap::new();
+        for p in &self.proxies {
+            let id = p["id"].as_str().unwrap_or("").to_string();
+            let s = self.manager.stats(&id);
+            let (u, d) = (s.up as f64, s.down as f64);
+            let (lu, ld) = self.stat_last.get(&id).copied().unwrap_or((u, d));
+            let (ru, rd) = ((u - lu).max(0.0) / dt, (d - ld).max(0.0) / dt);
+            self.stat_last.insert(id.clone(), (u, d));
+            up_all += ru;
+            down_all += rd;
+            push_point(self.stat_hist.entry(id.clone()).or_default(), (ru, rd));
+            cards.insert(id.clone(), json!([ru, rd]));
+            for (exit, (eu, ed)) in self.manager.exit_totals(&id) {
+                let e = exits_now.entry(exit).or_default();
+                e.0 += eu;
+                e.1 += ed;
+            }
+            seen.insert(id);
+        }
+        self.stat_last.retain(|k, _| seen.contains(k));
+        self.stat_hist.retain(|k, _| k.is_empty() || seen.contains(k));
+        push_point(self.stat_hist.entry(String::new()).or_default(), (up_all, down_all));
+        cards.insert(String::new(), json!([up_all, down_all]));
+        let mut exits = Map::new();
+        for (oid, (u, d)) in &exits_now {
+            let (lu, ld) = self.exit_last.get(oid).copied().unwrap_or((*u, *d));
+            let r = ((u - lu).max(0.0) + (d - ld).max(0.0)) / dt;
+            exits.insert(oid.clone(), json!(r));
+        }
+        for (oid, h) in self.exit_hist.iter_mut() {
+            if !exits_now.contains_key(oid) {
+                push_point(h, 0.0);
+            }
+        }
+        for (oid, r) in &exits {
+            push_point(self.exit_hist.entry(oid.clone()).or_default(), r.as_f64().unwrap_or(0.0));
+        }
+        self.exit_last = exits_now;
+        json!({"cards": cards, "exits": exits})
+    }
+
+    /// the last minute for a newly opened window, and the names and colours the graph needs
+    fn stat_history_json(&self) -> Value {
+        let cards: Map<String, Value> = self.stat_hist.iter().map(|(k, h)| (k.clone(), json!(h.iter().map(|(u, d)| [*u, *d]).collect::<Vec<_>>()))).collect();
+        let exits: Map<String, Value> = self.exit_hist.iter().map(|(k, h)| (k.clone(), json!(h))).collect();
+        json!({"cards": cards, "exits": exits, "meta": self.stat_meta()})
+    }
+
+    /// cards and outbound blocks for the graph: [id, name, colour]
+    fn stat_meta(&self) -> Value {
+        let colour = |id: &str| graph::find(&self.graph, id).and_then(|(_, n)| n["color"].as_str().map(String::from)).unwrap_or_default();
+        let cards: Vec<Value> = self.proxies.iter().map(|p| {
+            let id = p["id"].as_str().unwrap_or("");
+            json!([id, p["name"], colour(id)])
+        }).collect();
+        let exits: Vec<Value> = self.graph.get("outbounds").and_then(Value::as_array).into_iter().flatten()
+            .filter(|n| n["outbound"]["type"] != "block")
+            .map(|n| json!([n["id"], n["name"], n["color"].as_str().unwrap_or("")]))
+            .collect();
+        json!({"cards": cards, "exits": exits})
+    }
+
+    /// The connection test's sites and whether it runs (Python `ConnTestInterface.sites`)
+    fn conn_sites_json(&self) -> Value {
+        let sites: Vec<Value> = proxydock_core::probe::test_sites(&self.glob).into_iter().map(|(g, n, h, a)| json!([g, n, h, a])).collect();
+        json!({"sites": sites, "running": self.conn_running, "workers": proxydock_core::probe::PROBE_WORKERS,
+               "cooldown": proxydock_core::probe::PROBE_COOLDOWN, "timeout": 8})
+    }
+
+    fn send_conn_sites(&mut self) {
+        let msg = json!({"ev": "conn_sites", "conn": self.conn_sites_json()});
+        self.broadcast(&msg);
+    }
+
+    /// "Add" on the connection test page (Python `ConnTestInterface.add_site` / `set_test_sites`)
+    fn add_test_site(&mut self, text: &str) {
+        if self.conn_running {
+            return;
+        }
+        let Some(host) = config::test_site_host(text) else {
+            let msg = json!({"ev": "error", "message": format!("{}: {}", tr("Cannot add"), tr("Enter a site name like example.com"))});
+            self.broadcast(&msg);
+            return;
+        };
+        if proxydock_core::probe::test_sites(&self.glob).iter().any(|(_, _, h, _)| *h == host) {
+            let msg = json!({"ev": "info", "message": format!("{}: {host}", tr("Already in the list"))});
+            self.broadcast(&msg);
+            return;
+        }
+        let mut list: Vec<Value> = self.glob["test_sites"].as_array().cloned().unwrap_or_default();
+        if list.len() >= config::MAX_TEST_SITES {
+            let msg = json!({"ev": "error", "message": format!("{}: {}", tr("Cannot add"), tr("Up to {n} added sites").replace("{n}", &config::MAX_TEST_SITES.to_string()))});
+            self.broadcast(&msg);
+            return;
+        }
+        list.push(json!(host));
+        self.set_test_sites(list);
+    }
+
+    fn set_test_sites(&mut self, hosts: Vec<Value>) {
+        let mut g = self.glob.clone();
+        g.insert("test_sites".into(), Value::Array(hosts));
+        let g = config::validate_global(&Value::Object(g));
+        if g["test_sites"] != self.glob["test_sites"] {
+            self.glob = g;
+            *self.shared_glob.lock().unwrap() = self.glob.clone();
+            self.save();
+        }
+        self.send_conn_sites();
+    }
+
+    /// "Start test": a temporary SOCKS5 bridge to the running card, then every site over HTTPS through it, 6 at
+    /// a time; each result as it comes (Python `ConnTestInterface._start` / `_on_result` / `_on_done`)
+    fn conn_test(&mut self, id: &str) {
+        if self.conn_running {
+            return;
+        }
+        let Some(proxy) = self.proxy(id).cloned() else { return };
+        if self.manager.state(id) != State::Running {
+            return;
+        }
+        let hosts: Vec<String> = proxydock_core::probe::test_sites(&self.glob).into_iter().map(|(_, _, h, _)| h).collect();
+        self.conn_running = true;
+        self.conn_ok.clear();
+        self.conn_total = hosts.len();
+        let name = name_of(&proxy);
+        let msg = tr("Connection test started: {name} ({len} sites)").replace("{name}", &name).replace("{len}", &hosts.len().to_string());
+        self.app_log(Level::Info, &msg);
+        let start = json!({"ev": "conn_start", "name": name, "total": hosts.len()});
+        self.broadcast(&start);
+        let (tx, remote, glob) = (self.tx.clone(), self.manager.remote(), self.glob.clone());
+        std::thread::spawn(move || {
+            use proxydock_core::probe;
+            let port = probe::free_local_port();
+            let started = remote.start(&probe::bridge_for(&proxy, port), &glob).recv_timeout(Duration::from_secs(15)).unwrap_or(false);
+            let mut err = String::new();
+            if started {
+                let queue = Arc::new(Mutex::new(hosts.iter().cloned().enumerate().collect::<Vec<_>>()));
+                let workers: Vec<_> = (0..probe::PROBE_WORKERS.min(hosts.len()))
+                    .map(|_| {
+                        let (queue, tx) = (queue.clone(), tx.clone());
+                        std::thread::spawn(move || loop {
+                            let next = queue.lock().unwrap().pop();
+                            let Some((row, host)) = next else { break };
+                            let res = probe::probe_site(&host, port);
+                            let _ = tx.send(Msg::Work(Box::new(move |c: &mut Controller| c.on_conn_result(row, res))));
+                        })
+                    })
+                    .collect();
+                for w in workers {
+                    let _ = w.join();
+                }
+            } else {
+                err = match remote.state(probe::BRIDGE_ID) {
+                    State::Error(m) if !m.is_empty() => m,
+                    _ => tr("Could not create the test connection"),
+                };
+            }
+            let _ = remote.stop(probe::BRIDGE_ID).recv_timeout(Duration::from_secs(5));
+            let _ = tx.send(Msg::Work(Box::new(move |c: &mut Controller| c.on_conn_done(err))));
+        });
+    }
+
+    fn on_conn_result(&mut self, row: usize, res: Map<String, Value>) {
+        let (text, conn, total, ok) = proxydock_core::probe::site_result(&res);
+        if ok {
+            self.conn_ok.push(res.get("total_ms").and_then(Value::as_f64).unwrap_or(0.0));
+        }
+        let msg = json!({"ev": "conn_result", "row": row, "result": [text, conn, total, ok]});
+        self.broadcast(&msg);
+    }
+
+    fn on_conn_done(&mut self, err: String) {
+        self.conn_running = false;
+        let summary = if !err.is_empty() {
+            self.app_log(Level::Fail, &tr("Connection test failed: {err}").replace("{err}", &err));
+            tr("Could not start the test: {err}").replace("{err}", &err)
+        } else {
+            let n = self.conn_ok.len();
+            let mut msg = tr("Succeeded {len} / {len2}").replace("{len}", &n.to_string()).replace("{len2}", &self.conn_total.to_string());
+            if n > 0 {
+                let avg = self.conn_ok.iter().sum::<f64>() / n as f64;
+                msg += &tr(" · average {avg:.0f} ms").replace("{avg:.0f}", &format!("{avg:.0}"));
+            }
+            self.app_log(Level::Info, &tr("Connection test finished: {msg}").replace("{msg}", &msg));
+            let clock = log::now_text();
+            msg + &tr("  ·  finished at {strftime}").replace("{strftime}", clock.get(11..).unwrap_or(""))
+        };
+        let msg = json!({"ev": "conn_done", "error": err, "summary": summary});
+        self.broadcast(&msg);
     }
 
     fn on_tick(&mut self) {
@@ -1317,9 +1563,10 @@ impl Controller {
                 let _ = self.manager.start(&p, &self.glob);
             }
         }
+        let point = self.stat_tick();
         if self.clients.values().any(|c| c.ready) {
             let stats = self.stats_json();
-            self.broadcast(&json!({"ev": "stats", "stats": stats}));
+            self.broadcast(&json!({"ev": "stats", "stats": stats, "point": point}));
             self.send_flow();
         }
     }
@@ -1364,6 +1611,17 @@ fn engine_text(glob: &Map<String, Value>) -> String {
             None => exe.display().to_string(),
         },
         None => tr("sing-box was not found"),
+    }
+}
+
+/// one more second in a last-minute history
+fn push_point<T: Default + Clone>(h: &mut VecDeque<T>, v: T) {
+    if h.is_empty() {
+        h.extend(std::iter::repeat_n(T::default(), STAT_POINTS));
+    }
+    h.push_back(v);
+    while h.len() > STAT_POINTS {
+        h.pop_front();
     }
 }
 

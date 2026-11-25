@@ -525,6 +525,8 @@ fn settings_text() -> SettingsText {
 
 fn labels(app: &App) {
     app.global::<Settings>().set_text(settings_text());
+    stats_labels(app);
+    conn_labels(app);
     app.set_t_latency(tr("Test latency").into());
     app.set_t_close(tr("Close").into());
     app.set_t_save(tr("Save").into());
@@ -810,6 +812,55 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
     {
+        // statistics: another card or graph picked
+        let (models, weak) = (models.clone(), app.as_weak());
+        app.global::<Stats>().on_changed(move || {
+            if let Some(a) = weak.upgrade() {
+                stats_render(&a, &running_cards(&models));
+            }
+        });
+        // connection test: start after a short pause (against rapid clicks), sites added and removed
+        let c = app.global::<Conn>();
+        let (send1, weak) = (send.clone(), app.as_weak());
+        c.on_start(move || {
+            let Some(a) = weak.upgrade() else { return };
+            let busy = CONN.with(|s| {
+                let s = s.borrow();
+                s.running || s.preparing || s.cooldown > 0
+            });
+            if busy || conn_selected(&a).is_none() {
+                return;
+            }
+            CONN.with(|s| s.borrow_mut().preparing = true);
+            conn_sync(&a);
+            let (send, weak) = (send1.clone(), a.as_weak());
+            slint::Timer::single_shot(std::time::Duration::from_millis(300), move || {
+                let Some(a) = weak.upgrade() else { return };
+                match conn_selected(&a) {
+                    Some((id, _)) => send(json!({"cmd": "conn_test", "id": id})),
+                    None => {
+                        CONN.with(|s| s.borrow_mut().preparing = false);
+                        conn_sync(&a);
+                    }
+                }
+            });
+        });
+        let (send2, weak) = (send.clone(), app.as_weak());
+        c.on_add(move || {
+            if let Some(a) = weak.upgrade() {
+                send2(json!({"cmd": "test_site_add", "text": a.global::<Conn>().get_site().as_str()}));
+            }
+        });
+        let send3 = send.clone();
+        c.on_remove(move |host| send3(json!({"cmd": "test_site_remove", "host": host.as_str()})));
+        let weak = app.as_weak();
+        c.on_proxy_changed(move || {
+            if let Some(a) = weak.upgrade() {
+                conn_sync(&a);
+            }
+        });
+    }
+    {
         let w = writer.clone();
         app.on_stop_all(move || {
             let _ = ipc::send(&mut w.lock().unwrap(), &json!({"cmd": "stop_all"}));
@@ -835,6 +886,11 @@ fn main() -> Result<(), slint::PlatformError> {
                             show_latency(&app, &m, &v["latency"]);
                             m.set_canvas(&v["canvas"]);
                             show_settings(&app, &v["settings"]);
+                            stats_history(&v["history"]);
+                            stats_push(&v["stats"], &Value::Null);
+                            conn_sites(&app, &v["conn"]);
+                            conn_cards(&app, &m);
+                            stats_render(&app, &running_cards(&m));
                             app.set_can_undo(v["undo"] == json!(true));
                             app.set_can_redo(v["redo"] == json!(true));
                             // debug builds: PROXYDOCK_EDIT=<block id>[,<button>] opens its editor (screenshots without clicking)
@@ -848,6 +904,8 @@ fn main() -> Result<(), slint::PlatformError> {
                         "graph" => {
                             m.cards.set_vec(v["cards"].as_array().into_iter().flatten().map(card_row).collect::<Vec<_>>());
                             m.set_canvas(&v["canvas"]);
+                            stats_meta(&v["stat_meta"]);
+                            conn_cards(&app, &m);
                         }
                         "form" => {
                             let id = v["id"].as_str().unwrap_or("").to_string();
@@ -913,8 +971,17 @@ fn main() -> Result<(), slint::PlatformError> {
                             app.set_can_undo(v["undo"] == json!(true));
                             app.set_can_redo(v["redo"] == json!(true));
                         }
-                        "card" => m.set_card(&v["card"]),
-                        "stats" => m.set_stats(&v["stats"]),
+                        "card" => {
+                            m.set_card(&v["card"]);
+                            conn_cards(&app, &m);
+                        }
+                        "stats" => {
+                            m.set_stats(&v["stats"]);
+                            stats_push(&v["stats"], &v["point"]);
+                            stats_render(&app, &running_cards(&m));
+                        }
+                        "conn_sites" => conn_sites(&app, &v["conn"]),
+                        "conn_start" | "conn_result" | "conn_done" => conn_event(&app, &v),
                         "log" => m.add_logs(v["entries"].as_array().map(Vec::as_slice).unwrap_or(&[])),
                         _ => {}
                     }
@@ -966,4 +1033,439 @@ fn main() -> Result<(), slint::PlatformError> {
 
 thread_local! {
     static MODELS: std::cell::RefCell<Option<Rc<Models>>> = const { std::cell::RefCell::new(None) };
+}
+
+// --- statistics page (Python ui/stats.py): the last minute kept here, the graph drawn as SVG paths ---
+
+const STAT_POINTS: usize = 60;
+/// line colours for cards and blocks without a colour of their own (Python `stats.LINE_COLORS`)
+const LINE_COLORS: [&str; 10] = ["#4f8ef7", "#e8912d", "#57ab5a", "#b76de0", "#e5534b", "#39c5bb", "#d9b92f", "#e26ba5", "#7c6cf2", "#9aa0a6"];
+
+#[derive(Default)]
+struct StatState {
+    /// card id ("" = all) -> (up, down) per second
+    hist: HashMap<String, std::collections::VecDeque<(f64, f64)>>,
+    /// outbound block id -> up + down per second
+    exits: HashMap<String, std::collections::VecDeque<f64>>,
+    cards: Vec<(String, String, String)>,
+    exit_meta: Vec<(String, String, String)>,
+    /// the core's latest counters (stats_json) and this second's rates
+    latest: Value,
+    point: Value,
+    /// the ids behind the choice box (0 = all)
+    choice_ids: Vec<String>,
+}
+
+thread_local! {
+    static STATS: std::cell::RefCell<StatState> = std::cell::RefCell::new(StatState::default());
+}
+
+fn push_hist<T: Default + Clone>(h: &mut std::collections::VecDeque<T>, v: T) {
+    if h.is_empty() {
+        h.extend(std::iter::repeat_n(T::default(), STAT_POINTS));
+    }
+    h.push_back(v);
+    while h.len() > STAT_POINTS {
+        h.pop_front();
+    }
+}
+
+fn triples(v: &Value) -> Vec<(String, String, String)> {
+    v.as_array()
+        .into_iter()
+        .flatten()
+        .map(|x| (x[0].as_str().unwrap_or("").to_string(), x[1].as_str().unwrap_or("").to_string(), x[2].as_str().unwrap_or("").to_string()))
+        .collect()
+}
+
+fn stats_meta(v: &Value) {
+    STATS.with(|s| {
+        let mut s = s.borrow_mut();
+        s.cards = triples(&v["cards"]);
+        s.exit_meta = triples(&v["exits"]);
+    });
+}
+
+/// a newly opened window: the last minute the core kept
+fn stats_history(v: &Value) {
+    STATS.with(|s| {
+        let mut s = s.borrow_mut();
+        s.hist = v["cards"].as_object().into_iter().flatten()
+            .map(|(k, h)| (k.clone(), h.as_array().into_iter().flatten().map(|p| (p[0].as_f64().unwrap_or(0.0), p[1].as_f64().unwrap_or(0.0))).collect()))
+            .collect();
+        s.exits = v["exits"].as_object().into_iter().flatten()
+            .map(|(k, h)| (k.clone(), h.as_array().into_iter().flatten().map(|x| x.as_f64().unwrap_or(0.0)).collect()))
+            .collect();
+    });
+    stats_meta(&v["meta"]);
+}
+
+/// one second from the core (Python `StatsInterface.push` / `push_exits`)
+fn stats_push(stats: &Value, point: &Value) {
+    STATS.with(|s| {
+        let mut s = s.borrow_mut();
+        s.latest = stats.clone();
+        if point.is_null() {
+            return;
+        }
+        s.point = point.clone();
+        let mut seen = std::collections::HashSet::new();
+        for (id, r) in point["cards"].as_object().into_iter().flatten() {
+            push_hist(s.hist.entry(id.clone()).or_default(), (r[0].as_f64().unwrap_or(0.0), r[1].as_f64().unwrap_or(0.0)));
+            seen.insert(id.clone());
+        }
+        s.hist.retain(|k, _| seen.contains(k));
+        let rates: HashMap<String, f64> = point["exits"].as_object().into_iter().flatten().map(|(k, r)| (k.clone(), r.as_f64().unwrap_or(0.0))).collect();
+        for (oid, r) in &rates {
+            if !s.exits.contains_key(oid) {
+                s.exits.insert(oid.clone(), Default::default());
+            }
+            push_hist(s.exits.get_mut(oid).unwrap(), *r);
+        }
+        for (oid, h) in s.exits.iter_mut() {
+            if !rates.contains_key(oid) {
+                push_hist(h, 0.0);
+            }
+        }
+    });
+}
+
+/// "1,234" (Python f"{n:,}")
+fn thousands(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// SVG path of values across a w x h px graph (y down), and the area under it
+fn chart_path(values: &[f64], top: f64, w: f64, h: f64) -> (String, String) {
+    let step = w / (values.len().max(2) - 1) as f64;
+    let mut d = String::new();
+    for (i, v) in values.iter().enumerate() {
+        let y = h - h * (v / top).clamp(0.0, 1.0);
+        d += &format!("{}{:.1} {:.1} ", if i == 0 { "M " } else { "L " }, i as f64 * step, y);
+    }
+    let area = format!("{d}L {:.1} {h:.1} L 0 {h:.1} Z", values.len().saturating_sub(1) as f64 * step);
+    (d, area)
+}
+
+fn hex(c: &str) -> Color {
+    hex_color(c).unwrap_or(Color::from_rgb_u8(0x9a, 0xa0, 0xa6))
+}
+
+/// the statistics page from what is kept (Python `StatsInterface._show`)
+fn stats_render(app: &App, running: &std::collections::HashSet<String>) {
+    let st = app.global::<Stats>();
+    STATS.with(|s| {
+        let mut s = s.borrow_mut();
+        // the choice box: all cards, then each card (kept on the same card when the list changes)
+        let current = s.choice_ids.get(st.get_choice().max(0) as usize).cloned().unwrap_or_default();
+        let mut ids = vec![String::new()];
+        let mut names = vec![SharedString::from(tr("Total"))];
+        for (id, name, _) in &s.cards {
+            ids.push(id.clone());
+            names.push(name.as_str().into());
+        }
+        let choice = ids.iter().position(|i| *i == current).unwrap_or(0);
+        if ids != s.choice_ids {
+            st.set_choices(ModelRc::new(VecModel::from(names)));
+            s.choice_ids = ids;
+        }
+        if st.get_choice() != choice as i32 {
+            st.set_choice(choice as i32);
+        }
+        let sel = s.choice_ids[choice].clone();
+        let c = &s.latest[sel.as_str()];
+        let n = |k: &str| c[k].as_f64().unwrap_or(0.0) as u64;
+        let r = &s.point["cards"][sel.as_str()];
+        let (up, down) = (r[0].as_f64().unwrap_or(0.0), r[1].as_f64().unwrap_or(0.0));
+        let rate = |b: f64| format!("{}/s", fmt_size(b));
+        let total = |b: u64| tr("total {fmt_size}").replace("{fmt_size}", &fmt_size(b as f64));
+        let tile = |t: &str, v: String, sub: String| StatTileData { title: tr(t).into(), value: v.into(), sub: sub.into() };
+        let tiles = vec![
+            tile("Active TCP connections", n("tcp").to_string(), String::new()),
+            tile("Active UDP sessions", n("udp").to_string(), String::new()),
+            tile("Total connections", thousands(n("total")), String::new()),
+            tile("Download", rate(down), total(n("down"))),
+            tile("Upload", rate(up), total(n("up"))),
+            tile("Blocked / failed", format!("{} / {}", thousands(n("blocked")), thousands(n("failed"))), String::new()),
+        ];
+        st.set_tiles(ModelRc::new(VecModel::from(tiles)));
+        // the graph
+        let mut series: Vec<(String, Color, Vec<f64>, bool)> = vec![];
+        let mut empty = String::new();
+        match st.get_mode() {
+            1 => {
+                let mut k = 0;
+                for (id, name, color) in &s.cards {
+                    let Some(h) = s.hist.get(id) else { continue };
+                    if !running.contains(id) && h.iter().all(|(u, d)| u + d == 0.0) {
+                        continue;
+                    }
+                    let col = if color.is_empty() {
+                        k += 1;
+                        LINE_COLORS[(k - 1) % LINE_COLORS.len()]
+                    } else {
+                        color.as_str()
+                    };
+                    series.push((name.clone(), hex(col), h.iter().map(|(u, d)| u + d).collect(), false));
+                }
+                if series.is_empty() {
+                    empty = tr("No proxy is running");
+                }
+            }
+            2 => {
+                let mut k = 0;
+                for (id, name, color) in &s.exit_meta {
+                    let Some(h) = s.exits.get(id) else { continue };
+                    if h.iter().all(|v| *v == 0.0) {
+                        continue;
+                    }
+                    let col = if color.is_empty() {
+                        k += 1;
+                        LINE_COLORS[(k - 1) % LINE_COLORS.len()]
+                    } else {
+                        color.as_str()
+                    };
+                    series.push((name.clone(), hex(col), h.iter().copied().collect(), false));
+                }
+                if series.is_empty() {
+                    empty = tr("No traffic in the last minute");
+                }
+            }
+            _ => {
+                let h = s.hist.get(&sel).cloned().unwrap_or_default();
+                let dark = app.get_dark();
+                let (down_c, up_c) = if dark { ("#9ecaff", "#e3008c") } else { ("#0061a4", "#b4009e") };
+                series.push((tr("Download"), hex(down_c), h.iter().map(|(_, d)| *d).collect(), true));
+                series.push((tr("Upload"), hex(up_c), h.iter().map(|(u, _)| *u).collect(), false));
+            }
+        }
+        let top = series.iter().flat_map(|x| x.2.iter().copied()).fold(1024.0f64, f64::max);
+        let lines: Vec<ChartLine> = series
+            .iter()
+            .map(|(name, color, values, fill)| {
+                let (d, area) = chart_path(values, top, st.get_chart_w().max(1.0) as f64, st.get_chart_h().max(1.0) as f64);
+                ChartLine { name: name.as_str().into(), color: *color, commands: d.into(), area: if *fill { area.into() } else { SharedString::new() } }
+            })
+            .collect();
+        st.set_lines(ModelRc::new(VecModel::from(lines)));
+        st.set_max_text(tr("max {fmt_rate}").replace("{fmt_rate}", &rate(top)).into());
+        st.set_empty(empty.into());
+    });
+}
+
+fn stats_labels(app: &App) {
+    let st = app.global::<Stats>();
+    st.set_title(tr("Statistics").into());
+    st.set_chart_title(tr("Throughput (last 60 s)").into());
+    let modes: Vec<SharedString> = ["Combined", "Per proxy", "Per exit"].iter().map(|m| SharedString::from(tr(m))).collect();
+    st.set_modes(ModelRc::new(VecModel::from(modes)));
+    STATS.with(|s| s.borrow_mut().choice_ids.clear());
+    app.set_t_stats(tr("Statistics").into());
+    app.set_t_conn(tr("Connection test").into());
+}
+
+/// the running cards (their ids), for the graph and the connection test
+fn running_cards(m: &Models) -> std::collections::HashSet<String> {
+    m.cards.iter().filter(|c| c.state == "running").map(|c| c.id.to_string()).collect()
+}
+
+// --- connection test page (Python ui/conntest.py) ---
+
+#[derive(Default)]
+struct ConnState {
+    rows: Vec<ConnRow>,
+    running: bool,
+    preparing: bool,
+    cooldown: u64,
+    has_results: bool,
+    /// the running cards in the choice box: (id, name)
+    cards: Vec<(String, String)>,
+    workers: u64,
+    timeout: u64,
+    cooldown_secs: u64,
+    done: usize,
+}
+
+thread_local! {
+    static CONN: std::cell::RefCell<ConnState> = std::cell::RefCell::new(ConnState::default());
+    static CONN_TIMER: slint::Timer = slint::Timer::default();
+}
+
+fn conn_labels(app: &App) {
+    let c = app.global::<Conn>();
+    c.set_title(tr("Connection test").into());
+    c.set_placeholder(tr("Add a site, e.g. example.com").into());
+    c.set_add_text(tr("Add").into());
+    let cols: Vec<SharedString> = ["Region", "Site", "Address", "Result", "Connect", "All"].iter().map(|x| SharedString::from(tr(x))).collect();
+    c.set_columns(ModelRc::new(VecModel::from(cols)));
+}
+
+fn conn_rows(app: &App) {
+    CONN.with(|s| app.global::<Conn>().set_rows(ModelRc::new(VecModel::from(s.borrow().rows.clone()))));
+}
+
+/// the sites (results cleared) from the core's "conn"
+fn conn_sites(app: &App, v: &Value) {
+    CONN.with(|s| {
+        let mut s = s.borrow_mut();
+        s.rows = v["sites"].as_array().into_iter().flatten()
+            .map(|x| ConnRow {
+                region: x[0].as_str().unwrap_or("").into(),
+                name: x[1].as_str().unwrap_or("").into(),
+                host: x[2].as_str().unwrap_or("").into(),
+                added: x[3] == json!(true),
+                result: "-".into(),
+                conn: SharedString::new(),
+                total: SharedString::new(),
+                tone: 0,
+            })
+            .collect();
+        s.running = v["running"] == json!(true);
+        s.workers = v["workers"].as_u64().unwrap_or(6);
+        s.timeout = v["timeout"].as_u64().unwrap_or(8);
+        s.cooldown_secs = v["cooldown"].as_u64().unwrap_or(15);
+        s.has_results = false;
+    });
+    app.global::<Conn>().set_site(SharedString::new());
+    conn_rows(app);
+    conn_sync(app);
+}
+
+/// the running cards in the choice box (kept on the same card)
+fn conn_cards(app: &App, m: &Models) {
+    let c = app.global::<Conn>();
+    let running: Vec<(String, String)> = m.cards.iter().filter(|r| r.state == "running").map(|r| (r.id.to_string(), r.name.to_string())).collect();
+    CONN.with(|s| {
+        let mut s = s.borrow_mut();
+        if s.cards == running {
+            return;
+        }
+        let current = s.cards.get(c.get_proxy().max(0) as usize).map(|x| x.0.clone());
+        let names: Vec<SharedString> = running.iter().map(|x| SharedString::from(x.1.as_str())).collect();
+        c.set_proxies(ModelRc::new(VecModel::from(names)));
+        let idx = current.and_then(|id| running.iter().position(|x| x.0 == id)).unwrap_or(0);
+        c.set_proxy(idx as i32);
+        s.cards = running;
+    });
+    conn_sync(app);
+}
+
+fn conn_selected(app: &App) -> Option<(String, String)> {
+    let i = app.global::<Conn>().get_proxy().max(0) as usize;
+    CONN.with(|s| s.borrow().cards.get(i).cloned())
+}
+
+/// the button and the summary while nothing runs (Python `_sync_button` / `_cool_tick`)
+fn conn_sync(app: &App) {
+    let c = app.global::<Conn>();
+    let sel = conn_selected(app);
+    CONN.with(|s| {
+        let s = s.borrow();
+        c.set_editable(!s.running);
+        if s.running {
+            c.set_button(tr("Testing…").into());
+            c.set_button_enabled(false);
+            return;
+        }
+        if s.preparing {
+            c.set_button(tr("Preparing…").into());
+            c.set_button_enabled(false);
+            return;
+        }
+        if s.cooldown > 0 {
+            c.set_button(tr("Test again ({cooldown}s)").replace("{cooldown}", &s.cooldown.to_string()).into());
+            c.set_button_enabled(false);
+            return;
+        }
+        c.set_button(tr(if s.has_results { "Test again" } else { "Start test" }).into());
+        c.set_button_enabled(sel.is_some());
+        let summary = match &sel {
+            Some((_, name)) => tr("Connects to {len} sites over HTTPS through '{name}' ({PROBE_WORKERS} at a time, up to {PROBE_TIMEOUT}s per site).")
+                .replace("{name}", name)
+                .replace("{len}", &s.rows.len().to_string())
+                .replace("{PROBE_WORKERS}", &s.workers.to_string())
+                .replace("{PROBE_TIMEOUT}", &s.timeout.to_string()),
+            None => tr("No proxy is running. Start one on the Proxies page first."),
+        };
+        c.set_summary(summary.into());
+    });
+}
+
+fn conn_event(app: &App, v: &Value) {
+    let c = app.global::<Conn>();
+    match v["ev"].as_str().unwrap_or("") {
+        "conn_start" => {
+            let total = v["total"].as_u64().unwrap_or(0);
+            CONN.with(|s| {
+                let mut s = s.borrow_mut();
+                s.running = true;
+                s.preparing = false;
+                s.done = 0;
+                for r in s.rows.iter_mut() {
+                    r.result = tr("Waiting…").into();
+                    r.conn = SharedString::new();
+                    r.total = SharedString::new();
+                    r.tone = 0;
+                }
+            });
+            c.set_summary(tr("Testing '{name}'… 0 / {len}").replace("{name}", v["name"].as_str().unwrap_or("")).replace("{len}", &total.to_string()).into());
+            conn_rows(app);
+            conn_sync(app);
+        }
+        "conn_result" => {
+            let row = v["row"].as_u64().unwrap_or(0) as usize;
+            let r = &v["result"];
+            let (done, total) = CONN.with(|s| {
+                let mut s = s.borrow_mut();
+                s.done += 1;
+                s.has_results = true;
+                if let Some(x) = s.rows.get_mut(row) {
+                    x.result = r[0].as_str().unwrap_or("").into();
+                    x.conn = r[1].as_str().unwrap_or("").into();
+                    x.total = r[2].as_str().unwrap_or("").into();
+                    x.tone = if r[3] == json!(true) { 1 } else { 2 };
+                }
+                (s.done, s.rows.len())
+            });
+            c.set_summary(tr("Testing… {len} / {len2}").replace("{len}", &done.to_string()).replace("{len2}", &total.to_string()).into());
+            conn_rows(app);
+        }
+        "conn_done" => {
+            CONN.with(|s| {
+                let mut s = s.borrow_mut();
+                s.running = false;
+                s.cooldown = s.cooldown_secs;
+            });
+            c.set_summary(v["summary"].as_str().unwrap_or("").into());
+            conn_sync(app);
+            // the cooldown: the button counts down, then the page goes back to its idle text
+            let weak = app.as_weak();
+            CONN_TIMER.with(|t| {
+                t.start(slint::TimerMode::Repeated, std::time::Duration::from_secs(1), move || {
+                    let Some(a) = weak.upgrade() else { return };
+                    let left = CONN.with(|s| {
+                        let mut s = s.borrow_mut();
+                        s.cooldown = s.cooldown.saturating_sub(1);
+                        s.cooldown
+                    });
+                    if left == 0 {
+                        CONN_TIMER.with(|t| t.stop());
+                        conn_sync(&a);
+                    } else {
+                        let c = a.global::<Conn>();
+                        c.set_button(tr("Test again ({cooldown}s)").replace("{cooldown}", &left.to_string()).into());
+                    }
+                });
+            });
+        }
+        _ => {}
+    }
 }
