@@ -34,16 +34,22 @@ impl Entry {
 }
 
 // sizes in logical px (scaled by the monitor DPI)
-const WIDTH: f32 = 208.0;
+const WIDTH: f32 = 240.0;
 /// at most this wide, however long a label is
-const MAX_WIDTH: f32 = 420.0;
-const HEADER_H: f32 = 30.0;
-const ITEM_H: f32 = 40.0;
-const DIVIDER_H: f32 = 9.0;
-const PAD: f32 = 6.0; // above the first / below the last entry
+const MAX_WIDTH: f32 = 480.0;
+// M3 menus: 48 px items, Body Large labels; group names in Title Small
+const HEADER_H: f32 = 36.0;
+const ITEM_H: f32 = 48.0;
+const DIVIDER_H: f32 = 17.0;
+const PAD: f32 = 8.0; // above the first / below the last entry
 const SHADOW: f32 = 14.0; // transparent margin for the shadow
 const RADIUS: f32 = 16.0; // M3 Expressive menus: large corners
-const FONT_PX: f32 = 14.0;
+// em sizes (`em_scale` turns them into ab_glyph's line-height scale)
+const FONT_PX: f32 = 16.0;
+const HEADER_PX: f32 = 14.0;
+// the label's start, and a choice's (after its check mark)
+const TEXT_X: f32 = 24.0;
+const CHOICE_X: f32 = 56.0;
 const MOUSE_LEAVE: u32 = 0x02A3; // WM_MOUSELEAVE
 
 struct State {
@@ -123,8 +129,16 @@ fn surface_size(entries: &[Entry], s: f32, width: f32) -> (f32, f32) {
     (width, h)
 }
 
+/// ab_glyph's PxScale is the font's whole line height (ascent - descent), not its em size: a "14 px"
+/// scale draws letters near 11 px. This gives the scale for an em size in px (as CSS / Slint sizes are).
+fn em_scale(font: &FontVec, px: f32) -> PxScale {
+    let height = font.height_unscaled();
+    let upem = font.units_per_em().unwrap_or(height);
+    PxScale::from(px * height / upem)
+}
+
 fn text_width(font: &FontVec, text: &str, px: f32) -> f32 {
-    let sf = font.as_scaled(PxScale::from(px));
+    let sf = font.as_scaled(em_scale(font, px));
     text.chars().map(|c| sf.h_advance(font.glyph_id(c))).sum()
 }
 
@@ -133,8 +147,9 @@ fn menu_width(font: &FontVec, entries: &[Entry], s: f32) -> f32 {
     let need = entries
         .iter()
         .map(|e| match e {
-            Entry::Item { label, .. } | Entry::Header { label } => text_width(font, label, FONT_PX * s) + 40.0 * s,
-            Entry::Choice { label, .. } => text_width(font, label, FONT_PX * s) + 64.0 * s,
+            Entry::Item { label, .. } => text_width(font, label, FONT_PX * s) + (TEXT_X * 2.0) * s,
+            Entry::Header { label } => text_width(font, label, HEADER_PX * s) + (TEXT_X * 2.0) * s,
+            Entry::Choice { label, .. } => text_width(font, label, FONT_PX * s) + (CHOICE_X + TEXT_X) * s,
             Entry::Divider => 0.0,
         })
         .fold(WIDTH * s, f32::max);
@@ -168,7 +183,7 @@ fn fill(pm: &mut Pixmap, path: Option<Path>, rgba: (u8, u8, u8, u8)) {
 }
 
 fn draw_text(pm: &mut Pixmap, font: &FontVec, text: &str, x: f32, center_y: f32, px: f32, rgb: (u8, u8, u8)) {
-    let scale = PxScale::from(px);
+    let scale = em_scale(font, px);
     let sf = font.as_scaled(scale);
     let baseline = center_y + (sf.ascent() + sf.descent()) / 2.0;
     let (w, h) = (pm.width() as i32, pm.height() as i32);
@@ -233,7 +248,7 @@ fn render(st: &State) {
             Entry::Divider => {
                 fill(
                     &mut pm,
-                    rrect(ox + 12.0 * s, oy + top + eh / 2.0 - 0.5 * s, sw - 24.0 * s, 1.0 * s, 0.0),
+                    rrect(ox + 16.0 * s, oy + top + eh / 2.0 - 0.5 * s, sw - 32.0 * s, 1.0 * s, 0.0),
                     (outline.0, outline.1, outline.2, 255),
                 );
             }
@@ -242,31 +257,31 @@ fn render(st: &State) {
                     // state layer: on-surface at 10%, a pill inside the surface
                     fill(
                         &mut pm,
-                        rrect(ox + 6.0 * s, oy + top + 2.0 * s, sw - 12.0 * s, eh - 4.0 * s, (eh - 4.0 * s) / 2.0),
+                        rrect(ox + 8.0 * s, oy + top + 2.0 * s, sw - 16.0 * s, eh - 4.0 * s, (eh - 4.0 * s) / 2.0),
                         (on_surface.0, on_surface.1, on_surface.2, 26),
                     );
                 }
-                draw_text(&mut pm, &st.font, label, ox + 20.0 * s, oy + top + eh / 2.0, FONT_PX * s, on_surface);
+                draw_text(&mut pm, &st.font, label, ox + TEXT_X * s, oy + top + eh / 2.0, FONT_PX * s, on_surface);
             }
             Entry::Header { label } => {
                 let muted = if st.dark { (0xc3, 0xc7, 0xcf) } else { (0x43, 0x47, 0x4e) };
-                draw_text(&mut pm, &st.font, label, ox + 20.0 * s, oy + top + eh / 2.0 + 2.0 * s, 12.0 * s, muted);
+                draw_text(&mut pm, &st.font, label, ox + TEXT_X * s, oy + top + eh / 2.0 + 3.0 * s, HEADER_PX * s, muted);
             }
             Entry::Choice { label, on, .. } => {
                 if st.hover == Some(idx) {
                     fill(
                         &mut pm,
-                        rrect(ox + 6.0 * s, oy + top + 2.0 * s, sw - 12.0 * s, eh - 4.0 * s, (eh - 4.0 * s) / 2.0),
+                        rrect(ox + 8.0 * s, oy + top + 2.0 * s, sw - 16.0 * s, eh - 4.0 * s, (eh - 4.0 * s) / 2.0),
                         (on_surface.0, on_surface.1, on_surface.2, 26),
                     );
                 }
                 if *on {
                     // a check mark (drawn: the menu's font may not have one)
-                    let (cx, cy) = (ox + 26.0 * s, oy + top + eh / 2.0);
+                    let (cx, cy) = (ox + 32.0 * s, oy + top + eh / 2.0);
                     let mut pb = PathBuilder::new();
-                    pb.move_to(cx - 5.0 * s, cy);
-                    pb.line_to(cx - 1.5 * s, cy + 3.5 * s);
-                    pb.line_to(cx + 5.5 * s, cy - 4.0 * s);
+                    pb.move_to(cx - 6.0 * s, cy);
+                    pb.line_to(cx - 2.0 * s, cy + 4.0 * s);
+                    pb.line_to(cx + 6.5 * s, cy - 4.5 * s);
                     if let Some(path) = pb.finish() {
                         let mut paint = Paint::default();
                         paint.set_color(Color::from_rgba8(on_surface.0, on_surface.1, on_surface.2, 255));
@@ -275,7 +290,7 @@ fn render(st: &State) {
                         pm.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
                     }
                 }
-                draw_text(&mut pm, &st.font, label, ox + 44.0 * s, oy + top + eh / 2.0, FONT_PX * s, on_surface);
+                draw_text(&mut pm, &st.font, label, ox + CHOICE_X * s, oy + top + eh / 2.0, FONT_PX * s, on_surface);
             }
         }
     }
