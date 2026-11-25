@@ -1713,8 +1713,7 @@ component HelpPage inherits VerticalLayout {
         vertical-stretch: 1;
         help-scroll := ScrollView {
             VerticalLayout {
-                x: 0;
-                width: min(help-scroll.visible-width - 16px, 760px);
+                width: help-scroll.visible-width - 16px;
                 padding-right: 16px;
                 padding-bottom: 24px;
                 spacing: 8px;
@@ -1742,8 +1741,7 @@ component AboutPage inherits VerticalLayout {
         vertical-stretch: 1;
         about-scroll := ScrollView {
             VerticalLayout {
-                x: 0;
-                width: min(about-scroll.visible-width - 16px, 720px);
+                width: about-scroll.visible-width - 16px;
                 padding-right: 16px;
                 padding-bottom: 24px;
                 spacing: 16px;
@@ -2304,6 +2302,9 @@ export component App inherits Window {
                     }
                     VerticalLayout {
                         visible: root.page == 3;
+                        // the editor in a readable width, in the middle of any room left over
+                        width: min(parent.width, 916px);
+                        x: (parent.width - self.width) / 2;
                         spacing: 12px;
                         HorizontalLayout {
                             spacing: 8px;
@@ -2373,8 +2374,17 @@ export component App inherits Window {
                         }
                     }
                     StatsPage { visible: root.page == 5; }
-                    HelpPage { visible: root.page == 7; }
-                    AboutPage { visible: root.page == 8; }
+                    // pages with a readable width sit in the middle of any room left over
+                    HelpPage {
+                        visible: root.page == 7;
+                        width: min(parent.width, 776px);
+                        x: (parent.width - self.width) / 2;
+                    }
+                    AboutPage {
+                        visible: root.page == 8;
+                        width: min(parent.width, 736px);
+                        x: (parent.width - self.width) / 2;
+                    }
                     LicensePage {
                         visible: root.page == 9;
                         back => { root.page = 8; }
@@ -2382,6 +2392,8 @@ export component App inherits Window {
                     ConnPage { visible: root.page == 6; }
                     settings-page := VerticalLayout {
                         visible: root.page == 4;
+                        width: min(parent.width, 1376px);
+                        x: (parent.width - self.width) / 2;
                         spacing: 12px;
                         HorizontalLayout {
                             spacing: 8px;
@@ -2400,7 +2412,11 @@ export component App inherits Window {
                                 // two columns of sections when there is room, one otherwise; never wider than reads well
                                 out property <bool> wide: self.visible-width >= 720px;
                                 out property <length> content-w: min(self.visible-width - 16px, 1360px);
+                                // the sections' width; any room left over goes evenly to both sides
+                                out property <length> used-w: self.wide ? self.content-w : min(self.content-w, 720px);
                                 VerticalLayout {
+                                    x: max(0px, (settings-scroll.visible-width - 16px - settings-scroll.used-w) / 2);
+                                    width: settings-scroll.used-w + 16px;
                                     padding-right: 16px;
                                     // room for the apply bar
                                     padding-bottom: 96px;
