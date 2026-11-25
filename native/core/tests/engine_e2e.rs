@@ -159,6 +159,17 @@ fn socks5_card_relays_counts_and_logs() {
     assert!(got.starts_with(b"echo: "));
     assert!(log.wait_for(|(lv, m)| *lv == Level::Tcp && m.contains(&format!("-> 127.0.0.1:{echo}")), 5), "{:?}", log.0.lock().unwrap());
 
+    // the way it took: the outbound sing-box chose, mapped to the exit block (a log line -> the canvas)
+    let who = log.0.lock().unwrap().iter().find(|(lv, m)| *lv == Level::Tcp && m.contains(&format!("-> 127.0.0.1:{echo}"))).map(|(_, m)| m.split(" -> ").next().unwrap().to_string()).unwrap();
+    let target = format!("127.0.0.1:{echo}");
+    let until = Instant::now() + Duration::from_secs(5);
+    while engine.route_of(&who, Some(&target)).is_none() && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(engine.route_of(&who, Some(&target)).as_deref(), Some("out1"));
+    assert_eq!(engine.route_of(&who, None).as_deref(), Some("out1"));
+    assert_eq!(engine.route_of("10.9.9.9:1", None), None);
+
     // traffic counted from the Clash API (polled once a second)
     let until = Instant::now() + Duration::from_secs(5);
     while engine.stats().up < 50_000 && Instant::now() < until {

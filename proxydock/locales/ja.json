@@ -1066,5 +1066,7 @@
  "Rust crates (list)": "Rust クレート（一覧）",
  "Menus, settings and the whole window": "メニュー、設定などウィンドウ全体",
  "Proxy defaults": "プロキシの既定値",
- "Startup": "起動"
+ "Startup": "起動",
+ "This connection's way is no longer known (only recent connections of running cards are)": "この接続の経路はもう分かりません（実行中のカードの最近の接続のみ分かります）",
+ "The connection's way is lit on the canvas": "キャンバスにこの接続の経路を表示しました"
 }

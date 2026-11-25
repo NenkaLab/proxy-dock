@@ -92,7 +92,15 @@ fn log_row(e: &Value) -> LogRow {
         "TCP" | "UDP" => 3,
         _ => 0,
     };
-    LogRow { text: format!("[{}] {:<5} {name}{}", s("time"), level, s("message")).into(), tone }
+    // a card's connection line can show its way on the canvas
+    let routable = !s("id").is_empty() && proxydock::controller::conn_of_line(s("message")).is_some();
+    LogRow {
+        text: format!("[{}] {:<5} {name}{}", s("time"), level, s("message")).into(),
+        tone,
+        card: s("id").into(),
+        message: s("message").into(),
+        routable,
+    }
 }
 
 fn traffic_text(st: &Value) -> String {
@@ -498,6 +506,49 @@ thread_local! {
     static RENAME_KEY: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
 }
 
+thread_local! {
+    static ROUTE_SEQ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// A logged connection's way on the canvas: its links stand out (the others fade) for a while
+fn show_route(app: &App, m: &Models, v: &Value) {
+    let err = v["error"].as_str().unwrap_or("");
+    let ways: std::collections::HashSet<usize> = v["links"].as_array().into_iter().flatten().filter_map(|l| l.as_u64()).map(|l| l as usize).collect();
+    if ways.is_empty() {
+        show_toast(app, if err.is_empty() { "?" } else { err }, false, 5.0);
+        return;
+    }
+    set_route(m, Some(&ways));
+    app.set_page(0);
+    show_toast(app, &tr("The connection's way is lit on the canvas"), true, 4.0);
+    ROUTE_SEQ.with(|n| n.set(n.get() + 1));
+    let seq = ROUTE_SEQ.with(|n| n.get());
+    let weak = app.as_weak();
+    slint::Timer::single_shot(std::time::Duration::from_secs(12), move || {
+        if ROUTE_SEQ.with(|n| n.get()) != seq || weak.upgrade().is_none() {
+            return;
+        }
+        if let Some(m) = MODELS.with(|m| m.borrow().clone()) {
+            set_route(&m, None);
+        }
+    });
+}
+
+/// lights the links of `ways` (by their index in the core's canvas links) and fades the rest; None: all as usual
+fn set_route(m: &Models, ways: Option<&std::collections::HashSet<usize>>) {
+    for i in 0..m.links.row_count() {
+        let Some(mut l) = m.links.row_data(i) else { continue };
+        // (link ids are the core's link index + 1)
+        let on = ways.is_some_and(|w| w.contains(&(l.id as usize - 1)));
+        let dim = ways.is_some() && !on;
+        if l.selected != on || l.dimmed != dim {
+            l.selected = on;
+            l.dimmed = dim;
+            m.links.set_row_data(i, l);
+        }
+    }
+}
+
 /// a message at the bottom of the canvas for `secs` (a newer one replaces it and its timer)
 fn show_toast(app: &App, text: &str, info: bool, secs: f32) {
     app.set_toast(text.into());
@@ -878,6 +929,11 @@ fn main() -> Result<(), slint::PlatformError> {
         move |node: i32| models.keys.borrow().get((node - 1).max(0) as usize).cloned().unwrap_or_default()
     };
     app.set_links(ModelRc::from(models.links.clone()));
+    {
+        // a connection's log line clicked: ask the core which way it went
+        let send = send.clone();
+        app.on_log_route(move |card, message| send(json!({"cmd": "route_of", "id": card.as_str(), "message": message.as_str()})));
+    }
     // canvas: moving and selecting blocks (positions stay in this window until saving settings is ported)
     {
         let nodes = models.nodes.clone();
@@ -1357,6 +1413,7 @@ fn main() -> Result<(), slint::PlatformError> {
                         // a settings change (Python `on_notify` while the window is open: an InfoBar for 2.5 s)
                         "info" => show_toast(&app, v["message"].as_str().unwrap_or(""), true, 2.5),
                         "latency" => show_latency(&app, &m, &v["latency"]),
+                        "route" => show_route(&app, &m, &v),
                         "settings" => show_settings(&app, &v["settings"]),
                         "language" => {
                             set_language(v["language"].as_str().unwrap_or("en"));

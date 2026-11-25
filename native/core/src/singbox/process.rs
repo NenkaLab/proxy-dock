@@ -33,6 +33,8 @@ static FROM: LazyLock<Regex> = LazyLock::new(|| {
 static TO: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(?:inbound|endpoint)/[\w-]+\[[^\]]*\]: (?:\[[^\]]*\] )?inbound (packet )?connection to (\S+)$").unwrap()
 });
+// the outbound sing-box chose for a connection (logged right after the inbound "connection to")
+static OUT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^outbound/[\w-]+\[([^\]]+)\]: outbound (?:packet )?connection to (\S+)$").unwrap());
 static PROC_ERR: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(?:inbound|endpoint)/[\w-]+\[[^\]]*\]: process connection from (\S+): (.*)$").unwrap()
 });
@@ -159,6 +161,10 @@ struct State {
     tag_bytes: HashMap<String, (f64, f64)>,
     tick_tags: HashMap<String, (f64, f64)>,
     raw_tail: VecDeque<String>,
+    /// the latest connections' (client, destination, outbound tag), newest last: the way a log line's
+    /// connection took (`Engine::route_of`); and the connection ids already in it
+    routes: VecDeque<(String, String, String)>,
+    routed: HashSet<String>,
 }
 
 struct Shared {
@@ -467,6 +473,8 @@ impl Engine {
                 tag_bytes: HashMap::new(),
                 tick_tags: HashMap::new(),
                 raw_tail: VecDeque::new(),
+                routes: VecDeque::new(),
+                routed: HashSet::new(),
             }),
             stopping: AtomicBool::new(false),
         });
@@ -533,6 +541,17 @@ impl Engine {
     }
 
     /// {outbound block id: (up, down) bytes so far} from this card's connections
+    /// The exit block a recent connection from `who` (client "ip:port") to `target` ("host:port", None = any)
+    /// left through, from the outbound sing-box chose for it (newest match first).
+    pub fn route_of(&self, who: &str, target: Option<&str>) -> Option<String> {
+        let st = self.shared.state.lock().unwrap();
+        st.routes
+            .iter()
+            .rev()
+            .find(|(w, t, _)| w == who && target.is_none_or(|x| t == x))
+            .and_then(|(_, _, tag)| sbc::exit_of_tag(&st.proxy, tag))
+    }
+
     pub fn exit_totals(&self) -> HashMap<String, (f64, f64)> {
         let st = self.shared.state.lock().unwrap();
         let mut out: HashMap<String, (f64, f64)> = HashMap::new();
@@ -640,6 +659,9 @@ fn read_output(shared: &Shared, child: &Mutex<Option<Proc>>, lines: mpsc::Receiv
     }
 }
 
+/// how many recent connections `Engine::route_of` can find
+const ROUTES_KEPT: usize = 4000;
+
 /// One sing-box log line (level, connection id, message): connection lines, rejects, authentication failures,
 /// failed outbound connections. (Python `SingBoxInstance._handle`.)
 fn handle(shared: &Shared, level: &str, cid: Option<String>, msg: &str) {
@@ -660,6 +682,7 @@ fn handle(shared: &Shared, level: &str, cid: Option<String>, msg: &str) {
         if st.clients.len() > 20000 {
             st.clients.clear();
             st.targets.clear();
+            st.routed.clear();
         }
         return;
     }
@@ -676,6 +699,18 @@ fn handle(shared: &Shared, level: &str, cid: Option<String>, msg: &str) {
             shared.log_conn(Level::Udp, &format!("{who} -> {target} UDP"));
         } else {
             shared.log_conn(Level::Tcp, &format!("{who} -> {target}"));
+        }
+        return;
+    }
+    if let Some(c) = OUT.captures(msg) {
+        // the first outbound a connection names is the one the route chose (a chain's next hops follow)
+        let mut st = shared.state.lock().unwrap();
+        if st.routed.insert(cid.clone()) {
+            let target = st.targets.get(&cid).cloned().unwrap_or_else(|| c[2].to_string());
+            st.routes.push_back((who, target, c[1].to_string()));
+            if st.routes.len() > ROUTES_KEPT {
+                st.routes.pop_front();
+            }
         }
         return;
     }

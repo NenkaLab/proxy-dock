@@ -1066,5 +1066,7 @@
  "Rust crates (list)": "Rust-Crates (Liste)",
  "Menus, settings and the whole window": "Menüs, Einstellungen und das ganze Fenster",
  "Proxy defaults": "Proxy-Standardwerte",
- "Startup": "Start"
+ "Startup": "Start",
+ "This connection's way is no longer known (only recent connections of running cards are)": "Der Weg dieser Verbindung ist nicht mehr bekannt (nur jüngste Verbindungen laufender Karten sind es)",
+ "The connection's way is lit on the canvas": "Der Weg der Verbindung ist auf der Arbeitsfläche hervorgehoben"
 }

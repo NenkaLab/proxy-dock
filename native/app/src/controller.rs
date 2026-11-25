@@ -373,7 +373,17 @@ struct Controller {
 }
 
 fn entry_json(e: &Entry) -> Value {
-    json!({"time": e.time, "level": e.level.tag(), "message": e.message, "name": e.proxy_name})
+    json!({"time": e.time, "level": e.level.tag(), "message": e.message, "name": e.proxy_name, "id": e.proxy_id})
+}
+
+/// The client and destination of a connection log line: "who -> host:port …" or "who UDP session ended …"
+pub fn conn_of_line(message: &str) -> Option<(String, Option<String>)> {
+    if let Some((who, rest)) = message.split_once(" -> ") {
+        let target = rest.split_whitespace().next()?.to_string();
+        return Some((who.trim().to_string(), Some(target)));
+    }
+    let (who, _) = message.split_once(" UDP ")?;
+    (!who.contains(' ')).then(|| (who.to_string(), None))
 }
 
 impl Controller {
@@ -1778,6 +1788,7 @@ impl Controller {
             }
             "toggle" => self.toggle(id),
             "stop_all" => self.stop_all(),
+            "route_of" => self.route_of(n, id, v["message"].as_str().unwrap_or("")),
             "move" | "connect" | "disconnect" | "delete" | "add" | "duplicate" | "rename" => self.edit(cmd, v),
             "settings_save" => self.save_settings(v),
             "latency" => {
@@ -2130,6 +2141,18 @@ impl Controller {
 }
 
 impl Controller {
+    /// The canvas links a logged connection of card `id` went along (answered to the asking window only):
+    /// the exit from the engine's recent connections, or the card's only exit.
+    fn route_of(&mut self, client: u64, id: &str, message: &str) {
+        let exits: Vec<&String> = self.view.paths.keys().filter(|(card, _)| card == id).map(|(_, exit)| exit).collect();
+        let exit = conn_of_line(message)
+            .and_then(|(who, target)| self.manager.route_of(id, &who, target.as_deref()))
+            .or_else(|| (exits.len() == 1).then(|| exits[0].clone()));
+        let links: Vec<usize> = exit.and_then(|e| self.view.paths.get(&(id.to_string(), e)).cloned()).unwrap_or_default();
+        let error = if links.is_empty() { tr("This connection's way is no longer known (only recent connections of running cards are)") } else { String::new() };
+        self.send_to(client, &json!({"ev": "route", "links": links, "error": error}));
+    }
+
     /// bytes per second on each canvas link over the last tick: each running card's traffic to each exit block
     /// (from its sing-box connections) counted on the links of that card's way to the exit
     fn send_flow(&mut self) {
@@ -2184,4 +2207,22 @@ fn push_point<T: Default + Clone>(h: &mut VecDeque<T>, v: T) {
 
 fn name_of(p: &Value) -> String {
     p["name"].as_str().unwrap_or("").to_string()
+}
+
+#[cfg(test)]
+mod route_tests {
+    use super::conn_of_line;
+
+    #[test]
+    fn connection_lines_give_client_and_destination() {
+        assert_eq!(conn_of_line("127.0.0.1:5000 -> example.com:443"), Some(("127.0.0.1:5000".into(), Some("example.com:443".into()))));
+        assert_eq!(conn_of_line("127.0.0.1:5000 -> 1.1.1.1:53 UDP"), Some(("127.0.0.1:5000".into(), Some("1.1.1.1:53".into()))));
+        assert_eq!(
+            conn_of_line("[::1]:5000 -> example.com:443 closed · normal close · ↑ 1 KB ↓ 2 KB · 1.0s"),
+            Some(("[::1]:5000".into(), Some("example.com:443".into())))
+        );
+        assert_eq!(conn_of_line("127.0.0.1:5000 UDP session ended · ↑ 1 B ↓ 2 B · 0.5s"), Some(("127.0.0.1:5000".into(), None)));
+        assert_eq!(conn_of_line("Card started"), None);
+        assert_eq!(conn_of_line("sing-box: something UDP failed"), None);
+    }
 }

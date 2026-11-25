@@ -142,6 +142,10 @@ export struct LogRow {
     text: string,
     // 0 normal, 1 warning, 2 problem (failure, auth, block, error), 3 connection
     tone: int,
+    // a card's line: the card's id and the message (a connection line can show its way on the canvas)
+    card: string,
+    message: string,
+    routable: bool,
 }
 
 // A block on the canvas. Pin ids: input lane i = node * 64 + i * 2, output lane o = node * 64 + o * 2 + 1
@@ -2571,6 +2575,8 @@ export component App inherits Window {
     out property <color> caption-text: M3.on-surface;
     callback toggle(string);
     callback stop-all();
+    // a connection's log line clicked (card id, message): its way is shown on the canvas
+    callback log-route(string, string);
     // light / dark switched: the title bar colours follow
     callback theme-changed();
     changed dark => { root.theme-changed(); }
@@ -3077,14 +3083,23 @@ export component App inherits Window {
                             background: M3.surface-container-low;
                             clip: true;
                             log-view := ListView {
-                                for line in root.logs: Text {
-                                    text: line.text;
-                                    font-family: Type.mono;
-                                    font-size: root.log-px * 1px;
+                                for line in root.logs: Rectangle {
                                     height: max(20px, root.log-px * 1.65px);
-                                    x: 12px;
-                                    color: line.tone == 2 ? M3.error : line.tone == 1 ? #b26a00 : line.tone == 3 ? M3.on-surface-variant : M3.on-surface;
-                                    vertical-alignment: center;
+                                    // a connection's line: click to see its way on the canvas
+                                    background: line.routable && row-ta.has-hover ? M3.on-surface.with-alpha(0.06) : transparent;
+                                    Text {
+                                        x: 12px;
+                                        text: line.text;
+                                        font-family: Type.mono;
+                                        font-size: root.log-px * 1px;
+                                        color: line.tone == 2 ? M3.error : line.tone == 1 ? #b26a00 : line.tone == 3 ? M3.on-surface-variant : M3.on-surface;
+                                        vertical-alignment: center;
+                                    }
+                                    row-ta := TouchArea {
+                                        enabled: line.routable;
+                                        mouse-cursor: line.routable ? pointer : default;
+                                        clicked => { root.log-route(line.card, line.message); }
+                                    }
                                 }
                             }
                             EdgeFade {

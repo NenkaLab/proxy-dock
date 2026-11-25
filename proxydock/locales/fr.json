@@ -1066,5 +1066,7 @@
  "Rust crates (list)": "Crates Rust (liste)",
  "Menus, settings and the whole window": "Menus, réglages et toute la fenêtre",
  "Proxy defaults": "Valeurs par défaut des proxys",
- "Startup": "Démarrage"
+ "Startup": "Démarrage",
+ "This connection's way is no longer known (only recent connections of running cards are)": "Le chemin de cette connexion n'est plus connu (seules les connexions récentes des cartes actives le sont)",
+ "The connection's way is lit on the canvas": "Le chemin de la connexion est mis en évidence sur le canevas"
 }

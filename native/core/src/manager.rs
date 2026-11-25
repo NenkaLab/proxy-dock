@@ -77,6 +77,13 @@ impl Card {
             Card::Hysteria(e) => e.clear_last(),
         }
     }
+    /// (a Hysteria server card has one exit: the caller falls back to it)
+    fn route_of(&self, who: &str, target: Option<&str>) -> Option<String> {
+        match self {
+            Card::SingBox(e) => e.route_of(who, target),
+            Card::Hysteria(_) => None,
+        }
+    }
     fn exit_totals(&self) -> HashMap<String, (f64, f64)> {
         match self {
             Card::SingBox(e) => e.exit_totals(),
@@ -266,6 +273,11 @@ impl Manager {
 
     pub fn last_reason(&self, id: &str) -> String {
         self.shared.lock().unwrap().running.get(id).map(|r| r.engine.last_reason()).unwrap_or_default()
+    }
+
+    /// the exit block a recent connection of a running card took (`Engine::route_of`)
+    pub fn route_of(&self, id: &str, who: &str, target: Option<&str>) -> Option<String> {
+        self.shared.lock().unwrap().running.get(id).and_then(|r| r.engine.route_of(who, target))
     }
 
     /// {outbound block id: (up, down)} of a running card
