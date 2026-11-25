@@ -1068,5 +1068,8 @@
  "Proxy defaults": "Valores predeterminados del proxy",
  "Startup": "Inicio",
  "This connection's way is no longer known (only recent connections of running cards are)": "Ya no se conoce el camino de esta conexión (solo el de las conexiones recientes de tarjetas en marcha)",
- "The connection's way is lit on the canvas": "El camino de la conexión está resaltado en el lienzo"
+ "The connection's way is lit on the canvas": "El camino de la conexión está resaltado en el lienzo",
+ "Waterfall": "Cascada",
+ "Waiting": "Espera",
+ "Response": "Respuesta"
 }

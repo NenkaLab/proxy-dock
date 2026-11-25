@@ -1068,5 +1068,8 @@
  "Proxy defaults": "프록시 기본값",
  "Startup": "시작",
  "This connection's way is no longer known (only recent connections of running cards are)": "이 연결의 경로를 더는 알 수 없습니다 (실행 중인 카드의 최근 연결만 알 수 있습니다)",
- "The connection's way is lit on the canvas": "캔버스에 이 연결의 경로를 표시했습니다"
+ "The connection's way is lit on the canvas": "캔버스에 이 연결의 경로를 표시했습니다",
+ "Waterfall": "워터폴",
+ "Waiting": "응답 대기",
+ "Response": "응답"
 }

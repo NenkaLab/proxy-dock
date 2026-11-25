@@ -1895,10 +1895,17 @@ component StatsPage inherits VerticalLayout {
 // --- connection test page (Python ui/conntest.py) ---
 
 export struct ConnRow {
+    // the site's place in the list (from 1: the default order)
+    index: int,
     region: string, name: string, host: string, added: bool,
     result: string, conn: string, total: string,
     // 0 not tested / waiting, 1 answered, 2 failed
     tone: int,
+    // to sort by (ms; -1 unknown)
+    conn-ms: float, total-ms: float,
+    // the waterfall (ms; -1 not reached): the site's start from the test's start, then the end of each phase
+    // from the site's start: the local proxy, the tunnel to the site, TLS, the first byte, the end
+    w-start: float, w-tcp: float, w-connect: float, w-tls: float, w-first: float, w-total: float,
 }
 
 export global Conn {
@@ -1914,16 +1921,101 @@ export global Conn {
     in property <bool> editable: true;
     in property <[string]> columns;
     in property <[ConnRow]> rows;
+    in property <string> t-waterfall;
+    // the waterfall's phases: proxy, connect, TLS, waiting, response
+    in property <[string]> phases;
+    // the sorting (0 = the sites' order) and the waterfall's scale (the latest end, ms)
+    in property <int> sort-col;
+    in property <bool> sort-desc;
+    in property <float> w-max: 1;
+    callback sort(int);
     callback start();
     callback add();
     callback remove(string);
     callback proxy-changed();
 }
 
+// the waterfall's colours (as in browsers' developer tools): proxy, connect, TLS, waiting, response
+global WaterfallColors {
+    out property <[color]> phase: [#9aa0a6, #f29900, #a142f4, #34a853, #4285f4];
+}
+
+// a header cell: click to sort by it (again: the other way); an arrow shows the column sorted by
+component ConnHead inherits Rectangle {
+    in property <string> text;
+    in property <int> column;
+    in property <bool> right;
+    in property <length> pad;
+    property <bool> on: Conn.sort-col == root.column && root.column != 0;
+    background: ta.has-hover ? M3.on-surface.with-alpha(0.06) : transparent;
+    HorizontalLayout {
+        padding-left: root.pad;
+        alignment: root.right ? end : start;
+        spacing: 4px;
+        Text {
+            text: root.text;
+            font-size: 12px * Type.scale;
+            font-weight: 700;
+            color: root.on ? M3.primary : M3.on-surface-variant;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        if root.on: Text {
+            text: Conn.sort-desc ? "▼" : "▲";
+            font-size: 10px * Type.scale;
+            color: M3.primary;
+            vertical-alignment: center;
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { Conn.sort(root.column); }
+    }
+}
+
+// one site's bar in the waterfall: each phase in its colour, from the site's start (all on the test's time scale)
+component WaterfallBar inherits Rectangle {
+    in property <ConnRow> r;
+    // px per ms
+    in property <float> k;
+    property <[float]> ends: [root.r.w-tcp, root.r.w-connect, root.r.w-tls, root.r.w-first, root.r.w-total];
+    // (10 px in from the column's start, clear of the time before it)
+    property <length> x0: 10px + max(0, root.r.w-start) * root.k * 1px;
+    for i in 5: Rectangle {
+        property <float> from: i == 0 ? 0 : root.ends[i - 1];
+        property <float> to: root.ends[i];
+        visible: root.r.w-start >= 0 && self.from >= 0 && self.to > self.from;
+        x: root.x0 + self.from * root.k * 1px;
+        y: (parent.height - self.height) / 2;
+        width: max(1px, (self.to - self.from) * root.k * 1px);
+        height: 10px;
+        background: WaterfallColors.phase[i];
+    }
+    // a failed site: from where it got to until it gave up
+    property <float> reached: max(0, max(root.r.w-tcp, max(root.r.w-connect, max(root.r.w-tls, root.r.w-first))));
+    if root.r.tone == 2 && root.r.w-start >= 0 && root.r.w-total > root.reached: Rectangle {
+        x: root.x0 + root.reached * root.k * 1px;
+        y: (parent.height - self.height) / 2;
+        width: max(1px, (root.r.w-total - root.reached) * root.k * 1px);
+        height: 10px;
+        background: M3.error.with-alpha(0.55);
+    }
+}
+
 component ConnPage inherits VerticalLayout {
     spacing: 10px;
-    // the region and address columns go when it gets narrow
-    property <bool> wide: self.width >= 760px;
+    // the columns' widths; the result's takes what is left (a narrow window scrolls the table sideways)
+    property <length> w-index: 40px;
+    property <length> w-region: 72px;
+    property <length> w-name: 112px;
+    property <length> w-host: 150px;
+    property <length> w-ms: 70px;
+    property <length> w-fall: 244px;
+    property <length> w-remove: 28px;
+    property <length> fixed-w: root.w-index + root.w-region + root.w-name + root.w-host + 2 * root.w-ms + root.w-fall + root.w-remove
+        + 8 * 12px + 28px;
+    property <length> w-result: max(120px, conn-scroll.visible-width - root.fixed-w);
+    property <length> table-w: root.fixed-w + root.w-result;
     HorizontalLayout {
         spacing: 8px;
         Text {
@@ -1950,70 +2042,107 @@ component ConnPage inherits VerticalLayout {
             clicked => { Conn.add(); }
         }
     }
+    // the waterfall's legend
+    HorizontalLayout {
+        alignment: end;
+        spacing: 14px;
+        for name[i] in Conn.phases: HorizontalLayout {
+            spacing: 6px;
+            Rectangle {
+                width: 12px;
+                height: 8px;
+                y: (parent.height - self.height) / 2;
+                background: WaterfallColors.phase[i];
+            }
+            Text {
+                text: name;
+                font-size: 12px * Type.scale;
+                color: M3.on-surface-variant;
+                vertical-alignment: center;
+            }
+        }
+    }
     Rectangle {
         vertical-stretch: 1;
         border-radius: 16px;
         background: M3.surface-container-low;
         clip: true;
         VerticalLayout {
-            // header
+            // the header: stays at the top, follows the table sideways
             Rectangle {
                 height: 40px;
                 background: M3.surface-container-high;
+                clip: true;
                 HorizontalLayout {
+                    x: conn-scroll.content-x;
+                    width: root.table-w;
                     padding-left: 16px;
                     padding-right: 12px;
                     spacing: 12px;
-                    if root.wide: Text { width: 90px; text: Conn.columns[0]; font-size: 12px * Type.scale; font-weight: 700; color: M3.on-surface-variant; vertical-alignment: center; }
-                    Text { width: 120px; text: Conn.columns[1]; font-size: 12px * Type.scale; font-weight: 700; color: M3.on-surface-variant; vertical-alignment: center; }
-                    if root.wide: Text { width: 170px; text: Conn.columns[2]; font-size: 12px * Type.scale; font-weight: 700; color: M3.on-surface-variant; vertical-alignment: center; }
-                    Text { horizontal-stretch: 1; text: Conn.columns[3]; font-size: 12px * Type.scale; font-weight: 700; color: M3.on-surface-variant; vertical-alignment: center; }
-                    Text { width: 70px; text: Conn.columns[4]; font-size: 12px * Type.scale; font-weight: 700; color: M3.on-surface-variant; vertical-alignment: center; horizontal-alignment: right; }
-                    Text { width: 70px; text: Conn.columns[5]; font-size: 12px * Type.scale; font-weight: 700; color: M3.on-surface-variant; vertical-alignment: center; horizontal-alignment: right; }
-                    Rectangle { width: 28px; }
+                    ConnHead { width: root.w-index; text: "#"; column: 0; right: true; }
+                    ConnHead { width: root.w-region; text: Conn.columns[0]; column: 1; }
+                    ConnHead { width: root.w-name; text: Conn.columns[1]; column: 2; }
+                    ConnHead { width: root.w-host; text: Conn.columns[2]; column: 3; }
+                    ConnHead { width: root.w-result; text: Conn.columns[3]; column: 4; }
+                    ConnHead { width: root.w-ms; text: Conn.columns[4]; column: 5; right: true; }
+                    ConnHead { width: root.w-ms; text: Conn.columns[5]; column: 6; right: true; }
+                    ConnHead { width: root.w-fall; text: Conn.t-waterfall; column: 7; pad: 10px; }
+                    Rectangle { width: root.w-remove; }
                 }
             }
             Rectangle {
                 vertical-stretch: 1;
-                conn-list := ListView {
-                    for r[i] in Conn.rows: Rectangle {
-                        height: 36px;
-                        background: mod(i, 2) == 1 ? M3.on-surface.with-alpha(0.03) : transparent;
-                        HorizontalLayout {
-                            padding-left: 16px;
-                            padding-right: 12px;
-                            spacing: 12px;
-                            if root.wide: Text { width: 90px; text: r.region; font-size: 13px * Type.scale; color: M3.on-surface-variant; vertical-alignment: center; overflow: elide; }
-                            Text { width: 120px; text: r.name; font-size: 13px * Type.scale; font-weight: 600; color: M3.on-surface; vertical-alignment: center; overflow: elide; }
-                            if root.wide: Text { width: 170px; text: r.host; font-size: 12px * Type.scale; font-family: Type.mono; color: M3.on-surface-variant; vertical-alignment: center; overflow: elide; }
-                            Text {
-                                horizontal-stretch: 1;
-                                text: r.result;
-                                font-size: 13px * Type.scale;
-                                color: r.tone == 1 ? #2e9d4a : r.tone == 2 ? M3.error : M3.on-surface-variant;
-                                vertical-alignment: center;
-                                overflow: elide;
-                            }
-                            Text { width: 70px; text: r.conn; font-size: 12px * Type.scale; font-family: Type.mono; color: M3.on-surface; vertical-alignment: center; horizontal-alignment: right; }
-                            Text { width: 70px; text: r.total; font-size: 12px * Type.scale; font-family: Type.mono; color: M3.on-surface; vertical-alignment: center; horizontal-alignment: right; }
-                            // a site the user added can be taken out again
-                            Rectangle {
-                                width: 28px;
-                                if r.added: Rectangle {
-                                    width: 28px;
-                                    height: 28px;
-                                    border-radius: 14px;
-                                    background: rm-ta.has-hover && Conn.editable ? M3.on-surface.with-alpha(0.10) : transparent;
-                                    opacity: Conn.editable ? 1 : 0.38;
-                                    Image {
-                                        width: 16px;
-                                        height: 16px;
-                                        source: @image-url("icons/close.svg");
-                                        colorize: M3.on-surface-variant;
-                                    }
-                                    rm-ta := TouchArea {
-                                        enabled: Conn.editable;
-                                        clicked => { Conn.remove(r.host); }
+                // up and down, and sideways when the window is narrow
+                conn-scroll := ScrollView {
+                    content-width: root.table-w;
+                    content-height: rows-lay.preferred-height;
+                    rows-lay := VerticalLayout {
+                        width: root.table-w;
+                        for r[i] in Conn.rows: Rectangle {
+                            height: 36px;
+                            background: mod(i, 2) == 1 ? M3.on-surface.with-alpha(0.03) : transparent;
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 12px;
+                                spacing: 12px;
+                                Text { width: root.w-index; text: r.index; font-size: 12px * Type.scale; font-family: Type.mono; color: M3.on-surface-variant; vertical-alignment: center; horizontal-alignment: right; }
+                                Text { width: root.w-region; text: r.region; font-size: 13px * Type.scale; color: M3.on-surface-variant; vertical-alignment: center; overflow: elide; }
+                                Text { width: root.w-name; text: r.name; font-size: 13px * Type.scale; font-weight: 600; color: M3.on-surface; vertical-alignment: center; overflow: elide; }
+                                Text { width: root.w-host; text: r.host; font-size: 12px * Type.scale; font-family: Type.mono; color: M3.on-surface-variant; vertical-alignment: center; overflow: elide; }
+                                Text {
+                                    width: root.w-result;
+                                    text: r.result;
+                                    font-size: 13px * Type.scale;
+                                    color: r.tone == 1 ? #2e9d4a : r.tone == 2 ? M3.error : M3.on-surface-variant;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                                Text { width: root.w-ms; text: r.conn; font-size: 12px * Type.scale; font-family: Type.mono; color: M3.on-surface; vertical-alignment: center; horizontal-alignment: right; }
+                                Text { width: root.w-ms; text: r.total; font-size: 12px * Type.scale; font-family: Type.mono; color: M3.on-surface; vertical-alignment: center; horizontal-alignment: right; }
+                                WaterfallBar {
+                                    width: root.w-fall;
+                                    r: r;
+                                    k: (root.w-fall / 1px - 14) / Conn.w-max;
+                                }
+                                // a site the user added can be taken out again
+                                Rectangle {
+                                    width: root.w-remove;
+                                    if r.added: Rectangle {
+                                        width: 28px;
+                                        height: 28px;
+                                        border-radius: 14px;
+                                        background: rm-ta.has-hover && Conn.editable ? M3.on-surface.with-alpha(0.10) : transparent;
+                                        opacity: Conn.editable ? 1 : 0.38;
+                                        Image {
+                                            width: 16px;
+                                            height: 16px;
+                                            source: @image-url("icons/close.svg");
+                                            colorize: M3.on-surface-variant;
+                                        }
+                                        rm-ta := TouchArea {
+                                            enabled: Conn.editable;
+                                            clicked => { Conn.remove(r.host); }
+                                        }
                                     }
                                 }
                             }
@@ -2024,9 +2153,9 @@ component ConnPage inherits VerticalLayout {
                     // (not over the scroll bar)
                     x: 0;
                     width: parent.width - 14px;
-                    offset: conn-list.content-y;
-                    content: conn-list.content-height;
-                    view: conn-list.visible-height;
+                    offset: conn-scroll.content-y;
+                    content: conn-scroll.content-height;
+                    view: conn-scroll.visible-height;
                     fade-color: M3.surface-container-low;
                 }
             }

@@ -1215,6 +1215,22 @@ fn main() -> Result<(), slint::PlatformError> {
         });
         let send3 = send.clone();
         c.on_remove(move |host| send3(json!({"cmd": "test_site_remove", "host": host.as_str()})));
+        // a column's header clicked: by it upwards, again downwards; the # column goes back to the sites' order
+        let weak = app.as_weak();
+        c.on_sort(move |col| {
+            CONN.with(|s| {
+                let mut s = s.borrow_mut();
+                if col == 0 || s.sort_col != col {
+                    s.sort_col = col;
+                    s.sort_desc = false;
+                } else {
+                    s.sort_desc = !s.sort_desc;
+                }
+            });
+            if let Some(a) = weak.upgrade() {
+                conn_rows(&a);
+            }
+        });
         let weak = app.as_weak();
         c.on_proxy_changed(move || {
             if let Some(a) = weak.upgrade() {
@@ -1763,6 +1779,21 @@ struct ConnState {
     timeout: u64,
     cooldown_secs: u64,
     done: usize,
+    /// the column the table is sorted by (0 = the sites' order) and whether downwards
+    sort_col: i32,
+    sort_desc: bool,
+}
+
+/// a waterfall-less row (not tested yet): every time unknown
+fn conn_untimed(r: &mut ConnRow) {
+    r.conn_ms = -1.0;
+    r.total_ms = -1.0;
+    r.w_start = -1.0;
+    r.w_tcp = -1.0;
+    r.w_connect = -1.0;
+    r.w_tls = -1.0;
+    r.w_first = -1.0;
+    r.w_total = -1.0;
 }
 
 thread_local! {
@@ -1777,10 +1808,58 @@ fn conn_labels(app: &App) {
     c.set_add_text(tr("Add").into());
     let cols: Vec<SharedString> = ["Region", "Site", "Address", "Result", "Connect", "All"].iter().map(|x| SharedString::from(tr(x))).collect();
     c.set_columns(ModelRc::new(VecModel::from(cols)));
+    c.set_t_waterfall(tr("Waterfall").into());
+    let phases: Vec<SharedString> = ["Proxy", "Connect", "TLS", "Waiting", "Response"].iter().map(|x| SharedString::from(tr(x))).collect();
+    c.set_phases(ModelRc::new(VecModel::from(phases)));
 }
 
+/// the table: the rows in the chosen order (an unknown number last either way), and the waterfall's scale
 fn conn_rows(app: &App) {
-    CONN.with(|s| app.global::<Conn>().set_rows(ModelRc::new(VecModel::from(s.borrow().rows.clone()))));
+    CONN.with(|s| {
+        let s = s.borrow();
+        let mut rows = s.rows.clone();
+        let (col, desc) = (s.sort_col, s.sort_desc);
+        let num = |r: &ConnRow| -> f32 {
+            match col {
+                5 => r.conn_ms,
+                6 => r.total_ms,
+                7 => r.w_start,
+                _ => 0.0,
+            }
+        };
+        rows.sort_by(|a, b| {
+            use std::cmp::Ordering;
+            let ord = match col {
+                1 => a.region.to_lowercase().cmp(&b.region.to_lowercase()),
+                2 => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                3 => a.host.cmp(&b.host),
+                // answered first, then failed, then not tested; then by the text
+                4 => {
+                    let rank = |r: &ConnRow| match r.tone { 1 => 0, 2 => 1, _ => 2 };
+                    rank(a).cmp(&rank(b)).then_with(|| a.result.cmp(&b.result))
+                }
+                5..=7 => {
+                    let (x, y) = (num(a), num(b));
+                    // unknown times stay at the bottom whichever way
+                    match (x < 0.0, y < 0.0) {
+                        (true, true) => Ordering::Equal,
+                        (true, false) => return Ordering::Greater,
+                        (false, true) => return Ordering::Less,
+                        _ => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
+                    }
+                }
+                _ => Ordering::Equal,
+            };
+            let ord = if desc { ord.reverse() } else { ord };
+            ord.then_with(|| a.index.cmp(&b.index))
+        });
+        let w_max = s.rows.iter().map(|r| r.w_start + r.w_total).fold(0.0f32, f32::max);
+        let c = app.global::<Conn>();
+        c.set_rows(ModelRc::new(VecModel::from(rows)));
+        c.set_sort_col(col);
+        c.set_sort_desc(desc);
+        c.set_w_max(w_max.max(1.0));
+    });
 }
 
 /// the sites (results cleared) from the core's "conn"
@@ -1788,7 +1867,17 @@ fn conn_sites(app: &App, v: &Value) {
     CONN.with(|s| {
         let mut s = s.borrow_mut();
         s.rows = v["sites"].as_array().into_iter().flatten()
-            .map(|x| ConnRow {
+            .enumerate()
+            .map(|(i, x)| ConnRow {
+                index: i as i32 + 1,
+                conn_ms: -1.0,
+                total_ms: -1.0,
+                w_start: -1.0,
+                w_tcp: -1.0,
+                w_connect: -1.0,
+                w_tls: -1.0,
+                w_first: -1.0,
+                w_total: -1.0,
                 region: x[0].as_str().unwrap_or("").into(),
                 name: x[1].as_str().unwrap_or("").into(),
                 host: x[2].as_str().unwrap_or("").into(),
@@ -1885,6 +1974,7 @@ fn conn_event(app: &App, v: &Value) {
                     r.conn = SharedString::new();
                     r.total = SharedString::new();
                     r.tone = 0;
+                    conn_untimed(r);
                 }
             });
             c.set_summary(tr("Testing '{name}'… 0 / {len}").replace("{name}", v["name"].as_str().unwrap_or("")).replace("{len}", &total.to_string()).into());
@@ -1903,6 +1993,17 @@ fn conn_event(app: &App, v: &Value) {
                     x.conn = r[1].as_str().unwrap_or("").into();
                     x.total = r[2].as_str().unwrap_or("").into();
                     x.tone = if r[3] == json!(true) { 1 } else { 2 };
+                    let t = &v["timing"];
+                    let ms = |k: &str| t[k].as_f64().map_or(-1.0, |v| v as f32);
+                    // the phases' ends are from the site's own start; the start is from the test's
+                    x.w_start = ms("start");
+                    x.w_tcp = ms("tcp");
+                    x.w_connect = ms("connect");
+                    x.w_tls = ms("tls");
+                    x.w_first = ms("first_byte");
+                    x.w_total = ms("total");
+                    x.conn_ms = x.w_connect;
+                    x.total_ms = x.w_total;
                 }
                 (s.done, s.rows.len())
             });

@@ -167,9 +167,15 @@ fn roots() -> Arc<rustls::ClientConfig> {
 }
 
 /// `probe_site`: HTTPS to host:443 through the SOCKS5 proxy on 127.0.0.1:port. Keys: ok, status, connect_ms,
-/// total_ms, error, kind ("" / "socks" / "tls" / "timeout" / "closed" / "net"), note.
+/// total_ms, error, kind ("" / "socks" / "tls" / "timeout" / "closed" / "net"), note; and for the waterfall the
+/// end of each phase in ms from the start (null when not reached): tcp_ms (the local proxy), connect_ms (the
+/// tunnel to the site), tls_ms (TLS handshake), first_byte_ms (the response's first byte).
 pub fn probe_site(host: &str, port: u16) -> Map<String, Value> {
-    let mut res = json!({"ok": false, "status": "", "connect_ms": null, "total_ms": null, "error": "", "kind": ""}).as_object().unwrap().clone();
+    let mut res = json!({"ok": false, "status": "", "connect_ms": null, "total_ms": null, "error": "", "kind": "",
+        "tcp_ms": null, "tls_ms": null, "first_byte_ms": null})
+    .as_object()
+    .unwrap()
+    .clone();
     let t0 = Instant::now();
     let local: SocketAddr = ([127, 0, 0, 1], port).into();
     let mut s = match TcpStream::connect_timeout(&local, PROBE_TIMEOUT) {
@@ -179,6 +185,7 @@ pub fn probe_site(host: &str, port: u16) -> Map<String, Value> {
             return res;
         }
     };
+    res.insert("tcp_ms".into(), json!(ms(t0)));
     let _ = s.set_read_timeout(Some(PROBE_TIMEOUT));
     let _ = s.set_write_timeout(Some(PROBE_TIMEOUT));
     let r = (|| -> Result<(), Fail> {
@@ -198,11 +205,19 @@ pub fn probe_site(host: &str, port: u16) -> Map<String, Value> {
         let name = rustls::pki_types::ServerName::try_from(host.to_string()).map_err(|e| Fail::Io(std::io::Error::other(e.to_string())))?;
         let conn = rustls::ClientConnection::new(roots(), name).map_err(|e| Fail::Io(std::io::Error::other(e)))?;
         let mut tls = rustls::StreamOwned::new(conn, s.try_clone().map_err(Fail::Io)?);
+        // the handshake on its own (its time is a phase of the waterfall)
+        while tls.conn.is_handshaking() {
+            tls.conn.complete_io(&mut tls.sock).map_err(Fail::Io)?;
+        }
+        res.insert("tls_ms".into(), json!(ms(t0)));
         let head = format!("HEAD / HTTP/1.1\r\nHost: {host}\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\nConnection: close\r\n\r\n");
         tls.write_all(head.as_bytes()).map_err(Fail::Io)?;
         let mut buf = [0u8; 512];
         let n = match tls.read(&mut buf) {
-            Ok(n) => n,
+            Ok(n) => {
+                res.insert("first_byte_ms".into(), json!(ms(t0)));
+                n
+            }
             // a server that closes without close_notify: what arrived before counts
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof && tls.conn.is_handshaking() == false => 0,
             Err(e) => return Err(Fail::Io(e)),

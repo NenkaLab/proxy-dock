@@ -2055,14 +2055,19 @@ impl Controller {
             let started = remote.start(&probe::bridge_for(&proxy, port), &glob).recv_timeout(Duration::from_secs(15)).unwrap_or(false);
             let mut err = String::new();
             if started {
-                let queue = Arc::new(Mutex::new(hosts.iter().cloned().enumerate().collect::<Vec<_>>()));
+                // the waterfall's zero: every site's start is measured from here
+                let t_test = Instant::now();
+                // (taken from the end: reversed, so the first site starts first)
+                let queue = Arc::new(Mutex::new(hosts.iter().cloned().enumerate().rev().collect::<Vec<_>>()));
                 let workers: Vec<_> = (0..probe::PROBE_WORKERS.min(hosts.len()))
                     .map(|_| {
                         let (queue, tx) = (queue.clone(), tx.clone());
                         std::thread::spawn(move || loop {
                             let next = queue.lock().unwrap().pop();
                             let Some((row, host)) = next else { break };
-                            let res = probe::probe_site(&host, port);
+                            let begin = t_test.elapsed().as_secs_f64() * 1000.0;
+                            let mut res = probe::probe_site(&host, port);
+                            res.insert("start_ms".into(), json!(begin));
                             let _ = tx.send(Msg::Work(Box::new(move |c: &mut Controller| c.on_conn_result(row, res))));
                         })
                     })
@@ -2086,7 +2091,11 @@ impl Controller {
         if ok {
             self.conn_ok.push(res.get("total_ms").and_then(Value::as_f64).unwrap_or(0.0));
         }
-        let msg = json!({"ev": "conn_result", "row": row, "result": [text, conn, total, ok]});
+        // the waterfall: when the site started and the end of each phase (ms; null = not reached)
+        let at = |k: &str| res.get(k).cloned().unwrap_or(Value::Null);
+        let timing = json!({"start": at("start_ms"), "tcp": at("tcp_ms"), "connect": at("connect_ms"), "tls": at("tls_ms"),
+            "first_byte": at("first_byte_ms"), "total": at("total_ms")});
+        let msg = json!({"ev": "conn_result", "row": row, "result": [text, conn, total, ok], "timing": timing});
         self.broadcast(&msg);
     }
 

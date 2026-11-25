@@ -1068,5 +1068,8 @@
  "Proxy defaults": "代理默认值",
  "Startup": "启动",
  "This connection's way is no longer known (only recent connections of running cards are)": "已无法得知此连接的路径（只记录运行中卡片的最近连接）",
- "The connection's way is lit on the canvas": "已在画布上标出此连接的路径"
+ "The connection's way is lit on the canvas": "已在画布上标出此连接的路径",
+ "Waterfall": "瀑布图",
+ "Waiting": "等待响应",
+ "Response": "响应"
 }
