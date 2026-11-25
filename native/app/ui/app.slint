@@ -637,9 +637,11 @@ component FormRow inherits Rectangle {
     lay := HorizontalLayout {
         spacing: 16px;
         padding-top: f.label != "" ? 10px : 2px;
+        // the label and the control centred on each other
         VerticalLayout {
             width: 260px;
             spacing: 2px;
+            alignment: center;
             Text {
                 text: f.kind == "button" ? "" : f.label;
                 font-size: (f.kind == "heading" ? 18px : 14px) * Type.scale;
@@ -655,7 +657,7 @@ component FormRow inherits Rectangle {
             }
         }
         VerticalLayout {
-            alignment: start;
+            alignment: center;
             horizontal-stretch: 1;
             if f.kind == "bool": HorizontalLayout {
                 alignment: start;
@@ -990,10 +992,14 @@ component SettingRow inherits HorizontalLayout {
             wrap: word-wrap;
         }
     }
-    HorizontalLayout {
-        alignment: end;
-        spacing: 8px;
-        @children
+    // the controls in the middle of the row's height, like the text beside them
+    VerticalLayout {
+        alignment: center;
+        HorizontalLayout {
+            alignment: end;
+            spacing: 8px;
+            @children
+        }
     }
 }
 
