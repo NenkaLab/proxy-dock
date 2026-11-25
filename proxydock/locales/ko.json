@@ -1052,5 +1052,6 @@
  "{who} -> {target} closed · {reason} · ↑ {fmt_size} ↓ {fmt_size2} · {value:.1f}s": "{who} -> {target} 종료 · {reason} · ↑ {fmt_size} ↓ {fmt_size2} · {value:.1f}s",
  "{who} -> {target} not in the allow list": "{who} -> {target} 허용 목록에 없음",
  "{who} UDP session ended · ↑ {fmt_size} ↓ {fmt_size2} · {value:.1f}s{extra}": "{who} UDP 세션 종료 · ↑ {fmt_size} ↓ {fmt_size2} · {value:.1f}s{extra}",
- "→ output {n}": "→ 출력 {n}"
+ "→ output {n}": "→ 출력 {n}",
+ "Shadowsocks cipher '{value}' is not supported": "Shadowsocks 암호 방식 '{value}'은(는) 지원하지 않습니다"
 }

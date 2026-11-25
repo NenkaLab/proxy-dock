@@ -515,6 +515,29 @@ pub fn py_json(v: &Value) -> String {
     String::from_utf8(out).expect("serde_json writes UTF-8")
 }
 
+/// `json.dumps(v, ensure_ascii=False)`: one line, ", " and ": " between items
+pub fn py_dumps(v: &Value) -> String {
+    struct Line;
+    impl serde_json::ser::Formatter for Line {
+        fn write_f64<W: ?Sized + std::io::Write>(&mut self, w: &mut W, value: f64) -> std::io::Result<()> {
+            w.write_all(crate::py::float_repr(value).as_bytes())
+        }
+        fn begin_array_value<W: ?Sized + std::io::Write>(&mut self, w: &mut W, first: bool) -> std::io::Result<()> {
+            if first { Ok(()) } else { w.write_all(b", ") }
+        }
+        fn begin_object_key<W: ?Sized + std::io::Write>(&mut self, w: &mut W, first: bool) -> std::io::Result<()> {
+            if first { Ok(()) } else { w.write_all(b", ") }
+        }
+        fn begin_object_value<W: ?Sized + std::io::Write>(&mut self, w: &mut W) -> std::io::Result<()> {
+            w.write_all(b": ")
+        }
+    }
+    use serde::Serialize;
+    let mut out = Vec::new();
+    v.serialize(&mut serde_json::Serializer::with_formatter(&mut out, Line)).expect("JSON values always serialize");
+    String::from_utf8(out).expect("serde_json writes UTF-8")
+}
+
 #[derive(Debug)]
 pub enum SaveError {
     /// passwords could not be encrypted (nothing written)

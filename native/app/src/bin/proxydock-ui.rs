@@ -329,10 +329,46 @@ fn field_rows(fields: &[Value]) -> Vec<FieldRow> {
                     index,
                     visible: f["visible"] == json!(true),
                     buttons: ModelRc::new(VecModel::from(buttons)),
+                    busy: f["busy"] == json!(true),
+                    tone: f["tone"].as_i64().unwrap_or(0) as i32,
                 }
             })
             .collect()
     })
+}
+
+thread_local! {
+    static NOTICE_SEQ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// the text on the clipboard ("" if there is none)
+fn clipboard_text() -> String {
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
+        use windows_sys::Win32::System::Memory::{GlobalLock, GlobalUnlock};
+        const CF_UNICODETEXT: u32 = 13;
+        if OpenClipboard(std::ptr::null_mut()) == 0 {
+            return String::new();
+        }
+        let mut out = String::new();
+        let h = GetClipboardData(CF_UNICODETEXT);
+        if !h.is_null() {
+            let p = GlobalLock(h) as *const u16;
+            if !p.is_null() {
+                let mut n = 0;
+                while *p.add(n) != 0 && n < 1 << 20 {
+                    n += 1;
+                }
+                out = String::from_utf16_lossy(std::slice::from_raw_parts(p, n));
+                GlobalUnlock(h);
+            }
+        }
+        CloseClipboard();
+        out
+    }
+    #[cfg(not(windows))]
+    String::new()
 }
 
 fn labels(app: &App) {
@@ -489,7 +525,11 @@ fn main() -> Result<(), slint::PlatformError> {
                 let e = e.borrow();
                 // a plain button's key is its action; an item's button n has the action in its options
                 let action = if i < 0 { key.to_string() } else { e.options.get(key.as_str()).and_then(|o| o.get(i as usize)).cloned().unwrap_or_default() };
-                json!({"cmd": "edit_action", "id": e.id, "action": action, "values": e.values})
+                let mut values = e.values.clone();
+                if action == "link.paste" {
+                    values.insert("clipboard".into(), json!(clipboard_text()));
+                }
+                json!({"cmd": "edit_action", "id": e.id, "action": action, "values": values})
             });
             send_p(msg);
         });
@@ -565,19 +605,40 @@ fn main() -> Result<(), slint::PlatformError> {
                             let id = v["id"].as_str().unwrap_or("").to_string();
                             EDITOR.with(|e| {
                                 let mut e = e.borrow_mut();
-                                if e.id != id || app.get_page() != 3 {
+                                let fresh = e.id != id || app.get_page() != 3;
+                                if fresh {
                                     // a fresh editor
                                     e.id = id;
                                     e.back_to = app.get_page();
                                 }
                                 // the core's draft has every value typed so far
                                 e.values.clear();
+                                if fresh {
+                                    app.set_form_notice(SharedString::new());
+                                }
                             });
                             let rows = field_rows(v["fields"].as_array().map(Vec::as_slice).unwrap_or(&[]));
                             app.set_form_fields(ModelRc::new(VecModel::from(rows)));
                             app.set_form_title(v["title"].as_str().unwrap_or("").into());
                             app.set_form_errors(ModelRc::default());
                             app.set_page(3);
+                        }
+                        "notice" => {
+                            let (title, text) = (v["title"].as_str().unwrap_or(""), v["text"].as_str().unwrap_or(""));
+                            let msg = if text.is_empty() { title.to_string() } else { format!("{title}\n{text}") };
+                            app.set_form_notice(msg.as_str().into());
+                            app.set_form_notice_ok(v["ok"] == json!(true));
+                            // the same message twice in a row stays (each one restarts the timer)
+                            NOTICE_SEQ.with(|n| n.set(n.get() + 1));
+                            let seq = NOTICE_SEQ.with(|n| n.get());
+                            let weak = app.as_weak();
+                            slint::Timer::single_shot(std::time::Duration::from_secs(7), move || {
+                                if let Some(a) = weak.upgrade() {
+                                    if NOTICE_SEQ.with(|n| n.get()) == seq {
+                                        a.set_form_notice(SharedString::new());
+                                    }
+                                }
+                            });
                         }
                         "show_text" => {
                             app.set_popup_title(v["title"].as_str().unwrap_or("").into());

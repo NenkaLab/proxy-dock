@@ -1052,5 +1052,6 @@
  "{who} -> {target} closed · {reason} · ↑ {fmt_size} ↓ {fmt_size2} · {value:.1f}s": "{who} -> {target} 关闭 · {reason} · ↑ {fmt_size} ↓ {fmt_size2} · {value:.1f}s",
  "{who} -> {target} not in the allow list": "{who} -> {target} 不在允许列表中",
  "{who} UDP session ended · ↑ {fmt_size} ↓ {fmt_size2} · {value:.1f}s{extra}": "{who} UDP 会话结束 · ↑ {fmt_size} ↓ {fmt_size2} · {value:.1f}s{extra}",
- "→ output {n}": "→ 输出 {n}"
+ "→ output {n}": "→ 输出 {n}",
+ "Shadowsocks cipher '{value}' is not supported": "不支持 Shadowsocks 加密方式“{value}”"
 }

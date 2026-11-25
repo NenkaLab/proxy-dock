@@ -280,6 +280,7 @@ pub fn outbound_form(g: &Obj, node: &Value) -> Vec<Field> {
     let mut b = Builder { node, prefix: "outbound", out: vec![] };
     b.add("name", "Name", "", Kind::Text, true);
     b.add("type", "Type", "Direct = connect straight from this PC. The others go through another proxy/server", outbound_types(), true).rerender = true;
+    b.push(field("link.paste", "Paste share link", "", Kind::Button, json!(null), true));
     b.add("host", "Server address · port", "", Kind::Text, remote);
     b.add("port", "", "", Kind::Int { min: 0, max: 65535 }, remote);
     // through another block
@@ -293,10 +294,15 @@ pub fn outbound_form(g: &Obj, node: &Value) -> Vec<Field> {
     b.add("username", "Upstream proxy account", "", Kind::Text, user_shown);
     b.add("password", if user_shown { "" } else { "Password" }, "", Kind::Secret, matches!(ot, "http" | "https" | "socks5" | "trojan" | "tuic"));
     // subscription
-    b.add("sub_url", "Subscription address", "", Kind::Secret, ot == "subscription");
+    let servers: Vec<(String, String)> = crate::singbox::compile::servers_of(ob).iter().filter_map(|x| x["name"].as_str().map(|n| (n.to_string(), n.to_string()))).collect();
+    let updated = ob["sub_updated"].as_i64().unwrap_or(0);
+    let when = if updated > 0 { crate::log::local_minute(updated) } else { "-".into() };
+    b.add("sub_url", "Subscription address", "", Kind::Secret, ot == "subscription").desc =
+        tr("{count} servers · updated {when}").replace("{count}", &servers.len().to_string()).replace("{when}", &when);
+    b.push(field("sub.update", "Update now", "", Kind::Button, json!(null), ot == "subscription"));
     b.add("sub_mode", "Server", "Fastest automatically measures the servers every few minutes and moves away from ones that stop working",
         choice(&[("auto", tr("Fastest automatically")), ("select", tr("Pick a server"))]), ot == "subscription").rerender = true;
-    let servers: Vec<(String, String)> = crate::singbox::compile::servers_of(ob).iter().filter_map(|x| x["name"].as_str().map(|n| (n.to_string(), n.to_string()))).collect();
+    let servers = if servers.is_empty() { vec![(String::new(), tr("(no servers yet)"))] } else { servers };
     b.add("sub_selected", "", "", Kind::Choice(servers), ot == "subscription" && st("sub_mode") == "select");
     b.add("sub_interval", "Update every (hours)", "0 = only when you click 'Update now'", Kind::Int { min: 0, max: 720 }, ot == "subscription");
     // group: mode and members
@@ -699,16 +705,52 @@ pub fn on_open(kind: &str, node: &mut Value) {
     }
 }
 
-/// What a button did: the changed draft, and text to show (a device's config).
+/// What a button did: the changed draft, text to show (a device's config), a message (ok, title, text).
 pub struct Acted {
     pub node: Value,
     pub show: Option<(String, String)>,
+    pub notice: Option<(bool, String, String)>,
+}
+
+/// "Paste share link": the outbound from the link (the subscription's servers stay), the link's name when the
+/// block still has an empty or type name (Python `_paste_link`)
+fn paste_link(n: &mut Value, clipboard: &str) -> (bool, String, String) {
+    let (fields, name) = match crate::links::parse(clipboard) {
+        Ok(x) => x,
+        Err(e) => {
+            let text = format!("{e}
+{}", tr("Copy a vless://, vmess://, trojan://, tuic://, ss:// or hysteria2:// link first"));
+            return (false, tr("Cannot use the clipboard"), text);
+        }
+    };
+    let old = n["outbound"].clone();
+    let mut ob = crate::config::outbound_defaults();
+    for k in ["sub_servers", "sub_updated"] {
+        if let Some(v) = old.get(k) {
+            ob.insert(k.into(), v.clone());
+        }
+    }
+    for (k, v) in fields {
+        ob.insert(k, v);
+    }
+    n["outbound"] = Value::Object(ob);
+    let current = py_strip(s(n, "name"));
+    let Kind::Choice(types) = outbound_types() else { unreachable!() };
+    if current.is_empty() || types.iter().any(|(_, label)| current.starts_with(label.as_str())) {
+        n["name"] = json!(crate::py::head(&name, 60));
+    }
+    (true, tr("Filled in from the link"), name)
+}
+
+fn py_strip(t: &str) -> String {
+    crate::py::strip(t).to_string()
 }
 
 /// A button of the editor (`action` = the button field's key), on the draft with the typed values already in.
 pub fn act(kind: &str, node: &Value, action: &str, values: &Map<String, Value>) -> Result<Acted, String> {
     let mut n = node.clone();
     let mut show = None;
+    let mut notice = None;
     let parts: Vec<&str> = action.split('.').collect();
     let idx = |p: &str| p.parse::<usize>().ok();
     match parts.as_slice() {
@@ -772,6 +814,9 @@ pub fn act(kind: &str, node: &Value, action: &str, values: &Map<String, Value>) 
                 }
             }
         }
+        ["link", "paste"] => {
+            notice = Some(paste_link(&mut n, values.get("clipboard").and_then(Value::as_str).unwrap_or("")));
+        }
         ["rule", "add"] => {
             let k = n["rules"].as_array().map_or(0, Vec::len) + 1;
             n["rules"].as_array_mut().unwrap().push(json!({"id": crate::ids::new_id(), "name": tr("Rule {n}").replace("{n}", &k.to_string()), "match": {}, "target": null, "color": ""}));
@@ -779,7 +824,7 @@ pub fn act(kind: &str, node: &Value, action: &str, values: &Map<String, Value>) 
         _ => return Err(String::new()),
     }
     let node = apply(kind, &n, &Map::new());
-    Ok(Acted { node, show })
+    Ok(Acted { node, show, notice })
 }
 
 /// The graph with node replaced (same id).

@@ -31,6 +31,27 @@ enum Msg {
     Toggle(String),
     StopAll,
     Quit(Sender<()>),
+    /// the result of work done on another thread (a network check, a download), applied on the controller's
+    Work(Box<dyn FnOnce(&mut Controller) + Send>),
+}
+
+/// work for another thread: it returns what to do with its result on the controller's thread
+type Job = Box<dyn FnOnce() -> Box<dyn FnOnce(&mut Controller) + Send> + Send>;
+
+/// editor buttons that need the network (their work runs on another thread)
+const NETWORK_ACTIONS: [&str; 3] = ["sub.update", "sni.detect", "probe"];
+
+/// the first subscription check after starting, then how often (Python `update_due_subscriptions` timers)
+const SUB_FIRST: Duration = Duration::from_secs(20);
+const SUB_EVERY: Duration = Duration::from_secs(15 * 60);
+
+/// the label of an editor button while its work runs
+fn busy_label(action: &str) -> &'static str {
+    match action {
+        "sub.update" => "Updating…",
+        "sni.detect" => "Connecting…",
+        _ => "Checking…",
+    }
 }
 
 /// a card as the tray menu shows it
@@ -143,6 +164,9 @@ pub fn spawn(config_path: PathBuf) -> std::io::Result<Handle> {
         drafts: HashMap::new(),
         flow_last: HashMap::new(),
         flow_sent: vec![],
+        busy: std::collections::HashSet::new(),
+        sub_busy: std::collections::HashSet::new(),
+        next_sub_check: Instant::now() + SUB_FIRST,
     };
     c.load();
     std::thread::Builder::new().name("controller".into()).spawn(move || c.run(rx))?;
@@ -180,6 +204,11 @@ struct Controller {
     flow_last: HashMap<(String, String), f64>,
     /// the per-link rates last sent (bytes/s; all zero = nothing flowing)
     flow_sent: Vec<f64>,
+    /// editor buttons whose work is running: (window, action)
+    busy: std::collections::HashSet<(u64, String)>,
+    /// subscription blocks being refreshed in the background
+    sub_busy: std::collections::HashSet<String>,
+    next_sub_check: Instant,
 }
 
 fn entry_json(e: &Entry) -> Value {
@@ -318,12 +347,22 @@ impl Controller {
         let Some((kind, draft)) = self.drafts.get(&client).cloned() else { return };
         let mut node = form::apply(kind, &draft, &values);
         let id = node["id"].as_str().unwrap_or("").to_string();
+        let action = v["action"].as_str().unwrap_or("");
+        if cmd == "edit_action" && NETWORK_ACTIONS.contains(&action) {
+            self.drafts.insert(client, (kind, node.clone()));
+            self.start_work(client, action, kind, &node);
+            self.send_form(client);
+            return;
+        }
         if cmd == "edit_action" {
-            match form::act(kind, &node, v["action"].as_str().unwrap_or(""), &values) {
+            match form::act(kind, &node, action, &values) {
                 Ok(done) => {
                     node = done.node;
                     if let Some((title, text)) = done.show {
                         reply(self, json!({"ev": "show_text", "title": title, "text": text}));
+                    }
+                    if let Some((ok, title, text)) = done.notice {
+                        reply(self, json!({"ev": "notice", "ok": ok, "title": title, "text": text}));
                     }
                 }
                 Err(msg) if !msg.is_empty() => reply(self, json!({"ev": "form_errors", "errors": [msg]})),
@@ -332,9 +371,7 @@ impl Controller {
         }
         self.drafts.insert(client, (kind, node.clone()));
         if cmd != "edit_save" {
-            let fields: Vec<Value> = form::form(&self.graph, &self.glob, kind, &node).iter().map(form::Field::to_json).collect();
-            let title = graph::find(&self.graph, &id).and_then(|(_, n)| n["name"].as_str().map(String::from)).unwrap_or_default();
-            reply(self, json!({"ev": "form", "id": id, "kind": kind, "title": title, "fields": fields}));
+            self.send_form(client);
             return;
         }
         if !self.can_save {
@@ -360,6 +397,152 @@ impl Controller {
         self.app_log(Level::Setting, &tr("Saved proxy '{name}'").replace("{name}", &name));
         self.graph_changed();
         reply(self, json!({"ev": "form_saved", "id": id}));
+    }
+
+    /// the editor's fields for the window's draft (buttons whose work runs are shown busy)
+    fn send_form(&mut self, client: u64) {
+        let Some((kind, node)) = self.drafts.get(&client).cloned() else { return };
+        let id = node["id"].as_str().unwrap_or("").to_string();
+        let fields: Vec<Value> = form::form(&self.graph, &self.glob, kind, &node)
+            .iter()
+            .map(|f| {
+                let mut j = f.to_json();
+                if self.busy.contains(&(client, f.key.clone())) {
+                    j["label"] = json!(tr(busy_label(&f.key)));
+                    j["busy"] = json!(true);
+                }
+                j
+            })
+            .collect();
+        let title = graph::find(&self.graph, &id).and_then(|(_, n)| n["name"].as_str().map(String::from)).unwrap_or_default();
+        let msg = json!({"ev": "form", "id": id, "kind": kind, "title": title, "fields": fields});
+        self.send_to(client, &msg);
+    }
+
+    fn send_to(&mut self, client: u64, msg: &Value) {
+        if let Some(cl) = self.clients.get_mut(&client) {
+            let _ = ipc::send(&mut cl.stream, msg);
+        }
+    }
+
+    fn notice(&mut self, client: u64, ok: bool, title: &str, text: &str) {
+        self.send_to(client, &json!({"ev": "notice", "ok": ok, "title": title, "text": text}));
+    }
+
+    /// An editor button that needs the network: the work runs on its own thread and its result goes into the
+    /// window's draft when it is still editing the same block.
+    fn start_work(&mut self, client: u64, action: &str, kind: &'static str, node: &Value) {
+        let key = (client, action.to_string());
+        if self.busy.contains(&key) {
+            return;
+        }
+        let Some(job) = self.network_job(client, action, kind, node) else { return };
+        self.busy.insert(key.clone());
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let apply = job();
+            let _ = tx.send(Msg::Work(Box::new(move |c: &mut Controller| {
+                c.busy.remove(&key);
+                apply(c);
+                c.send_form(key.0);
+            })));
+        });
+    }
+
+    /// the work of a network button (None: nothing to do, a message was shown)
+    fn network_job(&mut self, client: u64, action: &str, _kind: &'static str, node: &Value) -> Option<Job> {
+        let id = node["id"].as_str().unwrap_or("").to_string();
+        match action {
+            "sub.update" => {
+                let url = proxydock_core::py::strip(node["outbound"]["sub_url"].as_str().unwrap_or("")).to_string();
+                if url.is_empty() {
+                    self.notice(client, false, &tr("Subscription"), &tr("Enter the subscription address (https://...)"));
+                    return None;
+                }
+                Some(Box::new(move || {
+                    let result = proxydock_core::subscription::update(&url);
+                    Box::new(move |c: &mut Controller| {
+                        let (ok, text) = match result {
+                            Ok((fields, note)) => {
+                                c.with_draft(client, &id, |n| {
+                                    for (k, v) in fields {
+                                        n["outbound"][k] = v;
+                                    }
+                                });
+                                (true, note)
+                            }
+                            Err(e) => (false, e),
+                        };
+                        c.notice(client, ok, &tr("Subscription"), &text);
+                    })
+                }))
+            }
+            _ => None,
+        }
+    }
+
+    /// change the window's draft if it still edits block `id`
+    fn with_draft(&mut self, client: u64, id: &str, f: impl FnOnce(&mut Value)) {
+        if let Some((_, n)) = self.drafts.get_mut(&client) {
+            if n["id"] == json!(id) {
+                f(n);
+            }
+        }
+    }
+
+    /// Refresh the subscription blocks whose interval has passed, in the background (Python
+    /// `update_due_subscriptions`): changed servers apply to the cards, the same ones only move the update time.
+    fn update_due_subscriptions(&mut self) {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+        let due: Vec<(String, String)> = self.graph.get("outbounds").and_then(Value::as_array).into_iter().flatten()
+            .filter(|n| n["outbound"]["type"] == json!("subscription"))
+            .filter(|n| {
+                let ob = &n["outbound"];
+                let every = ob["sub_interval"].as_i64().unwrap_or(0);
+                every > 0 && now - ob["sub_updated"].as_i64().unwrap_or(0) >= every * 3600
+            })
+            .map(|n| (n["id"].as_str().unwrap_or("").to_string(), n["outbound"]["sub_url"].as_str().unwrap_or("").to_string()))
+            .filter(|(id, _)| !self.sub_busy.contains(id))
+            .collect();
+        for (id, url) in due {
+            self.sub_busy.insert(id.clone());
+            let tx = self.tx.clone();
+            std::thread::spawn(move || {
+                let result = proxydock_core::subscription::update(&url);
+                let _ = tx.send(Msg::Work(Box::new(move |c: &mut Controller| c.on_sub_updated(&id, result))));
+            });
+        }
+    }
+
+    fn on_sub_updated(&mut self, id: &str, result: Result<(Map<String, Value>, String), String>) {
+        self.sub_busy.remove(id);
+        let Some(name) = graph::find(&self.graph, id).filter(|(k, _)| *k == "outbound").map(|(_, n)| n["name"].as_str().unwrap_or("").to_string()) else { return };
+        let (fields, note) = match result {
+            Ok(x) => x,
+            Err(e) => {
+                let msg = tr("Subscription '{name}' could not be updated: {note}").replace("{name}", &name).replace("{note}", &e);
+                self.app_log(Level::Warn, &msg);
+                return;
+            }
+        };
+        let mut same = false;
+        for n in self.graph.get_mut("outbounds").and_then(Value::as_array_mut).into_iter().flatten() {
+            if n["id"] == json!(id) {
+                same = n["outbound"]["sub_servers"] == fields["sub_servers"];
+                for (k, v) in &fields {
+                    if !same || k == "sub_updated" {
+                        n["outbound"][k] = v.clone();
+                    }
+                }
+            }
+        }
+        if same {
+            self.save();
+            return;
+        }
+        let msg = tr("Subscription '{name}' updated: {note}").replace("{name}", &name).replace("{note}", &note);
+        self.app_log(Level::Setting, &msg);
+        self.graph_changed();
     }
 
     /// a canvas edit from the window
@@ -455,6 +638,7 @@ impl Controller {
                     self.clients.remove(&n);
                 }
                 Msg::Tick => self.on_tick(),
+                Msg::Work(f) => f(&mut self),
                 Msg::Toggle(id) => self.toggle(&id),
                 Msg::StopAll => self.stop_all(),
                 Msg::Quit(done) => {
@@ -591,6 +775,10 @@ impl Controller {
 
     fn on_tick(&mut self) {
         let now = Instant::now();
+        if now >= self.next_sub_check {
+            self.next_sub_check = now + SUB_EVERY;
+            self.update_due_subscriptions();
+        }
         let due: Vec<String> = self.restart_at.iter().filter(|(_, t)| **t <= now).map(|(id, _)| id.clone()).collect();
         for id in due {
             self.restart_at.remove(&id);

@@ -18,11 +18,12 @@ sha2 = "0.10"
 zip = { version = "9.8.2", default-features = false, features = ["deflate"] }
 serde = "1.0.229"
 x25519-dalek = { version = "3.0.0", features = ["static_secrets"] }
+yaml-rust2 = "0.13.2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_JobObjects", "Win32_System_Threading",
-    "Win32_System_SystemInformation", "Win32_UI_Shell", "Win32_System_Registry",
+    "Win32_System_SystemInformation", "Win32_UI_Shell", "Win32_System_Registry", "Win32_System_Time",
 ] }
 
 [target."cfg(not(windows))".dependencies]

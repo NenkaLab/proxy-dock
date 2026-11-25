@@ -308,3 +308,82 @@ fn block_editor() {
     h.quit(Duration::from_secs(10));
     let _ = std::fs::remove_dir_all(&home);
 }
+
+/// one HTTP response on a local port (a subscription server); returns the URL
+fn serve_once(body: String) -> String {
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://127.0.0.1:{}/sub", l.local_addr().unwrap().port());
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        if let Ok((mut s, _)) = l.accept() {
+            let mut buf = [0u8; 4096];
+            let _ = s.read(&mut buf);
+            let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        }
+    });
+    url
+}
+
+#[test]
+fn share_links_and_subscriptions() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let home = std::env::temp_dir().join(format!("proxydock-links-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let settings = json!({
+        "version": 3,
+        "graph": {
+            "inbounds": [],
+            "outbounds": [{"id": "o", "name": "Direct", "outbound": {"type": "direct"}},
+                          {"id": "s", "name": "Sub", "outbound": {"type": "subscription"}}],
+        },
+    });
+    let path = home.join("config.json");
+    std::fs::write(&path, settings.to_string()).unwrap();
+    let h = controller::spawn(path.clone()).unwrap();
+    let (mut w, rx) = connect(&h, &h.token);
+    expect(&rx, 5, |v| v["ev"] == "hello").expect("hello");
+    let field = |form: &Value, key: &str| form["fields"].as_array().unwrap().iter().find(|f| f["key"] == key).cloned().unwrap();
+
+    // a share link fills the outbound and, over a type name, the block's name
+    ipc::send(&mut w, &json!({"cmd": "edit_open", "id": "o"})).unwrap();
+    expect(&rx, 5, |v| v["ev"] == "form").expect("form");
+    ipc::send(&mut w, &json!({"cmd": "edit_action", "id": "o", "action": "link.paste", "values": {"clipboard": "not a link"}})).unwrap();
+    let n = expect(&rx, 5, |v| v["ev"] == "notice").expect("notice");
+    assert_eq!(n["ok"], false);
+    let link = "trojan://secret@example.com:8443?sni=a.example.com&type=ws&path=%2Fws#My%20Trojan";
+    ipc::send(&mut w, &json!({"cmd": "edit_action", "id": "o", "action": "link.paste", "values": {"clipboard": link}})).unwrap();
+    let n = expect(&rx, 5, |v| v["ev"] == "notice").expect("notice");
+    assert_eq!((n["ok"].as_bool(), n["text"].as_str()), (Some(true), Some("My Trojan")));
+    let f = expect(&rx, 5, |v| v["ev"] == "form").expect("form");
+    assert_eq!(field(&f, "outbound.type")["value"], "trojan");
+    assert_eq!(field(&f, "outbound.transport_path")["value"], "/ws");
+    assert_eq!(field(&f, "name")["value"], "My Trojan");
+    ipc::send(&mut w, &json!({"cmd": "edit_save", "id": "o", "values": {}})).unwrap();
+    expect(&rx, 10, |v| v["ev"] == "form_saved").expect("saved");
+    assert_eq!(saved(&path)["graph"]["outbounds"][0]["outbound"]["sni"], "a.example.com");
+
+    // "Update now": the button is busy until the list arrives, then the servers are in the draft
+    use base64::Engine;
+    let list = "trojan://pw@a.com:443#A\nvless://u@b.com:1?type=kcp#bad\nss://YWVzLTI1Ni1nY206cGFzcw@1.2.3.4:8388#C\n";
+    let url = serve_once(base64::engine::general_purpose::STANDARD.encode(list));
+    ipc::send(&mut w, &json!({"cmd": "edit_open", "id": "s"})).unwrap();
+    expect(&rx, 5, |v| v["ev"] == "form").expect("form");
+    ipc::send(&mut w, &json!({"cmd": "edit_action", "id": "s", "action": "sub.update", "values": {"outbound.sub_url": url}})).unwrap();
+    let f = expect(&rx, 5, |v| v["ev"] == "form").expect("busy form");
+    assert_eq!(field(&f, "sub.update")["busy"], true);
+    let n = expect(&rx, 25, |v| v["ev"] == "notice").expect("notice");
+    assert_eq!(n["ok"], true, "{n}");
+    assert!(n["text"].as_str().unwrap().contains('2') && n["text"].as_str().unwrap().contains('1'), "{n}");
+    let f = expect(&rx, 5, |v| v["ev"] == "form").expect("form");
+    assert!(field(&f, "sub.update").get("busy").is_none());
+    assert!(field(&f, "outbound.sub_url")["desc"].as_str().unwrap().starts_with('2'));
+    ipc::send(&mut w, &json!({"cmd": "edit_save", "id": "s", "values": {}})).unwrap();
+    expect(&rx, 10, |v| v["ev"] == "form_saved").expect("saved");
+    // (the servers are saved sealed, like passwords)
+    let g = proxydock_core::config::load_from(&path).unwrap().graph;
+    let servers: Value = serde_json::from_str(g["outbounds"][1]["outbound"]["sub_servers"].as_str().unwrap()).unwrap();
+    assert_eq!(servers.as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect::<Vec<_>>(), ["A", "C"]);
+    h.quit(Duration::from_secs(10));
+    let _ = std::fs::remove_dir_all(&home);
+}

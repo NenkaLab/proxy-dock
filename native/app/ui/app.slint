@@ -80,6 +80,10 @@ export struct FieldRow {
     visible: bool,
     // "item": the buttons' labels (their actions stay in the Rust side)
     buttons: [string],
+    // a button whose work runs (a download, a network check)
+    busy: bool,
+    // the description's colour: 0 normal, 1 success, 2 failure
+    tone: int,
 }
 
 export struct CardRow {
@@ -311,7 +315,7 @@ component FormRow inherits Rectangle {
             if f.desc != "": Text {
                 text: f.desc;
                 font-size: 12px;
-                color: M3.on-surface-variant;
+                color: f.tone == 1 ? #1e7f3c : f.tone == 2 ? M3.error : M3.on-surface-variant;
                 wrap: word-wrap;
             }
         }
@@ -334,6 +338,7 @@ component FormRow inherits Rectangle {
                 alignment: start;
                 Button {
                     text: f.label;
+                    enabled: !f.busy;
                     clicked => { root.pressed(f.key, -1); }
                 }
             }
@@ -502,6 +507,9 @@ export component App inherits Window {
     in property <string> t-delete: "Delete";
     // a refused edit's reason, shown for a few seconds
     in property <string> toast;
+    // a message in the editor (a button's result): text and whether it went well
+    in property <string> form-notice;
+    in property <bool> form-notice-ok;
     // world coordinates of the visible canvas centre (new blocks go there)
     out property <float> view-center-x: (editor.width / 2 - editor.pan-x) / editor.zoom / 1px;
     out property <float> view-center-y: (editor.height / 2 - editor.pan-y) / editor.zoom / 1px;
@@ -734,6 +742,18 @@ export component App inherits Window {
                             }
                             Button { text: root.t-cancel; clicked => { root.form-cancel(); } }
                             Button { text: root.t-save; primary: true; clicked => { root.form-save(); } }
+                        }
+                        if root.form-notice != "": Rectangle {
+                            border-radius: 12px;
+                            background: root.form-notice-ok ? M3.secondary-container : M3.error-container;
+                            height: notice-text.preferred-height + 20px;
+                            notice-text := Text {
+                                x: 16px;
+                                width: parent.width - 32px;
+                                text: root.form-notice;
+                                color: root.form-notice-ok ? M3.on-secondary-container : M3.on-error-container;
+                                wrap: word-wrap;
+                            }
                         }
                         if root.form-errors.length > 0: Rectangle {
                             border-radius: 12px;

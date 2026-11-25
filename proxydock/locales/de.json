@@ -1052,5 +1052,6 @@
  "{who} -> {target} closed · {reason} · ↑ {fmt_size} ↓ {fmt_size2} · {value:.1f}s": "{who} -> {target} geschlossen · {reason} · ↑ {fmt_size} ↓ {fmt_size2} · {value:.1f}s",
  "{who} -> {target} not in the allow list": "{who} -> {target} nicht in der Zulassungsliste",
  "{who} UDP session ended · ↑ {fmt_size} ↓ {fmt_size2} · {value:.1f}s{extra}": "{who} UDP-Sitzung beendet · ↑ {fmt_size} ↓ {fmt_size2} · {value:.1f}s{extra}",
- "→ output {n}": "→ Ausgang {n}"
+ "→ output {n}": "→ Ausgang {n}",
+ "Shadowsocks cipher '{value}' is not supported": "Die Shadowsocks-Verschlüsselung '{value}' wird nicht unterstützt"
 }

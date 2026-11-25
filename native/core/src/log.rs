@@ -81,6 +81,28 @@ pub fn now_text() -> String {
     }
 }
 
+/// a Unix time as local "YYYY-MM-DD HH:MM" (Python `time.strftime("%Y-%m-%d %H:%M", time.localtime(t))`)
+pub fn local_minute(unix: i64) -> String {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
+        use windows_sys::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
+        // 100 ns ticks since 1601
+        let ticks = (unix.max(0) as u64 + 11_644_473_600) * 10_000_000;
+        let ft = FILETIME { dwLowDateTime: ticks as u32, dwHighDateTime: (ticks >> 32) as u32 };
+        let (mut utc, mut local): (SYSTEMTIME, SYSTEMTIME) = unsafe { (std::mem::zeroed(), std::mem::zeroed()) };
+        let ok = unsafe { FileTimeToSystemTime(&ft, &mut utc) != 0 && SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc, &mut local) != 0 };
+        let t = if ok { local } else { utc };
+        format!("{:04}-{:02}-{:02} {:02}:{:02}", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute)
+    }
+    #[cfg(not(windows))]
+    {
+        let s = unix.max(0) as u64;
+        let (y, m, d) = civil_from_days((s / 86400) as i64);
+        format!("{y:04}-{m:02}-{d:02} {:02}:{:02}", s % 86400 / 3600, s % 3600 / 60)
+    }
+}
+
 #[cfg(not(windows))]
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719468;

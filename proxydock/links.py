@@ -7,6 +7,8 @@ from .i18n import _t
 import base64
 import urllib.parse
 
+from .ss import SS_METHODS
+
 SCHEMES = ("vless", "vmess", "trojan", "tuic", "ss", "hysteria2", "hy2")
 
 
@@ -77,6 +79,8 @@ def parse(link):
             raw = u.netloc.rsplit("@", 1)[0]
             userinfo = urllib.parse.unquote(raw) if ":" in urllib.parse.unquote(raw) else _b64(raw)
         method, _, password = userinfo.partition(":")
+        if method not in SS_METHODS:        # (the editor and the checks only know these)
+            raise ValueError(_t("Shadowsocks cipher '{value}' is not supported").format(value=method))
         return {"type": "shadowsocks", "host": host, "port": port, "ss_method": method,
                 "ss_password": password}, name or "Shadowsocks"
 

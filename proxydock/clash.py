@@ -8,6 +8,8 @@ a Clash file.
 from .i18n import _t
 import re
 
+from .ss import SS_METHODS
+
 
 def looks_like_clash(text):
     return re.search(r"^proxies\s*:", text, re.M) is not None
@@ -82,7 +84,10 @@ def _one(p):
     if t == "ss":
         if p.get("plugin"):
             raise ValueError("plugin")      # obfs / v2ray-plugin are not supported
-        return dict(base, type="shadowsocks", ss_method=_s(p.get("cipher")).lower(), ss_password=_s(p.get("password")))
+        method = _s(p.get("cipher")).lower()
+        if method not in SS_METHODS:
+            raise ValueError("cipher")      # (the checks only know these ciphers)
+        return dict(base, type="shadowsocks", ss_method=method, ss_password=_s(p.get("password")))
     if t == "vmess":
         ob = dict(base, type="vmess", uuid=_s(p.get("uuid")), vmess_cipher=(_s(p.get("cipher")) or "auto").lower(),
                   vmess_alter_id=int(p.get("alterId") or 0), security="tls" if _b(p.get("tls")) else "none", **_transport(p))
