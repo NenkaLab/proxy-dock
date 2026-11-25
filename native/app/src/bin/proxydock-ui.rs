@@ -454,6 +454,34 @@ fn show_settings(app: &App, v: &Value) {
     st.set_saved_close(b("close_exits"));
     st.set_saved_latest(b("singbox_latest"));
     st.set_saved_admin(b("run_as_admin"));
+    st.set_sizes(list("text_sizes"));
+    st.set_text_size(i("text_size"));
+    st.set_saved_text_size(i("text_size"));
+    // the fonts: by name in this window's lists of the PC's fonts (0 = built in)
+    let (ui_font, mono_font) = (vals["ui_font"].as_str().unwrap_or("").to_string(), vals["mono_font"].as_str().unwrap_or("").to_string());
+    FONTS.with(|f| {
+        let mut f = f.borrow_mut();
+        f.ui_choice = ui_font.clone();
+        let code = proxydock_core::i18n::current();
+        let builtin = tr("Built-in · {builtin_ui}").replace("{builtin_ui}", if lang_font(&code).is_empty() { system_ui_font() } else { lang_font(&code) });
+        let ui_names: Vec<SharedString> = std::iter::once(SharedString::from(builtin)).chain(f.ui.iter().map(|x| SharedString::from(x.as_str()))).collect();
+        let mono_names: Vec<SharedString> = std::iter::once(SharedString::from(tr("Built-in · {builtin_mono}").replace("{builtin_mono}", "JetBrains Mono")))
+            .chain(f.mono.iter().map(|x| SharedString::from(x.as_str())))
+            .collect();
+        st.set_ui_fonts(ModelRc::new(VecModel::from(ui_names)));
+        st.set_mono_fonts(ModelRc::new(VecModel::from(mono_names)));
+        let ui_i = f.ui.iter().position(|x| *x == ui_font).map_or(0, |k| k as i32 + 1);
+        let mono_i = f.mono.iter().position(|x| *x == mono_font).map_or(0, |k| k as i32 + 1);
+        st.set_ui_font(ui_i);
+        st.set_saved_ui_font(ui_i);
+        st.set_mono_font(mono_i);
+        st.set_saved_mono_font(mono_i);
+    });
+    // text size: Python's 115% is this window's own size
+    let size = proxydock_core::config::TEXT_SIZES.get(i("text_size").max(0) as usize).copied().unwrap_or(115);
+    app.global::<Type>().set_scale(size as f32 / 115.0);
+    app.global::<Type>().set_mono(if mono_font.is_empty() { "JetBrains Mono".into() } else { mono_font.as_str().into() });
+    apply_fonts(app, &proxydock_core::i18n::current());
     st.set_admin(b("run_as_admin"));
     st.set_windows(v["windows"] == json!(true));
     st.set_login(v["startup"]["registered"] == json!(true));
@@ -502,9 +530,59 @@ fn lang_font(code: &str) -> &'static str {
     }
 }
 
+/// the PC's font families: all, and the fixed-width ones (for the log); and the UI font the user chose
+#[derive(Default)]
+struct Fonts {
+    ui: Vec<String>,
+    mono: Vec<String>,
+    ui_choice: String,
+}
+
+thread_local! {
+    static FONTS: std::cell::RefCell<Fonts> = std::cell::RefCell::new(Fonts::default());
+}
+
+/// the font families installed on this PC (Windows GDI), sorted; the fixed-width ones apart
+fn system_fonts() -> (Vec<String>, Vec<String>) {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Graphics::Gdi::{EnumFontFamiliesExW, GetDC, ReleaseDC, DEFAULT_CHARSET, LOGFONTW, TEXTMETRICW};
+        unsafe extern "system" fn each(lf: *const LOGFONTW, _tm: *const TEXTMETRICW, _ty: u32, data: isize) -> i32 {
+            let (out, lf) = unsafe { (&mut *(data as *mut Vec<(String, bool)>), &*lf) };
+            let n = lf.lfFaceName.iter().position(|c| *c == 0).unwrap_or(32);
+            let name = String::from_utf16_lossy(&lf.lfFaceName[..n]);
+            if !name.starts_with('@') && !name.is_empty() {
+                out.push((name, lf.lfPitchAndFamily & 3 == 1));
+            }
+            1
+        }
+        let mut found: Vec<(String, bool)> = vec![];
+        unsafe {
+            let dc = GetDC(std::ptr::null_mut());
+            let mut lf: LOGFONTW = std::mem::zeroed();
+            lf.lfCharSet = DEFAULT_CHARSET as u8;
+            EnumFontFamiliesExW(dc, &lf, Some(each), &mut found as *mut _ as isize, 0);
+            ReleaseDC(std::ptr::null_mut(), dc);
+        }
+        found.sort_by_key(|(n, _)| n.to_lowercase());
+        found.dedup_by(|a, b| a.0 == b.0);
+        let mono = found.iter().filter(|(_, m)| *m).map(|(n, _)| n.clone()).collect();
+        (found.into_iter().map(|(n, _)| n).collect(), mono)
+    }
+    #[cfg(not(windows))]
+    (vec![], vec![])
+}
+
+/// the system's own UI font, for "Built-in" in languages that use it
+fn system_ui_font() -> &'static str {
+    if cfg!(windows) { "Segoe UI" } else if cfg!(target_os = "macos") { "SF Pro" } else { "Sans" }
+}
+
 /// the window's font for the language, and each language's name in its own font
 fn apply_fonts(app: &App, code: &str) {
-    app.set_ui_font(lang_font(code).into());
+    // the user's UI font, else the language's own
+    let chosen = FONTS.with(|f| f.borrow().ui_choice.clone());
+    app.set_ui_font(if chosen.is_empty() { lang_font(code).into() } else { chosen.as_str().into() });
     let fonts: Vec<SharedString> = proxydock_core::i18n::LANGUAGES.iter().map(|(c, _)| SharedString::from(lang_font(c))).collect();
     app.global::<Settings>().set_language_fonts(ModelRc::new(VecModel::from(fonts)));
 }
@@ -555,6 +633,13 @@ fn settings_text() -> SettingsText {
         logsize_desc: t("Font size of the log and license views (pt)"),
         close: t("Quit with the X button"),
         close_desc: t("When off, the app keeps running in the tray after X"),
+        text_size: t("Text size"),
+        text_size_desc: t("Size of the text in menus and pages (applies right away)"),
+        fonts: t("Fonts"),
+        ui_font: t("UI font"),
+        ui_font_desc: t("Menus, settings and the whole window"),
+        mono_font: t("Log font"),
+        mono_font_desc: t("Monospace font of the log view (CJK text uses the UI font)"),
         startup: t("Startup (applied immediately)"),
         login: t("Start at login"),
         login_desc: t("Runs ProxyDock automatically when you sign in"),
@@ -614,6 +699,12 @@ fn main() -> Result<(), slint::PlatformError> {
     let writer = Arc::new(Mutex::new(stream.try_clone().map_err(|e| slint::PlatformError::Other(e.to_string()))?));
 
     let app = App::new()?;
+    FONTS.with(|f| {
+        let (ui, mono) = system_fonts();
+        let mut f = f.borrow_mut();
+        f.ui = ui;
+        f.mono = mono;
+    });
     let models = Rc::new(Models {
         cards: Rc::new(VecModel::default()),
         logs: Rc::new(VecModel::default()),
@@ -843,6 +934,9 @@ fn main() -> Result<(), slint::PlatformError> {
                 "dns_via_outbound": st.get_dnsvia(), "log_to_file": st.get_logfile(), "language": st.get_language(),
                 "theme": st.get_theme(), "ui_scale": st.get_scale(), "log_font_size": st.get_logsize(),
                 "close_exits": st.get_close(), "singbox_latest": st.get_latest(), "run_as_admin": st.get_admin(),
+                "text_size": st.get_text_size(),
+                "ui_font": FONTS.with(|f| f.borrow().ui.get((st.get_ui_font() - 1).max(-1) as usize).cloned().filter(|_| st.get_ui_font() > 0).unwrap_or_default()),
+                "mono_font": FONTS.with(|f| f.borrow().mono.get((st.get_mono_font() - 1).max(-1) as usize).cloned().filter(|_| st.get_mono_font() > 0).unwrap_or_default()),
             }}));
         });
         let weak = app.as_weak();

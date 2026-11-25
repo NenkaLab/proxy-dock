@@ -500,9 +500,12 @@ impl Controller {
                 "language": index(&codes, &g["language"]), "theme": index(&config::THEMES, &g["theme"]), "ui_scale": scale,
                 "log_font_size": g["log_font_size"], "close_exits": g["close_exits"], "singbox_latest": g["singbox_latest"],
                 "run_as_admin": g["run_as_admin"],
+                "text_size": config::TEXT_SIZES.iter().position(|x| Some(*x) == g["text_size"].as_i64()).unwrap_or(1),
+                "ui_font": g["ui_font"], "mono_font": g["mono_font"],
             },
             "languages": proxydock_core::i18n::LANGUAGES.iter().map(|(_, n)| *n).collect::<Vec<_>>(),
             "themes": [tr("System"), tr("Light"), tr("Dark")],
+            "text_sizes": config::TEXT_SIZES.iter().map(|s| format!("{s}%") + &if *s == 115 { tr(" (default)") } else { String::new() }).collect::<Vec<_>>(),
             "scales": config::UI_SCALES.iter().map(|s| format!("{s}%") + &if *s == 100 { tr(" (default)") } else { String::new() }).collect::<Vec<_>>(),
             "engine": self.engine_text,
             "windows": proxydock_core::platform::supported(),
@@ -557,6 +560,11 @@ impl Controller {
         g.insert("dns_extra".into(), json!(dns_extra));
         g.insert("language".into(), json!(pick(&codes, "language")));
         g.insert("theme".into(), json!(pick(&config::THEMES, "theme")));
+        let size = config::TEXT_SIZES.get(vals["text_size"].as_u64().unwrap_or(1) as usize).copied().unwrap_or(115);
+        g.insert("text_size".into(), json!(size));
+        for k in ["ui_font", "mono_font"] {
+            g.insert(k.into(), json!(proxydock_core::py::strip(vals[k].as_str().unwrap_or(""))));
+        }
         let scale = config::UI_SCALES.get(vals["ui_scale"].as_u64().unwrap_or(1) as usize).copied().unwrap_or(100);
         g.insert("ui_scale".into(), json!(scale));
         let g = config::validate_global(&Value::Object(g));

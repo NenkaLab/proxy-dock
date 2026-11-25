@@ -37,6 +37,13 @@ global M3 {
     out property <color> outline-variant: dark ? #43474e : #c3c7cf;
 }
 
+// text settings (proxydock-ui.rs `show_settings`): the size of all text (Python "Text size", 115% = 1),
+// and the log's monospace font
+export global Type {
+    in property <float> scale: 1;
+    in property <string> mono: "JetBrains Mono";
+}
+
 global Motion {
     out property <duration> fast-spatial: 350ms;
     out property <duration> fast-effects: 150ms;
@@ -78,6 +85,8 @@ export struct SettingsText {
     logs: string, logfile: string, open-folder: string,
     display: string, language: string, language-desc: string, theme: string, theme-desc: string,
     scale: string, scale-desc: string, logsize: string, logsize-desc: string, close: string, close-desc: string,
+    text-size: string, text-size-desc: string, fonts: string, ui-font: string, ui-font-desc: string,
+    mono-font: string, mono-font-desc: string,
     startup: string, login: string, login-desc: string, hidden: string, hidden-desc: string, admin: string, admin-desc: string,
     firewall: string, fw-block: string, fw-block-desc: string, fw-on: string, fw-off: string,
 }
@@ -183,7 +192,7 @@ component ProxyNode inherits BaseNode {
             x: root.state != "" ? 30px : 20px; y: 12px;
             width: root.node-width - self.x - (root.state != "" ? 76px : root.kind <= 2 ? 44px : 14px);
             text: root.title;
-            font-size: 15px;
+            font-size: 15px * Type.scale;
             font-weight: 700;
             color: root.on-container;
             overflow: elide;
@@ -192,7 +201,7 @@ component ProxyNode inherits BaseNode {
             x: 20px; y: 34px;
             width: root.node-width - 34px - (root.badge != "" ? badge-pill.width + 8px : 0px);
             text: root.detail;
-            font-size: 12px;
+            font-size: 12px * Type.scale;
             color: root.on-container.with-alpha(0.72);
             overflow: elide;
         }
@@ -205,7 +214,7 @@ component ProxyNode inherits BaseNode {
             background: root.badge-tone == 1 ? #3fa34d : root.badge-tone == 2 ? #d9a21b : root.badge-tone == 3 ? #e5534b : #9aa0a6;
             badge-text := Text {
                 text: root.badge;
-                font-size: 11px;
+                font-size: 11px * Type.scale;
                 font-weight: 700;
                 color: #ffffff;
             }
@@ -221,8 +230,8 @@ component ProxyNode inherits BaseNode {
             x: 20px;
             y: root.node-height - root.rate-h - 6px;
             text: root.rate;
-            font-size: 11px;
-            font-family: "JetBrains Mono";
+            font-size: 11px * Type.scale;
+            font-family: Type.mono;
             font-weight: 600;
             color: root.on-container;
         }
@@ -246,7 +255,7 @@ component ProxyNode inherits BaseNode {
             background: run-ta.has-hover ? root.on-container.with-alpha(0.14) : transparent;
             Text {
                 text: root.state == "running" || root.state == "starting" ? "■" : "▶";
-                font-size: 13px;
+                font-size: 13px * Type.scale;
                 color: root.on-container;
             }
             run-ta := TouchArea { clicked => { root.toggle(); } }
@@ -275,14 +284,14 @@ component ProxyNode inherits BaseNode {
         x: 14px;
         y: root.lane-y(i) - self.height / 2;
         text: label;
-        font-size: 12px;
+        font-size: 12px * Type.scale;
         color: root.on-container.with-alpha(0.8);
     }
     for label[o] in root.lanes || root.kind == 2 ? root.out-labels : []: Text {
         x: root.node-width - self.width - 14px;
         y: root.lane-y(o) - self.height / 2;
         text: label;
-        font-size: 12px;
+        font-size: 12px * Type.scale;
         color: root.on-container.with-alpha(0.8);
     }
 
@@ -334,7 +343,7 @@ component ToolbarButton inherits Rectangle {
         x: 42px;
         visible: !root.compact;
         text: root.text;
-        font-size: 14px;
+        font-size: 14px * Type.scale;
         font-weight: 600;
         color: root.filled ? M3.on-primary : M3.on-surface;
         vertical-alignment: center;
@@ -359,7 +368,7 @@ component AppLineEdit inherits Rectangle {
     in property <bool> enabled: true;
     in property <bool> read-only;
     in property <InputType> input-type: InputType.text;
-    in property <length> font-size: 14px;
+    in property <length> font-size: 14px * Type.scale;
     in property <string> font-family;
     out property <bool> has-focus: input.has-focus;
     callback accepted(string);
@@ -450,7 +459,7 @@ component ComboItem inherits Rectangle {
         x: 12px;
         width: parent.width - 44px;
         text: root.text;
-        font-size: 14px;
+        font-size: 14px * Type.scale;
         font-family: root.font;
         color: root.current ? M3.on-secondary-container : M3.on-surface;
         vertical-alignment: center;
@@ -487,7 +496,7 @@ component AppComboBox inherits Rectangle {
         x: 14px;
         width: parent.width - 48px;
         text: root.model[root.current-index];
-        font-size: 14px;
+        font-size: 14px * Type.scale;
         font-family: root.current-index < root.fonts.length ? root.fonts[root.current-index] : "";
         color: M3.on-surface;
         vertical-alignment: center;
@@ -589,7 +598,7 @@ component AppSpinBox inherits Rectangle {
             vertical-alignment: center;
             input-type: InputType.number;
             text: root.value;
-            font-size: 14px;
+            font-size: 14px * Type.scale;
             color: M3.on-surface;
             enabled: root.enabled;
             edited => {
@@ -633,14 +642,14 @@ component FormRow inherits Rectangle {
             spacing: 2px;
             Text {
                 text: f.kind == "button" ? "" : f.label;
-                font-size: f.kind == "heading" ? 18px : 14px;
+                font-size: (f.kind == "heading" ? 18px : 14px) * Type.scale;
                 color: f.kind == "heading" ? M3.primary : M3.on-surface;
                 font-weight: f.kind == "heading" ? 700 : 600;
                 wrap: word-wrap;
             }
             if f.desc != "": Text {
                 text: f.desc;
-                font-size: 12px;
+                font-size: 12px * Type.scale;
                 color: f.tone == 1 ? #1e7f3c : f.tone == 2 ? M3.error : M3.on-surface-variant;
                 wrap: word-wrap;
             }
@@ -675,7 +684,7 @@ component FormRow inherits Rectangle {
                     color: M3.on-surface-variant;
                     vertical-alignment: center;
                     horizontal-stretch: 1;
-                    font-family: "JetBrains Mono";
+                    font-family: Type.mono;
                 }
                 for b[i] in f.buttons: Button {
                     text: b;
@@ -685,8 +694,8 @@ component FormRow inherits Rectangle {
             if f.kind == "info": AppLineEdit {
                 text: f.text;
                 read-only: true;
-                font-size: 12px;
-                font-family: "JetBrains Mono";
+                font-size: 12px * Type.scale;
+                font-family: Type.mono;
             }
             if f.kind == "text" || f.kind == "secret" || f.kind == "int": AppLineEdit {
                 text: f.text;
@@ -724,7 +733,7 @@ component RailItem inherits Rectangle {
         }
         Text {
             text: root.label;
-            font-size: 12px;
+            font-size: 12px * Type.scale;
             font-weight: root.active ? 700 : 500;
             color: root.active ? M3.on-surface : M3.on-surface-variant;
             horizontal-alignment: center;
@@ -747,7 +756,7 @@ component Chip inherits Rectangle {
         padding-right: 12px;
         Text {
             text: root.text;
-            font-size: 13px;
+            font-size: 13px * Type.scale;
             font-weight: 600;
             vertical-alignment: center;
             color: state == "running" ? M3.on-green-container : state == "starting" ? M3.on-amber-container
@@ -772,27 +781,27 @@ component Card inherits Rectangle {
             horizontal-stretch: 1;
             Text {
                 text: card.name;
-                font-size: 17px;
+                font-size: 17px * Type.scale;
                 font-weight: 700;
                 color: M3.on-surface;
                 overflow: elide;
             }
             Text {
                 text: card.summary;
-                font-size: 13px;
+                font-size: 13px * Type.scale;
                 color: M3.on-surface-variant;
                 overflow: elide;
             }
             if card.error != "": Text {
                 text: card.error;
-                font-size: 13px;
+                font-size: 13px * Type.scale;
                 color: M3.error;
                 wrap: word-wrap;
             }
             if card.traffic != "": Text {
                 text: card.traffic;
-                font-size: 12px;
-                font-family: "JetBrains Mono";
+                font-size: 12px * Type.scale;
+                font-family: Type.mono;
                 color: M3.on-surface-variant;
             }
         }
@@ -838,6 +847,16 @@ export global Settings {
     in-out property <bool> latest;
     in-out property <bool> admin;
     in property <bool> saved-admin;
+    // text size (index in sizes), the UI font and the log font (index in their lists; 0 = built in)
+    in-out property <int> text-size;
+    in property <int> saved-text-size;
+    in property <[string]> sizes;
+    in-out property <int> ui-font;
+    in property <int> saved-ui-font;
+    in property <[string]> ui-fonts;
+    in-out property <int> mono-font;
+    in property <int> saved-mono-font;
+    in property <[string]> mono-fonts;
     // Windows only: start at login (applied at once), the firewall rule (text, and whether it is on; -1 = checking)
     in property <bool> windows;
     in-out property <bool> login;
@@ -868,7 +887,8 @@ export global Settings {
     in property <int> saved-logsize;
     in property <bool> saved-close;
     in property <bool> saved-latest;
-    out property <bool> dirty: admin != saved-admin || allowed != saved-allowed || private != saved-private || timeout != saved-timeout || logconn != saved-logconn || logclose != saved-logclose || dns != saved-dns || dnsvia != saved-dnsvia || logfile != saved-logfile || language != saved-language || theme != saved-theme || scale != saved-scale || logsize != saved-logsize || close != saved-close || latest != saved-latest;
+    out property <bool> dirty: admin != saved-admin || text-size != saved-text-size || ui-font != saved-ui-font
+        || mono-font != saved-mono-font || allowed != saved-allowed || private != saved-private || timeout != saved-timeout || logconn != saved-logconn || logclose != saved-logclose || dns != saved-dns || dnsvia != saved-dnsvia || logfile != saved-logfile || language != saved-language || theme != saved-theme || scale != saved-scale || logsize != saved-logsize || close != saved-close || latest != saved-latest;
     public function revert() {
         self.allowed = self.saved-allowed;
         self.private = self.saved-private;
@@ -885,6 +905,9 @@ export global Settings {
         self.close = self.saved-close;
         self.latest = self.saved-latest;
         self.admin = self.saved-admin;
+        self.text-size = self.saved-text-size;
+        self.ui-font = self.saved-ui-font;
+        self.mono-font = self.saved-mono-font;
     }
     callback apply();
     callback open-log-dir();
@@ -912,7 +935,7 @@ component SettingsSection inherits Rectangle {
             }
             Text {
                 text: root.title;
-                font-size: 16px;
+                font-size: 16px * Type.scale;
                 font-weight: 700;
                 color: M3.on-surface;
                 wrap: word-wrap;
@@ -940,7 +963,7 @@ component SettingRow inherits HorizontalLayout {
             spacing: 8px;
             Text {
                 text: root.label;
-                font-size: 14px;
+                font-size: 14px * Type.scale;
                 font-weight: 600;
                 color: M3.on-surface;
                 wrap: word-wrap;
@@ -954,7 +977,7 @@ component SettingRow inherits HorizontalLayout {
                 background: M3.tertiary-container;
                 badge-label := Text {
                     text: root.badge;
-                    font-size: 11px;
+                    font-size: 11px * Type.scale;
                     font-weight: 700;
                     color: M3.on-tertiary-container;
                 }
@@ -962,7 +985,7 @@ component SettingRow inherits HorizontalLayout {
         }
         if root.desc != "": Text {
             text: root.desc;
-            font-size: 12px;
+            font-size: 12px * Type.scale;
             color: M3.on-surface-variant;
             wrap: word-wrap;
         }
@@ -981,14 +1004,14 @@ component SettingsDefaults inherits SettingsSection {
         spacing: 4px;
         Text {
             text: Settings.text.allowed;
-            font-size: 14px;
+            font-size: 14px * Type.scale;
             font-weight: 600;
             color: M3.on-surface;
         }
         AppLineEdit { text <=> Settings.allowed; }
         Text {
             text: Settings.text.allowed-desc;
-            font-size: 12px;
+            font-size: 12px * Type.scale;
             color: M3.on-surface-variant;
             wrap: word-wrap;
         }
@@ -1023,7 +1046,7 @@ component SettingsDefaults inherits SettingsSection {
         padding-top: 8px;
         Text {
             text: Settings.text.dns;
-            font-size: 14px;
+            font-size: 14px * Type.scale;
             font-weight: 600;
             color: M3.on-surface;
         }
@@ -1033,7 +1056,7 @@ component SettingsDefaults inherits SettingsSection {
         }
         Text {
             text: Settings.text.dns-desc;
-            font-size: 12px;
+            font-size: 12px * Type.scale;
             color: M3.on-surface-variant;
             wrap: word-wrap;
         }
@@ -1085,7 +1108,7 @@ component SettingsFirewall inherits SettingsSection {
         alignment: end;
         Text {
             text: Settings.fw-text;
-            font-size: 14px;
+            font-size: 14px * Type.scale;
             font-weight: 600;
             color: Settings.fw-state == 1 ? #2e9d4a : M3.on-surface-variant;
             vertical-alignment: center;
@@ -1127,6 +1150,15 @@ component SettingsDisplay inherits SettingsSection {
         }
     }
     SettingRow {
+        label: Settings.text.text-size;
+        desc: Settings.text.text-size-desc;
+        AppComboBox {
+            width: 170px;
+            model: Settings.sizes;
+            current-index <=> Settings.text-size;
+        }
+    }
+    SettingRow {
         label: Settings.text.scale;
         desc: Settings.text.scale-desc;
         AppComboBox {
@@ -1152,13 +1184,36 @@ component SettingsDisplay inherits SettingsSection {
     }
 }
 
+component SettingsFonts inherits SettingsSection {
+    title: Settings.text.fonts;
+    icon: @image-url("icons/text_fields.svg");
+    SettingRow {
+        label: Settings.text.ui-font;
+        desc: Settings.text.ui-font-desc;
+        AppComboBox {
+            width: 240px;
+            model: Settings.ui-fonts;
+            current-index <=> Settings.ui-font;
+        }
+    }
+    SettingRow {
+        label: Settings.text.mono-font;
+        desc: Settings.text.mono-font-desc;
+        AppComboBox {
+            width: 240px;
+            model: Settings.mono-fonts;
+            current-index <=> Settings.mono-font;
+        }
+    }
+}
+
 component SettingsEngine inherits SettingsSection {
     title: Settings.text.engine;
     icon: @image-url("icons/memory.svg");
     Text {
         text: Settings.engine;
-        font-size: 12px;
-        font-family: "JetBrains Mono";
+        font-size: 12px * Type.scale;
+        font-family: Type.mono;
         color: M3.on-surface-variant;
         wrap: char-wrap;
     }
@@ -1186,8 +1241,8 @@ component SettingsLogs inherits SettingsSection {
     // a path has no spaces to wrap at
     Text {
         text: Settings.log-dir;
-        font-size: 12px;
-        font-family: "JetBrains Mono";
+        font-size: 12px * Type.scale;
+        font-family: Type.mono;
         color: M3.on-surface-variant;
         wrap: char-wrap;
     }
@@ -1231,20 +1286,20 @@ component StatTile inherits Rectangle {
         alignment: center;
         Text {
             text: root.data.title;
-            font-size: 12px;
+            font-size: 12px * Type.scale;
             color: M3.on-surface-variant;
             overflow: elide;
         }
         Text {
             text: root.data.value;
-            font-size: 22px;
+            font-size: 22px * Type.scale;
             font-weight: 700;
             color: M3.on-surface;
             overflow: elide;
         }
         Text {
             text: root.data.sub;
-            font-size: 12px;
+            font-size: 12px * Type.scale;
             color: M3.on-surface-variant;
             overflow: elide;
         }
@@ -1268,7 +1323,7 @@ component Segmented inherits Rectangle {
             background: i == root.current ? M3.secondary-container : seg-ta.has-hover ? M3.on-surface.with-alpha(0.06) : transparent;
             seg-label := Text {
                 text: item;
-                font-size: 13px;
+                font-size: 13px * Type.scale;
                 font-weight: i == root.current ? 700 : 500;
                 color: i == root.current ? M3.on-secondary-container : M3.on-surface;
             }
@@ -1288,7 +1343,7 @@ component StatsPage inherits VerticalLayout {
         spacing: 12px;
         Text {
             text: Stats.title;
-            font-size: 26px;
+            font-size: 26px * Type.scale;
             font-weight: 700;
             color: M3.on-surface;
             horizontal-stretch: 1;
@@ -1349,7 +1404,7 @@ component StatsPage inherits VerticalLayout {
                 spacing: 12px;
                 Text {
                     text: Stats.chart-title;
-                    font-size: 13px;
+                    font-size: 13px * Type.scale;
                     font-weight: 600;
                     color: M3.on-surface;
                     vertical-alignment: center;
@@ -1367,7 +1422,7 @@ component StatsPage inherits VerticalLayout {
                 spacing: 14px;
                 Text {
                     text: Stats.max-text;
-                    font-size: 12px;
+                    font-size: 12px * Type.scale;
                     color: M3.on-surface-variant;
                     horizontal-stretch: 1;
                 }
@@ -1383,7 +1438,7 @@ component StatsPage inherits VerticalLayout {
                     }
                     Text {
                         text: l.name;
-                        font-size: 12px;
+                        font-size: 12px * Type.scale;
                         color: M3.on-surface-variant;
                         max-width: 160px;
                         overflow: elide;
@@ -1434,7 +1489,7 @@ component StatsPage inherits VerticalLayout {
                 if Stats.empty != "": Text {
                     text: Stats.empty;
                     color: M3.on-surface-variant;
-                    font-size: 14px;
+                    font-size: 14px * Type.scale;
                 }
             }
         }
@@ -1477,7 +1532,7 @@ component ConnPage inherits VerticalLayout {
         spacing: 12px;
         Text {
             text: Conn.title;
-            font-size: 26px;
+            font-size: 26px * Type.scale;
             font-weight: 700;
             color: M3.on-surface;
             horizontal-stretch: 1;
@@ -1504,7 +1559,7 @@ component ConnPage inherits VerticalLayout {
         spacing: 8px;
         Text {
             text: Conn.summary;
-            font-size: 12px;
+            font-size: 12px * Type.scale;
             color: M3.on-surface-variant;
             wrap: word-wrap;
             horizontal-stretch: 1;
@@ -1540,12 +1595,12 @@ component ConnPage inherits VerticalLayout {
                     padding-left: 16px;
                     padding-right: 12px;
                     spacing: 12px;
-                    if root.wide: Text { width: 90px; text: Conn.columns[0]; font-size: 12px; font-weight: 700; color: M3.on-surface-variant; vertical-alignment: center; }
-                    Text { width: 120px; text: Conn.columns[1]; font-size: 12px; font-weight: 700; color: M3.on-surface-variant; vertical-alignment: center; }
-                    if root.wide: Text { width: 170px; text: Conn.columns[2]; font-size: 12px; font-weight: 700; color: M3.on-surface-variant; vertical-alignment: center; }
-                    Text { horizontal-stretch: 1; text: Conn.columns[3]; font-size: 12px; font-weight: 700; color: M3.on-surface-variant; vertical-alignment: center; }
-                    Text { width: 70px; text: Conn.columns[4]; font-size: 12px; font-weight: 700; color: M3.on-surface-variant; vertical-alignment: center; horizontal-alignment: right; }
-                    Text { width: 70px; text: Conn.columns[5]; font-size: 12px; font-weight: 700; color: M3.on-surface-variant; vertical-alignment: center; horizontal-alignment: right; }
+                    if root.wide: Text { width: 90px; text: Conn.columns[0]; font-size: 12px * Type.scale; font-weight: 700; color: M3.on-surface-variant; vertical-alignment: center; }
+                    Text { width: 120px; text: Conn.columns[1]; font-size: 12px * Type.scale; font-weight: 700; color: M3.on-surface-variant; vertical-alignment: center; }
+                    if root.wide: Text { width: 170px; text: Conn.columns[2]; font-size: 12px * Type.scale; font-weight: 700; color: M3.on-surface-variant; vertical-alignment: center; }
+                    Text { horizontal-stretch: 1; text: Conn.columns[3]; font-size: 12px * Type.scale; font-weight: 700; color: M3.on-surface-variant; vertical-alignment: center; }
+                    Text { width: 70px; text: Conn.columns[4]; font-size: 12px * Type.scale; font-weight: 700; color: M3.on-surface-variant; vertical-alignment: center; horizontal-alignment: right; }
+                    Text { width: 70px; text: Conn.columns[5]; font-size: 12px * Type.scale; font-weight: 700; color: M3.on-surface-variant; vertical-alignment: center; horizontal-alignment: right; }
                     Rectangle { width: 28px; }
                 }
             }
@@ -1559,19 +1614,19 @@ component ConnPage inherits VerticalLayout {
                             padding-left: 16px;
                             padding-right: 12px;
                             spacing: 12px;
-                            if root.wide: Text { width: 90px; text: r.region; font-size: 13px; color: M3.on-surface-variant; vertical-alignment: center; overflow: elide; }
-                            Text { width: 120px; text: r.name; font-size: 13px; font-weight: 600; color: M3.on-surface; vertical-alignment: center; overflow: elide; }
-                            if root.wide: Text { width: 170px; text: r.host; font-size: 12px; font-family: "JetBrains Mono"; color: M3.on-surface-variant; vertical-alignment: center; overflow: elide; }
+                            if root.wide: Text { width: 90px; text: r.region; font-size: 13px * Type.scale; color: M3.on-surface-variant; vertical-alignment: center; overflow: elide; }
+                            Text { width: 120px; text: r.name; font-size: 13px * Type.scale; font-weight: 600; color: M3.on-surface; vertical-alignment: center; overflow: elide; }
+                            if root.wide: Text { width: 170px; text: r.host; font-size: 12px * Type.scale; font-family: Type.mono; color: M3.on-surface-variant; vertical-alignment: center; overflow: elide; }
                             Text {
                                 horizontal-stretch: 1;
                                 text: r.result;
-                                font-size: 13px;
+                                font-size: 13px * Type.scale;
                                 color: r.tone == 1 ? #2e9d4a : r.tone == 2 ? M3.error : M3.on-surface-variant;
                                 vertical-alignment: center;
                                 overflow: elide;
                             }
-                            Text { width: 70px; text: r.conn; font-size: 12px; font-family: "JetBrains Mono"; color: M3.on-surface; vertical-alignment: center; horizontal-alignment: right; }
-                            Text { width: 70px; text: r.total; font-size: 12px; font-family: "JetBrains Mono"; color: M3.on-surface; vertical-alignment: center; horizontal-alignment: right; }
+                            Text { width: 70px; text: r.conn; font-size: 12px * Type.scale; font-family: Type.mono; color: M3.on-surface; vertical-alignment: center; horizontal-alignment: right; }
+                            Text { width: 70px; text: r.total; font-size: 12px * Type.scale; font-family: Type.mono; color: M3.on-surface; vertical-alignment: center; horizontal-alignment: right; }
                             // a site the user added can be taken out again
                             Rectangle {
                                 width: 28px;
@@ -1658,7 +1713,7 @@ component HelpBlockView inherits VerticalLayout {
     in property <HelpBlock> block;
     if root.block.kind == 0: Text {
         text: root.block.title;
-        font-size: 18px;
+        font-size: 18px * Type.scale;
         font-weight: 700;
         color: M3.primary;
         wrap: word-wrap;
@@ -1666,7 +1721,7 @@ component HelpBlockView inherits VerticalLayout {
     if root.block.kind == 1: StyledText {
         text: root.block.text;
         default-color: M3.on-surface;
-        default-font-size: 14px;
+        default-font-size: 14px * Type.scale;
         link-color: M3.primary;
         selectable: true;
         link-clicked(link) => { Info.open-url(link); }
@@ -1683,13 +1738,13 @@ component HelpBlockView inherits VerticalLayout {
                 width: 240px;
                 text: root.block.a;
                 default-color: root.block.header ? M3.on-surface-variant : M3.on-surface;
-                default-font-size: 13px;
+                default-font-size: 13px * Type.scale;
             }
             StyledText {
                 horizontal-stretch: 1;
                 text: root.block.b;
                 default-color: root.block.header ? M3.on-surface-variant : M3.on-surface;
-                default-font-size: 13px;
+                default-font-size: 13px * Type.scale;
             }
         }
         Rectangle {
@@ -1705,7 +1760,7 @@ component HelpPage inherits VerticalLayout {
     spacing: 12px;
     Text {
         text: Info.help-title;
-        font-size: 26px;
+        font-size: 26px * Type.scale;
         font-weight: 700;
         color: M3.on-surface;
     }
@@ -1757,9 +1812,9 @@ component AboutPage inherits VerticalLayout {
                     VerticalLayout {
                         alignment: center;
                         spacing: 2px;
-                        Text { text: Info.app-name; font-size: 26px; font-weight: 700; color: M3.on-surface; }
-                        Text { text: Info.version-text; font-size: 14px; color: M3.on-surface; }
-                        Text { text: Info.desc; font-size: 12px; color: M3.on-surface-variant; wrap: word-wrap; }
+                        Text { text: Info.app-name; font-size: 26px * Type.scale; font-weight: 700; color: M3.on-surface; }
+                        Text { text: Info.version-text; font-size: 14px * Type.scale; color: M3.on-surface; }
+                        Text { text: Info.desc; font-size: 12px * Type.scale; color: M3.on-surface-variant; wrap: word-wrap; }
                     }
                 }
                 SettingsSection {
@@ -1784,8 +1839,8 @@ component AboutPage inherits VerticalLayout {
                     }
                     Text {
                         text: Info.app-dir;
-                        font-size: 12px;
-                        font-family: "JetBrains Mono";
+                        font-size: 12px * Type.scale;
+                        font-family: Type.mono;
                         color: M3.on-surface-variant;
                         wrap: char-wrap;
                     }
@@ -1863,7 +1918,7 @@ component LicensePage inherits VerticalLayout {
         }
         Text {
             text: Info.licenses;
-            font-size: 26px;
+            font-size: 26px * Type.scale;
             font-weight: 700;
             color: M3.on-surface;
             horizontal-stretch: 1;
@@ -1885,7 +1940,7 @@ component LicensePage inherits VerticalLayout {
     }
     Text {
         text: Info.lic-desc;
-        font-size: 12px;
+        font-size: 12px * Type.scale;
         color: M3.on-surface-variant;
         wrap: word-wrap;
     }
@@ -1901,8 +1956,8 @@ component LicensePage inherits VerticalLayout {
                 width: lic-scroll.visible-width - 32px;
                 height: self.preferred-height + 24px;
                 text: Info.lic-text;
-                font-family: "JetBrains Mono";
-                font-size: 12px;
+                font-family: Type.mono;
+                font-size: 12px * Type.scale;
                 color: M3.on-surface;
                 wrap: word-wrap;
             }
@@ -2185,7 +2240,7 @@ export component App inherits Window {
                         if root.nodes.length == 0: Text {
                             text: root.t-no-graph;
                             color: M3.on-surface-variant;
-                            font-size: 15px;
+                            font-size: 15px * Type.scale;
                         }
                         // M3 Expressive floating toolbar
                         Rectangle {
@@ -2261,7 +2316,7 @@ export component App inherits Window {
                         HorizontalLayout {
                             Text {
                                 text: root.t-proxy;
-                                font-size: 26px;
+                                font-size: 26px * Type.scale;
                                 font-weight: 700;
                                 color: M3.on-surface;
                                 horizontal-stretch: 1;
@@ -2275,7 +2330,7 @@ export component App inherits Window {
                         if root.cards.length == 0: Text {
                             text: root.t-empty;
                             color: M3.on-surface-variant;
-                            font-size: 15px;
+                            font-size: 15px * Type.scale;
                         }
                         Rectangle {
                             vertical-stretch: 1;
@@ -2310,7 +2365,7 @@ export component App inherits Window {
                             spacing: 8px;
                             Text {
                                 text: root.form-title;
-                                font-size: 26px;
+                                font-size: 26px * Type.scale;
                                 font-weight: 700;
                                 color: M3.on-surface;
                                 horizontal-stretch: 1;
@@ -2399,7 +2454,7 @@ export component App inherits Window {
                             spacing: 8px;
                             Text {
                                 text: Settings.text.title;
-                                font-size: 26px;
+                                font-size: 26px * Type.scale;
                                 font-weight: 700;
                                 color: M3.on-surface;
                                 horizontal-stretch: 1;
@@ -2439,6 +2494,7 @@ export component App inherits Window {
                                             spacing: 16px;
                                             alignment: start;
                                             SettingsDisplay {}
+                                            SettingsFonts {}
                                             SettingsEngine {}
                                             SettingsLogs {}
                                         }
@@ -2450,6 +2506,7 @@ export component App inherits Window {
                                         if Settings.windows: SettingsStartup {}
                                         if Settings.windows: SettingsFirewall {}
                                         SettingsDisplay {}
+                                        SettingsFonts {}
                                         SettingsEngine {}
                                         SettingsLogs {}
                                     }
@@ -2483,7 +2540,7 @@ export component App inherits Window {
                             spacing: 8px;
                             Text {
                                 text: Settings.text.changed;
-                                font-size: 14px;
+                                font-size: 14px * Type.scale;
                                 font-weight: 600;
                                 color: M3.on-surface;
                                 vertical-alignment: center;
@@ -2509,7 +2566,7 @@ export component App inherits Window {
                         spacing: 12px;
                         Text {
                             text: root.t-logs;
-                            font-size: 26px;
+                            font-size: 26px * Type.scale;
                             font-weight: 700;
                             color: M3.on-surface;
                         }
@@ -2520,7 +2577,7 @@ export component App inherits Window {
                             log-view := ListView {
                                 for line in root.logs: Text {
                                     text: line.text;
-                                    font-family: "JetBrains Mono";
+                                    font-family: Type.mono;
                                     font-size: root.log-px * 1px;
                                     height: max(20px, root.log-px * 1.65px);
                                     x: 12px;
@@ -2588,7 +2645,7 @@ export component App inherits Window {
                     spacing: 16px;
                     Text {
                         text: root.t-rename;
-                        font-size: 20px;
+                        font-size: 20px * Type.scale;
                         font-weight: 700;
                         color: M3.on-surface;
                     }
@@ -2633,14 +2690,14 @@ export component App inherits Window {
                 spacing: 12px;
                 Text {
                     text: root.popup-title;
-                    font-size: 20px;
+                    font-size: 20px * Type.scale;
                     font-weight: 700;
                     color: M3.on-surface;
                 }
                 TextEdit {
                     text: root.popup-text;
                     read-only: true;
-                    font-size: 13px;
+                    font-size: 13px * Type.scale;
                 }
                 HorizontalLayout {
                     alignment: end;
