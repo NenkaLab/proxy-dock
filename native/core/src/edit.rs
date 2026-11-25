@@ -407,6 +407,112 @@ pub fn add(g: &mut Obj, kind: i32, x: f64, y: f64) -> String {
     }
 }
 
+/// Rename a block from its title on the canvas (Python `rename_node`, `set_wireless_title`). Returns the name the
+/// settings log shows, or None when nothing changes (an empty or the same name, the PC block). A wireless half
+/// keeps its title as typed (titles may repeat); other blocks get a free name ("base 2", ...).
+pub fn rename(g: &mut Obj, key: &str, name: &str) -> Option<String> {
+    let (id, out_half) = block_of(key);
+    let name: String = crate::py::strip(name).chars().take(60).collect();
+    let (kind, n) = graph::find(g, id).map(|(k, n)| (k, n.clone()))?;
+    if name.is_empty() || !matches!(kind, "inbound" | "outbound" | "router" | "relay") {
+        return None;
+    }
+    if kind == "relay" && n["wireless"] == json!(true) {
+        let field = if out_half { "name_out" } else { "name" };
+        if n[field] == json!(name) {
+            return None;
+        }
+        let label = tr("Wireless {name}").replace("{name}", &format!("#{}", n["number"].as_i64().unwrap_or(0)));
+        node_mut(g, "relays", id)?[field] = json!(name);
+        return Some(format!("{label} · {name}"));
+    }
+    if n["name"] == json!(name) {
+        return None;
+    }
+    let list = format!("{kind}s");
+    // (its own old name does not count as taken)
+    node_mut(g, &list, id)?["name"] = json!("");
+    let free = unique_name(g, &name);
+    node_mut(g, &list, id)?["name"] = json!(free);
+    Some(free)
+}
+
+/// A copy of each block (Python `duplicate_node`), 40 px down and right, with nothing linked to or from it (a
+/// pass-through keeps its inside wiring; a wireless pair gets a number of its own). A card copy gets the next free
+/// port and does not start by itself. Returns the new ids.
+pub fn duplicate(g: &mut Obj, keys: &[&str]) -> Vec<String> {
+    let mut ids: Vec<&str> = vec![];
+    for k in keys {
+        let (id, _) = block_of(k);
+        if *k != "pc" && !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    let mut made = vec![];
+    for id in ids {
+        let Some((kind, src)) = graph::find(g, id).map(|(k, n)| (k, n.clone())) else { continue };
+        if !matches!(kind, "inbound" | "outbound" | "router" | "relay") {
+            continue;
+        }
+        let mut n = src.clone();
+        let new_id = crate::ids::new_id();
+        n["id"] = json!(new_id);
+        if kind == "relay" {
+            // fresh lane ids, the inside wiring kept (Python `copy_relay`)
+            let mut new_out: std::collections::HashMap<String, String> = Default::default();
+            for x in n["outputs"].as_array_mut().into_iter().flatten() {
+                let fresh = crate::ids::new_id();
+                new_out.insert(x["id"].as_str().unwrap_or("").to_string(), fresh.clone());
+                x["id"] = json!(fresh);
+            }
+            for x in n["inputs"].as_array_mut().into_iter().flatten() {
+                x["id"] = json!(crate::ids::new_id());
+                x["out"] = x["out"].as_str().and_then(|o| new_out.get(o)).map_or(Value::Null, |o| json!(o));
+            }
+        }
+        let base = format!("{}{}", src["name"].as_str().unwrap_or(""), tr(" copy"));
+        n["name"] = json!(unique_name(g, &base));
+        let shifted = |p: &Value| json!([p[0].as_f64().unwrap_or(0.0) + 40.0, p[1].as_f64().unwrap_or(0.0) + 40.0]);
+        n["pos"] = shifted(&src["pos"]);
+        match kind {
+            "inbound" => {
+                let used: std::collections::HashSet<i64> =
+                    arr(g, "inbounds").iter().filter_map(|x| x["inbound"]["port"].as_i64()).collect();
+                let start = src["inbound"]["port"].as_i64().unwrap_or(1080) + 1;
+                n["inbound"]["port"] = json!((start..).find(|p| !used.contains(p)).unwrap());
+                n["autostart"] = json!(false);
+                n["target"] = Value::Null;
+            }
+            "outbound" => {
+                n["via"] = Value::Null;
+                n["members"] = json!([]);
+            }
+            "router" => {
+                n["default"] = Value::Null;
+                for x in n["rules"].as_array_mut().into_iter().flatten() {
+                    x["id"] = json!(crate::ids::new_id());
+                    x["target"] = Value::Null;
+                }
+            }
+            _ => {
+                for x in n["outputs"].as_array_mut().into_iter().flatten() {
+                    x["target"] = Value::Null;
+                }
+                if n["wireless"] == json!(true) {
+                    n["number"] = json!(graph::next_wireless_number(g));
+                    n["pos_out"] = shifted(&src["pos_out"]);
+                    n["broken"] = Value::Null;
+                    let out0 = n["outputs"][0]["id"].clone();
+                    n["inputs"][0]["out"] = out0;
+                }
+            }
+        }
+        arr(g, &format!("{kind}s")).push(n);
+        made.push(new_id);
+    }
+    made
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

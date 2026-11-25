@@ -16,6 +16,31 @@ use std::time::Duration;
 
 static CORE: OnceLock<Handle> = OnceLock::new();
 static UI_CHILD: Mutex<Option<std::process::Child>> = Mutex::new(None);
+/// the tray icon's window (its notifications go through it)
+static TRAY_HWND: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// A notification from the tray icon (Python `tray.showMessage(APP_NAME, text, Information)`).
+fn tray_message(text: &str) {
+    use windows_sys::Win32::UI::Shell::{Shell_NotifyIconW, NIF_INFO, NIIF_INFO, NIM_MODIFY, NOTIFYICONDATAW};
+    let hwnd = TRAY_HWND.load(std::sync::atomic::Ordering::Relaxed);
+    if hwnd == 0 {
+        return;
+    }
+    let mut nid: NOTIFYICONDATAW = unsafe { std::mem::zeroed() };
+    nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+    nid.hWnd = hwnd as _;
+    // tray-icon numbers its icons from 1; this process has one
+    nid.uID = 1;
+    nid.uFlags = NIF_INFO;
+    nid.dwInfoFlags = NIIF_INFO;
+    let copy = |dst: &mut [u16], text: &str| {
+        let w: Vec<u16> = text.encode_utf16().take(dst.len() - 1).collect();
+        dst[..w.len()].copy_from_slice(&w);
+    };
+    copy(&mut nid.szInfoTitle, "ProxyDock");
+    copy(&mut nid.szInfo, text);
+    unsafe { Shell_NotifyIconW(NIM_MODIFY, &nid) };
+}
 
 /// 32x32 RGBA: blue rounded square with three white boxes on a dock, like make_icon() in proxydock/ui/common.py
 fn icon_rgba() -> Vec<u8> {
@@ -164,7 +189,8 @@ fn run_tray(show_at_start: Option<u32>) {
 
     // physical pixels everywhere (tray click positions, the menu's own drawing)
     unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
-    let core = match controller::spawn(proxydock_core::paths::config_path()) {
+    let notify: controller::Notify = std::sync::Arc::new(|text: &str| tray_message(text));
+    let core = match controller::spawn_with(proxydock_core::paths::config_path(), notify) {
         Ok(h) => h,
         Err(e) => {
             eprintln!("ProxyDock: {e}");
@@ -178,6 +204,7 @@ fn run_tray(show_at_start: Option<u32>) {
         .with_icon(Icon::from_rgba(icon_rgba(), 32, 32).unwrap())
         .build()
         .unwrap();
+    TRAY_HWND.store(_tray.window_handle() as usize, std::sync::atomic::Ordering::Relaxed);
     TrayIconEvent::set_event_handler(Some(|e: TrayIconEvent| match e {
         TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } => open_ui(0),
         TrayIconEvent::Click { button: MouseButton::Right, button_state: MouseButtonState::Up, position, .. } => {
@@ -187,6 +214,12 @@ fn run_tray(show_at_start: Option<u32>) {
     }));
     if let Some(page) = show_at_start {
         open_ui(page);
+        // started by the user (not at login with --hidden): say what runs (Python `show_start_notice`)
+        let auto = CORE.get().map_or(0, |c| c.cards().iter().filter(|c| c.autostart).count());
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(800));
+            tray_message(&tr("Running · {len} autostart proxies").replace("{len}", &auto.to_string()));
+        });
     }
     unsafe {
         let mut msg: MSG = std::mem::zeroed();

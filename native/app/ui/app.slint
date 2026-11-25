@@ -275,12 +275,14 @@ component ProxyNode inherits BaseNode {
 component ToolbarButton inherits Rectangle {
     in property <string> text;
     in property <bool> filled;
+    in property <bool> enabled: true;
     callback clicked();
     height: 44px;
     width: label.preferred-width + 36px;
+    opacity: root.enabled ? 1 : 0.38;
     // pressed buttons square off, then spring back
     border-radius: ta.pressed ? 12px : 22px;
-    background: filled ? M3.primary : ta.has-hover ? M3.on-surface.with-alpha(0.08) : transparent;
+    background: filled ? M3.primary : ta.has-hover && root.enabled ? M3.on-surface.with-alpha(0.08) : transparent;
     animate border-radius { duration: Motion.fast-spatial; easing: cubic-bezier(0.42, 1.67, 0.21, 0.90); }
     label := Text {
         text: root.text;
@@ -290,7 +292,10 @@ component ToolbarButton inherits Rectangle {
         horizontal-alignment: center;
         vertical-alignment: center;
     }
-    ta := TouchArea { clicked => { root.clicked(); } }
+    ta := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
 }
 
 component FormRow inherits Rectangle {
@@ -505,8 +510,32 @@ export component App inherits Window {
     in property <string> t-add-relay: "Pass-through";
     in property <string> t-add-outbound: "Outbound";
     in property <string> t-delete: "Delete";
+    in property <string> t-undo: "Undo";
+    in property <string> t-redo: "Redo";
+    in property <string> t-rename: "Rename";
+    in property <string> t-duplicate: "Duplicate";
+    in property <bool> can-undo;
+    in property <bool> can-redo;
+    // the title box of "Rename" (F2): open, and the text typed
+    in-out property <bool> rename-open;
+    in-out property <string> rename-text;
+    callback undo();
+    callback redo();
+    callback rename-selected();
+    callback rename-apply(string);
+    callback duplicate-selected();
+    changed rename-open => {
+        if self.rename-open {
+            rename-input.focus();
+            rename-input.select-all();
+        } else {
+            editor.focus();
+        }
+    }
     // a refused edit's reason, shown for a few seconds
     in property <string> toast;
+    // the toast is a plain message (a settings change), not a refusal
+    in property <bool> toast-info;
     // a message in the editor (a button's result): text and whether it went well
     in property <string> form-notice;
     in property <bool> form-notice-ok;
@@ -625,6 +654,35 @@ export component App inherits Window {
                         width: parent.width + 40px;
                         height: parent.height + 40px;
                         visible: root.page == 0;
+                        FocusScope {
+                            width: 100%;
+                            height: 100%;
+                            // Python canvas shortcuts: Delete, F2, Ctrl+D, Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z
+                            key-pressed(event) => {
+                                if event.text == Key.Delete {
+                                    root.delete-selected();
+                                    return accept;
+                                }
+                                if event.text == Key.F2 {
+                                    root.rename-selected();
+                                    return accept;
+                                }
+                                if event.modifiers.control && !event.modifiers.alt {
+                                    if event.text == "d" || event.text == "D" {
+                                        root.duplicate-selected();
+                                        return accept;
+                                    }
+                                    if ((event.text == "z" || event.text == "Z") && event.modifiers.shift) || event.text == "y" || event.text == "Y" {
+                                        root.redo();
+                                        return accept;
+                                    }
+                                    if event.text == "z" || event.text == "Z" {
+                                        root.undo();
+                                        return accept;
+                                    }
+                                }
+                                reject
+                            }
                         editor := NodeEditor {
                             width: 100%;
                             height: 100%;
@@ -651,6 +709,7 @@ export component App inherits Window {
                                 selected: node.selected;
                             }
                         }
+                        }
                         if root.nodes.length == 0: Text {
                             text: root.t-no-graph;
                             color: M3.on-surface-variant;
@@ -674,6 +733,10 @@ export component App inherits Window {
                                 ToolbarButton { text: "+ " + root.t-add-router; clicked => { root.add-block(1); } }
                                 ToolbarButton { text: "+ " + root.t-add-relay; clicked => { root.add-block(3); } }
                                 ToolbarButton { text: "+ " + root.t-add-outbound; clicked => { root.add-block(2); } }
+                                ToolbarButton { text: root.t-undo; enabled: root.can-undo; clicked => { root.undo(); } }
+                                ToolbarButton { text: root.t-redo; enabled: root.can-redo; clicked => { root.redo(); } }
+                                ToolbarButton { text: root.t-rename; clicked => { root.rename-selected(); } }
+                                ToolbarButton { text: root.t-duplicate; clicked => { root.duplicate-selected(); } }
                                 ToolbarButton { text: root.t-delete; filled: true; clicked => { root.delete-selected(); } }
                             }
                         }
@@ -683,12 +746,12 @@ export component App inherits Window {
                             width: min(parent.width - 40px, toast-text.preferred-width + 40px);
                             height: toast-text.preferred-height + 24px;
                             border-radius: 12px;
-                            background: M3.error-container;
+                            background: root.toast-info ? M3.secondary-container : M3.error-container;
                             toast-text := Text {
                                 width: parent.width - 40px;
                                 text: root.toast;
                                 wrap: word-wrap;
-                                color: M3.on-error-container;
+                                color: root.toast-info ? M3.on-secondary-container : M3.on-error-container;
                                 horizontal-alignment: center;
                             }
                         }
@@ -807,6 +870,65 @@ export component App inherits Window {
                                     color: line.tone == 2 ? M3.error : line.tone == 1 ? #b26a00 : line.tone == 3 ? M3.on-surface-variant : M3.on-surface;
                                     vertical-alignment: center;
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Rectangle {
+        visible: root.rename-open;
+        background: #00000060;
+        TouchArea {
+            enabled: root.rename-open;
+            clicked => { root.rename-open = false; }
+        }
+        FocusScope {
+            enabled: root.rename-open;
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    root.rename-open = false;
+                    return accept;
+                }
+                reject
+            }
+            Rectangle {
+                width: min(parent.width - 80px, 420px);
+                height: rename-lay.preferred-height;
+                border-radius: 28px;
+                background: M3.surface-container-high;
+                TouchArea { }
+                rename-lay := VerticalLayout {
+                    padding: 24px;
+                    spacing: 16px;
+                    Text {
+                        text: root.t-rename;
+                        font-size: 20px;
+                        font-weight: 700;
+                        color: M3.on-surface;
+                    }
+                    rename-input := LineEdit {
+                        enabled: root.rename-open;
+                        text <=> root.rename-text;
+                        accepted(text) => {
+                            root.rename-open = false;
+                            root.rename-apply(text);
+                        }
+                    }
+                    HorizontalLayout {
+                        alignment: end;
+                        spacing: 8px;
+                        Button {
+                            text: root.t-cancel;
+                            clicked => { root.rename-open = false; }
+                        }
+                        Button {
+                            text: root.t-save;
+                            primary: true;
+                            clicked => {
+                                root.rename-open = false;
+                                root.rename-apply(root.rename-text);
                             }
                         }
                     }

@@ -483,3 +483,86 @@ fn connection_check_and_port_check() {
     h.quit(Duration::from_secs(10));
     let _ = std::fs::remove_dir_all(&home);
 }
+
+#[test]
+fn undo_rename_duplicate_and_notices() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let home = std::env::temp_dir().join(format!("proxydock-undo-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let port = free_port();
+    // the card cannot start (no sing-box there): with no window open, the tray says so
+    let settings = json!({
+        "version": 3,
+        "global": {"log_to_file": true, "singbox_path": home.join("missing.exe").display().to_string()},
+        "graph": {
+            // a plain-text password: saved sealed while loading, which is not an undo step
+            "inbounds": [{"id": "c1", "name": "card", "autostart": true, "inbound": {"type": "socks5", "host": "127.0.0.1", "port": port, "auth_enabled": true, "username": "u", "password": "pw"}, "target": "d"}],
+            "outbounds": [{"id": "d", "name": "Direct", "outbound": {"type": "direct"}}],
+        },
+    });
+    let path = home.join("config.json");
+    std::fs::write(&path, settings.to_string()).unwrap();
+    proxydock_core::singbox::guard::set_run_dir(home.join("run"));
+    let tray: std::sync::Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+    let notify: controller::Notify = {
+        let tray = tray.clone();
+        std::sync::Arc::new(move |m: &str| tray.lock().unwrap().push(m.to_string()))
+    };
+    let h = controller::spawn_with(path.clone(), notify).unwrap();
+    let until = Instant::now() + Duration::from_secs(10);
+    while !tray.lock().unwrap().iter().any(|m| m.starts_with("'card' failed to start: ")) && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(tray.lock().unwrap().iter().any(|m| m.starts_with("'card' failed to start: ")), "{:?}", tray.lock().unwrap());
+
+    let (mut w, rx) = connect(&h, &h.token);
+    let hello = expect(&rx, 5, |v| v["ev"] == "hello").expect("hello");
+    assert_eq!((hello["undo"].clone(), hello["redo"].clone()), (json!(false), json!(false)));
+    let names = |p: &std::path::Path| -> Vec<String> {
+        let g = saved(p)["graph"].clone();
+        ["inbounds", "outbounds"].iter().flat_map(|k| g[*k].as_array().cloned().unwrap_or_default()).map(|n| n["name"].as_str().unwrap().to_string()).collect()
+    };
+
+    // rename: a settings change, shown in the open window (not the tray) and saved; one undo step
+    let before = tray.lock().unwrap().len();
+    ipc::send(&mut w, &json!({"cmd": "rename", "key": "d", "name": "  Exit  "})).unwrap();
+    assert!(expect(&rx, 5, |v| v["ev"] == "info" && v["message"] == "Saved proxy 'Exit'").is_some());
+    assert!(expect(&rx, 5, |v| v["ev"] == "undo" && v["undo"] == true && v["redo"] == false).is_some());
+    assert_eq!(names(&path), ["card", "Exit"]);
+    assert_eq!(tray.lock().unwrap().len(), before);
+    // the same name again: nothing changes, the window gets the canvas back
+    ipc::send(&mut w, &json!({"cmd": "rename", "key": "d", "name": "Exit"})).unwrap();
+    assert!(expect(&rx, 5, |v| v["ev"] == "graph").is_some());
+
+    // duplicate two blocks in one message: one step
+    ipc::send(&mut w, &json!({"cmd": "duplicate", "keys": ["c1", "d"]})).unwrap();
+    assert!(expect(&rx, 5, |v| v["ev"] == "graph" && v["cards"].as_array().unwrap().len() == 2).is_some());
+    assert_eq!(names(&path), ["card", "card copy", "Exit", "Exit copy"]);
+    let copy = saved(&path)["graph"]["inbounds"][1].clone();
+    assert_eq!((copy["inbound"]["port"].clone(), copy["autostart"].clone(), copy["target"].clone()), (json!(port + 1), json!(false), Value::Null));
+
+    // undo twice, redo once
+    ipc::send(&mut w, &json!({"cmd": "undo"})).unwrap();
+    assert!(expect(&rx, 5, |v| v["ev"] == "info" && v["message"] == "Undone").is_some());
+    assert!(expect(&rx, 5, |v| v["ev"] == "undo" && v["undo"] == true && v["redo"] == true).is_some());
+    assert_eq!(names(&path), ["card", "Exit"]);
+    ipc::send(&mut w, &json!({"cmd": "undo"})).unwrap();
+    assert!(expect(&rx, 5, |v| v["ev"] == "undo" && v["undo"] == false && v["redo"] == true).is_some());
+    assert_eq!(names(&path), ["card", "Direct"]);
+    ipc::send(&mut w, &json!({"cmd": "redo"})).unwrap();
+    assert!(expect(&rx, 5, |v| v["ev"] == "info" && v["message"] == "Redone").is_some());
+    assert!(expect(&rx, 5, |v| v["ev"] == "undo" && v["undo"] == true && v["redo"] == true).is_some());
+    assert_eq!(names(&path), ["card", "Exit"]);
+    // a new change drops what could be redone
+    ipc::send(&mut w, &json!({"cmd": "delete", "keys": [], "links": [{"from": "c1", "out": 0, "to": "d", "in": 0}]})).unwrap();
+    assert!(expect(&rx, 5, |v| v["ev"] == "undo" && v["undo"] == true && v["redo"] == false).is_some());
+    assert_eq!(saved(&path)["graph"]["inbounds"][0]["target"], Value::Null);
+
+    // "Save the log to a file": the settings changes are in it, one line each
+    h.quit(Duration::from_secs(10));
+    let text = std::fs::read_to_string(home.join("logs").join("proxydock.log")).unwrap();
+    assert!(text.lines().any(|l| l.ends_with("] SET   Saved proxy 'Exit'")), "{text}");
+    assert!(text.lines().any(|l| l.ends_with("] SET   Undone")), "{text}");
+    let _ = std::fs::remove_dir_all(&home);
+}

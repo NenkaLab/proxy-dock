@@ -41,6 +41,14 @@ type Job = Box<dyn FnOnce() -> Box<dyn FnOnce(&mut Controller) + Send> + Send>;
 /// editor buttons that need the network (their work runs on another thread)
 const NETWORK_ACTIONS: [&str; 3] = ["sub.update", "sni.detect", "probe"];
 
+/// undo steps kept (Python `UNDO_LIMIT`)
+const UNDO_LIMIT: usize = 100;
+/// the PC block's live state: never undone (Python `PC_RUNTIME`)
+const PC_RUNTIME: [&str; 3] = ["backup", "applied", "server"];
+
+/// shows a message in the tray when no window is open (Python `on_notify` -> `tray.showMessage`)
+pub type Notify = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// the first subscription check after starting, then how often (Python `update_due_subscriptions` timers)
 const SUB_FIRST: Duration = Duration::from_secs(20);
 const SUB_EVERY: Duration = Duration::from_secs(15 * 60);
@@ -60,6 +68,7 @@ pub struct CardInfo {
     pub id: String,
     pub name: String,
     pub state: State,
+    pub autostart: bool,
 }
 
 /// What the tray holds: commands to the controller and the window's connection details.
@@ -110,6 +119,11 @@ pub fn state_name(s: &State) -> &'static str {
 
 /// Read the settings at `config_path` and start the controller (autostart cards start right away).
 pub fn spawn(config_path: PathBuf) -> std::io::Result<Handle> {
+    spawn_with(config_path, Arc::new(|_| {}))
+}
+
+/// `spawn` with the tray's notification (messages for the user while no window is open)
+pub fn spawn_with(config_path: PathBuf, notify: Notify) -> std::io::Result<Handle> {
     let (tx, rx) = channel();
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
@@ -168,6 +182,13 @@ pub fn spawn(config_path: PathBuf) -> std::io::Result<Handle> {
         sub_busy: std::collections::HashSet::new(),
         next_sub_check: Instant::now() + SUB_FIRST,
         probe_text: HashMap::new(),
+        notify,
+        file_log: None,
+        undo: vec![],
+        redo: vec![],
+        undo_base: Value::Null,
+        undo_open: false,
+        undo_quiet: false,
     };
     c.load();
     std::thread::Builder::new().name("controller".into()).spawn(move || c.run(rx))?;
@@ -212,6 +233,17 @@ struct Controller {
     next_sub_check: Instant,
     /// the last connection check of each window: (block, text, tone 0 / 1 ok / 2 failed)
     probe_text: HashMap<u64, (String, String, i32)>,
+    notify: Notify,
+    /// "Save the log to a file" (global setting `log_to_file`)
+    file_log: Option<log::FileLog>,
+    /// undo / redo: the graph before each change; the changes one message makes are one step
+    undo: Vec<Value>,
+    redo: Vec<Value>,
+    undo_base: Value,
+    /// this message already made a step (further changes join it)
+    undo_open: bool,
+    /// background changes (a subscription refresh) are not steps
+    undo_quiet: bool,
 }
 
 fn entry_json(e: &Entry) -> Value {
@@ -229,10 +261,118 @@ impl Controller {
             eprintln!("[{}] {:<5} {}{}", e.time, e.level.tag(), if e.proxy_name.is_empty() { String::new() } else { format!("[{}] ", e.proxy_name) }, e.message);
         }
         self.broadcast(&json!({"ev": "log", "entries": [entry_json(&e)]}));
+        if let Some(f) = self.file_log.as_mut() {
+            let _ = f.write(&log::format_line(&e));
+        }
+        // a settings change is shown to the user too (Python `notify_hook`)
+        if e.level == Level::Setting {
+            self.notify_user(&e.message);
+        }
         self.logs.push_back(e);
         while self.logs.len() > LOG_KEEP {
             self.logs.pop_front();
         }
+    }
+
+    /// A message for the user (Python `on_notify`): in the open window, else in the tray.
+    fn notify_user(&mut self, message: &str) {
+        if self.clients.values().any(|c| c.ready) {
+            self.broadcast(&json!({"ev": "info", "message": message}));
+        } else {
+            (self.notify)(message);
+        }
+    }
+
+    /// "Save the log to a file" on or off (Python `_apply_file_logging`)
+    fn apply_file_logging(&mut self, enabled: bool) {
+        if enabled && self.file_log.is_none() {
+            let dir = self.config_path.parent().map(|d| d.join("logs")).unwrap_or_else(proxydock_core::paths::log_dir);
+            match log::FileLog::open(&dir) {
+                Ok(f) => self.file_log = Some(f),
+                Err(e) => {
+                    let msg = tr("Cannot open the log file: {e}").replace("{e}", &e.to_string());
+                    self.app_log(Level::Error, &msg);
+                }
+            }
+        } else if !enabled {
+            self.file_log = None;
+        }
+    }
+
+    /// the graph as undo keeps it (without the PC block's live state)
+    fn snapshot(&self) -> Value {
+        let mut g = self.graph.clone();
+        if let Some(pc) = g.get_mut("pc").and_then(Value::as_object_mut) {
+            for k in PC_RUNTIME {
+                pc.remove(k);
+            }
+        }
+        Value::Object(g)
+    }
+
+    /// After a save (Python `_note_change`): if the graph changed, the state before it becomes an undo step (one
+    /// per message, however many changes it makes).
+    fn note_change(&mut self) {
+        let snap = self.snapshot();
+        if snap == self.undo_base {
+            return;
+        }
+        // the save while loading (an older file sealed again, a new file): the starting point, not a step
+        if self.undo_base.is_null() {
+            self.undo_base = snap;
+            return;
+        }
+        if !self.undo_quiet && !self.undo_open {
+            let before = std::mem::replace(&mut self.undo_base, Value::Null);
+            self.undo.push(before);
+            if self.undo.len() > UNDO_LIMIT {
+                self.undo.remove(0);
+            }
+            self.redo.clear();
+            self.undo_open = true;
+        }
+        self.undo_base = snap;
+        self.send_undo_state();
+    }
+
+    fn send_undo_state(&mut self) {
+        let msg = json!({"ev": "undo", "undo": !self.undo.is_empty(), "redo": !self.redo.is_empty()});
+        self.broadcast(&msg);
+    }
+
+    /// Undo (or redo) one step (Python `_step`)
+    fn undo_step(&mut self, redo: bool) {
+        if !self.can_save {
+            return;
+        }
+        let popped = if redo { self.redo.pop() } else { self.undo.pop() };
+        let Some(state) = popped else { return };
+        let now = self.snapshot();
+        if redo {
+            self.undo.push(now);
+        } else {
+            self.redo.push(now);
+        }
+        let mut g = graph::validate(&state);
+        let live: Vec<(String, Value)> = self
+            .graph
+            .get("pc")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+            .filter(|(k, _)| PC_RUNTIME.contains(&k.as_str()))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        if let Some(pc) = g.get_mut("pc").and_then(Value::as_object_mut) {
+            pc.extend(live);
+        }
+        self.graph = g;
+        self.undo_quiet = true;
+        self.graph_changed();
+        self.undo_quiet = false;
+        self.undo_base = self.snapshot();
+        self.app_log(Level::Setting, &tr(if redo { "Redone" } else { "Undone" }));
+        self.send_undo_state();
     }
 
     /// settings file -> global settings and the compiled cards; then the autostart cards start
@@ -247,6 +387,8 @@ impl Controller {
                     let msg = format!("{id}: {field:?}");
                     self.app_log(Level::Warn, &msg);
                 }
+                let to_file = self.glob["log_to_file"] == json!(true);
+                self.apply_file_logging(to_file);
                 if l.notes.needs_save {
                     // plain-text passwords of an older version: saved sealed right away (as the Python app does)
                     self.save();
@@ -263,6 +405,7 @@ impl Controller {
             }
         }
         self.rebuild();
+        self.undo_base = self.snapshot();
         let auto: Vec<Value> = self.proxies.iter().filter(|p| p["autostart"] == json!(true)).cloned().collect();
         for p in auto {
             let _ = self.manager.start(&p, &self.glob);
@@ -286,6 +429,7 @@ impl Controller {
             let msg = tr("Failed to save settings: {e}").replace("{e}", &format!("{e:?}"));
             self.app_log(Level::Warn, &msg);
         }
+        self.note_change();
     }
 
     /// The graph changed (Python `_recompile`): rebuild the cards, apply to running ones that changed (a card
@@ -624,13 +768,15 @@ impl Controller {
                 }
             }
         }
+        self.undo_quiet = true;
         if same {
             self.save();
-            return;
+        } else {
+            let msg = tr("Subscription '{name}' updated: {note}").replace("{name}", &name).replace("{note}", &note);
+            self.app_log(Level::Setting, &msg);
+            self.graph_changed();
         }
-        let msg = tr("Subscription '{name}' updated: {note}").replace("{name}", &name).replace("{note}", &note);
-        self.app_log(Level::Setting, &msg);
-        self.graph_changed();
+        self.undo_quiet = false;
     }
 
     /// a canvas edit from the window
@@ -657,11 +803,35 @@ impl Controller {
             "connect" => edit::connect(&mut self.graph, &s("from"), n("out"), &s("to"), n("in")),
             "disconnect" => edit::disconnect(&mut self.graph, &s("from"), n("out"), &s("to"), n("in")),
             "delete" => {
+                // selected links are cut first (a refused one is skipped), then the selected blocks deleted
+                for l in v["links"].as_array().into_iter().flatten() {
+                    let s = |k: &str| l[k].as_str().unwrap_or("").to_string();
+                    let n = |k: &str| l[k].as_u64().unwrap_or(0) as usize;
+                    let _ = edit::disconnect(&mut self.graph, &s("from"), n("out"), &s("to"), n("in"));
+                }
                 for k in v["keys"].as_array().into_iter().flatten().filter_map(Value::as_str) {
                     edit::delete(&mut self.graph, k);
                 }
                 Ok(())
             }
+            "duplicate" => {
+                let keys: Vec<&str> = v["keys"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+                if edit::duplicate(&mut self.graph, &keys).is_empty() {
+                    return;
+                }
+                Ok(())
+            }
+            "rename" => match edit::rename(&mut self.graph, &s("key"), &s("name")) {
+                Some(name) => {
+                    self.app_log(Level::Setting, &tr("Saved proxy '{name}'").replace("{name}", &name));
+                    Ok(())
+                }
+                None => {
+                    // nothing to change: the window shows the saved title again
+                    self.send_canvas();
+                    return;
+                }
+            },
             "add" => {
                 edit::add(&mut self.graph, v["kind"].as_i64().unwrap_or(2) as i32, f("x"), f("y"));
                 Ok(())
@@ -699,6 +869,7 @@ impl Controller {
                 id: p["id"].as_str().unwrap_or("").into(),
                 name: p["name"].as_str().unwrap_or("").into(),
                 state: self.manager.state(p["id"].as_str().unwrap_or("")),
+                autostart: p["autostart"] == json!(true),
             })
             .collect();
     }
@@ -736,6 +907,8 @@ impl Controller {
                     break;
                 }
             }
+            // one message, one undo step (Python: one turn of the event loop)
+            self.undo_open = false;
         }
     }
 
@@ -762,7 +935,7 @@ impl Controller {
                 let skip = self.logs.len().saturating_sub(LOG_SEND);
                 let logs: Vec<Value> = self.logs.iter().skip(skip).map(entry_json).collect();
                 let canvas = canvas::to_json(&self.view, &|id| state_name(&self.manager.state(id)));
-                let hello = json!({"ev": "hello", "language": self.glob["language"], "cards": cards, "logs": logs, "stats": self.stats_json(), "canvas": canvas});
+                let hello = json!({"ev": "hello", "language": self.glob["language"], "cards": cards, "logs": logs, "stats": self.stats_json(), "canvas": canvas, "undo": !self.undo.is_empty(), "redo": !self.redo.is_empty()});
                 if let Some(c) = self.clients.get_mut(&n) {
                     c.ready = ipc::send(&mut c.stream, &hello).is_ok();
                 }
@@ -785,7 +958,9 @@ impl Controller {
             }
             "toggle" => self.toggle(id),
             "stop_all" => self.stop_all(),
-            "move" | "connect" | "disconnect" | "delete" | "add" => self.edit(cmd, v),
+            "move" | "connect" | "disconnect" | "delete" | "add" | "duplicate" | "rename" => self.edit(cmd, v),
+            "undo" => self.undo_step(false),
+            "redo" => self.undo_step(true),
             "edit_open" | "edit_preview" | "edit_action" | "edit_save" => self.editor(n, cmd, v),
             "edit_close" => {
                 self.drafts.remove(&n);
@@ -819,10 +994,12 @@ impl Controller {
         if st == State::Running {
             self.running_since.insert(id.to_string(), Instant::now());
         }
-        // (a card that fails without auto-restart shows its error on the card; tray notifications come later)
-        if let (State::Error(_), Some(p)) = (&st, self.proxy(id).cloned()) {
+        if let (State::Error(msg), Some(p)) = (&st, self.proxy(id).cloned()) {
             if p["auto_restart"] == json!(true) {
                 self.schedule_restart(&p);
+            } else {
+                let text = tr("'{name}' failed to start: {msg}").replace("{name}", &name_of(&p)).replace("{msg}", msg);
+                self.notify_user(&text);
             }
         }
         if let Some(p) = self.proxy(id).cloned() {

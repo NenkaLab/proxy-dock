@@ -339,6 +339,25 @@ fn field_rows(fields: &[Value]) -> Vec<FieldRow> {
 
 thread_local! {
     static NOTICE_SEQ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static TOAST_SEQ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// the block whose title the rename box edits
+    static RENAME_KEY: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// a message at the bottom of the canvas for `secs` (a newer one replaces it and its timer)
+fn show_toast(app: &App, text: &str, info: bool, secs: f32) {
+    app.set_toast(text.into());
+    app.set_toast_info(info);
+    TOAST_SEQ.with(|n| n.set(n.get() + 1));
+    let seq = TOAST_SEQ.with(|n| n.get());
+    let weak = app.as_weak();
+    slint::Timer::single_shot(std::time::Duration::from_secs_f32(secs), move || {
+        if let Some(a) = weak.upgrade() {
+            if TOAST_SEQ.with(|n| n.get()) == seq {
+                a.set_toast(SharedString::new());
+            }
+        }
+    });
 }
 
 /// the text on the clipboard ("" if there is none)
@@ -380,6 +399,10 @@ fn labels(app: &App) {
     app.set_t_add_relay(tr("Pass-through").into());
     app.set_t_add_outbound(tr("Outbound").into());
     app.set_t_delete(tr("Delete").into());
+    app.set_t_undo(tr("Undo").into());
+    app.set_t_redo(tr("Redo").into());
+    app.set_t_rename(tr("Rename").into());
+    app.set_t_duplicate(tr("Duplicate").into());
     app.set_t_canvas(tr("Canvas").into());
     app.set_t_no_graph(tr("No proxies yet. Create one with 'New proxy'.").into());
     app.set_t_proxy(tr("Proxy").into());
@@ -554,14 +577,58 @@ fn main() -> Result<(), slint::PlatformError> {
     {
         let (send, models, key_of) = (send.clone(), models.clone(), key_of.clone());
         app.on_delete_selected(move || {
-            // selected links are cut first, then selected blocks deleted
-            for l in models.links.iter().filter(|l| l.selected) {
-                let (a, b) = (l.start_pin_id, l.end_pin_id);
-                send(json!({"cmd": "disconnect", "from": key_of(a / 64), "out": (a % 64) / 2, "to": key_of(b / 64), "in": (b % 64) / 2}));
-            }
+            // one message (one undo step): selected links are cut first, then selected blocks deleted
+            let links: Vec<Value> = models
+                .links
+                .iter()
+                .filter(|l| l.selected)
+                .map(|l| {
+                    let (a, b) = (l.start_pin_id, l.end_pin_id);
+                    json!({"from": key_of(a / 64), "out": (a % 64) / 2, "to": key_of(b / 64), "in": (b % 64) / 2})
+                })
+                .collect();
             let keys: Vec<String> = models.nodes.iter().filter(|n| n.selected).map(|n| key_of(n.id)).collect();
+            if !keys.is_empty() || !links.is_empty() {
+                send(json!({"cmd": "delete", "keys": keys, "links": links}));
+            }
+        });
+    }
+    {
+        let send = send.clone();
+        app.on_undo({
+            let send = send.clone();
+            move || send(json!({"cmd": "undo"}))
+        });
+        app.on_redo({
+            let send = send.clone();
+            move || send(json!({"cmd": "redo"}))
+        });
+        let (models2, key_of2) = (models.clone(), key_of.clone());
+        let send2 = send.clone();
+        app.on_duplicate_selected(move || {
+            let keys: Vec<String> = models2.nodes.iter().filter(|n| n.selected).map(|n| key_of2(n.id)).filter(|k| k != "pc").collect();
             if !keys.is_empty() {
-                send(json!({"cmd": "delete", "keys": keys}));
+                send2(json!({"cmd": "duplicate", "keys": keys}));
+            }
+        });
+        let (models3, key_of3, weak) = (models.clone(), key_of.clone(), app.as_weak());
+        app.on_rename_selected(move || {
+            // one selected block (not the PC block): its title in the rename box
+            let sel: Vec<NodeData> = models3.nodes.iter().filter(|n| n.selected).collect();
+            let [n] = sel.as_slice() else { return };
+            let key = key_of3(n.id);
+            if key == "pc" {
+                return;
+            }
+            let Some(a) = weak.upgrade() else { return };
+            RENAME_KEY.with(|k| *k.borrow_mut() = key);
+            a.set_rename_text(n.title.clone());
+            a.set_rename_open(true);
+        });
+        app.on_rename_apply(move |text| {
+            let key = RENAME_KEY.with(|k| k.borrow().clone());
+            if !key.is_empty() {
+                send(json!({"cmd": "rename", "key": key, "name": text.as_str()}));
             }
         });
     }
@@ -589,6 +656,8 @@ fn main() -> Result<(), slint::PlatformError> {
                             m.add_logs(v["logs"].as_array().map(Vec::as_slice).unwrap_or(&[]));
                             m.set_stats(&v["stats"]);
                             m.set_canvas(&v["canvas"]);
+                            app.set_can_undo(v["undo"] == json!(true));
+                            app.set_can_redo(v["redo"] == json!(true));
                             // debug builds: PROXYDOCK_EDIT=<block id>[,<button>] opens its editor (screenshots without clicking)
                             if cfg!(debug_assertions) {
                                 if let Ok(id) = std::env::var("PROXYDOCK_EDIT") {
@@ -652,14 +721,12 @@ fn main() -> Result<(), slint::PlatformError> {
                             app.set_form_errors(ModelRc::default());
                             app.set_page(EDITOR.with(|e| e.borrow().back_to));
                         }
-                        "error" => {
-                            app.set_toast(v["message"].as_str().unwrap_or("").into());
-                            let weak = app.as_weak();
-                            slint::Timer::single_shot(std::time::Duration::from_secs(5), move || {
-                                if let Some(a) = weak.upgrade() {
-                                    a.set_toast(SharedString::new());
-                                }
-                            });
+                        "error" => show_toast(&app, v["message"].as_str().unwrap_or(""), false, 5.0),
+                        // a settings change (Python `on_notify` while the window is open: an InfoBar for 2.5 s)
+                        "info" => show_toast(&app, v["message"].as_str().unwrap_or(""), true, 2.5),
+                        "undo" => {
+                            app.set_can_undo(v["undo"] == json!(true));
+                            app.set_can_redo(v["redo"] == json!(true));
                         }
                         "card" => m.set_card(&v["card"]),
                         "stats" => m.set_stats(&v["stats"]),
