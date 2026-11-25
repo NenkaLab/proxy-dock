@@ -878,3 +878,38 @@ fn tray_switches_and_group_members() {
     h.quit(Duration::from_secs(10));
     let _ = std::fs::remove_dir_all(&home);
 }
+
+#[test]
+fn settings_v2_become_a_graph() {
+    let _serial = serial();
+    let home = std::env::temp_dir().join(format!("proxydock-v2-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    // two proxies through the same upstream: one shared outbound block
+    let up = json!({"type": "socks5", "host": "10.0.0.1", "port": 1080});
+    let v2 = json!({"version": 2, "global": {"language": "en"}, "proxies": [
+        {"id": "aaaaaaaa", "name": "first", "autostart": false, "inbound": {"type": "socks5", "port": free_port()}, "outbound": up},
+        {"id": "bbbbbbbb", "name": "second", "inbound": {"type": "http", "port": free_port()}, "outbound": up},
+    ]});
+    let path = home.join("config.json");
+    std::fs::write(&path, v2.to_string()).unwrap();
+    let h = controller::spawn(path.clone()).unwrap();
+    let until = Instant::now() + Duration::from_secs(5);
+    while saved(&path)["version"] != json!(3) && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let s = saved(&path);
+    assert_eq!(s["version"], json!(3));
+    let g = &s["graph"];
+    assert_eq!(g["inbounds"].as_array().unwrap().len(), 2);
+    assert_eq!(g["outbounds"].as_array().unwrap().len(), 1);
+    let shared = g["outbounds"][0]["id"].clone();
+    assert_eq!((g["inbounds"][0]["id"].clone(), g["inbounds"][0]["target"].clone()), (json!("aaaaaaaa"), shared.clone()));
+    assert_eq!(g["inbounds"][1]["target"], shared);
+    // the v2 file kept for an older ProxyDock
+    let kept: Value = serde_json::from_str(&std::fs::read_to_string(home.join("config.v2.json")).unwrap()).unwrap();
+    assert_eq!(kept["version"], json!(2));
+    assert_eq!(h.cards().len(), 2);
+    h.quit(Duration::from_secs(10));
+    let _ = std::fs::remove_dir_all(&home);
+}

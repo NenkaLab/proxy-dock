@@ -30,6 +30,15 @@ pub fn app_dir() -> PathBuf {
     }
 }
 
+/// the previous version's (SOCKS5 Proxy) settings folder; None with PROXYDOCK_HOME (tests, a portable copy: never
+/// the user's real folder)
+pub fn old_app_dir() -> Option<PathBuf> {
+    match std::env::var_os("PROXYDOCK_HOME") {
+        Some(p) if !p.is_empty() => None,
+        _ => Some(app_dir_named(OLD_APP_ID)),
+    }
+}
+
 pub fn config_path() -> PathBuf {
     app_dir().join("config.json")
 }

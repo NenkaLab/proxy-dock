@@ -976,3 +976,32 @@ pub fn compile(graph: &Obj) -> Vec<Obj> {
     }
     out
 }
+
+/// Settings v2 (one inbound + outbound per proxy) -> graph; identical outbounds become one shared block (Python
+/// `from_proxies` with `add_outbound` / `add_inbound`)
+pub fn from_proxies(proxies: &[Value]) -> Obj {
+    let mut g = empty();
+    let mut shared: Vec<(Value, String)> = vec![];
+    for (i, p) in proxies.iter().enumerate() {
+        let ob = &p["outbound"];
+        let target = match shared.iter().find(|(o, _)| o == ob) {
+            Some((_, id)) => id.clone(),
+            None => {
+                let n = validate_outbound_node(&json!({"id": new_id(), "name": null, "outbound": ob, "pos": [460, shared.len() * 190]}));
+                let id = n["id"].as_str().unwrap_or("").to_string();
+                g.get_mut("outbounds").and_then(Value::as_array_mut).unwrap().push(Value::Object(n));
+                shared.push((ob.clone(), id.clone()));
+                id
+            }
+        };
+        let mut n = validate_inbound_node(&json!({
+            "id": new_id(), "name": p["name"], "autostart": p["autostart"], "inbound": p["inbound"],
+            "target": target, "pos": [0, i * 170],
+        }));
+        n.insert("target".into(), json!(target));
+        n.insert("id".into(), p["id"].clone());
+        n.insert("overrides".into(), p["overrides"].clone());
+        g.get_mut("inbounds").and_then(Value::as_array_mut).unwrap().push(Value::Object(n));
+    }
+    g
+}

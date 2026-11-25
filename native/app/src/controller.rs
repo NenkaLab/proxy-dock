@@ -976,6 +976,17 @@ impl Controller {
             }
             Err(config::LoadError::Missing) => {
                 self.can_save = true;
+                // no settings yet: the previous version's (SOCKS5 Proxy), if it was used (Python `migrate_from_old`)
+                let old = proxydock_core::paths::old_app_dir();
+                if let Some((g, graph_old, n)) = old.as_deref().and_then(config::migrate_from_old) {
+                    self.glob = g;
+                    proxydock_core::i18n::set_language(self.glob["language"].as_str().unwrap_or("en"));
+                    self.graph = graph::validate(&Value::Object(graph_old));
+                    let msg = tr("Imported settings from the previous version ({old_dir}) - {len} proxies")
+                        .replace("{old_dir}", &old.unwrap_or_default().display().to_string())
+                        .replace("{len}", &n.to_string());
+                    self.app_log(Level::Info, &msg);
+                }
                 self.save();
             }
             Err(e) => {

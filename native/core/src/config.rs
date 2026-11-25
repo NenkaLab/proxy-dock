@@ -395,6 +395,8 @@ pub fn hop_ports(text: &str) -> Option<Vec<String>> {
 pub struct LoadNotes {
     /// a secret was stored unencrypted, or the file is the old v2 format: save it again
     pub needs_save: bool,
+    /// the file was settings v2 (kept as config.v2.json before it is saved as v3)
+    pub from_v2: bool,
     /// secrets that could not be decrypted (block id, field)
     pub undecryptable: Vec<(String, Undecryptable)>,
 }
@@ -403,7 +405,7 @@ pub struct LoadNotes {
 pub enum LoadError {
     Missing,
     Unreadable(String),
-    /// settings v2 (one inbound + outbound per proxy): not handled here yet
+    /// (not used any more: settings v2 are read and turned into a graph)
     OldFormat,
 }
 
@@ -421,10 +423,23 @@ pub fn parse(text: &str) -> Result<Loaded, LoadError> {
     let raw: Value = serde_json::from_str(text).map_err(|e| LoadError::Unreadable(e.to_string()))?;
     let empty = Map::new();
     let raw = raw.as_object().unwrap_or(&empty);
-    if raw.get("version").and_then(Value::as_i64).unwrap_or(2) < 3 {
-        return Err(LoadError::OldFormat);
-    }
     let global = validate_global(raw.get("global").unwrap_or(&Value::Null));
+    if raw.get("version").and_then(Value::as_i64).unwrap_or(2) < 3 {
+        // settings v2: one inbound + outbound per proxy (Python `load`)
+        let mut notes = LoadNotes { needs_save: true, from_v2: true, ..Default::default() };
+        let mut proxies = vec![];
+        for item in raw.get("proxies").and_then(Value::as_array).into_iter().flatten().filter(|x| x.is_object()) {
+            let mut item = item.clone();
+            let id = item["id"].as_str().unwrap_or("").to_string();
+            for field in ["inbound", "outbound"] {
+                let (plain, _, failed) = secret::unseal(item.get(field).unwrap_or(&Value::Null));
+                notes.undecryptable.extend(failed.into_iter().map(|f| (id.clone(), f)));
+                item[field] = plain;
+            }
+            proxies.push(Value::Object(validate_proxy(&item)));
+        }
+        return Ok(Loaded { global, graph: crate::graph::from_proxies(&proxies), notes });
+    }
     let mut graph = raw.get("graph").and_then(Value::as_object).cloned().unwrap_or_default();
     let mut notes = LoadNotes::default();
     for (key, field) in [("inbounds", "inbound"), ("outbounds", "outbound")] {
@@ -451,9 +466,47 @@ pub fn parse(text: &str) -> Result<Loaded, LoadError> {
     Ok(Loaded { global, graph, notes })
 }
 
+/// The previous version's (SOCKS5 Proxy / ProxyLocal) settings in `old_dir` as global settings and a graph: a SOCKS5
+/// card for its proxy, and a Shadowsocks card if it had one turned on (Python `migrate_from_old`). None when there is
+/// nothing to move. The original is kept.
+pub fn migrate_from_old(old_dir: &std::path::Path) -> Option<(Map<String, Value>, Map<String, Value>, usize)> {
+    let text = std::fs::read_to_string(old_dir.join("config.json")).ok()?;
+    let old: Value = serde_json::from_str(&text).ok()?;
+    if !old.is_object() {
+        return None;
+    }
+    let (old, _, _) = secret::unseal(&old);
+    let glob = validate_global(&old);
+    let get = |k: &str, d: Value| old.get(k).cloned().unwrap_or(d);
+    let host = get("host", json!("127.0.0.1"));
+    let mut proxies = vec![Value::Object(validate_proxy(&json!({
+        "id": crate::ids::new_id(), "name": crate::i18n::tr("Default SOCKS5"), "autostart": true,
+        "inbound": {"type": "socks5", "host": host, "port": get("port", json!(30307)), "auth_enabled": get("auth_enabled", json!(false)),
+                    "username": get("username", json!("")), "password": get("password", json!(""))},
+        "outbound": {"type": "direct"},
+    })))];
+    if old.get("ss_enabled").is_some_and(crate::secret::truthy) && old.get("ss_password").is_some_and(crate::secret::truthy) {
+        proxies.push(Value::Object(validate_proxy(&json!({
+            "id": crate::ids::new_id(), "name": "Shadowsocks", "autostart": true,
+            "inbound": {"type": "shadowsocks", "host": host, "port": get("ss_port", json!(8388)),
+                        "ss_method": get("ss_method", inbound_defaults()["ss_method"].clone()), "ss_password": old["ss_password"]},
+            "outbound": {"type": "direct"},
+        }))));
+    }
+    let n = proxies.len();
+    Some((glob, crate::graph::from_proxies(&proxies), n))
+}
+
 pub fn load_from(path: &std::path::Path) -> Result<Loaded, LoadError> {
     match std::fs::read_to_string(path) {
-        Ok(text) => parse(&text),
+        Ok(text) => {
+            let loaded = parse(&text)?;
+            if loaded.notes.from_v2 {
+                // kept so an older ProxyDock can still be used (Python `load`)
+                let _ = std::fs::copy(path, path.with_file_name("config.v2.json"));
+            }
+            Ok(loaded)
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(LoadError::Missing),
         Err(e) => Err(LoadError::Unreadable(e.to_string())),
     }
