@@ -926,3 +926,43 @@ pub fn block_menu(g: &Obj, key: &str) -> Value {
     }
     menu(head, sub_title, sub, true, true)
 }
+
+// --- the list page's "New proxy" templates (Python `ui/proxies.TEMPLATES`, `window.new_proxy / new_inbound`) ---
+
+/// (name, what it is for, inbound, outbound)
+pub fn templates() -> Vec<(String, String, Value, Value)> {
+    vec![
+        (tr("Local SOCKS5"), tr("SOCKS5 proxy for this PC"), json!({"type": "socks5", "port": 1080}), json!({"type": "direct"})),
+        (tr("Local HTTP"), tr("For HTTP proxy settings in browsers and apps"), json!({"type": "http", "port": 8080}), json!({"type": "direct"})),
+        (tr("HTTPS proxy"), tr("HTTP proxy wrapped in TLS (self-signed certificate generated)"), json!({"type": "https", "port": 8443}), json!({"type": "direct"})),
+        ("SOCKS4".into(), tr("For older programs (no authentication)"), json!({"type": "socks4", "port": 1084}), json!({"type": "direct"})),
+        (tr("Shadowsocks server"), tr("Shadowsocks apps on other devices connect to it"), json!({"type": "shadowsocks", "host": "0.0.0.0", "port": 8388}), json!({"type": "direct"})),
+        (tr("Hysteria2 server"), tr("Hysteria2 apps on other devices connect to it (QUIC)"), json!({"type": "hysteria2", "host": "0.0.0.0", "port": 8443}), json!({"type": "direct"})),
+        (tr("Local → upstream proxy"), tr("Local SOCKS5, forwarded to a company/other HTTP or SOCKS proxy"), json!({"type": "socks5", "port": 1080}), json!({"type": "http"})),
+        (tr("Local → Shadowsocks tunnel"), tr("Local SOCKS5, encrypted to a remote Shadowsocks server"), json!({"type": "socks5", "port": 1080}), json!({"type": "shadowsocks"})),
+        (tr("Local → Hysteria2 tunnel"), tr("Local SOCKS5, to a remote Hysteria2 server (QUIC)"), json!({"type": "socks5", "port": 1080}), json!({"type": "hysteria2"})),
+    ]
+}
+
+/// Template `i`: an inbound on the first free port from the template's, below the other inbounds; with an
+/// outbound other than Direct, a new outbound block linked to it (Python `new_inbound`). Returns (the inbound's
+/// id, the new outbound's id).
+pub fn add_template(g: &mut Obj, i: usize) -> Option<(String, Option<String>)> {
+    let (name, _, ib, ob) = templates().into_iter().nth(i)?;
+    let used: std::collections::HashSet<i64> = arr(g, "inbounds").iter().filter_map(|n| n["inbound"]["port"].as_i64()).collect();
+    let mut ib = ib;
+    let port = (ib["port"].as_i64().unwrap_or(1080)..).find(|p| !used.contains(p)).unwrap();
+    ib["port"] = json!(port);
+    // below the inbounds there are (Python `next_free_pos`)
+    let y = arr(g, "inbounds").iter().filter_map(|n| n["pos"][1].as_f64()).fold(None, |m: Option<f64>, y| Some(m.map_or(y, |m| m.max(y)))).map_or(0.0, |y| y + 170.0);
+    let fresh = if ob["type"] != json!("direct") { Some(add_outbound(g, ob["type"].as_str().unwrap_or("direct"), None, None, 460.0, y)) } else { None };
+    let name = unique_name(g, &name);
+    let n = graph::validate_inbound_node(&json!({
+        "id": crate::ids::new_id(), "name": name, "inbound": ib, "pos": [0.0, y], "target": fresh.clone(),
+    }));
+    let mut n = Value::Object(n);
+    n["target"] = json!(fresh.clone());
+    let id = n["id"].as_str().unwrap_or("").to_string();
+    arr(g, "inbounds").push(n);
+    Some((id, fresh))
+}

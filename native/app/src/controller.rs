@@ -1255,6 +1255,10 @@ impl Controller {
         for n in canvas["nodes"].as_array_mut().into_iter().flatten() {
             let key = n["key"].as_str().unwrap_or("").to_string();
             n["menu"] = edit::block_menu(&self.graph, &key);
+            // an IF in switch mode: its switch (the list page shows it on the block's card)
+            if let Some((_, r)) = graph::find(&self.graph, &key).filter(|(k, r)| *k == "router" && r["style"] == json!("if") && r["switch"] == json!(true)) {
+                n["switch"] = json!(r["switch_on"] == json!(true));
+            }
         }
         canvas
     }
@@ -1263,7 +1267,8 @@ impl Controller {
     fn add_menu_json(&self) -> Value {
         let ib: Vec<Value> = proxydock_core::config::INBOUND_TYPES.iter().map(|t| json!([t, edit::inbound_label(t)])).collect();
         let ob: Vec<Value> = proxydock_core::config::OUTBOUND_TYPES.iter().map(|t| json!([t, graph::outbound_label(t)])).collect();
-        json!({"inbounds": ib, "outbounds": ob})
+        let templates: Vec<Value> = edit::templates().into_iter().map(|(n, d, _, _)| json!([n, d])).collect();
+        json!({"inbounds": ib, "outbounds": ob, "templates": templates})
     }
 
     fn send_canvas(&mut self) {
@@ -1682,6 +1687,14 @@ impl Controller {
                 id
             }
             "relay" => edit::add_relay(&mut self.graph, x, y),
+            // the list page's "New proxy": an inbound (and its outbound); the outbound opens, else the inbound
+            "template" => {
+                let Some((id, fresh)) = edit::add_template(&mut self.graph, v["index"].as_u64().unwrap_or(0) as usize) else { return None };
+                let name = graph::find(&self.graph, &id).map(|(_, n)| name_of(n)).unwrap_or_default();
+                self.app_log(Level::Setting, &tr("Created proxy '{name}'").replace("{name}", &name));
+                self.graph_changed();
+                return Some(fresh.unwrap_or(id));
+            }
             "wireless" => edit::add_wireless(&mut self.graph, x, y),
             "link" => match proxydock_core::links::parse(v["text"].as_str().unwrap_or("").trim()) {
                 Ok((fields, name)) => {

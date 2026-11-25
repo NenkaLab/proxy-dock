@@ -79,6 +79,11 @@ fn card_row(c: &Value) -> CardRow {
         error: if state == "error" { s("error") } else { SharedString::new() },
         traffic: SharedString::new(),
         action: if on { tr("Stop") } else { tr("Run") }.into(),
+        menu: ModelRc::default(),
+        menu_sub_title: SharedString::new(),
+        menu_sub: ModelRc::default(),
+        menu_cut: false,
+        menu_tail: false,
     }
 }
 
@@ -209,6 +214,11 @@ struct Models {
     keys: std::cell::RefCell<Vec<String>>,
     /// bytes per second on each link (same order as `links`), for the moving dots
     rates: std::cell::RefCell<Vec<f64>>,
+    /// each block's right-click menu by its key (the list page's ⋯ buttons)
+    menus: std::cell::RefCell<HashMap<String, Value>>,
+    /// the list page's outbound blocks and routers
+    out_rows: Rc<VecModel<BlockRow>>,
+    router_rows: Rc<VecModel<BlockRow>>,
 }
 
 impl Models {
@@ -264,6 +274,38 @@ impl Models {
         let mut keys = vec![String::new(); ids.len()];
         for (k, id) in &ids {
             keys[*id as usize - 1] = k.clone();
+        }
+        // the list page: each block's menu, the outbound blocks and the routers
+        let mut menus = HashMap::new();
+        let (mut outs, mut routers) = (vec![], vec![]);
+        for n in c["nodes"].as_array().into_iter().flatten() {
+            let key = n["key"].as_str().unwrap_or("").to_string();
+            menus.insert(key.clone(), n["menu"].clone());
+            let kind = n["kind"].as_i64().unwrap_or(0) as i32;
+            if kind == 1 || kind == 2 {
+                let row = BlockRow {
+                    key: key.into(),
+                    title: n["title"].as_str().unwrap_or("").into(),
+                    detail: n["detail"].as_str().unwrap_or("").into(),
+                    kind,
+                    has_switch: n["switch"].is_boolean(),
+                    switch_on: n["switch"] == json!(true),
+                    menu: leaves(&n["menu"]["head"]),
+                    menu_sub_title: n["menu"]["sub_title"].as_str().unwrap_or("").into(),
+                    menu_sub: leaves(&n["menu"]["sub"]),
+                    menu_cut: n["menu"]["cut"] == json!(true),
+                    menu_tail: n["menu"]["tail"] == json!(true),
+                };
+                if kind == 2 { outs.push(row) } else { routers.push(row) }
+            }
+        }
+        *self.menus.borrow_mut() = menus;
+        self.out_rows.set_vec(outs);
+        self.router_rows.set_vec(routers);
+        for i in 0..self.cards.row_count() {
+            if let Some(row) = self.cards.row_data(i) {
+                self.cards.set_row_data(i, self.with_menu(row));
+            }
         }
         self.nodes.set_vec(nodes);
         self.links.set_vec(links);
@@ -339,9 +381,21 @@ impl Models {
         }
     }
 
+    /// a card row with its block's ⋯ menu
+    fn with_menu(&self, mut row: CardRow) -> CardRow {
+        if let Some(m) = self.menus.borrow().get(row.id.as_str()) {
+            row.menu = leaves(&m["head"]);
+            row.menu_sub_title = m["sub_title"].as_str().unwrap_or("").into();
+            row.menu_sub = leaves(&m["sub"]);
+            row.menu_cut = m["cut"] == json!(true);
+            row.menu_tail = m["tail"] == json!(true);
+        }
+        row
+    }
+
     fn set_card(&self, c: &Value) {
         self.set_node_state(c["id"].as_str().unwrap_or(""), c["state"].as_str().unwrap_or(""));
-        let row = card_row(c);
+        let row = self.with_menu(card_row(c));
         match (0..self.cards.row_count()).find(|i| self.cards.row_data(*i).is_some_and(|r| r.id == row.id)) {
             Some(i) => {
                 let mut row = row;
@@ -1017,6 +1071,12 @@ fn labels(app: &App) {
         t.set_delete(tr("Delete").into());
     }
     app.set_t_copy(tr("Copy address/link for clients").into());
+    app.set_t_sec_inbound(tr("Inbound").into());
+    app.set_t_sec_outbound(tr("Outbound").into());
+    app.set_t_sec_routers(tr("Routers").into());
+    app.set_t_no_outbound(tr("No outbound blocks.").into());
+    app.set_t_new_proxy(tr("New proxy").into());
+    app.set_t_new_outbound(tr("New outbound").into());
     app.set_t_empty(tr("No proxies yet. Create one with 'New proxy'.").into());
 }
 
@@ -1057,6 +1117,9 @@ fn main() -> Result<(), slint::PlatformError> {
         link_meta: Default::default(),
         keys: Default::default(),
         rates: Default::default(),
+        menus: Default::default(),
+        out_rows: Rc::new(VecModel::default()),
+        router_rows: Rc::new(VecModel::default()),
     });
     app.set_cards(ModelRc::from(models.cards.clone()));
     app.set_logs(ModelRc::from(models.logs.clone()));
@@ -1072,6 +1135,8 @@ fn main() -> Result<(), slint::PlatformError> {
         move |node: i32| models.keys.borrow().get((node - 1).max(0) as usize).cloned().unwrap_or_default()
     };
     app.set_links(ModelRc::from(models.links.clone()));
+    app.set_out_rows(ModelRc::from(models.out_rows.clone()));
+    app.set_router_rows(ModelRc::from(models.router_rows.clone()));
     {
         // a connection's log line clicked: ask the core which way it went
         let send = send.clone();
@@ -1176,12 +1241,32 @@ fn main() -> Result<(), slint::PlatformError> {
             send6(json!({"cmd": "add", "what": what.as_str(), "type": t.as_str(), "text": text, "x": x - 115.0, "y": y - 34.0}));
         });
         // a block's menu: most entries go to the core; delete asks first; "go to the partner" is the window's
-        let (send7, key_of7, models7, weak7) = (send.clone(), key_of.clone(), models.clone(), app.as_weak());
+        let (key_of8, weak8) = (key_of.clone(), app.as_weak());
         app.on_node_action(move |node, action| {
-            let key = key_of7(node);
+            if let Some(a) = weak8.upgrade() {
+                a.invoke_block_action(key_of8(node).into(), action);
+            }
+        });
+        // the list page's add buttons
+        let send9 = send.clone();
+        app.on_list_add(move |what, t| {
+            let index: u64 = t.parse().unwrap_or(0);
+            send9(json!({"cmd": "add", "what": what.as_str(), "type": t.as_str(), "index": index, "x": 0.0, "y": 0.0}));
+        });
+        // an IF's switch on the list page
+        let send10 = send.clone();
+        app.on_set_switch(move |key, on| send10(json!({"cmd": "set_switch", "id": key.as_str(), "on": on})));
+        let (send7, key_of7, models7, weak7) = (send.clone(), key_of.clone(), models.clone(), app.as_weak());
+        app.on_block_action(move |key, action| {
+            let key = key.to_string();
             match action.as_str() {
                 "delete" => {
-                    let names: Vec<String> = models7.nodes.iter().filter(|n| n.id == node).map(|n| n.title.to_string()).collect();
+                    let names: Vec<String> = models7
+                        .nodes
+                        .iter()
+                        .filter(|n| key_of7(n.id) == key)
+                        .map(|n| n.title.to_string())
+                        .collect();
                     ask_delete(&weak7, &names, json!({"cmd": "delete", "keys": [key], "links": []}));
                 }
                 a if a.starts_with("wireless.partner.") => {
@@ -1558,6 +1643,17 @@ fn main() -> Result<(), slint::PlatformError> {
                                 let t = app.global::<CanvasText>();
                                 t.set_inbounds(type_leaves(&v["add_menu"]["inbounds"]));
                                 t.set_outbounds(type_leaves(&v["add_menu"]["outbounds"]));
+                                let templates: Vec<MenuLeaf> = v["add_menu"]["templates"]
+                                    .as_array()
+                                    .into_iter()
+                                    .flatten()
+                                    .enumerate()
+                                    .map(|(i, x)| MenuLeaf {
+                                        action: i.to_string().into(),
+                                        title: format!("{}  —  {}", x[0].as_str().unwrap_or(""), x[1].as_str().unwrap_or("")).into(),
+                                    })
+                                    .collect();
+                                t.set_templates(ModelRc::new(VecModel::from(templates)));
                             }
                             set_language(v["language"].as_str().unwrap_or("en"));
                             apply_fonts(&app, v["language"].as_str().unwrap_or("en"));

@@ -107,6 +107,8 @@ export global CanvasText {
     // the types the add menus offer: [type, name]
     in property <[MenuLeaf]> inbounds;
     in property <[MenuLeaf]> outbounds;
+    // the list page's "New proxy" templates: [index, "name — what it is for"]
+    in property <[MenuLeaf]> templates;
 }
 
 // the settings page's texts (translated in proxydock-ui.rs)
@@ -167,6 +169,29 @@ export struct CardRow {
     error: string,
     traffic: string,
     action: string,
+    // its block's right-click menu (for the ⋯ button)
+    menu: [MenuLeaf],
+    menu-sub-title: string,
+    menu-sub: [MenuLeaf],
+    menu-cut: bool,
+    menu-tail: bool,
+}
+
+// an outbound block, a router / IF or the PC block on the list page
+export struct BlockRow {
+    key: string,
+    title: string,
+    detail: string,
+    // 1 router / IF, 2 outbound, 4 the PC block
+    kind: int,
+    // an IF in switch mode: its switch shown (and its state)
+    has-switch: bool,
+    switch-on: bool,
+    menu: [MenuLeaf],
+    menu-sub-title: string,
+    menu-sub: [MenuLeaf],
+    menu-cut: bool,
+    menu-tail: bool,
 }
 
 // a dot moving along a link with traffic (world coordinates; size in world px)
@@ -1066,11 +1091,62 @@ component PageActions inherits HorizontalLayout {
     callback stop-all();
     callback cancel();
     callback save();
+    in property <string> t-new-proxy;
+    in property <string> t-new-outbound;
+    callback add(string, string);
     alignment: end;
     spacing: 8px;
     if root.page == 1 && root.has-cards: AppButton {
         text: root.t-stop-all;
         clicked => { root.stop-all(); }
+    }
+    // the list page's "add" buttons open menus (Python's drop-down buttons)
+    if root.page == 1: AppButton {
+        text: CanvasText.add-router;
+        icon: @image-url("icons/alt_route.svg");
+        clicked => { router-menu.show({ x: self.absolute-position.x - router-menu.absolute-position.x, y: self.absolute-position.y - router-menu.absolute-position.y + self.height + 4px }); }
+    }
+    if root.page == 1: AppButton {
+        text: root.t-new-outbound;
+        icon: @image-url("icons/logout.svg");
+        clicked => { out-menu.show({ x: self.absolute-position.x - out-menu.absolute-position.x, y: self.absolute-position.y - out-menu.absolute-position.y + self.height + 4px }); }
+    }
+    if root.page == 1: AppButton {
+        text: root.t-new-proxy;
+        icon: @image-url("icons/add.svg");
+        primary: true;
+        clicked => { proxy-menu.show({ x: self.absolute-position.x - proxy-menu.absolute-position.x + self.width - 420px, y: self.absolute-position.y - proxy-menu.absolute-position.y + self.height + 4px }); }
+    }
+    router-menu := ContextMenuArea {
+        width: 0;
+        Menu {
+            MenuItem {
+                title: CanvasText.router;
+                activated => { root.add("router", ""); }
+            }
+            MenuItem {
+                title: CanvasText.if-block;
+                activated => { root.add("if", ""); }
+            }
+        }
+    }
+    out-menu := ContextMenuArea {
+        width: 0;
+        Menu {
+            for t in CanvasText.outbounds: MenuItem {
+                title: t.title;
+                activated => { root.add("outbound", t.action); }
+            }
+        }
+    }
+    proxy-menu := ContextMenuArea {
+        width: 0;
+        Menu {
+            for t in CanvasText.templates: MenuItem {
+                title: t.title;
+                activated => { root.add("template", t.action); }
+            }
+        }
     }
     if root.page == 3: AppButton {
         text: root.t-cancel;
@@ -1225,8 +1301,16 @@ component Card inherits Rectangle {
     callback edit(string);
     // the card's address / link for client apps, to the clipboard
     callback copy(string);
+    // an entry of the ⋯ menu
+    callback menu-action(string, string);
     border-radius: 20px;
-    background: M3.surface-container-low;
+    background: open-ta.has-hover ? M3.surface-container : M3.surface-container-low;
+    animate background { duration: Motion.fast-effects; }
+    // the card itself opens the editor (Python: a click on the card)
+    open-ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.edit(root.card.id); }
+    }
     HorizontalLayout {
         padding: 16px;
         padding-left: 20px;
@@ -1280,9 +1364,9 @@ component Card inherits Rectangle {
             VerticalLayout {
                 alignment: center;
                 AppButton {
-                    icon: @image-url("icons/edit.svg");
+                    icon: @image-url("icons/more_vert.svg");
                     colorize-icon: true;
-                    clicked => { root.edit(card.id); }
+                    clicked => { card-more.show({ x: self.absolute-position.x - card-more.absolute-position.x, y: self.absolute-position.y - card-more.absolute-position.y + self.height + 4px }); }
                 }
             }
         }
@@ -1292,6 +1376,144 @@ component Card inherits Rectangle {
                 text: card.action;
                 primary: card.state != "running" && card.state != "starting";
                 clicked => { root.toggle(card.id); }
+            }
+        }
+    }
+    // the ⋯ menu: the block's own right-click menu (edit::block_menu)
+    card-more := ContextMenuArea {
+        x: 0;
+        y: 0;
+        width: 0;
+        height: 0;
+        Menu {
+            for e in root.card.menu: MenuItem {
+                title: e.action == "toggle" ? ((root.card.state == "running" || root.card.state == "starting") ? CanvasText.stop : CanvasText.run) : e.title;
+                activated => { root.menu-action(root.card.id, e.action); }
+            }
+            if root.card.menu-sub-title != "": Menu {
+                title: root.card.menu-sub-title;
+                for e in root.card.menu-sub: MenuItem {
+                    title: e.title;
+                    activated => { root.menu-action(root.card.id, e.action); }
+                }
+            }
+            if root.card.menu-cut: MenuSeparator {}
+            if root.card.menu-cut: MenuItem {
+                title: CanvasText.cut;
+                activated => { root.menu-action(root.card.id, "cut"); }
+            }
+            if root.card.menu-tail: MenuSeparator {}
+            if root.card.menu-tail: MenuItem {
+                title: CanvasText.duplicate;
+                activated => { root.menu-action(root.card.id, "duplicate"); }
+            }
+            if root.card.menu-tail: MenuItem {
+                title: CanvasText.delete;
+                activated => { root.menu-action(root.card.id, "delete"); }
+            }
+        }
+    }
+}
+
+// a section's title on the list page (M3 Title Small, primary)
+component ListTitle inherits HorizontalLayout {
+    in property <string> text;
+    in property <bool> first;
+    padding-left: 20px;
+    padding-top: root.first ? 4px : 20px;
+    padding-bottom: 4px;
+    Text {
+        text: root.text;
+        font-size: 14px * Type.scale;
+        font-weight: 500;
+        color: M3.primary;
+    }
+}
+
+// An outbound block, a router / IF or the PC block on the list page: name, what it is, an IF's switch, ⋯ menu
+component BlockCard inherits Rectangle {
+    in property <BlockRow> block;
+    callback open(string);
+    callback switched(string, bool);
+    callback menu-action(string, string);
+    property <bool> running: false;
+    border-radius: 20px;
+    background: open-ta.has-hover ? M3.surface-container : M3.surface-container-low;
+    animate background { duration: Motion.fast-effects; }
+    min-height: 72px;
+    open-ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { if root.block.kind != 4 { root.open(root.block.key); } }
+    }
+    HorizontalLayout {
+        padding: 16px;
+        padding-left: 20px;
+        spacing: 16px;
+        VerticalLayout {
+            spacing: 4px;
+            alignment: center;
+            horizontal-stretch: 1;
+            Text {
+                text: root.block.title;
+                font-size: 16px * Type.scale;
+                font-weight: 500;
+                color: M3.on-surface;
+                overflow: elide;
+            }
+            if root.block.detail != "": Text {
+                text: root.block.detail;
+                font-size: 14px * Type.scale;
+                color: M3.on-surface-variant;
+                overflow: elide;
+            }
+        }
+        if root.block.has-switch: VerticalLayout {
+            alignment: center;
+            AppSwitch {
+                checked: root.block.switch-on;
+                toggled => { root.switched(root.block.key, self.checked); }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            AppButton {
+                icon: @image-url("icons/more_vert.svg");
+                colorize-icon: true;
+                clicked => { block-more.show({ x: self.absolute-position.x - block-more.absolute-position.x, y: self.absolute-position.y - block-more.absolute-position.y + self.height + 4px }); }
+            }
+        }
+    }
+    // the ⋯ menu: the block's own right-click menu (edit::block_menu)
+    block-more := ContextMenuArea {
+        x: 0;
+        y: 0;
+        width: 0;
+        height: 0;
+        Menu {
+            for e in root.block.menu: MenuItem {
+                title: e.action == "toggle" ? (root.running ? CanvasText.stop : CanvasText.run) : e.title;
+                activated => { root.menu-action(root.block.key, e.action); }
+            }
+            if root.block.menu-sub-title != "": Menu {
+                title: root.block.menu-sub-title;
+                for e in root.block.menu-sub: MenuItem {
+                    title: e.title;
+                    activated => { root.menu-action(root.block.key, e.action); }
+                }
+            }
+            if root.block.menu-cut: MenuSeparator {}
+            if root.block.menu-cut: MenuItem {
+                title: CanvasText.cut;
+                activated => { root.menu-action(root.block.key, "cut"); }
+            }
+            if root.block.menu-tail: MenuSeparator {}
+            if root.block.menu-tail: MenuItem {
+                title: CanvasText.duplicate;
+                activated => { root.menu-action(root.block.key, "duplicate"); }
+            }
+            if root.block.menu-tail: MenuItem {
+                title: CanvasText.delete;
+                activated => { root.menu-action(root.block.key, "delete"); }
             }
         }
     }
@@ -2776,6 +2998,19 @@ export component App inherits Window {
     callback edit-block(int);
     callback edit-card(string);
     callback copy-card(string);
+    // the list page: outbound blocks and routers, an entry of a block's ⋯ menu, an IF's switch
+    in property <[BlockRow]> out-rows;
+    in property <[BlockRow]> router-rows;
+    callback block-action(string, string);
+    // the list page's add buttons (what, type or template number)
+    callback list-add(string, string);
+    callback set-switch(string, bool);
+    in property <string> t-sec-inbound: "Inbound";
+    in property <string> t-sec-outbound: "Outbound";
+    in property <string> t-sec-routers: "Routers";
+    in property <string> t-no-outbound: "No outbound blocks.";
+    in property <string> t-new-proxy: "New proxy";
+    in property <string> t-new-outbound: "New outbound";
     in property <string> t-copy: "Copy";
     callback field-changed(string, string);
     callback form-save();
@@ -3157,22 +3392,50 @@ export component App inherits Window {
                         width: min(parent.width, root.content-max);
                         x: (parent.width - self.width) / 2;
                         spacing: 12px;
-                        if root.cards.length == 0: Text {
-                            text: root.t-empty;
-                            color: M3.on-surface-variant;
-                            font-size: 15px * Type.scale;
-                        }
                         Rectangle {
                             vertical-stretch: 1;
-                            card-list := ListView {
-                                for c in root.cards: VerticalLayout {
-                                    padding-bottom: 10px;
-                                    Card {
+                            card-list := ScrollView {
+                                VerticalLayout {
+                                    width: card-list.visible-width - 16px;
+                                    padding-right: 16px;
+                                    padding-bottom: 24px;
+                                    alignment: start;
+                                    spacing: 8px;
+                                    // inbound blocks (the cards)
+                                    ListTitle { text: root.t-sec-inbound; first: true; }
+                                    if root.cards.length == 0: Text {
+                                        text: root.t-empty;
+                                        color: M3.on-surface-variant;
+                                        font-size: 14px * Type.scale;
+                                        wrap: word-wrap;
+                                    }
+                                    for c in root.cards: Card {
                                         card: c;
                                         toggle(id) => { root.toggle(id); }
                                         edit(id) => { root.edit-card(id); }
                                         copy(id) => { root.copy-card(id); }
+                                        menu-action(key, a) => { root.block-action(key, a); }
                                         t-copy: root.t-copy;
+                                    }
+                                    // outbound blocks
+                                    ListTitle { text: root.t-sec-outbound; }
+                                    if root.out-rows.length == 0: Text {
+                                        text: root.t-no-outbound;
+                                        color: M3.on-surface-variant;
+                                        font-size: 14px * Type.scale;
+                                    }
+                                    for b in root.out-rows: BlockCard {
+                                        block: b;
+                                        open(key) => { root.edit-card(key); }
+                                        menu-action(key, a) => { root.block-action(key, a); }
+                                    }
+                                    // routers and IFs
+                                    if root.router-rows.length > 0: ListTitle { text: root.t-sec-routers; }
+                                    for b in root.router-rows: BlockCard {
+                                        block: b;
+                                        open(key) => { root.edit-card(key); }
+                                        switched(key, on) => { root.set-switch(key, on); }
+                                        menu-action(key, a) => { root.block-action(key, a); }
                                     }
                                 }
                             }
@@ -3525,6 +3788,9 @@ export component App inherits Window {
             stop-all => { root.stop-all(); }
             cancel => { root.form-cancel(); }
             save => { root.form-save(); }
+            t-new-proxy: root.t-new-proxy;
+            t-new-outbound: root.t-new-outbound;
+            add(what, t) => { root.list-add(what, t); }
         }
         Text {
             x: 0;
