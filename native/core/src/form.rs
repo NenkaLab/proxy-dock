@@ -355,6 +355,7 @@ pub fn outbound_form(g: &Obj, node: &Value) -> Vec<Field> {
     // TLS
     b.add("tls_verify", "Verify server certificate", "Turn off for servers with self-signed certificates (pinning the fingerprint is recommended)", Kind::Bool, tls && !(ot == "vless" && sec == "reality"));
     b.add("sni", "SNI (server name)", "Servers that check the name (e.g. the official Hysteria2 server) refuse a wrong one. Connecting by IP? Click 'Detect from server'.", Kind::Text, tls);
+    b.push(field("sni.detect", "Detect from server", "Read the server's certificate and use its name", Kind::Button, json!(null), tls));
     b.add("pin_sha256", "Pin certificate fingerprint", "If set, only a certificate with this fingerprint is accepted", Kind::Text, ot == "hysteria2");
     // Shadowsocks / Hysteria2
     b.add("ss_method", "Cipher", "Must match the server", ss_methods(), ot == "shadowsocks");

@@ -477,6 +477,26 @@ impl Controller {
                     })
                 }))
             }
+            "sni.detect" => {
+                let ob = node["outbound"].clone();
+                if proxydock_core::py::strip(ob["host"].as_str().unwrap_or("")).is_empty() || ob["port"].as_i64().unwrap_or(0) == 0 {
+                    self.notice(client, false, &tr("Detect from server"), &tr("Enter the server address and port first"));
+                    return None;
+                }
+                Some(Box::new(move || {
+                    let result = proxydock_core::certinfo::detect(&ob);
+                    Box::new(move |c: &mut Controller| match result {
+                        Ok(d) => {
+                            if !d.sni.is_empty() {
+                                c.with_draft(client, &id, |n| n["outbound"]["sni"] = json!(d.sni));
+                            }
+                            let (ok, title, text) = proxydock_core::certinfo::message(&d);
+                            c.notice(client, ok, &title, &text);
+                        }
+                        Err(e) => c.notice(client, false, &tr("Detect from server"), &e),
+                    })
+                }))
+            }
             _ => None,
         }
     }

@@ -324,6 +324,29 @@ fn serve_once(body: String) -> String {
     url
 }
 
+/// a TLS server for one handshake, with a self-signed certificate for `name`; returns its port
+fn tls_once(name: &str) -> u16 {
+    use std::sync::Arc;
+    let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
+    let cert = rcgen::CertificateParams::new(vec![name.to_string()]).unwrap().self_signed(&key).unwrap();
+    let cfg = rustls::ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert.der().clone()], rustls::pki_types::PrivateKeyDer::Pkcs8(key.serialize_der().into()))
+        .unwrap();
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    let cfg = Arc::new(cfg);
+    std::thread::spawn(move || {
+        if let Ok((mut s, _)) = l.accept() {
+            let mut c = rustls::ServerConnection::new(cfg).unwrap();
+            while c.is_handshaking() && c.complete_io(&mut s).is_ok() {}
+        }
+    });
+    port
+}
+
 #[test]
 fn share_links_and_subscriptions() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
@@ -362,6 +385,19 @@ fn share_links_and_subscriptions() {
     ipc::send(&mut w, &json!({"cmd": "edit_save", "id": "o", "values": {}})).unwrap();
     expect(&rx, 10, |v| v["ev"] == "form_saved").expect("saved");
     assert_eq!(saved(&path)["graph"]["outbounds"][0]["outbound"]["sni"], "a.example.com");
+
+    // "Detect from server": the name in the server's certificate becomes the SNI
+    let tls = tls_once("proxy.example.net");
+    ipc::send(&mut w, &json!({"cmd": "edit_open", "id": "o"})).unwrap();
+    expect(&rx, 5, |v| v["ev"] == "form").expect("form");
+    ipc::send(&mut w, &json!({"cmd": "edit_action", "id": "o", "action": "sni.detect",
+                              "values": {"outbound.host": "127.0.0.1", "outbound.port": tls.to_string(), "outbound.sni": ""}})).unwrap();
+    let n = expect(&rx, 15, |v| v["ev"] == "notice").expect("notice");
+    assert_eq!(n["ok"], true, "{n}");
+    assert!(n["text"].as_str().unwrap().contains("proxy.example.net"), "{n}");
+    let f = expect(&rx, 5, |v| v["ev"] == "form").expect("form");
+    assert_eq!(field(&f, "outbound.sni")["value"], "proxy.example.net");
+    ipc::send(&mut w, &json!({"cmd": "edit_close"})).unwrap();
 
     // "Update now": the button is busy until the list arrives, then the servers are in the draft
     use base64::Engine;

@@ -2,6 +2,7 @@
 //! module; each Rust module names the Python one it replaces, and its behaviour is checked against that one.
 #![recursion_limit = "256"] // json! of the outbound defaults
 
+pub mod certinfo;
 pub mod checks;
 pub mod clash;
 pub mod config;

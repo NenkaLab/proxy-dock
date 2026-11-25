@@ -405,3 +405,29 @@ fn pinned_cards_need_sing_box_115() {
         assert_eq!(singbox::engine_for(&routed, &glob(&new)).map(|(k, e)| (k, e == new)), Ok((singbox::Kind::SingBox, true)));
     }
 }
+
+/// "Detect from server" over QUIC: a Hysteria2 server card's self-signed certificate is read (names, fingerprint)
+#[test]
+fn detect_sni_over_quic() {
+    let _serial = serial();
+    let Some(exe) = exe() else {
+        eprintln!("sing-box not found: skipped");
+        return;
+    };
+    let dir = temp_dir("detect");
+    let sport = free_udp_port();
+    let server = card(json!({"type": "hysteria2", "host": "127.0.0.1", "port": sport, "hy2_password": "hpw"}), json!({"type": "direct"}));
+    let cert = proxydock_core::tls::server_cert_paths(&server, &dir.join("certs")).unwrap();
+    let want = der_sha256_hex(&cert.0);
+    let mut e = env(&dir);
+    e.exe = exe;
+    e.cert = Some(cert);
+    let (h, _, _) = Log::hooks();
+    let mut s = Engine::start(&server, &config::validate_global(&json!({})), &e, h).expect("server");
+    let d = proxydock_core::certinfo::detect(&json!({"type": "hysteria2", "host": "127.0.0.1", "port": sport, "sni": ""}));
+    s.stop();
+    let d = d.expect("certificate");
+    assert_eq!(d.names, ["localhost"]);
+    assert_eq!(d.sni, "localhost");
+    assert_eq!(d.sha256, want);
+}
