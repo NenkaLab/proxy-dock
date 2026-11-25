@@ -1072,5 +1072,14 @@
  "Waterfall": "瀑布圖",
  "Waiting": "等待回應",
  "Response": "回應",
- "Public key": "公鑰"
+ "Public key": "公鑰",
+ "Input": "輸入",
+ "Group blocks": "群組區塊",
+ "Ungroup": "取消群組",
+ "Collapse": "摺疊",
+ "Expand": "展開",
+ "Colour": "顏色",
+ "Group {n}": "群組 {n}",
+ "{count} blocks": "{count} 個區塊",
+ "Select two blocks or more": "請選擇兩個以上的區塊"
 }

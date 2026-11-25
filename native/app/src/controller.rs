@@ -57,11 +57,15 @@ pub struct Hooks {
     pub notify: Notify,
     /// quit the whole app (the window closed with "Quit with the X button" on)
     pub quit: Arc<dyn Fn() + Send + Sync>,
+    /// start again: the whole app (true) or only the window (false: a new app scale)
+    pub restart: Arc<dyn Fn(bool) + Send + Sync>,
+    /// the tray icon's tooltip (cards running, rates, connections), once a second when it changes
+    pub tooltip: Notify,
 }
 
 impl Default for Hooks {
     fn default() -> Self {
-        Hooks { notify: Arc::new(|_| {}), quit: Arc::new(|| {}) }
+        Hooks { notify: Arc::new(|_| {}), quit: Arc::new(|| {}), restart: Arc::new(|_| {}), tooltip: Arc::new(|_| {}) }
     }
 }
 
@@ -169,6 +173,11 @@ impl Handle {
         self.quick.lock().unwrap().clone()
     }
 
+    /// close the window only (it keeps its place; the tray and the cards go on)
+    pub fn close_window(&self) {
+        let _ = self.tx.send(Msg::Work(Box::new(|c: &mut Controller| c.broadcast(&json!({"ev": "close_window"})))));
+    }
+
     /// stop every card and the controller (waits at most `timeout`)
     pub fn quit(&self, timeout: Duration) {
         let (t, r) = channel();
@@ -253,6 +262,7 @@ pub fn spawn_with(config_path: PathBuf, hooks: Hooks) -> std::io::Result<Handle>
         view: canvas::View::default(),
         graph: graph::empty(),
         can_save: false,
+        tooltip: String::new(),
         drafts: HashMap::new(),
         flow_last: HashMap::new(),
         flow_sent: vec![],
@@ -317,6 +327,8 @@ struct Controller {
     graph: Map<String, Value>,
     /// false when the settings file could not be read: it is never overwritten then
     can_save: bool,
+    /// the tray tooltip last sent
+    tooltip: String,
     /// the block each window is editing: (kind, draft)
     drafts: HashMap<u64, (&'static str, Value)>,
     /// per (card, exit block): up + down bytes at the last tick (for the per-link rates)
@@ -610,6 +622,11 @@ impl Controller {
             msg += &tr(" (applies after restart: {join})").replace("{join}", &pending.join(", "));
         }
         self.app_log(Level::Setting, &msg);
+        if !pending.is_empty() {
+            // (Python: a warning bar with "Restart now")
+            let text = format!("{}\n{}", tr("Restart required"), tr("Applies after a restart: {join}").replace("{join}", &pending.join(", ")));
+            self.broadcast(&json!({"ev": "restart_needed", "message": text}));
+        }
         if self.glob["singbox_latest"] == json!(true) && old["singbox_latest"] != json!(true) {
             self.update_latest_singbox();
         }
@@ -702,7 +719,10 @@ impl Controller {
         if let Some((total, oks)) = finished {
             self.latency_round = None;
             let text = tr("{ok} working, {failed} not responding").replace("{ok}", &oks.to_string()).replace("{failed}", &(total - oks).to_string());
-            let msg = json!({"ev": "info", "message": format!("{} · {text}", tr("Latency test finished"))});
+            // (Python: a success bar, a warning one when some did not respond)
+            let ev = if oks == total { "info" } else { "warn" };
+            let msg = json!({"ev": ev, "message": format!("{}
+{text}", tr("Latency test finished"))});
             self.broadcast(&msg);
         }
         self.send_latency();
@@ -885,6 +905,23 @@ impl Controller {
                 r["switch_on"] = json!(on);
                 let msg = tr("Switch '{name}' turned {state}").replace("{name}", r["name"].as_str().unwrap_or("")).replace("{state}", &tr(if on { "on" } else { "off" }));
                 self.app_log(Level::Setting, &msg);
+                self.graph_changed();
+            }
+            // Python `set_flag`: a card's options that need no restart (its block's chips)
+            "set_flag" => {
+                let id = v["id"].as_str().unwrap_or("").to_string();
+                let key = v["key"].as_str().unwrap_or("");
+                if !matches!(key, "autostart" | "auto_restart") {
+                    return;
+                }
+                let Some(n) = self.graph.get_mut("inbounds").and_then(Value::as_array_mut).and_then(|a| a.iter_mut().find(|n| n["id"] == json!(id))) else { return };
+                if n[key] == json!(on) {
+                    return;
+                }
+                n[key] = json!(on);
+                if key == "auto_restart" && !on {
+                    self.restart_at.remove(&id);
+                }
                 self.graph_changed();
             }
             // Python `select_member`: a hand-picked group uses another member (its cards restart with it)
@@ -1168,9 +1205,22 @@ impl Controller {
                 self.save();
             }
             Err(e) => {
-                // never overwrite a file this version cannot read (a newer or broken one)
-                let msg = format!("{}: {e:?}", self.config_path.display());
-                self.app_log(Level::Error, &msg);
+                // (Python `config.load`): the unreadable file is kept next to it, the app starts with defaults
+                let backup = std::path::PathBuf::from(format!("{}.broken", self.config_path.display()));
+                let e = match &e {
+                    config::LoadError::Unreadable(m) => m.clone(),
+                    other => format!("{other:?}"),
+                };
+                let msg = match std::fs::copy(&self.config_path, &backup) {
+                    Ok(_) => tr("Could not read the settings file, starting with defaults ({e}). The original was kept as {backup}")
+                        .replace("{e}", &e)
+                        .replace("{backup}", &backup.display().to_string()),
+                    Err(_) => tr("Could not read the settings file, starting with defaults: {e}").replace("{e}", &e),
+                };
+                self.app_log(Level::Warn, &msg);
+                self.glob = config::validate_global(&json!({}));
+                self.graph = graph::validate(&json!({}));
+                self.can_save = true;
             }
         }
         if self.graph["pc"]["applied"] == json!(true) {
@@ -1197,7 +1247,9 @@ impl Controller {
         self.proxies = graph::compile(&self.graph).into_iter().map(Value::Object).collect();
         let summaries: HashMap<String, String> =
             self.proxies.iter().map(|p| (p["id"].as_str().unwrap_or("").to_string(), manager::summary(p))).collect();
-        self.view = canvas::build(&self.graph, &|id| summaries.get(id).cloned().unwrap_or_default());
+        let unlinked: std::collections::HashSet<String> =
+            self.proxies.iter().filter(|p| p["unlinked"] == json!(true)).map(|p| p["id"].as_str().unwrap_or("").to_string()).collect();
+        self.view = canvas::build(&self.graph, &|id| summaries.get(id).cloned().unwrap_or_default(), &|id| unlinked.contains(id));
         let (_, pc_text) = self.pc_status();
         if let Some(n) = self.view.nodes.iter_mut().find(|n| n.key == "pc") {
             n.detail = pc_text;
@@ -1221,6 +1273,7 @@ impl Controller {
     fn graph_changed(&mut self) {
         let old: HashMap<String, Value> =
             self.proxies.iter().map(|p| (p["id"].as_str().unwrap_or("").to_string(), p.clone())).collect();
+        graph::clean_groups(&mut self.graph);
         self.rebuild();
         let mut alive = std::collections::HashSet::new();
         for p in self.proxies.clone() {
@@ -1252,9 +1305,15 @@ impl Controller {
     /// the canvas for the window, each block with its right-click menu
     fn canvas_json(&self) -> Value {
         let mut canvas = canvas::to_json(&self.view, &|id| state_name(&self.manager.state(id)));
+        canvas["groups"] = self.graph.get("groups").cloned().unwrap_or(json!([]));
         for n in canvas["nodes"].as_array_mut().into_iter().flatten() {
             let key = n["key"].as_str().unwrap_or("").to_string();
             n["menu"] = edit::block_menu(&self.graph, &key);
+            // a card's options (its block's chips)
+            if let Some((_, b)) = graph::find(&self.graph, &key).filter(|(k, _)| *k == "inbound") {
+                n["autostart"] = json!(b["autostart"] == json!(true));
+                n["auto_restart"] = json!(b["auto_restart"] == json!(true));
+            }
             // an IF in switch mode: its switch (the list page shows it on the block's card)
             if let Some((_, r)) = graph::find(&self.graph, &key).filter(|(k, r)| *k == "router" && r["style"] == json!("if") && r["switch"] == json!(true)) {
                 n["switch"] = json!(r["switch_on"] == json!(true));
@@ -1654,6 +1713,36 @@ impl Controller {
                 }
                 Ok(())
             }
+            // a canvas group's title (its key is "group:<id>")
+            "rename" if s("key").starts_with("group:") => {
+                if !edit::rename_group(&mut self.graph, &s("key")["group:".len()..], &s("name")) {
+                    self.send_canvas();
+                    return;
+                }
+                Ok(())
+            }
+            // canvas groups: a box around blocks (display only)
+            "group" => {
+                let keys: Vec<String> = v["keys"].as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect();
+                let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+                if edit::group_blocks(&mut self.graph, &refs).is_none() {
+                    self.broadcast(&json!({"ev": "error", "message": tr("Select two blocks or more")}));
+                    return;
+                }
+                Ok(())
+            }
+            "ungroup" | "group_color" | "group_collapse" => {
+                let id = s("id");
+                let changed = match cmd {
+                    "ungroup" => edit::ungroup(&mut self.graph, &id),
+                    "group_color" => edit::set_group_color(&mut self.graph, &id, &s("color")),
+                    _ => edit::set_group_collapsed(&mut self.graph, &id, v["collapsed"] == json!(true)),
+                };
+                if !changed {
+                    return;
+                }
+                Ok(())
+            }
             "rename" => match edit::rename(&mut self.graph, &s("key"), &s("name")) {
                 Some(name) => {
                     self.app_log(Level::Setting, &tr("Saved proxy '{name}'").replace("{name}", &name));
@@ -1667,6 +1756,21 @@ impl Controller {
             },
             "add" => {
                 edit::add(&mut self.graph, v["kind"].as_i64().unwrap_or(2) as i32, f("x"), f("y"));
+                Ok(())
+            }
+            // a block's colour, or one router output's ("out" = rule id / "default"); "" = automatic
+            "color" => {
+                let key = s("key");
+                let changed = match v["out"].as_str() {
+                    Some(out) => {
+                        proxydock_core::colors::output_color(&self.graph, &key, out) != s("color")
+                            && proxydock_core::colors::set_output_color(&mut self.graph, &key, out, &s("color"))
+                    }
+                    None => proxydock_core::colors::set_color(&mut self.graph, key.strip_suffix("/out").unwrap_or(&key), &s("color")),
+                };
+                if !changed {
+                    return;
+                }
                 Ok(())
             }
             _ => return,
@@ -1972,7 +2076,7 @@ impl Controller {
                 };
                 self.send_to(n, &msg);
             }
-            "move" | "connect" | "disconnect" | "delete" | "duplicate" | "rename" => self.edit(cmd, v),
+            "move" | "connect" | "disconnect" | "delete" | "duplicate" | "rename" | "color" | "group" | "ungroup" | "group_color" | "group_collapse" => self.edit(cmd, v),
             "add" => {
                 // (Python opens the editor for a new outbound other than Direct, and for a router / IF)
                 if let Some(open) = self.add_block(v) {
@@ -1993,7 +2097,16 @@ impl Controller {
                 let path = v["path"].as_str().unwrap_or("").to_string();
                 self.install_update(&path);
             }
-            "startup" | "startup_hidden" | "pc_off" | "pc_restore" | "firewall" | "set_switch" | "select_member" => self.platform_command(v),
+            "startup" | "startup_hidden" | "pc_off" | "pc_restore" | "firewall" | "set_switch" | "set_flag" | "select_member" => self.platform_command(v),
+            // "Restart now" (a new app scale: the window opens again) / the whole app
+            "restart" => {
+                let app = v["app"] == json!(true);
+                if !app {
+                    // the window closes itself (keeping its place), not the app ("Quit with the X button" or not)
+                    self.broadcast(&json!({"ev": "close_window"}));
+                }
+                (self.hooks.restart)(app);
+            }
             "conn_test" => self.conn_test(id),
             "test_site_add" => {
                 let text = v["text"].as_str().unwrap_or("").to_string();
@@ -2331,6 +2444,20 @@ impl Controller {
             }
         }
         let point = self.stat_tick();
+        // the tray icon's tooltip (Python `_tick`)
+        let running = self.proxies.iter().filter(|p| self.manager.state(p["id"].as_str().unwrap_or("")) == State::Running).count();
+        let (up, down) = (point["cards"][""][0].as_f64().unwrap_or(0.0), point["cards"][""][1].as_f64().unwrap_or(0.0));
+        let conns: u64 = self.proxies.iter().map(|p| { let s = self.manager.stats(p["id"].as_str().unwrap_or("")); (s.tcp_active + s.udp_active) as u64 }).sum();
+        let tip = tr("{APP_NAME}\n{running} proxies running\n↓ {fmt_rate}  ↑ {fmt_rate2}  · connections {value}")
+            .replace("{APP_NAME}", "ProxyDock")
+            .replace("{running}", &running.to_string())
+            .replace("{fmt_rate2}", &format!("{}/s", proxydock_core::log::fmt_size(up)))
+            .replace("{fmt_rate}", &format!("{}/s", proxydock_core::log::fmt_size(down)))
+            .replace("{value}", &conns.to_string());
+        if tip != self.tooltip {
+            (self.hooks.tooltip)(&tip);
+            self.tooltip = tip;
+        }
         if self.clients.values().any(|c| c.ready) {
             let stats = self.stats_json();
             self.broadcast(&json!({"ev": "stats", "stats": stats, "point": point}));

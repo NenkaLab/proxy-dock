@@ -8,7 +8,7 @@ use proxydock_core::i18n::{set_language, tr};
 use proxydock_core::log::fmt_size;
 use serde_json::{json, Value};
 use slint::{Color, ComponentHandle, Model, ModelRc, SharedString, VecModel};
-use slint_node_editor::{wire_node_editor, wire_selection, GraphLogic, LinkData, LinkPath, MovableNode, NodeEditorSetup};
+use slint_node_editor::{wire_node_editor, wire_selection, Dragged, GroupData, GroupLogic, GroupMember, LinkData, LinkPath, MovableNode, NodeEditorSetup};
 use std::collections::HashMap;
 use std::net::TcpStream;
 use std::rc::Rc;
@@ -25,6 +25,29 @@ impl MovableNode for NodeData {
     fn selected(&self) -> bool { self.selected }
     fn set_x(&mut self, x: f32) { self.x = x; }
     fn set_y(&mut self, y: f32) { self.y = y; }
+}
+
+impl GroupMember for NodeData {
+    fn group_id(&self) -> i32 { self.group_id }
+    fn set_group_id(&mut self, group_id: i32) { self.group_id = group_id; }
+}
+
+/// a group sheet's room around its blocks, and above them for its title band
+const GROUP_PAD: f32 = 20.0;
+const GROUP_HEAD: f32 = 36.0;
+
+thread_local! {
+    /// canvas groups: the core's id of each group row (row n has id n + 1), its member node ids, collapsed
+    static GROUPS: std::cell::RefCell<Vec<(String, Vec<i32>, bool)>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// a collapsed group's stand-in block: its pins -> the member pins they stand for
+    static STANDIN_PINS: std::cell::RefCell<HashMap<i32, i32>> = std::cell::RefCell::new(HashMap::new());
+    /// the last size seen of each block (a collapsed group's members are not measured while hidden)
+    static SIZES: std::cell::RefCell<HashMap<i32, (f32, f32)>> = std::cell::RefCell::new(HashMap::new());
+}
+
+/// a pin of a stand-in block as the member pin it stands for (other pins as they are)
+fn real_pin(p: i32) -> i32 {
+    STANDIN_PINS.with(|s| s.borrow().get(&p).copied().unwrap_or(p))
 }
 
 fn pin_in(node: i32, lane: i32) -> i32 {
@@ -49,6 +72,19 @@ fn hex_color(text: &str) -> Option<Color> {
 
 const WIRE: Color = Color::from_rgb_u8(90, 160, 240);
 
+/// the block colours the palette offers (Python `PALETTE`)
+const PALETTE: [(&str, &str); 10] = [
+    ("#e5534b", "Red"), ("#e8912d", "Orange"), ("#d9b92f", "Yellow"), ("#57ab5a", "Green"), ("#39c5bb", "Teal"),
+    ("#4f8ef7", "Blue"), ("#7c6cf2", "Indigo"), ("#b76de0", "Purple"), ("#e26ba5", "Pink"), ("#9aa0a6", "Gray"),
+];
+
+thread_local! {
+    /// what the open palette colours: the block key, the router output ("" = the block), its colour now
+    static PALETTE_FOR: std::cell::RefCell<(String, String, String)> = const { std::cell::RefCell::new((String::new(), String::new(), String::new())) };
+    /// links carrying a mix of colours: their index and colour (drawn dotted), and the geometry they were drawn for
+    static MIXED: std::cell::RefCell<(Vec<(usize, Color)>, Vec<(i32, i32, i32)>)> = const { std::cell::RefCell::new((Vec::new(), Vec::new())) };
+}
+
 /// bytes per second as "1.2 MB/s"
 fn rate_text(bps: f64) -> String {
     if bps <= 0.0 {
@@ -64,6 +100,24 @@ fn state_text(state: &str) -> String {
         "error" => tr("error"),
         _ => tr("Stopped"),
     }
+}
+
+/// a card's state line on its block (Python: "● Running", "○ error - the message", at most 60 characters)
+fn node_state_text(state: &str, error: &str) -> SharedString {
+    let text = if error.is_empty() { state_text(state) } else { format!("{} - {error}", state_text(state)) };
+    let text = if text.chars().count() > 60 { text.chars().take(60).collect::<String>() + "…" } else { text };
+    text.into()
+}
+
+/// a block's info lines from the core: [text, tone] pairs
+fn info_lines(v: &Value) -> ModelRc<InfoLine> {
+    let lines: Vec<InfoLine> = v
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|l| InfoLine { text: l[0].as_str().unwrap_or("").into(), tone: l[1].as_i64().unwrap_or(0) as i32 })
+        .collect();
+    ModelRc::new(VecModel::from(lines))
 }
 
 fn card_row(c: &Value) -> CardRow {
@@ -173,6 +227,449 @@ impl StopTimer for std::cell::RefCell<Option<slint::Timer>> {
     fn stop(&self) {
         if let Some(t) = self.borrow().as_ref() {
             t.stop();
+        }
+    }
+}
+
+thread_local! {
+    /// arrow-key navigation: the choices of the last step and where each block was reached from
+    static NAV: std::cell::RefCell<(Vec<i32>, HashMap<i32, i32>)> = std::cell::RefCell::new((Vec::new(), HashMap::new()));
+}
+
+/// Only block `id` selected, brought into view when it is not (Python `_select`)
+fn select_block(app: &App, models: &Models, id: i32, rect: Option<(f32, f32, f32, f32)>) {
+    for i in 0..models.nodes.row_count() {
+        let Some(mut n) = models.nodes.row_data(i) else { continue };
+        if n.selected != (n.id == id) {
+            n.selected = n.id == id;
+            models.nodes.set_row_data(i, n);
+        }
+    }
+    let Some((x, y, w, h)) = rect else { return };
+    let (z, px, py) = (app.get_canvas_zoom(), app.get_canvas_pan_x(), app.get_canvas_pan_y());
+    let (vw, vh) = (app.get_width_(), app.get_height_());
+    let (sx, sy) = (px + x * z, py + y * z);
+    if sx < 0.0 || sy < 0.0 || sx + w * z > vw || sy + h * z > vh - 100.0 {
+        app.set_canvas_pan_x(vw / 2.0 - (x + w / 2.0) * z);
+        app.set_canvas_pan_y((vh - 100.0) / 2.0 - (y + h / 2.0) * z);
+    }
+}
+
+/// Python `nav_key`: → the block the selected one links to, ← one linking into it (back where the last step
+/// came from first); ↑ / ↓ the other choices of that step, else the nearest block above / below.
+fn canvas_nav(app: &App, models: &Models, rects: &HashMap<i32, (f32, f32, f32, f32)>, dir: &str) {
+    let sel: Vec<i32> = models.nodes.iter().filter(|n| n.selected).map(|n| n.id).collect();
+    let [cur] = sel[..] else { return };
+    let keys = models.keys.borrow().clone();
+    let key = |id: i32| keys.get((id - 1).max(0) as usize).cloned().unwrap_or_default();
+    let id_of = |k: &str| keys.iter().position(|x| x == k).map(|i| i as i32 + 1);
+    let y_of = |id: i32| rects.get(&id).map_or(0.0, |r| r.1);
+    if dir == "left" || dir == "right" {
+        let forward = dir == "right";
+        let mut options: Vec<i32> = vec![];
+        // the other half of a wireless pair counts as linked
+        let k = key(cur);
+        let partner = if forward && !k.ends_with("/out") { id_of(&format!("{k}/out")) } else if !forward { k.strip_suffix("/out").and_then(id_of) } else { None };
+        options.extend(partner);
+        // links out of (into) it, by port, then top to bottom
+        let mut linked: Vec<(i32, f32, i32)> = vec![];
+        for (i, (_, a, b)) in models.link_meta.borrow().iter().enumerate() {
+            let Some(l) = models.links.row_data(i) else { continue };
+            if forward && *a == cur {
+                linked.push((l.start_pin_id, y_of(*b), *b));
+            } else if !forward && *b == cur {
+                linked.push((l.end_pin_id, y_of(*a), *a));
+            }
+        }
+        linked.sort_by(|x, y| x.0.cmp(&y.0).then(x.1.total_cmp(&y.1)));
+        for (_, _, n) in linked {
+            if n != cur && !options.contains(&n) {
+                options.push(n);
+            }
+        }
+        let back = NAV.with(|nav| nav.borrow().1.get(&cur).copied());
+        options.sort_by_key(|n| Some(*n) != back);
+        if let Some(first) = options.first().copied() {
+            NAV.with(|nav| {
+                let mut nav = nav.borrow_mut();
+                nav.0 = options.clone();
+                nav.1.insert(first, cur);
+            });
+            select_block(app, models, first, rects.get(&first).copied());
+        }
+        return;
+    }
+    let up = dir == "up";
+    let choices = NAV.with(|nav| nav.borrow().0.clone());
+    if choices.len() > 1 && choices.contains(&cur) {
+        let i = choices.iter().position(|n| *n == cur).unwrap() as i32;
+        let next = choices[((i + if up { -1 } else { 1 }).rem_euclid(choices.len() as i32)) as usize];
+        NAV.with(|nav| {
+            let mut nav = nav.borrow_mut();
+            if let Some(prev) = nav.1.get(&cur).copied() {
+                nav.1.insert(next, prev);
+            }
+        });
+        select_block(app, models, next, rects.get(&next).copied());
+        return;
+    }
+    // the nearest block above / below; one in the same column wins over one beside
+    let Some(here) = rects.get(&cur).copied() else { return };
+    let mut best: Option<(f32, i32)> = None;
+    for (id, r) in rects {
+        if *id == cur {
+            continue;
+        }
+        let dy = if up { here.1 - (r.1 + r.3) } else { r.1 - (here.1 + here.3) };
+        if dy < -here.3 / 2.0 {
+            continue;
+        }
+        let overlap = (here.0 + here.2).min(r.0 + r.2) - here.0.max(r.0);
+        let dx = if overlap > 0.0 { 0.0 } else { ((r.0 + r.2 / 2.0) - (here.0 + here.2 / 2.0)).abs() };
+        let score = dy.max(0.0) + 3.0 * dx;
+        if best.is_none_or(|(s, _)| score < s) {
+            best = Some((score, *id));
+        }
+    }
+    if let Some((_, id)) = best {
+        NAV.with(|nav| nav.borrow_mut().0.clear());
+        select_block(app, models, id, rects.get(&id).copied());
+    }
+}
+
+thread_local! {
+    /// the selection the wireless-pair focus was last worked out for
+    static PAIR_SEL: std::cell::RefCell<Vec<i32>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A selected half of a wireless pair (Python): the pair stays bright, the other blocks dim, and a dotted arc
+/// joins the halves. Checked a few times a second while the canvas shows (the selection has many writers).
+fn pair_focus(app: &App, models: &Models, rects: &HashMap<i32, (f32, f32, f32, f32)>) {
+    let sel: Vec<i32> = models.nodes.iter().filter(|n| n.selected).map(|n| n.id).collect();
+    let same = PAIR_SEL.with(|p| *p.borrow() == sel);
+    if same {
+        return;
+    }
+    PAIR_SEL.with(|p| *p.borrow_mut() = sel.clone());
+    let keys = models.keys.borrow().clone();
+    let id_of = |k: &str| keys.iter().position(|x| x == k).map(|i| i as i32 + 1);
+    let pair = match sel[..] {
+        [one] => {
+            let k = keys.get((one - 1).max(0) as usize).cloned().unwrap_or_default();
+            match k.strip_suffix("/out") {
+                Some(base) => id_of(base).map(|a| (a, one)),
+                None => id_of(&format!("{k}/out")).map(|b| (one, b)),
+            }
+        }
+        _ => None,
+    };
+    let Some((a, b)) = pair else {
+        app.set_focus_a(0);
+        app.set_focus_b(0);
+        app.set_pair_dots(ModelRc::default());
+        return;
+    };
+    app.set_focus_a(a);
+    app.set_focus_b(b);
+    // from the input half's right edge to the output half's left edge, sagging a little
+    let (Some(ra), Some(rb)) = (rects.get(&a), rects.get(&b)) else { return };
+    let (x0, y0) = (ra.0 + ra.2, ra.1 + ra.3 / 2.0);
+    let (x1, y1) = (rb.0, rb.1 + rb.3 / 2.0);
+    let (mx, my) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0 + ((x1 - x0).abs() + (y1 - y0).abs()) * 0.15 + 30.0);
+    let len = ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt().max(1.0);
+    let steps = (len / 16.0).ceil().clamp(4.0, 400.0) as usize;
+    let dark = app.get_dark();
+    let color = if dark { Color::from_rgb_u8(0xa8, 0xc7, 0xfa) } else { Color::from_rgb_u8(0x0b, 0x57, 0xd0) };
+    let dots: Vec<FlowDot> = (0..=steps)
+        .map(|i| {
+            let t = i as f32 / steps as f32;
+            let u = 1.0 - t;
+            FlowDot { x: u * u * x0 + 2.0 * u * t * mx + t * t * x1, y: u * u * y0 + 2.0 * u * t * my + t * t * y1, size: 5.0, color }
+        })
+        .collect();
+    app.set_pair_dots(ModelRc::new(VecModel::from(dots)));
+}
+
+/// a group's sheet around its members (their positions and last measured sizes)
+fn group_bounds(nodes: &[NodeData], members: &[i32]) -> (f32, f32, f32, f32) {
+    let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    SIZES.with(|s| {
+        let s = s.borrow();
+        for n in nodes.iter().filter(|n| members.contains(&n.id)) {
+            let (w, h) = s.get(&n.id).copied().unwrap_or((260.0, 120.0));
+            x0 = x0.min(n.x);
+            y0 = y0.min(n.y);
+            x1 = x1.max(n.x + w);
+            y1 = y1.max(n.y + h);
+        }
+    });
+    if x0 > x1 {
+        return (0.0, 0.0, 0.0, 0.0);
+    }
+    (x0 - GROUP_PAD, y0 - GROUP_PAD - GROUP_HEAD, x1 - x0 + GROUP_PAD * 2.0, y1 - y0 + GROUP_PAD * 2.0 + GROUP_HEAD)
+}
+
+/// The sheets follow their blocks (sizes measured, blocks moved); the toolbar learns the selection.
+fn groups_follow(app: &App, models: &Models, rects: &HashMap<i32, (f32, f32, f32, f32)>) {
+    SIZES.with(|s| {
+        let mut s = s.borrow_mut();
+        for (id, r) in rects {
+            s.insert(*id, (r.2, r.3));
+        }
+    });
+    let nodes: Vec<NodeData> = models.nodes.iter().collect();
+    let groups = GROUPS.with(|g| g.borrow().clone());
+    for (i, (_, members, _)) in groups.iter().enumerate() {
+        let Some(mut row) = models.groups.row_data(i) else { continue };
+        let (x, y, w, h) = group_bounds(&nodes, members);
+        if (row.x - x).abs() > 0.5 || (row.y - y).abs() > 0.5 || (row.width - w).abs() > 0.5 || (row.height - h).abs() > 0.5 {
+            row.x = x;
+            row.y = y;
+            row.width = w;
+            row.height = h;
+            models.groups.set_row_data(i, row);
+        }
+    }
+    let sel_count = nodes.iter().filter(|n| n.selected && n.kind != 5).count() as i32;
+    if app.get_sel_count() != sel_count {
+        app.set_sel_count(sel_count);
+    }
+    let sel = models.groups.iter().find(|g| g.selected);
+    let (gid, collapsed) = sel.map_or((0, false), |g| (g.id, g.collapsed));
+    if app.get_group_sel() != gid || app.get_group_sel_collapsed() != collapsed {
+        app.set_group_sel(gid);
+        app.set_group_sel_collapsed(collapsed);
+    }
+}
+
+/// the core's id of group row `gid`
+fn group_key(gid: i32) -> String {
+    GROUPS.with(|g| g.borrow().get((gid - 1).max(0) as usize).map(|x| x.0.clone()).unwrap_or_default())
+}
+
+/// The links that carry a mix of colours as dotted lines (Python: dashed), drawn again when blocks move.
+fn mix_dots(app: &App, models: &Models, rects: &HashMap<i32, (f32, f32, f32, f32)>) {
+    let mut geo: Vec<(i32, i32, i32)> = rects.iter().map(|(id, r)| (*id, r.0 as i32, r.1 as i32)).collect();
+    geo.sort_unstable();
+    let todo = MIXED.with(|m| {
+        let m = m.borrow();
+        (m.1 != geo).then(|| m.0.clone())
+    });
+    let Some(mixed) = todo else { return };
+    MIXED.with(|m| m.borrow_mut().1 = geo);
+    let mut dots = vec![];
+    CURVE.with(|c| {
+        let c = c.borrow();
+        let Some(curve_of) = c.as_ref() else { return };
+        for (i, color) in &mixed {
+            let Some(l) = models.links.row_data(*i) else { continue };
+            let Some(curve) = curve_of(l.start_pin_id, l.end_pin_id) else { continue };
+            // a dot every ~10 world px along the curve
+            let pts: Vec<(f32, f32)> = (0..=48).map(|k| curve.eval(k as f32 / 48.0)).collect();
+            let mut carry = 0.0f32;
+            for w in pts.windows(2) {
+                let ((x0, y0), (x1, y1)) = (w[0], w[1]);
+                let seg = ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt();
+                let mut d = carry;
+                while d < seg {
+                    let t = d / seg.max(0.001);
+                    dots.push(FlowDot { x: x0 + (x1 - x0) * t, y: y0 + (y1 - y0) * t, size: 4.0, color: *color });
+                    d += 10.0;
+                }
+                carry = d - seg;
+            }
+        }
+    });
+    app.set_mix_dots(ModelRc::new(VecModel::from(dots)));
+}
+
+// --- the back / forward history (Python `go_back / go_forward`, Alt+← / →, the mouse's back / forward buttons) ---
+
+#[derive(Default)]
+struct History {
+    back: Vec<i32>,
+    forward: Vec<i32>,
+    current: i32,
+    jumping: bool,
+}
+
+thread_local! {
+    static HISTORY: std::cell::RefCell<History> = std::cell::RefCell::new(History::default());
+    /// what the window's message hook calls for back (false) / forward (true)
+    static NAV_CB: std::cell::RefCell<Option<Rc<dyn Fn(bool)>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// the editor's page: leaving it returns to where it was opened from
+const EDITOR_PAGE: i32 = 3;
+
+fn page_changed(new: i32) {
+    HISTORY.with(|h| {
+        let mut h = h.borrow_mut();
+        let old = std::mem::replace(&mut h.current, new);
+        if h.jumping || old == new {
+            return;
+        }
+        if old == EDITOR_PAGE {
+            if h.back.last() == Some(&new) {
+                h.back.pop();
+            }
+        } else {
+            h.back.push(old);
+            let n = h.back.len();
+            if n > 30 {
+                h.back.drain(..n - 30);
+            }
+        }
+        h.forward.clear();
+    });
+}
+
+fn jump(app: &App, page: i32) {
+    HISTORY.with(|h| h.borrow_mut().jumping = true);
+    app.set_page(page);
+    HISTORY.with(|h| {
+        let mut h = h.borrow_mut();
+        h.jumping = false;
+        h.current = page;
+    });
+}
+
+fn go_back(app: &App) {
+    // back in the editor = cancel
+    if app.get_page() == EDITOR_PAGE {
+        app.invoke_form_cancel();
+        return;
+    }
+    let Some(page) = HISTORY.with(|h| h.borrow_mut().back.pop()) else { return };
+    HISTORY.with(|h| h.borrow_mut().forward.push(app.get_page()));
+    jump(app, page);
+}
+
+fn go_forward(app: &App) {
+    let Some(page) = HISTORY.with(|h| h.borrow_mut().forward.pop()) else { return };
+    let cur = app.get_page();
+    if cur != EDITOR_PAGE {
+        HISTORY.with(|h| h.borrow_mut().back.push(cur));
+    }
+    jump(app, page);
+}
+
+// --- the window's size and place (Python `restore_state / save_state`, window.json) ---
+
+fn window_state_path() -> std::path::PathBuf {
+    proxydock_core::paths::app_dir().join("window.json")
+}
+
+#[cfg(windows)]
+mod placement {
+    use windows_sys::Win32::Foundation::{HWND, RECT};
+    use windows_sys::Win32::Graphics::Gdi::{MonitorFromRect, MONITOR_DEFAULTTONULL};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowPlacement, SetWindowPlacement, SW_SHOWMAXIMIZED, SW_SHOWNORMAL, WINDOWPLACEMENT};
+
+    /// (left, top, right, bottom of the normal place, maximized)
+    pub fn get(hwnd: usize) -> Option<(i32, i32, i32, i32, bool)> {
+        let mut p: WINDOWPLACEMENT = unsafe { std::mem::zeroed() };
+        p.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
+        if unsafe { GetWindowPlacement(hwnd as HWND, &mut p) } == 0 {
+            return None;
+        }
+        let r = p.rcNormalPosition;
+        Some((r.left, r.top, r.right, r.bottom, p.showCmd == SW_SHOWMAXIMIZED as u32))
+    }
+
+    /// back where it was (the place is kept only when it is still on a screen)
+    pub fn set(hwnd: usize, l: i32, t: i32, r: i32, b: i32, maximized: bool) {
+        if r - l < 200 || b - t < 150 {
+            return;
+        }
+        let mut p: WINDOWPLACEMENT = unsafe { std::mem::zeroed() };
+        p.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
+        if unsafe { GetWindowPlacement(hwnd as HWND, &mut p) } == 0 {
+            return;
+        }
+        let rc = RECT { left: l, top: t, right: r, bottom: b };
+        if unsafe { MonitorFromRect(&rc, MONITOR_DEFAULTTONULL) }.is_null() {
+            // off every screen now: the size only, where Windows put it
+            let cur = p.rcNormalPosition;
+            p.rcNormalPosition = RECT { left: cur.left, top: cur.top, right: cur.left + (r - l), bottom: cur.top + (b - t) };
+        } else {
+            p.rcNormalPosition = rc;
+        }
+        p.showCmd = if maximized { SW_SHOWMAXIMIZED as u32 } else { SW_SHOWNORMAL as u32 };
+        unsafe { SetWindowPlacement(hwnd as HWND, &p) };
+    }
+}
+
+fn save_window_state(app: &App) {
+    #[cfg(windows)]
+    {
+        let Some((l, t, r, b, max)) = placement::get(owner_hwnd(app)) else { return };
+        let path = window_state_path();
+        // (the Python app's "geometry" stays as it was)
+        let mut data: serde_json::Map<String, Value> = std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        data.insert("rust".into(), json!({"left": l, "top": t, "right": r, "bottom": b, "maximized": max}));
+        let _ = std::fs::create_dir_all(path.parent().unwrap());
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(&tmp, Value::Object(data).to_string()).is_ok() {
+            let _ = std::fs::rename(&tmp, &path);
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = app;
+}
+
+fn restore_window_state(app: &App) {
+    #[cfg(windows)]
+    {
+        let Some(v) = std::fs::read_to_string(window_state_path()).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()) else { return };
+        let w = &v["rust"];
+        let n = |k: &str| w[k].as_i64().unwrap_or(0) as i32;
+        if w.is_object() {
+            placement::set(owner_hwnd(app), n("left"), n("top"), n("right"), n("bottom"), w["maximized"] == json!(true));
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = app;
+}
+
+/// the mouse's back / forward buttons and Alt+← / → anywhere in the window (Python `_MouseNavFilter` and the
+/// shortcuts): a hook on the window's messages
+#[cfg(windows)]
+mod nav_hook {
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
+
+    unsafe extern "system" fn proc_(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _id: usize, _data: usize) -> LRESULT {
+        const WM_XBUTTONUP: u32 = 0x020C;
+        const WM_SYSKEYDOWN: u32 = 0x0104;
+        let go = |forward: bool| {
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(cb) = super::NAV_CB.with(|c| c.borrow().clone()) {
+                    cb(forward);
+                }
+            });
+        };
+        match msg {
+            WM_XBUTTONUP => {
+                let button = (wp >> 16) & 0xffff;
+                if button == 1 || button == 2 {
+                    go(button == 2);
+                    return 1;
+                }
+            }
+            // Alt+← / →: (with Alt, keys come as system keys)
+            WM_SYSKEYDOWN if wp == 0x25 || wp == 0x27 => {
+                go(wp == 0x27);
+                return 0;
+            }
+            _ => {}
+        }
+        unsafe { DefSubclassProc(hwnd, msg, wp, lp) }
+    }
+
+    pub fn install(hwnd: usize) {
+        if hwnd != 0 {
+            unsafe { SetWindowSubclass(hwnd as HWND, Some(proc_), 7, 0) };
         }
     }
 }
@@ -317,16 +814,27 @@ struct Models {
     /// the list page's outbound blocks and routers
     out_rows: Rc<VecModel<BlockRow>>,
     router_rows: Rc<VecModel<BlockRow>>,
+    /// the canvas groups' sheets
+    groups: Rc<VecModel<GroupData>>,
 }
 
 impl Models {
     /// the canvas from the core's description (blocks keyed by block id, links by lanes)
     fn set_canvas(&self, c: &Value) {
         let mut ids: HashMap<String, i32> = HashMap::new();
-        let mut nodes = vec![];
+        let mut nodes: Vec<NodeData> = vec![];
         for (i, n) in c["nodes"].as_array().into_iter().flatten().enumerate() {
             let id = i as i32 + 1;
             ids.insert(n["key"].as_str().unwrap_or("").to_string(), id);
+            let card = n["card"].as_str().unwrap_or("");
+            let state = n["state"].as_str().unwrap_or("");
+            let error = self.cards.iter().find(|r| r.id == card).map(|r| r.error.to_string()).unwrap_or_default();
+            // the PC block: its status as its line
+            let lines = if n["lines"].as_array().is_some_and(|l| !l.is_empty()) || n["detail"].as_str().unwrap_or("").is_empty() {
+                info_lines(&n["lines"])
+            } else {
+                info_lines(&json!([[n["detail"], 0]]))
+            };
             let wires: Vec<Wire> = n["wires"]
                 .as_array()
                 .into_iter()
@@ -346,8 +854,29 @@ impl Models {
                 in_labels: strings(&n["in_labels"]),
                 out_labels: strings(&n["out_labels"]),
                 wires: ModelRc::new(VecModel::from(wires)),
-                card: n["card"].as_str().unwrap_or("").into(),
-                state: n["state"].as_str().unwrap_or("").into(),
+                card: card.into(),
+                state: state.into(),
+                state_text: node_state_text(state, &error),
+                lines,
+                autostart: n["autostart"] == json!(true),
+                auto_restart: n["auto_restart"] == json!(true),
+                group_id: 0,
+                swatch: hex_color(n["swatch"].as_str().unwrap_or("")).unwrap_or(WIRE),
+                own_color: n["color"].as_str().is_some_and(|c| !c.is_empty()),
+                out_colors: ModelRc::new(VecModel::from(
+                    n["out_colors"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|c| OutColor {
+                            key: c[0].as_str().unwrap_or("").into(),
+                            own: c[1].as_str().is_some_and(|x| !x.is_empty()),
+                            color: hex_color(c[2].as_str().unwrap_or("")).unwrap_or(WIRE),
+                        })
+                        .collect::<Vec<_>>(),
+                )),
+                has_switch: n["switch"].is_boolean(),
+                switch_on: n["switch"] == json!(true),
                 rate: SharedString::new(),
                 badge: SharedString::new(),
                 badge_tone: 0,
@@ -358,20 +887,127 @@ impl Models {
                 menu_tail: n["menu"]["tail"] == json!(true),
             });
         }
+        // canvas groups: each block's group, the rows (bounds are fitted once the blocks are measured)
+        let groups_raw: Vec<&Value> = c["groups"].as_array().into_iter().flatten().collect();
+        let mut group_rows: Vec<(String, Vec<i32>, bool)> = vec![];
+        for (gi, gr) in groups_raw.iter().enumerate() {
+            let members: Vec<i32> = gr["members"].as_array().into_iter().flatten().filter_map(Value::as_str).filter_map(|k| ids.get(k).copied()).collect();
+            for n in nodes.iter_mut().filter(|n| members.contains(&n.id)) {
+                n.group_id = gi as i32 + 1;
+            }
+            group_rows.push((gr["id"].as_str().unwrap_or("").to_string(), members, gr["collapsed"] == json!(true)));
+        }
+        let selected_groups: Vec<String> = GROUPS.with(|g| {
+            let g = g.borrow();
+            self.groups.iter().filter(|r| r.selected).filter_map(|r| g.get(r.id as usize - 1).map(|x| x.0.clone())).collect()
+        });
+        let rows: Vec<GroupData> = groups_raw
+            .iter()
+            .enumerate()
+            .map(|(gi, gr)| {
+                let (x, y, w, h) = group_bounds(&nodes, &group_rows[gi].1);
+                GroupData {
+                    id: gi as i32 + 1,
+                    title: gr["name"].as_str().unwrap_or("").into(),
+                    x,
+                    y,
+                    width: w,
+                    height: h,
+                    color: hex_color(gr["color"].as_str().unwrap_or("")).map_or(Color::from_argb_u8(0, 0, 0, 0), |c| c),
+                    collapsed: group_rows[gi].2,
+                    selected: selected_groups.contains(&group_rows[gi].0),
+                }
+            })
+            .collect();
+        // a collapsed group: a block stands in for its members, with a port per link crossing its edge
+        let mut standin_pins: HashMap<i32, i32> = HashMap::new();
+        let mut reroute: HashMap<usize, (i32, i32, i32, i32)> = HashMap::new(); // link index -> new (a, out pin, b, in pin)
+        let raw_links: Vec<&Value> = c["links"].as_array().into_iter().flatten().collect();
+        for (gi, (_, members, collapsed)) in group_rows.iter().enumerate() {
+            if !*collapsed {
+                continue;
+            }
+            let sid = nodes.len() as i32 + 1;
+            let mut ins: Vec<(i32, String)> = vec![]; // member pin, label
+            let mut outs: Vec<(i32, String)> = vec![];
+            let title_of = |id: i32| nodes.iter().find(|n| n.id == id).map(|n| n.title.to_string()).unwrap_or_default();
+            for (k, l) in raw_links.iter().enumerate() {
+                let (Some(a), Some(b)) = (ids.get(l["from"].as_str().unwrap_or("")).copied(), ids.get(l["to"].as_str().unwrap_or("")).copied()) else { continue };
+                let (out, inp) = (l["out"].as_i64().unwrap_or(0) as i32, l["in"].as_i64().unwrap_or(0) as i32);
+                let (ain, bin) = (members.contains(&a), members.contains(&b));
+                if ain == bin {
+                    continue;
+                }
+                let entry = reroute.entry(k).or_insert((a, pin_out(a, out), b, pin_in(b, inp)));
+                if ain {
+                    let real = pin_out(a, out);
+                    let port = outs.iter().position(|(p, _)| *p == real).unwrap_or_else(|| {
+                        outs.push((real, title_of(a)));
+                        outs.len() - 1
+                    }) as i32;
+                    let pin = pin_out(sid, port.min(31));
+                    standin_pins.insert(pin, real);
+                    entry.0 = sid;
+                    entry.1 = pin;
+                } else {
+                    let real = pin_in(b, inp);
+                    let port = ins.iter().position(|(p, _)| *p == real).unwrap_or_else(|| {
+                        ins.push((real, title_of(b)));
+                        ins.len() - 1
+                    }) as i32;
+                    let pin = pin_in(sid, port.min(31));
+                    standin_pins.insert(pin, real);
+                    entry.2 = sid;
+                    entry.3 = pin;
+                }
+            }
+            let r = &rows[gi];
+            let lines = vec![InfoLine { text: tr("{count} blocks").replace("{count}", &members.len().to_string()).into(), tone: 2 }];
+            nodes.push(NodeData {
+                id: sid,
+                title: r.title.clone(),
+                kind: 5,
+                x: r.x,
+                y: r.y + GROUP_HEAD + 4.0,
+                ins: ins.len().min(31) as i32,
+                outs: outs.len().min(31) as i32,
+                in_labels: ModelRc::new(VecModel::from(ins.iter().map(|(_, t)| SharedString::from(t.as_str())).collect::<Vec<_>>())),
+                out_labels: ModelRc::new(VecModel::from(outs.iter().map(|(_, t)| SharedString::from(t.as_str())).collect::<Vec<_>>())),
+                lines: ModelRc::new(VecModel::from(lines)),
+                swatch: r.color,
+                ..Default::default()
+            });
+            ids.insert(format!("group:{}", group_rows[gi].0), sid);
+        }
+        GROUPS.with(|g| *g.borrow_mut() = group_rows);
+        STANDIN_PINS.with(|s| *s.borrow_mut() = standin_pins);
+        self.groups.set_vec(rows);
         let mut links = vec![];
         let mut meta = vec![];
+        let mut mixed = vec![];
         for (k, l) in c["links"].as_array().into_iter().flatten().enumerate() {
             let (Some(a), Some(b)) = (ids.get(l["from"].as_str().unwrap_or("")), ids.get(l["to"].as_str().unwrap_or(""))) else {
                 continue;
             };
-            let color = hex_color(l["color"].as_str().unwrap_or("")).unwrap_or(WIRE);
+            let full = hex_color(l["color"].as_str().unwrap_or("")).unwrap_or(WIRE);
+            // a mix: the line faint, dots in the mixed colour over it
+            let color = if l["mixed"] == json!(true) {
+                mixed.push((links.len(), full));
+                full.with_alpha(0.3)
+            } else {
+                full
+            };
             let (out, inp) = (l["out"].as_i64().unwrap_or(0) as i32, l["in"].as_i64().unwrap_or(0) as i32);
-            links.push(LinkData::new(k as i32 + 1, pin_out(*a, out), pin_in(*b, inp), color));
-            meta.push((color, *a, *b));
+            // (a link crossing a collapsed group's edge: to / from its stand-in block)
+            let (a, pa, b, pb) = reroute.get(&k).copied().unwrap_or((*a, pin_out(*a, out), *b, pin_in(*b, inp)));
+            links.push(LinkData::new(k as i32 + 1, pa, pb, color));
+            meta.push((color, a, b));
         }
-        let mut keys = vec![String::new(); ids.len()];
+        let mut keys = vec![String::new(); nodes.len()];
         for (k, id) in &ids {
-            keys[*id as usize - 1] = k.clone();
+            if let Some(slot) = keys.get_mut(*id as usize - 1) {
+                *slot = k.clone();
+            }
         }
         // the list page: each block's menu, the outbound blocks and the routers
         let mut menus = HashMap::new();
@@ -409,6 +1045,7 @@ impl Models {
         self.links.set_vec(links);
         *self.link_meta.borrow_mut() = meta;
         *self.keys.borrow_mut() = keys;
+        MIXED.with(|m| *m.borrow_mut() = (mixed, Vec::new()));
         self.apply_badges();
     }
 
@@ -431,11 +1068,13 @@ impl Models {
     }
 
     /// a card's state on its canvas block
-    fn set_node_state(&self, card: &str, state: &str) {
+    fn set_node_state(&self, card: &str, state: &str, error: &str) {
+        let text = node_state_text(state, error);
         for i in 0..self.nodes.row_count() {
             let Some(mut n) = self.nodes.row_data(i) else { continue };
-            if n.card == card && n.state != state {
+            if n.card == card && (n.state != state || n.state_text != text) {
                 n.state = state.into();
+                n.state_text = text.clone();
                 self.nodes.set_row_data(i, n);
             }
         }
@@ -492,7 +1131,9 @@ impl Models {
     }
 
     fn set_card(&self, c: &Value) {
-        self.set_node_state(c["id"].as_str().unwrap_or(""), c["state"].as_str().unwrap_or(""));
+        let state = c["state"].as_str().unwrap_or("");
+        let error = if state == "error" { c["error"].as_str().unwrap_or("") } else { "" };
+        self.set_node_state(c["id"].as_str().unwrap_or(""), state, error);
         let row = self.with_menu(card_row(c));
         match (0..self.cards.row_count()).find(|i| self.cards.row_data(*i).is_some_and(|r| r.id == row.id)) {
             Some(i) => {
@@ -891,8 +1532,21 @@ fn log_sources(app: &App, cards: &[(String, String)]) {
     app.set_log_source(pos);
 }
 
+thread_local! {
+    // what the toast's button does ("" = no button)
+    static TOAST_ACTION: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// a toast with a button (Python's bar with "Restart now")
+fn show_toast_action(app: &App, text: &str, button: &str, action: &str, secs: f32) {
+    TOAST_ACTION.with(|t| *t.borrow_mut() = action.to_string());
+    show_toast(app, text, false, secs);
+    app.set_toast_action(button.into());
+}
+
 /// a message at the bottom of the canvas for `secs` (a newer one replaces it and its timer)
 fn show_toast(app: &App, text: &str, info: bool, secs: f32) {
+    app.set_toast_action(SharedString::new());
     app.set_toast(text.into());
     app.set_toast_info(info);
     TOAST_SEQ.with(|n| n.set(n.get() + 1));
@@ -1256,6 +1910,10 @@ fn labels(app: &App) {
     {
         let t = app.global::<CanvasText>();
         t.set_run(tr("Run").into());
+        t.set_at_start(tr("At start").into());
+        t.set_auto_restart(tr("Auto-restart").into());
+        t.set_switched_on(tr("Switched on").into());
+        t.set_switched_off(tr("Switched off").into());
         t.set_stop(tr("Stop").into());
         t.set_add_inbound(tr("Add inbound").into());
         t.set_add_outbound(tr("Add outbound").into());
@@ -1275,6 +1933,14 @@ fn labels(app: &App) {
     }
     app.set_t_copy(tr("Copy address/link for clients").into());
     app.set_t_search(tr("Search").into());
+    app.set_t_group(tr("Group blocks").into());
+    app.set_t_ungroup(tr("Ungroup").into());
+    app.set_t_collapse(tr("Collapse").into());
+    app.set_t_expand(tr("Expand").into());
+    app.set_t_colour(tr("Colour").into());
+    app.set_palette_colors(ModelRc::new(VecModel::from(PALETTE.iter().map(|(h, _)| hex_color(h).unwrap()).collect::<Vec<_>>())));
+    app.set_palette_names(ModelRc::new(VecModel::from(PALETTE.iter().map(|(_, n)| SharedString::from(tr(n))).collect::<Vec<_>>())));
+    app.set_t_palette_custom(tr("Custom colour…").into());
     app.set_t_pick_title(tr("Choose programs").into());
     app.set_t_pick_search(tr("Search running programs").into());
     app.set_t_pick_file(tr("Choose a program file...").into());
@@ -1334,7 +2000,9 @@ fn main() -> Result<(), slint::PlatformError> {
         menus: Default::default(),
         out_rows: Rc::new(VecModel::default()),
         router_rows: Rc::new(VecModel::default()),
+        groups: Rc::new(VecModel::default()),
     });
+    app.set_groups(ModelRc::from(models.groups.clone()));
     app.set_cards(ModelRc::from(models.cards.clone()));
     {
         // the log page shows the lines its filters let through
@@ -1366,16 +2034,35 @@ fn main() -> Result<(), slint::PlatformError> {
     {
         let nodes = models.nodes.clone();
         let links = models.links.clone();
-        let setup = NodeEditorSetup::new({
-            let (nodes, send, key_of) = (nodes.clone(), send.clone(), key_of.clone());
+        let setup = NodeEditorSetup::with_drag_commit({
+            let (nodes, send, key_of, groups) = (nodes.clone(), send.clone(), key_of.clone(), models.groups.clone());
             move |dragged, dx, dy| {
-                GraphLogic::commit_drag(&nodes, dragged, dx, dy);
+                let before: Vec<(f32, f32)> = nodes.iter().map(|n| (n.x, n.y)).collect();
+                GroupLogic::commit_drag(&*nodes, &*groups, dragged, dx, dy);
+                // a collapsed group's stand-in carries its (hidden) members
+                let carried: Vec<i32> = nodes.iter().enumerate().filter(|(i, n)| n.kind == 5 && before.get(*i) != Some(&(n.x, n.y))).map(|(_, n)| n.id).collect();
+                for sid in carried {
+                    let key = key_of(sid);
+                    let members = GROUPS.with(|g| g.borrow().iter().find(|x| format!("group:{}", x.0) == key).map(|x| x.1.clone()).unwrap_or_default());
+                    for i in 0..nodes.row_count() {
+                        let Some(mut n) = nodes.row_data(i) else { continue };
+                        if members.contains(&n.id) && before.get(i) == Some(&(n.x, n.y)) {
+                            n.x += dx;
+                            n.y += dy;
+                            nodes.set_row_data(i, n);
+                        }
+                    }
+                }
                 let moved: Vec<Value> = nodes
                     .iter()
-                    .filter(|n| n.id == dragged || n.selected)
-                    .map(|n| json!({"key": key_of(n.id), "x": n.x, "y": n.y}))
+                    .enumerate()
+                    .filter(|(i, n)| n.kind != 5 && before.get(*i) != Some(&(n.x, n.y)))
+                    .map(|(_, n)| json!({"key": key_of(n.id), "x": n.x, "y": n.y}))
                     .collect();
-                send(json!({"cmd": "move", "blocks": moved}));
+                let _ = Dragged::Node(0);
+                if !moved.is_empty() {
+                    send(json!({"cmd": "move", "blocks": moved}));
+                }
             }
         });
         let controller = setup.controller().clone();
@@ -1390,6 +2077,33 @@ fn main() -> Result<(), slint::PlatformError> {
             });
         }
         {
+            // a selected wireless pair: focus on it
+            let (controller, weak, models) = (controller.clone(), app.as_weak(), models.clone());
+            let t = slint::Timer::default();
+            t.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(150), move || {
+                let Some(a) = weak.upgrade() else { return };
+                if a.get_page() != 0 {
+                    return;
+                }
+                let rects: HashMap<i32, (f32, f32, f32, f32)> =
+                    controller.cache().borrow().node_rects.iter().map(|(id, r)| { use slint_node_editor::NodeGeometry; (*id, r.rect()) }).collect();
+                pair_focus(&a, &models, &rects);
+                mix_dots(&a, &models, &rects);
+                groups_follow(&a, &models, &rects);
+            });
+            std::mem::forget(t);
+        }
+        {
+            // the arrow keys, over the rectangles the editor measured
+            let (controller, weak, models) = (controller.clone(), app.as_weak(), models.clone());
+            app.on_canvas_nav(move |dir| {
+                let Some(a) = weak.upgrade() else { return };
+                let rects: HashMap<i32, (f32, f32, f32, f32)> =
+                    controller.cache().borrow().node_rects.iter().map(|(id, r)| { use slint_node_editor::NodeGeometry; (*id, r.rect()) }).collect();
+                canvas_nav(&a, &models, &rects, dir.as_str());
+            });
+        }
+        {
             // the links' curves, for the moving dots
             let controller = controller.clone();
             CURVE.with(|c| {
@@ -1397,7 +2111,28 @@ fn main() -> Result<(), slint::PlatformError> {
             });
         }
         wire_node_editor!(app, setup);
-        wire_selection!(app, setup, nodes, links);
+        let groups = models.groups.clone();
+        wire_selection!(app, setup, nodes, links, groups);
+        {
+            // groups: which move with a drag, which hide their members; the sheet's toggle goes to the core
+            let computations = app.global::<NodeEditorComputations>();
+            let g1 = groups.clone();
+            computations.on_group_in_drag(move |gid, node, group| GroupLogic::group_moves(&*g1, gid, Dragged::from_ids(node, group)));
+            let g2 = groups.clone();
+            computations.on_group_collapsed(move |gid, _| GroupLogic::is_collapsed(&*g2, gid));
+            let send_c = send.clone();
+            app.global::<NodeEditorEvents>().on_group_collapse_requested(move |gid, collapsed| {
+                send_c(json!({"cmd": "group_collapse", "id": group_key(gid), "collapsed": collapsed}));
+            });
+            let (send_r, weak_r) = (send.clone(), app.as_weak());
+            let _ = send_r;
+            app.global::<NodeEditorEvents>().on_group_double_clicked(move |gid| {
+                if let Some(a) = weak_r.upgrade() {
+                    a.set_group_sel(gid);
+                    a.invoke_group_rename();
+                }
+            });
+        }
         app.on_compute_link_at({
             let links = links.clone();
             move |x, y| {
@@ -1416,6 +2151,8 @@ fn main() -> Result<(), slint::PlatformError> {
                 if out / 64 == inp / 64 {
                     return;
                 }
+                // (a stand-in block's pin: the member pin it stands for)
+                let (out, inp) = (real_pin(out), real_pin(inp));
                 send(json!({"cmd": "connect", "from": key_of(out / 64), "out": (out % 64) / 2, "to": key_of(inp / 64), "in": (inp % 64) / 2}));
             });
         }
@@ -1434,7 +2171,13 @@ fn main() -> Result<(), slint::PlatformError> {
     // block editor
     {
         let (send1, key_of1) = (send.clone(), key_of.clone());
-        app.on_edit_block(move |node| send1(json!({"cmd": "edit_open", "id": key_of1(node)})));
+        app.on_edit_block(move |node| {
+            let key = key_of1(node);
+            match key.strip_prefix("group:") {
+                Some(gid) => send1(json!({"cmd": "group_collapse", "id": gid, "collapsed": false})),
+                None => send1(json!({"cmd": "edit_open", "id": key})),
+            }
+        });
         let send2 = send.clone();
         app.on_edit_card(move |id| send2(json!({"cmd": "edit_open", "id": id.as_str()})));
         let send3 = send.clone();
@@ -1504,6 +2247,68 @@ fn main() -> Result<(), slint::PlatformError> {
         // an IF's switch on the list page
         let send10 = send.clone();
         app.on_set_switch(move |key, on| send10(json!({"cmd": "set_switch", "id": key.as_str(), "on": on})));
+        // a swatch clicked: the palette for the block, or for one router output
+        let (models12, key_of12, weak12) = (models.clone(), key_of.clone(), app.as_weak());
+        app.on_open_palette(move |id, out, x, y| {
+            let Some(a) = weak12.upgrade() else { return };
+            let key = key_of12(id);
+            let Some(n) = models12.nodes.iter().find(|n| n.id == id) else { return };
+            let (title, cur, own) = if out.is_empty() {
+                (String::new(), n.swatch, n.own_color)
+            } else {
+                let i = n.out_colors.iter().position(|c| c.key == out).unwrap_or(0);
+                let c = n.out_colors.row_data(i);
+                (n.out_labels.row_data(i).map(|s| s.to_string()).unwrap_or_default(), c.as_ref().map_or(WIRE, |c| c.color), c.is_some_and(|c| c.own))
+            };
+            let cur_hex = format!("#{:02x}{:02x}{:02x}", cur.red(), cur.green(), cur.blue());
+            let index = if own { PALETTE.iter().position(|(h, _)| *h == cur_hex).map_or(-1, |i| i as i32) } else { -1 };
+            PALETTE_FOR.with(|p| *p.borrow_mut() = (key, out.to_string(), cur_hex));
+            a.set_palette_title(title.into());
+            a.set_palette_current(index);
+            a.set_palette_auto_current(!own);
+            // an output without its own colour uses the block's (an IF: the incoming links)
+            let auto = if out.is_empty() || n.detail == "IF" { tr("Automatic (follow the incoming links)") } else { tr("Same as the block") };
+            a.set_t_palette_auto(auto.into());
+            a.set_palette_x(x);
+            a.set_palette_y(y);
+            a.set_palette_open(true);
+        });
+        let (send12, weak13) = (send.clone(), app.as_weak());
+        app.on_palette_pick(move |i| {
+            let (key, out, cur) = PALETTE_FOR.with(|p| p.borrow().clone());
+            let apply = {
+                let send = send12.clone();
+                move |color: String| {
+                    if let Some(gid) = key.strip_prefix("group:") {
+                        send(json!({"cmd": "group_color", "id": gid, "color": color}));
+                        return;
+                    }
+                    let mut msg = json!({"cmd": "color", "key": key, "color": color});
+                    if !out.is_empty() {
+                        msg["out"] = json!(out);
+                    }
+                    send(msg);
+                }
+            };
+            match i {
+                -1 => apply(String::new()),
+                -2 => {
+                    // any colour: Windows' colour dialog, on its own thread
+                    let Some(a) = weak13.upgrade() else { return };
+                    let (owner, weak) = (owner_hwnd(&a), weak13.clone());
+                    std::thread::spawn(move || {
+                        if let Some(c) = proxydock::filedlg::choose_color(owner, &cur) {
+                            let _ = weak.upgrade_in_event_loop(move |_| apply(c));
+                        }
+                    });
+                }
+                i => apply(PALETTE.get(i as usize).map(|p| p.0.to_string()).unwrap_or_default()),
+            }
+        });
+        let send11 = send.clone();
+        app.on_set_flag(move |card, key, on| send11(json!({"cmd": "set_flag", "id": card.as_str(), "key": key.as_str(), "on": on})));
+        let key_of11 = key_of.clone();
+        app.on_node_key(move |id| key_of11(id).into());
         let (send7, key_of7, models7, weak7) = (send.clone(), key_of.clone(), models.clone(), app.as_weak());
         app.on_block_action(move |key, action| {
             let key = key.to_string();
@@ -1516,6 +2321,14 @@ fn main() -> Result<(), slint::PlatformError> {
                         .map(|n| n.title.to_string())
                         .collect();
                     ask_delete(&weak7, &names, json!({"cmd": "delete", "keys": [key], "links": []}));
+                }
+                // "Group blocks": the selection, with this block
+                "group.make" => {
+                    let mut keys: Vec<String> = models7.nodes.iter().filter(|n| n.selected && n.kind != 5).map(|n| key_of7(n.id)).collect();
+                    if !keys.contains(&key) {
+                        keys.push(key.clone());
+                    }
+                    send7(json!({"cmd": "group", "keys": keys}));
                 }
                 a if a.starts_with("wireless.partner.") => {
                     let id = key.strip_suffix("/out").unwrap_or(&key).to_string();
@@ -1697,11 +2510,11 @@ fn main() -> Result<(), slint::PlatformError> {
                 .iter()
                 .filter(|l| l.selected)
                 .map(|l| {
-                    let (a, b) = (l.start_pin_id, l.end_pin_id);
+                    let (a, b) = (real_pin(l.start_pin_id), real_pin(l.end_pin_id));
                     json!({"from": key_of(a / 64), "out": (a % 64) / 2, "to": key_of(b / 64), "in": (b % 64) / 2})
                 })
                 .collect();
-            let keys: Vec<String> = models.nodes.iter().filter(|n| n.selected).map(|n| key_of(n.id)).collect();
+            let keys: Vec<String> = models.nodes.iter().filter(|n| n.selected && n.kind != 5).map(|n| key_of(n.id)).collect();
             if keys.is_empty() {
                 if !links.is_empty() {
                     send(json!({"cmd": "delete", "keys": keys, "links": links}));
@@ -1725,7 +2538,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let (models2, key_of2) = (models.clone(), key_of.clone());
         let send2 = send.clone();
         app.on_duplicate_selected(move || {
-            let keys: Vec<String> = models2.nodes.iter().filter(|n| n.selected).map(|n| key_of2(n.id)).filter(|k| k != "pc").collect();
+            let keys: Vec<String> = models2.nodes.iter().filter(|n| n.selected && n.kind != 5).map(|n| key_of2(n.id)).filter(|k| k != "pc").collect();
             if !keys.is_empty() {
                 send2(json!({"cmd": "duplicate", "keys": keys}));
             }
@@ -1743,6 +2556,50 @@ fn main() -> Result<(), slint::PlatformError> {
             RENAME_KEY.with(|k| *k.borrow_mut() = key);
             a.set_rename_text(n.title.clone());
             a.set_rename_open(true);
+        });
+        // canvas groups: make one of the selection, and the selected group's bar
+        let (models4, key_of4, send4) = (models.clone(), key_of.clone(), send.clone());
+        app.on_group_make(move || {
+            let keys: Vec<String> = models4.nodes.iter().filter(|n| n.selected && n.kind != 5).map(|n| key_of4(n.id)).collect();
+            send4(json!({"cmd": "group", "keys": keys}));
+        });
+        let weak = app.as_weak();
+        let weak5 = weak.clone();
+        app.on_group_rename(move || {
+            let Some(a) = weak5.upgrade() else { return };
+            let gid = a.get_group_sel();
+            let Some(row) = a.get_groups().iter().find(|g| g.id == gid) else { return };
+            RENAME_KEY.with(|k| *k.borrow_mut() = format!("group:{}", group_key(gid)));
+            a.set_rename_text(row.title.clone());
+            a.set_rename_open(true);
+        });
+        let send6 = send.clone();
+        let weak6 = weak.clone();
+        app.on_group_collapse(move || {
+            let Some(a) = weak6.upgrade() else { return };
+            send6(json!({"cmd": "group_collapse", "id": group_key(a.get_group_sel()), "collapsed": !a.get_group_sel_collapsed()}));
+        });
+        let send7 = send.clone();
+        let weak7 = weak.clone();
+        app.on_ungroup(move || {
+            let Some(a) = weak7.upgrade() else { return };
+            send7(json!({"cmd": "ungroup", "id": group_key(a.get_group_sel())}));
+        });
+        let weak8 = weak.clone();
+        app.on_group_color(move |x, y| {
+            let Some(a) = weak8.upgrade() else { return };
+            let gid = a.get_group_sel();
+            let Some(row) = a.get_groups().iter().find(|g| g.id == gid) else { return };
+            let own = row.color.alpha() > 0;
+            let hex = format!("#{:02x}{:02x}{:02x}", row.color.red(), row.color.green(), row.color.blue());
+            PALETTE_FOR.with(|p| *p.borrow_mut() = (format!("group:{}", group_key(gid)), String::new(), hex.clone()));
+            a.set_palette_title(row.title.clone());
+            a.set_palette_current(if own { PALETTE.iter().position(|(h, _)| *h == hex).map_or(-1, |i| i as i32) } else { -1 });
+            a.set_palette_auto_current(!own);
+            a.set_t_palette_auto(tr("Default").into());
+            a.set_palette_x(x);
+            a.set_palette_y(y);
+            a.set_palette_open(true);
         });
         app.on_rename_apply(move |text| {
             let key = RENAME_KEY.with(|k| k.borrow().clone());
@@ -1794,12 +2651,40 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     {
         // "Quit with the X button": the whole app quits, else only this window closes (the tray keeps running)
-        let send = send.clone();
+        let send_q = send.clone();
+        let weak = app.as_weak();
         app.window().on_close_requested(move || {
+            if let Some(a) = weak.upgrade() {
+                save_window_state(&a);
+            }
             if CLOSE_EXITS.with(|c| c.get()) {
-                send(json!({"cmd": "quit"}));
+                send_q(json!({"cmd": "quit"}));
             }
             slint::CloseRequestResponse::HideWindow
+        });
+        // the history: pages as they change, back / forward from the hook
+        app.on_page_changed(page_changed);
+        HISTORY.with(|h| h.borrow_mut().current = app.get_page());
+        let weak = app.as_weak();
+        NAV_CB.with(|c| {
+            *c.borrow_mut() = Some(Rc::new(move |forward: bool| {
+                if let Some(a) = weak.upgrade() {
+                    if forward { go_forward(&a) } else { go_back(&a) }
+                }
+            }))
+        });
+        // the toast's button: "Restart now" (the window opens again with the new app scale)
+        let send_t = send.clone();
+        let weak_t = app.as_weak();
+        app.on_toast_clicked(move || {
+            let action = TOAST_ACTION.with(|t| t.borrow().clone());
+            if let Some(a) = weak_t.upgrade() {
+                a.set_toast(SharedString::new());
+                a.set_toast_action(SharedString::new());
+            }
+            if action == "restart" {
+                send_t(json!({"cmd": "restart", "app": false}));
+            }
         });
     }
     {
@@ -2075,6 +2960,13 @@ fn main() -> Result<(), slint::PlatformError> {
                         }
                         "pick_programs" => open_picker(&app, v["key"].as_str().unwrap_or("")),
                         "warn" => show_toast(&app, v["message"].as_str().unwrap_or(""), false, 6.0),
+                        // the tray's "Close window", or "Restart now": keep the place, end this process only
+                        "close_window" => {
+                            save_window_state(&app);
+                            let _ = app.hide();
+                            let _ = slint::quit_event_loop();
+                        }
+                        "restart_needed" => show_toast_action(&app, v["message"].as_str().unwrap_or(""), &tr("Restart now"), "restart", 15.0),
                         // text to hand to another program (a WireGuard device's config): onto the clipboard
                         "show_text" => {
                             if set_clipboard_text(v["text"].as_str().unwrap_or("")) {
@@ -2179,6 +3071,9 @@ fn main() -> Result<(), slint::PlatformError> {
                 apply_title_bar(&a);
                 #[cfg(windows)]
                 caption::install(&a);
+                restore_window_state(&a);
+                #[cfg(windows)]
+                nav_hook::install(owner_hwnd(&a));
                 FIRST_PAINT.with(|t| t.stop());
             }
         });

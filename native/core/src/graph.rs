@@ -729,7 +729,59 @@ pub fn validate(raw: &Value) -> Obj {
     }
     gpc["applied"] = json!(pc.get("applied") == Some(&Value::Bool(true)));
     gpc["server"] = json!(pc.get("server").and_then(Value::as_str).unwrap_or(""));
+    // canvas groups (Rust app only; Python ignores the key): kept only when there are any
+    if let Some(groups) = r.get("groups").and_then(Value::as_array) {
+        g.insert("groups".into(), Value::Array(groups.clone()));
+        clean_groups(&mut g);
+    }
     g
+}
+
+/// The canvas keys a group can hold: blocks, the output half of a wireless pair ("<id>/out"), the PC block.
+pub fn canvas_keys(g: &Obj) -> HashSet<String> {
+    let mut keys: HashSet<String> = ["inbounds", "outbounds", "routers", "relays"].iter().flat_map(|k| ids_of(g, k)).collect();
+    for r in list(g, "relays") {
+        if r["wireless"] == json!(true) {
+            keys.insert(format!("{}/out", r["id"].as_str().unwrap_or("")));
+        }
+    }
+    keys.insert("pc".into());
+    keys
+}
+
+/// Canvas groups as rows {id, name, color, members, collapsed}: members that are gone are dropped (and a block
+/// is in one group only), a group left with none goes; no groups = no key.
+pub fn clean_groups(g: &mut Obj) {
+    let Some(raw) = g.get("groups").and_then(Value::as_array).cloned() else { return };
+    let keys = canvas_keys(g);
+    let mut taken: HashSet<String> = HashSet::new();
+    let mut out = vec![];
+    for x in raw.iter().filter_map(Value::as_object) {
+        let members: Vec<Value> = x
+            .get("members")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .filter(|m| keys.contains(*m) && taken.insert(m.to_string()))
+            .map(|m| json!(m))
+            .collect();
+        if members.is_empty() {
+            continue;
+        }
+        out.push(json!({
+            "id": id_or_new(x.get("id")),
+            "name": x.get("name").and_then(Value::as_str).map(|s| crate::py::head(crate::py::strip(s), 60)).unwrap_or_default(),
+            "color": valid_color(x.get("color")),
+            "members": members,
+            "collapsed": x.get("collapsed") == Some(&json!(true)),
+        }));
+    }
+    if out.is_empty() {
+        g.remove("groups");
+    } else {
+        g.insert("groups".into(), Value::Array(out));
+    }
 }
 
 // --- compile to runtime proxies ---

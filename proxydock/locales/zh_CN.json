@@ -1072,5 +1072,14 @@
  "Waterfall": "瀑布图",
  "Waiting": "等待响应",
  "Response": "响应",
- "Public key": "公钥"
+ "Public key": "公钥",
+ "Input": "输入",
+ "Group blocks": "编组方块",
+ "Ungroup": "取消编组",
+ "Collapse": "折叠",
+ "Expand": "展开",
+ "Colour": "颜色",
+ "Group {n}": "编组 {n}",
+ "{count} blocks": "{count} 个方块",
+ "Select two blocks or more": "请选择两个或更多方块"
 }

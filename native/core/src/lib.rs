@@ -5,6 +5,7 @@
 pub mod certinfo;
 pub mod checks;
 pub mod clash;
+pub mod colors;
 pub mod config;
 pub mod edit;
 pub mod form;

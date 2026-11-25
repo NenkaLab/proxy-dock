@@ -169,6 +169,28 @@ pub fn set_startup(exe: &Path, register: bool, hidden: bool) -> Result<(), Strin
     }
 }
 
+/// the previous version's (SOCKS5 Proxy) start-at-login value name
+pub const OLD_STARTUP_NAME: &str = "SOCKS5 Proxy";
+
+/// Python `migrate_autostart`: the previous version's start-at-login entry is removed and ProxyDock registered
+/// instead (keeping a hidden start). True when it was moved.
+pub fn migrate_autostart(exe: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let Ok(k) = reg::open(&run_key(), false) else { return false };
+        let Some(old) = reg::get(&k, OLD_STARTUP_NAME).and_then(|v| v.as_str().map(String::from)) else { return false };
+        drop(k);
+        let Ok(k) = reg::open(&run_key(), true) else { return false };
+        reg::delete(&k, OLD_STARTUP_NAME);
+        set_startup(exe, true, old.contains("--hidden")).is_ok()
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = exe;
+        false
+    }
+}
+
 // --- the system proxy (the PC block) ---
 
 /// (ProxyServer value, error) for using this inbound as the system proxy (Python `system_proxy_server`)
@@ -355,6 +377,14 @@ mod tests {
         assert_eq!(startup_state(), (true, false));
         set_startup(exe, false, false).unwrap();
         assert_eq!(startup_state(), (false, false));
+        // the previous version's entry moves to ProxyDock, keeping a hidden start (Python `migrate_autostart`)
+        let k = reg::open(&run_key(), true).unwrap();
+        reg::set_str(&k, OLD_STARTUP_NAME, r#""C:\old\socks5proxy.exe" --hidden"#).unwrap();
+        assert!(migrate_autostart(exe));
+        assert!(reg::get(&k, OLD_STARTUP_NAME).is_none());
+        assert_eq!(startup_state(), (true, true));
+        assert!(!migrate_autostart(exe), "nothing left to move");
+        set_startup(exe, false, false).unwrap();
 
         // the PC block: back up, apply (the user's exceptions kept), restore
         let mut before = Map::new();

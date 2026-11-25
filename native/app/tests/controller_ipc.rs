@@ -615,7 +615,9 @@ fn settings_page_and_latency() {
     assert_eq!(busy["latency"]["badges"]["d"][0], "…");
     assert_eq!(busy["latency"]["badges"]["s"][0], "…");
     assert!(busy["latency"]["badges"].get("x").is_none());
-    let done = expect(&rx, 60, |v| v["ev"] == "info" && v["message"].as_str().unwrap().contains("·")).expect("finished");
+    // (a warning when some did not respond, as Python's bar)
+    let done = expect(&rx, 60, |v| (v["ev"] == "info" || v["ev"] == "warn") && v["message"].as_str().unwrap().contains("not responding")).expect("finished");
+    assert_eq!(done["ev"], "warn", "the SOCKS5 block has no server: one did not respond");
     eprintln!("{}", done["message"]);
     let last = expect(&rx, 5, |v| v["ev"] == "latency").expect("badges");
     assert_eq!(last["latency"]["progress"], "");
@@ -941,5 +943,29 @@ fn update_check_finds_a_newer_release() {
     assert!(saved(&path)["global"]["update_checked"].as_i64().unwrap() > 0);
     unsafe { std::env::remove_var("PROXYDOCK_UPDATE_URL") };
     h.quit(Duration::from_secs(10));
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn unreadable_settings_are_kept_aside() {
+    // (Python `config.load`): a broken config.json is copied to config.json.broken and the app starts with defaults
+    let _serial = serial();
+    let home = std::env::temp_dir().join(format!("proxydock-broken-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let path = home.join("config.json");
+    std::fs::write(&path, "{ this is not json").unwrap();
+    proxydock_core::singbox::guard::set_run_dir(home.join("run"));
+    let h = controller::spawn(path.clone()).unwrap();
+    let (mut w, rx) = connect(&h, &h.token);
+    let hello = expect(&rx, 5, |v| v["ev"] == "hello").expect("hello");
+    assert!(hello["logs"].as_array().unwrap().iter().any(|l| l["message"].as_str().unwrap_or("").contains(".broken")), "{}", hello["logs"]);
+    assert_eq!(std::fs::read_to_string(home.join("config.json.broken")).unwrap(), "{ this is not json");
+    // it can save again: a new block is written over the broken file (its copy stays)
+    ipc::send(&mut w, &json!({"cmd": "add", "what": "outbound", "type": "direct", "x": 0, "y": 0})).unwrap();
+    expect(&rx, 5, |v| v["ev"] == "graph").expect("graph");
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(saved["graph"]["outbounds"].as_array().unwrap().len(), 1);
+    h.quit(std::time::Duration::from_secs(5));
     let _ = std::fs::remove_dir_all(&home);
 }

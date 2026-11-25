@@ -55,6 +55,32 @@ fn run(_owner: usize, _title: &str, _filter: &str, _name: &str, _save: bool) -> 
     None
 }
 
+/// Windows' colour dialog (Python `ColorPicker`), starting at `initial` ("#rrggbb"); the chosen "#rrggbb"
+#[cfg(windows)]
+pub fn choose_color(owner: usize, initial: &str) -> Option<String> {
+    use windows_sys::Win32::UI::Controls::Dialogs::{ChooseColorW, CC_FULLOPEN, CC_RGBINIT, CHOOSECOLORW};
+    let h = initial.strip_prefix('#').and_then(|h| u32::from_str_radix(h, 16).ok()).unwrap_or(0x5aa0f0);
+    // COLORREF is 0x00bbggrr
+    let rgb = ((h >> 16) & 0xff) | (h & 0xff00) | ((h & 0xff) << 16);
+    let mut custom = [0u32; 16];
+    let mut c: CHOOSECOLORW = unsafe { std::mem::zeroed() };
+    c.lStructSize = std::mem::size_of::<CHOOSECOLORW>() as u32;
+    c.hwndOwner = owner as _;
+    c.rgbResult = rgb;
+    c.lpCustColors = custom.as_mut_ptr();
+    c.Flags = CC_FULLOPEN | CC_RGBINIT;
+    if unsafe { ChooseColorW(&mut c) } == 0 {
+        return None;
+    }
+    let v = c.rgbResult;
+    Some(format!("#{:02x}{:02x}{:02x}", v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff))
+}
+
+#[cfg(not(windows))]
+pub fn choose_color(_owner: usize, _initial: &str) -> Option<String> {
+    None
+}
+
 /// "Open": the chosen file, or None when cancelled. `owner` = the window's HWND (0 = none).
 pub fn open(owner: usize, title: &str, filter: &str) -> Option<std::path::PathBuf> {
     run(owner, title, filter, "", false)

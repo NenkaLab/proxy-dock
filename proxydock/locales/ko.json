@@ -1072,5 +1072,14 @@
  "Waterfall": "워터폴",
  "Waiting": "응답 대기",
  "Response": "응답",
- "Public key": "공개 키"
+ "Public key": "공개 키",
+ "Input": "입력",
+ "Group blocks": "블록 묶기",
+ "Ungroup": "묶음 풀기",
+ "Collapse": "접기",
+ "Expand": "펼치기",
+ "Colour": "색",
+ "Group {n}": "묶음 {n}",
+ "{count} blocks": "블록 {count}개",
+ "Select two blocks or more": "블록을 두 개 이상 선택하세요"
 }

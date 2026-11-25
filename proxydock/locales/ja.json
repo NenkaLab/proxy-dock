@@ -1072,5 +1072,14 @@
  "Waterfall": "ウォーターフォール",
  "Waiting": "応答待ち",
  "Response": "応答",
- "Public key": "公開鍵"
+ "Public key": "公開鍵",
+ "Input": "入力",
+ "Group blocks": "ブロックをまとめる",
+ "Ungroup": "まとめを解除",
+ "Collapse": "折りたたむ",
+ "Expand": "展開",
+ "Colour": "色",
+ "Group {n}": "まとめ {n}",
+ "{count} blocks": "ブロック {count} 個",
+ "Select two blocks or more": "ブロックを 2 つ以上選択してください"
 }

@@ -1072,5 +1072,14 @@
  "Waterfall": "Wasserfall",
  "Waiting": "Warten",
  "Response": "Antwort",
- "Public key": "Öffentlicher Schlüssel"
+ "Public key": "Öffentlicher Schlüssel",
+ "Input": "Eingang",
+ "Group blocks": "Blöcke gruppieren",
+ "Ungroup": "Gruppierung aufheben",
+ "Collapse": "Einklappen",
+ "Expand": "Ausklappen",
+ "Colour": "Farbe",
+ "Group {n}": "Gruppe {n}",
+ "{count} blocks": "{count} Blöcke",
+ "Select two blocks or more": "Wählen Sie zwei oder mehr Blöcke aus"
 }

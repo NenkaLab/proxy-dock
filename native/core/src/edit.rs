@@ -253,6 +253,84 @@ pub fn move_block(g: &mut Obj, key: &str, x: f64, y: f64) {
 
 /// Delete a block (Python `graph.remove`): links into it are cut; links into a deleted pass-through's lanes are
 /// spliced to where those lanes led. A wireless half deletes the whole pair.
+// --- canvas groups (a box around blocks; display only: the wiring does not change) ---
+
+fn groups_mut(g: &mut Obj) -> &mut Vec<Value> {
+    if !g.get("groups").is_some_and(Value::is_array) {
+        g.insert("groups".into(), json!([]));
+    }
+    g.get_mut("groups").and_then(Value::as_array_mut).unwrap()
+}
+
+fn group_mut<'a>(g: &'a mut Obj, gid: &str) -> Option<&'a mut Value> {
+    g.get_mut("groups").and_then(Value::as_array_mut).and_then(|a| a.iter_mut().find(|x| x["id"] == json!(gid)))
+}
+
+/// A group around blocks `keys` (taken out of any group they were in); its id. Needs two blocks or more.
+pub fn group_blocks(g: &mut Obj, keys: &[&str]) -> Option<String> {
+    let valid = graph::canvas_keys(g);
+    let keys: Vec<String> = keys.iter().filter(|k| valid.contains(**k)).map(|k| k.to_string()).collect();
+    if keys.len() < 2 {
+        return None;
+    }
+    let n = g.get("groups").and_then(Value::as_array).map_or(0, Vec::len) + 1;
+    for x in groups_mut(g).iter_mut() {
+        if let Some(m) = x["members"].as_array_mut() {
+            m.retain(|k| !keys.iter().any(|key| k == key));
+        }
+    }
+    let id = crate::ids::new_id();
+    let name = tr("Group {n}").replace("{n}", &n.to_string());
+    groups_mut(g).push(json!({"id": id, "name": name, "color": "", "members": keys, "collapsed": false}));
+    graph::clean_groups(g);
+    Some(id)
+}
+
+/// the group goes, its blocks stay where they are
+pub fn ungroup(g: &mut Obj, gid: &str) -> bool {
+    let before = g.get("groups").and_then(Value::as_array).map_or(0, Vec::len);
+    groups_mut(g).retain(|x| x["id"] != json!(gid));
+    graph::clean_groups(g);
+    g.get("groups").and_then(Value::as_array).map_or(0, Vec::len) != before
+}
+
+pub fn rename_group(g: &mut Obj, gid: &str, name: &str) -> bool {
+    let name = crate::py::head(crate::py::strip(name), 60);
+    match group_mut(g, gid) {
+        Some(x) if !name.is_empty() && x["name"] != json!(name) => {
+            x["name"] = json!(name);
+            true
+        }
+        _ => false,
+    }
+}
+
+pub fn set_group_color(g: &mut Obj, gid: &str, color: &str) -> bool {
+    let color = graph::valid_color(Some(&json!(color)));
+    match group_mut(g, gid) {
+        Some(x) if x["color"] != json!(color) => {
+            x["color"] = json!(color);
+            true
+        }
+        _ => false,
+    }
+}
+
+pub fn set_group_collapsed(g: &mut Obj, gid: &str, collapsed: bool) -> bool {
+    match group_mut(g, gid) {
+        Some(x) if x["collapsed"] != json!(collapsed) => {
+            x["collapsed"] = json!(collapsed);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// the group a block is in
+pub fn group_of(g: &Obj, key: &str) -> Option<String> {
+    g.get("groups").and_then(Value::as_array).into_iter().flatten().find(|x| x["members"].as_array().is_some_and(|m| m.iter().any(|k| k == key))).and_then(|x| x["id"].as_str().map(String::from))
+}
+
 pub fn delete(g: &mut Obj, key: &str) {
     let (nid, out_half) = block_of(key);
     let nid = nid.to_string();
@@ -537,6 +615,32 @@ mod tests {
             "routers": [{"id": "r", "name": "R", "rules": [{"id": "x", "name": "x", "match": {}}]}],
             "relays": [{"id": "rl", "name": "L", "inputs": [{"id": "L1"}, {"id": "L2"}]}],
         }))
+    }
+
+    #[test]
+    fn canvas_groups() {
+        let mut g = sample();
+        assert!(!g.contains_key("groups"), "no groups: no key (Python's graphs stay the same)");
+        assert!(group_blocks(&mut g, &["a"]).is_none(), "one block is not a group");
+        let id = group_blocks(&mut g, &["a", "d", "nope"]).unwrap();
+        assert_eq!(g["groups"][0]["members"], json!(["a", "d"]));
+        // a block is in one group: grouping it again takes it out of the first
+        let id2 = group_blocks(&mut g, &["d", "s"]).unwrap();
+        assert_eq!(group_of(&g, "d"), Some(id2.clone()));
+        // the first group lost "d" and is left with one block: still a group (it was made with two)
+        assert_eq!(g["groups"][0]["members"], json!(["a"]));
+        assert!(rename_group(&mut g, &id, "Local"));
+        assert!(set_group_color(&mut g, &id, "#57ab5a"));
+        assert!(set_group_collapsed(&mut g, &id, true));
+        // kept through validation (load / save); a deleted block leaves its group, an empty group goes
+        let v = graph::validate(&Value::Object(g.clone()));
+        assert_eq!(v["groups"][0]["name"], "Local");
+        assert_eq!(v["groups"][0]["collapsed"], true);
+        delete(&mut g, "a");
+        graph::clean_groups(&mut g);
+        assert_eq!(g["groups"].as_array().unwrap().len(), 1);
+        assert!(ungroup(&mut g, &id2));
+        assert!(!g.contains_key("groups"));
     }
 
     #[test]
@@ -924,6 +1028,7 @@ pub fn block_menu(g: &Obj, key: &str) -> Value {
         }
         _ => {}
     }
+    head.push(item("group.make", tr("Group blocks")));
     menu(head, sub_title, sub, true, true)
 }
 

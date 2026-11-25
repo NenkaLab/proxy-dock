@@ -1072,5 +1072,14 @@
  "Waterfall": "Cascade",
  "Waiting": "Attente",
  "Response": "Réponse",
- "Public key": "Clé publique"
+ "Public key": "Clé publique",
+ "Input": "Entrée",
+ "Group blocks": "Regrouper les blocs",
+ "Ungroup": "Dissocier",
+ "Collapse": "Réduire",
+ "Expand": "Développer",
+ "Colour": "Couleur",
+ "Group {n}": "Groupe {n}",
+ "{count} blocks": "{count} blocs",
+ "Select two blocks or more": "Sélectionnez au moins deux blocs"
 }

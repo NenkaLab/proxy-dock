@@ -2,6 +2,8 @@
 // links no GUI toolkit, so it stays small; the window is proxydock-ui.exe, started while it is wanted and exiting
 // when it closes.
 //   proxydock.exe [--hidden | --logs]   tray (and the window unless --hidden; --logs: on the log page)
+//   proxydock.exe --version             print the version
+//   proxydock.exe --restart             (internal) wait for the old copy to end, then start
 //   proxydock.exe --tun-helper ...      the elevated TUN helper (started by the app itself through UAC)
 //   PROXYDOCK_HOME=<folder>             settings folder instead of %APPDATA%\ProxyDock (tests, portable)
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -95,6 +97,80 @@ fn open_ui(page: u32) {
     *child = cmd.spawn().ok();
 }
 
+/// the window process's top-level window, if it is open
+fn ui_window() -> Option<usize> {
+    use windows_sys::Win32::{Foundation::*, UI::WindowsAndMessaging::*};
+    let pid = {
+        let mut child = UI_CHILD.lock().unwrap();
+        let c = child.as_mut()?;
+        if !matches!(c.try_wait(), Ok(None)) {
+            return None;
+        }
+        c.id()
+    };
+    struct Find {
+        pid: u32,
+        hwnd: HWND,
+    }
+    unsafe extern "system" fn each(hwnd: HWND, lparam: LPARAM) -> windows_sys::core::BOOL {
+        let find = unsafe { &mut *(lparam as *mut Find) };
+        let mut owner = 0u32;
+        unsafe { GetWindowThreadProcessId(hwnd, &mut owner) };
+        if owner == find.pid && unsafe { IsWindowVisible(hwnd) } != 0 && unsafe { GetWindow(hwnd, GW_OWNER) }.is_null() {
+            find.hwnd = hwnd;
+            return 0;
+        }
+        1
+    }
+    let mut find = Find { pid, hwnd: std::ptr::null_mut() };
+    unsafe { EnumWindows(Some(each), &mut find as *mut Find as LPARAM) };
+    (!find.hwnd.is_null()).then_some(find.hwnd as usize)
+}
+
+/// close the window (it saves its place and ends; the tray and the cards go on, whatever "Quit with the X button")
+fn close_ui() {
+    if let Some(core) = CORE.get() {
+        core.close_window();
+    }
+}
+
+/// Python `restart`: a new copy (told to wait for this one) and this one quits; `ui_only`: only the window opens
+/// again (a new app scale takes effect when it starts)
+fn restart(ui_only: bool) {
+    if ui_only {
+        // (the controller already told the window to close)
+        std::thread::spawn(|| {
+            // (the old window ends first: one window at a time)
+            for _ in 0..50 {
+                std::thread::sleep(Duration::from_millis(100));
+                let alive = UI_CHILD.lock().unwrap().as_mut().is_some_and(|c| matches!(c.try_wait(), Ok(None)));
+                if !alive {
+                    break;
+                }
+            }
+            open_ui(0);
+        });
+        return;
+    }
+    let Ok(exe) = std::env::current_exe() else { return };
+    let mut args: Vec<String> = std::env::args().skip(1).filter(|a| a != "--restart").collect();
+    args.push("--restart".into());
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(&args);
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0000_0008 | 0x0000_0200); // detached, its own group
+    }
+    match cmd.spawn() {
+        Ok(_) => quit(),
+        Err(e) => {
+            if let Some(core) = CORE.get() {
+                core.warn(&tr("Restart failed: {e}").replace("{e}", &e.to_string()));
+            }
+        }
+    }
+}
+
 fn quit() {
     if let Some(mut c) = UI_CHILD.lock().unwrap().take() {
         let _ = c.kill();
@@ -109,6 +185,11 @@ fn quit() {
 const WM_QUIT_APP: u32 = 0x8000 + 1;
 /// a thread message: open the window (wparam: the page), from a second start
 const WM_SHOW_UI: u32 = 0x8000 + 2;
+/// a thread message: restart (wparam 1: the whole app, 0: the window)
+const WM_RESTART: u32 = 0x8000 + 3;
+/// a thread message: the tray tooltip changed (in TOOLTIP)
+const WM_TOOLTIP: u32 = 0x8000 + 4;
+static TOOLTIP: Mutex<String> = Mutex::new(String::new());
 /// named events a second start sets (the window / the log page)
 const SHOW_EVENTS: [&str; 2] = ["Local\\ProxyDockRustShow", "Local\\ProxyDockRustShowLogs"];
 
@@ -161,6 +242,8 @@ const ID_QUIT: u32 = 4;
 const ID_PC_OFF: u32 = 5;
 const ID_STARTUP: u32 = 6;
 const ID_STARTUP_HIDDEN: u32 = 7;
+const ID_RESTART: u32 = 8;
+const ID_CLOSE: u32 = 9;
 const ID_CARD: u32 = 100;
 /// the IF switches' and groups' choices
 const ID_QUICK: u32 = 1000;
@@ -180,7 +263,12 @@ fn show_menu(x: i32, y: i32) {
     use menu::Entry;
     let Some(core) = CORE.get() else { return };
     let cards = core.cards();
-    let mut entries = vec![Entry::Item { label: tr("Open window"), id: ID_OPEN }, Entry::Item { label: tr("Logs"), id: ID_LOG }];
+    // (Python: the first item opens or closes the window)
+    let open = ui_window().is_some();
+    let mut entries = vec![
+        if open { Entry::Item { label: tr("Close window"), id: ID_CLOSE } } else { Entry::Item { label: tr("Open window"), id: ID_OPEN } },
+        Entry::Item { label: tr("Logs"), id: ID_LOG },
+    ];
     if !cards.is_empty() {
         entries.push(Entry::Divider);
         for (i, c) in cards.iter().take(MENU_CARDS).enumerate() {
@@ -219,9 +307,12 @@ fn show_menu(x: i32, y: i32) {
         entries.push(Entry::Item { label: tr("Hide startup notification  ·  {value}").replace("{value}", &on_off(hidden)), id: ID_STARTUP_HIDDEN });
     }
     entries.push(Entry::Divider);
+    entries.push(Entry::Item { label: tr("Restart"), id: ID_RESTART });
     entries.push(Entry::Item { label: tr("Quit"), id: ID_QUIT });
     menu::show(x, y, entries, move |id| match id {
         ID_OPEN => open_ui(0),
+        ID_CLOSE => close_ui(),
+        ID_RESTART => restart(false),
         ID_LOG => open_ui(2),
         ID_STOP_ALL => core.stop_all(),
         ID_QUIT => quit(),
@@ -288,6 +379,13 @@ fn run_tray(show_at_start: Option<u32>, note: Option<String>) {
         quit: std::sync::Arc::new(move || unsafe {
             PostThreadMessageW(main_thread, WM_QUIT_APP, 0, 0);
         }),
+        restart: std::sync::Arc::new(move |app: bool| unsafe {
+            PostThreadMessageW(main_thread, WM_RESTART, app as usize, 0);
+        }),
+        tooltip: std::sync::Arc::new(move |text: &str| {
+            *TOOLTIP.lock().unwrap() = text.to_string();
+            unsafe { PostThreadMessageW(main_thread, WM_TOOLTIP, 0, 0) };
+        }),
     };
     let core = match controller::spawn_with(proxydock_core::paths::config_path(), hooks) {
         Ok(h) => h,
@@ -335,6 +433,15 @@ fn run_tray(show_at_start: Option<u32>, note: Option<String>) {
                 open_ui(msg.wParam as u32);
                 continue;
             }
+            if msg.hwnd.is_null() && msg.message == WM_RESTART {
+                restart(msg.wParam == 0);
+                continue;
+            }
+            if msg.hwnd.is_null() && msg.message == WM_TOOLTIP {
+                let tip = TOOLTIP.lock().unwrap().clone();
+                let _ = _tray.set_tooltip(Some(tip));
+                continue;
+            }
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
@@ -346,11 +453,32 @@ fn main() {
     if args.first().map(String::as_str) == Some(proxydock_core::singbox::helper::ARG) {
         std::process::exit(proxydock_core::singbox::helper::main(&args[1..]));
     }
-    let Some(mutex) = first_instance() else {
+    if args.iter().any(|a| a == "--version") {
+        // (a GUI program: the console it was started from, if any)
+        unsafe { windows_sys::Win32::System::Console::AttachConsole(u32::MAX) };
+        println!("ProxyDock {}", proxydock_core::update::current_version());
+        return;
+    }
+    // a restart: the old copy is still quitting (Python `become_primary(wait=True)`): wait up to 15 s
+    let mut mutex = first_instance();
+    if mutex.is_none() && args.iter().any(|a| a == "--restart") {
+        for _ in 0..150 {
+            std::thread::sleep(Duration::from_millis(100));
+            mutex = first_instance();
+            if mutex.is_some() {
+                break;
+            }
+        }
+    }
+    let Some(mutex) = mutex else {
         // already running: show its window instead (Python `_on_second_instance`)
         wake_first_instance(args.iter().any(|a| a == "--logs"));
         return;
     };
+    // the previous version's start-at-login entry becomes ours (Python `migrate_autostart`); not for a run on
+    // another settings folder (PROXYDOCK_HOME: tests, portable), which must leave the user's login items alone
+    let migrated = std::env::var_os("PROXYDOCK_HOME").is_none()
+        && std::env::current_exe().is_ok_and(|exe| proxydock_core::platform::migrate_autostart(&exe));
     let note = match relaunch_elevated(&args, mutex) {
         Ok(true) => return,
         Ok(false) => None,
@@ -363,5 +491,11 @@ fn main() {
         }
     };
     let has = |f: &str| args.iter().any(|a| a == f);
+    let note = match (note, migrated) {
+        (Some(n), _) => Some(n),
+        (None, true) => Some(tr("Moved the previous version's startup entry to ProxyDock")),
+        (None, false) => None,
+    };
+    // (a restart opens the window again unless it was started hidden)
     run_tray(if has("--hidden") { None } else if has("--logs") { Some(2) } else { Some(0) }, note);
 }
