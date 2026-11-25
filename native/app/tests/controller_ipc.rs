@@ -509,7 +509,7 @@ fn undo_rename_duplicate_and_notices() {
         let tray = tray.clone();
         std::sync::Arc::new(move |m: &str| tray.lock().unwrap().push(m.to_string()))
     };
-    let h = controller::spawn_with(path.clone(), notify).unwrap();
+    let h = controller::spawn_with(path.clone(), controller::Hooks { notify, ..Default::default() }).unwrap();
     let until = Instant::now() + Duration::from_secs(10);
     while !tray.lock().unwrap().iter().any(|m| m.starts_with("'card' failed to start: ")) && Instant::now() < until {
         std::thread::sleep(Duration::from_millis(50));
@@ -564,5 +564,89 @@ fn undo_rename_duplicate_and_notices() {
     let text = std::fs::read_to_string(home.join("logs").join("proxydock.log")).unwrap();
     assert!(text.lines().any(|l| l.ends_with("] SET   Saved proxy 'Exit'")), "{text}");
     assert!(text.lines().any(|l| l.ends_with("] SET   Undone")), "{text}");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn settings_page_and_latency() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(exe) = singbox() else {
+        eprintln!("sing-box not found: skipped");
+        return;
+    };
+    let home = std::env::temp_dir().join(format!("proxydock-settings-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let settings = json!({
+        "version": 3,
+        "global": {"singbox_path": exe.display().to_string()},
+        "graph": {
+            "outbounds": [
+                {"id": "d", "name": "Direct", "outbound": {"type": "direct"}},
+                {"id": "x", "name": "Refuse", "outbound": {"type": "block"}},
+                {"id": "s", "name": "Dead", "outbound": {"type": "socks5", "host": "127.0.0.1", "port": free_port()}},
+            ],
+        },
+    });
+    let path = home.join("config.json");
+    std::fs::write(&path, settings.to_string()).unwrap();
+    proxydock_core::singbox::guard::set_run_dir(home.join("run"));
+    let h = controller::spawn(path.clone()).unwrap();
+    let (mut w, rx) = connect(&h, &h.token);
+    let hello = expect(&rx, 5, |v| v["ev"] == "hello").expect("hello");
+    let st = &hello["settings"];
+    assert_eq!(st["values"]["allowed_domains"], "*");
+    assert_eq!(st["values"]["ui_scale"], 1);
+    assert_eq!(st["languages"][1], "한국어");
+    assert!(st["engine"].as_str().unwrap().starts_with("sing-box "), "{}", st["engine"]);
+
+    // latency: every outbound block but Block, "…" while measuring, then a time or ✕
+    ipc::send(&mut w, &json!({"cmd": "latency", "keys": []})).unwrap();
+    let busy = expect(&rx, 5, |v| v["ev"] == "latency" && !v["latency"]["progress"].as_str().unwrap().is_empty()).expect("busy");
+    assert_eq!(busy["latency"]["badges"]["d"][0], "…");
+    assert_eq!(busy["latency"]["badges"]["s"][0], "…");
+    assert!(busy["latency"]["badges"].get("x").is_none());
+    let done = expect(&rx, 60, |v| v["ev"] == "info" && v["message"].as_str().unwrap().contains("·")).expect("finished");
+    eprintln!("{}", done["message"]);
+    let last = expect(&rx, 5, |v| v["ev"] == "latency").expect("badges");
+    assert_eq!(last["latency"]["progress"], "");
+    assert_eq!(last["latency"]["badges"]["s"], json!(["✕", 3]));
+    let d = last["latency"]["badges"]["d"][0].as_str().unwrap().to_string();
+    eprintln!("Direct: {d}");
+    assert!(d.ends_with(" ms") || d == "✕");
+    // the block changed: its result is no longer shown
+    ipc::send(&mut w, &json!({"cmd": "edit_open", "id": "s"})).unwrap();
+    ipc::send(&mut w, &json!({"cmd": "edit_save", "id": "s", "values": {"outbound.port": "1"}})).unwrap();
+    let after = expect(&rx, 5, |v| v["ev"] == "latency").expect("after");
+    assert_eq!(after["latency"]["badges"]["d"], last["latency"]["badges"]["d"]);
+    assert!(after["latency"]["badges"].get("s").is_none(), "{after}");
+    // refused: no allowed domain, a DNS server that is not one
+    let mut vals = st["values"].clone();
+    vals["allowed_domains"] = json!(" ; ");
+    ipc::send(&mut w, &json!({"cmd": "settings_save", "values": vals})).unwrap();
+    assert!(expect(&rx, 5, |v| v["ev"] == "error" && v["message"].as_str().unwrap().starts_with("Allowed domains: ")).is_some());
+    vals["allowed_domains"] = json!("a.com; *.b.com ,");
+    vals["dns_server"] = json!("ftp://x");
+    ipc::send(&mut w, &json!({"cmd": "settings_save", "values": vals})).unwrap();
+    assert!(expect(&rx, 5, |v| v["ev"] == "error" && v["message"].as_str().unwrap().starts_with("DNS server: ")).is_some());
+
+    // saved: Korean, a bigger window, quit with X
+    vals["dns_server"] = json!(" 1.1.1.1 ");
+    vals["language"] = json!(1);
+    vals["ui_scale"] = json!(3);
+    vals["close_exits"] = json!(true);
+    vals["timeout"] = json!(300);
+    ipc::send(&mut w, &json!({"cmd": "settings_save", "values": vals})).unwrap();
+    assert!(expect(&rx, 5, |v| v["ev"] == "info" && v["message"] == "Settings saved (applies after restart: App scale)").is_some());
+    assert!(expect(&rx, 5, |v| v["ev"] == "language" && v["language"] == "ko").is_some());
+    let s2 = expect(&rx, 5, |v| v["ev"] == "settings").expect("settings");
+    assert_eq!(s2["settings"]["values"]["allowed_domains"], "a.com, *.b.com");
+    assert_eq!(s2["settings"]["themes"][0], "기기 설정");
+    let g = saved(&path)["global"].clone();
+    assert_eq!((g["language"].clone(), g["ui_scale"].clone(), g["close_exits"].clone(), g["timeout"].clone(), g["dns_server"].clone()),
+               (json!("ko"), json!(125), json!(true), json!(300), json!("1.1.1.1")));
+    assert_eq!(h.setting("ui_scale"), json!(125));
+
+    h.quit(Duration::from_secs(10));
     let _ = std::fs::remove_dir_all(&home);
 }

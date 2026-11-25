@@ -463,3 +463,35 @@ mod tests {
         assert_eq!((r["kind"].as_str(), r["error"].as_str()), (Some("socks"), Some("Blocked (allow list / private network)")));
     }
 }
+
+/// Outbound blocks a latency test can measure (every one but Block; Python `latency_targets`)
+pub fn latency_targets(g: &crate::graph::Obj) -> Vec<String> {
+    g.get("outbounds")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|n| n["outbound"]["type"] != "block")
+        .filter_map(|n| n["id"].as_str().map(String::from))
+        .collect()
+}
+
+/// A proxy that leaves through outbound block `oid`, for `check_outbound` (Python `probe.outbound_proxy`)
+pub fn outbound_proxy(g: &crate::graph::Obj, oid: &str) -> Value {
+    let name = crate::graph::find(g, oid).map_or(Value::String(oid.into()), |(_, n)| n["name"].clone());
+    let ob = crate::graph::resolve_outbound(g, oid);
+    let mut p = Value::Object(crate::config::validate_proxy(&serde_json::json!({
+        "id": "__latency__", "name": name,
+        "inbound": {"type": "socks5", "host": "127.0.0.1", "port": 1}, "outbound": ob,
+    })));
+    p["outbound"]["via"] = ob.get("via").cloned().unwrap_or(Value::Null);
+    if let Some(m) = ob.get("members") {
+        p["outbound"]["members"] = m.clone();
+    }
+    p
+}
+
+/// What a latency result depends on (the block and its chain): a result is shown only while this is unchanged
+/// (Python `latency_key`)
+pub fn latency_key(g: &crate::graph::Obj, oid: &str) -> Value {
+    crate::graph::resolve_outbound(g, oid)
+}

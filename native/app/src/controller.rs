@@ -49,6 +49,23 @@ const PC_RUNTIME: [&str; 3] = ["backup", "applied", "server"];
 /// shows a message in the tray when no window is open (Python `on_notify` -> `tray.showMessage`)
 pub type Notify = Arc<dyn Fn(&str) + Send + Sync>;
 
+/// What the tray process does for the controller.
+#[derive(Clone)]
+pub struct Hooks {
+    pub notify: Notify,
+    /// quit the whole app (the window closed with "Quit with the X button" on)
+    pub quit: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl Default for Hooks {
+    fn default() -> Self {
+        Hooks { notify: Arc::new(|_| {}), quit: Arc::new(|| {}) }
+    }
+}
+
+/// outbound blocks measured at the same time (Python: a pool of 4)
+const LATENCY_WORKERS: usize = 4;
+
 /// the first subscription check after starting, then how often (Python `update_due_subscriptions` timers)
 const SUB_FIRST: Duration = Duration::from_secs(20);
 const SUB_EVERY: Duration = Duration::from_secs(15 * 60);
@@ -78,9 +95,15 @@ pub struct Handle {
     pub port: u16,
     pub token: String,
     cards: Arc<Mutex<Vec<CardInfo>>>,
+    glob: Arc<Mutex<Map<String, Value>>>,
 }
 
 impl Handle {
+    /// a global setting as saved (the window's scale, ...)
+    pub fn setting(&self, key: &str) -> Value {
+        self.glob.lock().unwrap().get(key).cloned().unwrap_or(Value::Null)
+    }
+
     pub fn cards(&self) -> Vec<CardInfo> {
         self.cards.lock().unwrap().clone()
     }
@@ -119,11 +142,11 @@ pub fn state_name(s: &State) -> &'static str {
 
 /// Read the settings at `config_path` and start the controller (autostart cards start right away).
 pub fn spawn(config_path: PathBuf) -> std::io::Result<Handle> {
-    spawn_with(config_path, Arc::new(|_| {}))
+    spawn_with(config_path, Hooks::default())
 }
 
-/// `spawn` with the tray's notification (messages for the user while no window is open)
-pub fn spawn_with(config_path: PathBuf, notify: Notify) -> std::io::Result<Handle> {
+/// `spawn` with what the tray does for it (notifications, quitting)
+pub fn spawn_with(config_path: PathBuf, hooks: Hooks) -> std::io::Result<Handle> {
     let (tx, rx) = channel();
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
@@ -147,6 +170,7 @@ pub fn spawn_with(config_path: PathBuf, notify: Notify) -> std::io::Result<Handl
         })?;
     }
     let cards = Arc::new(Mutex::new(vec![]));
+    let shared_glob = Arc::new(Mutex::new(config::validate_global(&json!({}))));
     let events = {
         let (a, b) = (tx.clone(), tx.clone());
         Events {
@@ -182,7 +206,12 @@ pub fn spawn_with(config_path: PathBuf, notify: Notify) -> std::io::Result<Handl
         sub_busy: std::collections::HashSet::new(),
         next_sub_check: Instant::now() + SUB_FIRST,
         probe_text: HashMap::new(),
-        notify,
+        hooks,
+        shared_glob: shared_glob.clone(),
+        engine_text: String::new(),
+        latency: HashMap::new(),
+        latency_busy: std::collections::HashSet::new(),
+        latency_round: None,
         file_log: None,
         undo: vec![],
         redo: vec![],
@@ -192,7 +221,7 @@ pub fn spawn_with(config_path: PathBuf, notify: Notify) -> std::io::Result<Handl
     };
     c.load();
     std::thread::Builder::new().name("controller".into()).spawn(move || c.run(rx))?;
-    Ok(Handle { tx, port, token, cards })
+    Ok(Handle { tx, port, token, cards, glob: shared_glob })
 }
 
 struct Client {
@@ -233,7 +262,16 @@ struct Controller {
     next_sub_check: Instant,
     /// the last connection check of each window: (block, text, tone 0 / 1 ok / 2 failed)
     probe_text: HashMap<u64, (String, String, i32)>,
-    notify: Notify,
+    hooks: Hooks,
+    /// the global settings as the tray reads them
+    shared_glob: Arc<Mutex<Map<String, Value>>>,
+    /// the settings page's sing-box line (path and version)
+    engine_text: String,
+    /// latency of outbound blocks: id -> (ok, ms, error, what it depends on)
+    latency: HashMap<String, (bool, Option<i64>, String, Value)>,
+    latency_busy: std::collections::HashSet<String>,
+    /// the running test: (total, done, ok)
+    latency_round: Option<(usize, usize, usize)>,
     /// "Save the log to a file" (global setting `log_to_file`)
     file_log: Option<log::FileLog>,
     /// undo / redo: the graph before each change; the changes one message makes are one step
@@ -279,7 +317,7 @@ impl Controller {
         if self.clients.values().any(|c| c.ready) {
             self.broadcast(&json!({"ev": "info", "message": message}));
         } else {
-            (self.notify)(message);
+            (self.hooks.notify)(message);
         }
     }
 
@@ -375,6 +413,220 @@ impl Controller {
         self.send_undo_state();
     }
 
+    /// The settings page: the values to show, the choices and what the app found (Python `SettingsInterface.load`)
+    fn settings_json(&self) -> Value {
+        let g = &self.glob;
+        let index = |list: &[&str], v: &Value| list.iter().position(|x| Some(*x) == v.as_str()).unwrap_or(0);
+        let codes: Vec<&str> = proxydock_core::i18n::LANGUAGES.iter().map(|(c, _)| *c).collect();
+        let scale = config::UI_SCALES.iter().position(|x| Some(*x) == g["ui_scale"].as_i64()).unwrap_or(1);
+        let domains: Vec<&str> = g["allowed_domains"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+        json!({
+            "values": {
+                "allowed_domains": domains.join(", "), "block_private": g["block_private"], "timeout": g["timeout"],
+                "log_connections": g["log_connections"], "log_close": g["log_close"], "dns_server": g["dns_server"],
+                "dns_via_outbound": g["dns_via_outbound"], "log_to_file": g["log_to_file"],
+                "language": index(&codes, &g["language"]), "theme": index(&config::THEMES, &g["theme"]), "ui_scale": scale,
+                "log_font_size": g["log_font_size"], "close_exits": g["close_exits"], "singbox_latest": g["singbox_latest"],
+            },
+            "languages": proxydock_core::i18n::LANGUAGES.iter().map(|(_, n)| *n).collect::<Vec<_>>(),
+            "themes": [tr("System"), tr("Light"), tr("Dark")],
+            "scales": config::UI_SCALES.iter().map(|s| format!("{s}%") + &if *s == 100 { tr(" (default)") } else { String::new() }).collect::<Vec<_>>(),
+            "engine": self.engine_text,
+            "log_dir": self.log_dir().display().to_string(),
+        })
+    }
+
+    fn log_dir(&self) -> PathBuf {
+        self.config_path.parent().map(|d| d.join("logs")).unwrap_or_else(proxydock_core::paths::log_dir)
+    }
+
+    /// "Apply" on the settings page (Python `SettingsInterface.apply` + `Controller.apply_global`)
+    fn save_settings(&mut self, v: &Value) {
+        let vals = &v["values"];
+        let text = |k: &str| vals[k].as_str().unwrap_or("").to_string();
+        let domains: Vec<String> = text("allowed_domains")
+            .replace(';', ",")
+            .split(',')
+            .map(|d| proxydock_core::py::strip(d).to_string())
+            .filter(|d| !d.is_empty())
+            .collect();
+        if domains.is_empty() {
+            let msg = json!({"ev": "error", "message": format!("{}: {}", tr("Allowed domains"), tr("Enter at least one (* allows all)"))});
+            self.broadcast(&msg);
+            return;
+        }
+        if config::dns_server_spec(&text("dns_server")).is_none() {
+            let msg = json!({"ev": "error", "message": tr("DNS server: use an address like 1.1.1.1, tls://dns.google or https://cloudflare-dns.com/dns-query")});
+            self.broadcast(&msg);
+            return;
+        }
+        if !self.can_save {
+            self.broadcast(&json!({"ev": "error", "message": tr("Save failed")}));
+            return;
+        }
+        let pick = |list: &[&str], k: &str| list.get(vals[k].as_u64().unwrap_or(0) as usize).copied().unwrap_or(list[0]).to_string();
+        let codes: Vec<&str> = proxydock_core::i18n::LANGUAGES.iter().map(|(c, _)| *c).collect();
+        let mut g = self.glob.clone();
+        for k in ["block_private", "log_connections", "log_close", "dns_via_outbound", "log_to_file", "close_exits", "singbox_latest"] {
+            g.insert(k.into(), json!(vals[k] == json!(true)));
+        }
+        for k in ["timeout", "log_font_size"] {
+            if let Some(n) = vals[k].as_i64() {
+                g.insert(k.into(), json!(n));
+            }
+        }
+        g.insert("allowed_domains".into(), json!(domains));
+        g.insert("dns_server".into(), json!(proxydock_core::py::strip(&text("dns_server"))));
+        g.insert("language".into(), json!(pick(&codes, "language")));
+        g.insert("theme".into(), json!(pick(&config::THEMES, "theme")));
+        let scale = config::UI_SCALES.get(vals["ui_scale"].as_u64().unwrap_or(1) as usize).copied().unwrap_or(100);
+        g.insert("ui_scale".into(), json!(scale));
+        let g = config::validate_global(&Value::Object(g));
+        let old = std::mem::replace(&mut self.glob, g);
+        *self.shared_glob.lock().unwrap() = self.glob.clone();
+        self.save();
+        self.manager.apply_global(&self.glob, &self.proxies);
+        let to_file = self.glob["log_to_file"] == json!(true);
+        self.apply_file_logging(to_file);
+        let mut pending = vec![];
+        if self.glob["ui_scale"] != old["ui_scale"] {
+            pending.push(tr("App scale"));
+        }
+        let mut msg = tr("Settings saved");
+        if !pending.is_empty() {
+            msg += &tr(" (applies after restart: {join})").replace("{join}", &pending.join(", "));
+        }
+        self.app_log(Level::Setting, &msg);
+        if self.glob["singbox_latest"] == json!(true) && old["singbox_latest"] != json!(true) {
+            self.update_latest_singbox();
+        }
+        if self.glob["singbox_latest"] != old["singbox_latest"] {
+            self.engine_text = engine_text(&self.glob);
+        }
+        if self.glob["language"] != old["language"] {
+            proxydock_core::i18n::set_language(self.glob["language"].as_str().unwrap_or("en"));
+            let lang = json!({"ev": "language", "language": self.glob["language"]});
+            self.broadcast(&lang);
+            self.rebuild();
+            self.send_canvas();
+            self.app_log(Level::Setting, &tr("Language changed"));
+        }
+        let settings = json!({"ev": "settings", "settings": self.settings_json()});
+        self.broadcast(&settings);
+    }
+
+    /// "Use the latest sing-box": check for a newer release in the background (at most once a day)
+    fn update_latest_singbox(&mut self) {
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = proxydock_core::singbox::latest::update(false);
+            let _ = tx.send(Msg::Work(Box::new(move |c: &mut Controller| {
+                match result {
+                    Ok(proxydock_core::singbox::latest::Outcome::Installed(v)) => {
+                        let msg = tr("Downloaded sing-box {version}; each proxy uses it from its next start").replace("{version}", &v.to_string());
+                        c.app_log(Level::Setting, &msg);
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        let msg = tr("Could not get the latest sing-box: {error}").replace("{error}", &e);
+                        c.app_log(Level::Warn, &msg);
+                    }
+                }
+                c.engine_text = engine_text(&c.glob);
+                let settings = json!({"ev": "settings", "settings": c.settings_json()});
+                c.broadcast(&settings);
+            })));
+        });
+    }
+
+    /// Measure outbound blocks (the given ones, else every one but Block), 4 at a time (Python `test_latency`).
+    fn test_latency(&mut self, keys: &[String]) {
+        let targets = proxydock_core::probe::latency_targets(&self.graph);
+        let mut ids: Vec<String> = keys.iter().map(|k| k.strip_suffix("/out").unwrap_or(k).to_string()).filter(|k| targets.contains(k)).collect();
+        if ids.is_empty() {
+            ids = targets;
+        }
+        ids.retain(|i| !self.latency_busy.contains(i));
+        ids.dedup();
+        if ids.is_empty() {
+            return;
+        }
+        let jobs: Vec<(String, Value, Value)> = ids
+            .iter()
+            .map(|id| (id.clone(), proxydock_core::probe::outbound_proxy(&self.graph, id), proxydock_core::probe::latency_key(&self.graph, id)))
+            .collect();
+        self.latency_busy.extend(ids.iter().cloned());
+        self.latency_round = Some((ids.len(), 0, 0));
+        self.send_latency();
+        let queue = Arc::new(Mutex::new(jobs));
+        for _ in 0..LATENCY_WORKERS.min(ids.len()) {
+            let (queue, tx, remote, glob) = (queue.clone(), self.tx.clone(), self.manager.remote(), self.glob.clone());
+            std::thread::spawn(move || loop {
+                let Some((id, p, key)) = queue.lock().unwrap().pop() else { break };
+                let r = proxydock_core::probe::check_outbound(&remote, &p, &glob, &format!("__latency_{id}__"));
+                let ok = r.get("ok") == Some(&json!(true));
+                let ms = if ok { r.get("total_ms").and_then(Value::as_f64).map(|m| m.round() as i64) } else { None };
+                let pick = |k: &str| r.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+                let error = if !pick("detail").is_empty() { pick("detail") } else { pick("error") };
+                let _ = tx.send(Msg::Work(Box::new(move |c: &mut Controller| c.on_latency(id, (ok, ms, error, key)))));
+            });
+        }
+    }
+
+    fn on_latency(&mut self, id: String, result: (bool, Option<i64>, String, Value)) {
+        self.latency_busy.remove(&id);
+        let ok = result.0;
+        self.latency.insert(id, result);
+        let mut finished = None;
+        if let Some((total, done, oks)) = self.latency_round.as_mut() {
+            *done += 1;
+            *oks += usize::from(ok);
+            if *done >= *total {
+                finished = Some((*total, *oks));
+            }
+        }
+        if let Some((total, oks)) = finished {
+            self.latency_round = None;
+            let text = tr("{ok} working, {failed} not responding").replace("{ok}", &oks.to_string()).replace("{failed}", &(total - oks).to_string());
+            let msg = json!({"ev": "info", "message": format!("{} · {text}", tr("Latency test finished"))});
+            self.broadcast(&msg);
+        }
+        self.send_latency();
+    }
+
+    /// The badges on outbound blocks (Python `update_latency`): "…" while testing, the time (tone 1 fast, 2 slow,
+    /// 3 very slow) or "✕" (3) for a block that did not respond; a result shows only while its block is unchanged.
+    fn latency_json(&self) -> Value {
+        let mut badges = Map::new();
+        for n in self.graph.get("outbounds").and_then(Value::as_array).into_iter().flatten() {
+            let id = n["id"].as_str().unwrap_or("");
+            let badge = if self.latency_busy.contains(id) {
+                Some(("…".to_string(), 0))
+            } else {
+                match self.latency.get(id) {
+                    Some((ok, ms, _, key)) if *key == proxydock_core::probe::latency_key(&self.graph, id) => Some(match (ok, ms) {
+                        (true, Some(ms)) => (format!("{ms} ms"), if *ms < 400 { 1 } else if *ms < 1000 { 2 } else { 3 }),
+                        _ => ("✕".to_string(), 3),
+                    }),
+                    _ => None,
+                }
+            };
+            if let Some((text, tone)) = badge {
+                badges.insert(id.into(), json!([text, tone]));
+            }
+        }
+        let progress = match self.latency_round {
+            Some((total, done, _)) => tr("Testing… {done}/{total}").replace("{done}", &done.to_string()).replace("{total}", &total.to_string()),
+            None => String::new(),
+        };
+        json!({"badges": badges, "progress": progress})
+    }
+
+    fn send_latency(&mut self) {
+        let msg = json!({"ev": "latency", "latency": self.latency_json()});
+        self.broadcast(&msg);
+    }
+
     /// settings file -> global settings and the compiled cards; then the autostart cards start
     fn load(&mut self) {
         match config::load_from(&self.config_path) {
@@ -406,6 +658,11 @@ impl Controller {
         }
         self.rebuild();
         self.undo_base = self.snapshot();
+        *self.shared_glob.lock().unwrap() = self.glob.clone();
+        self.engine_text = engine_text(&self.glob);
+        if self.glob["singbox_latest"] == json!(true) {
+            self.update_latest_singbox();
+        }
         let auto: Vec<Value> = self.proxies.iter().filter(|p| p["autostart"] == json!(true)).cloned().collect();
         for p in auto {
             let _ = self.manager.start(&p, &self.glob);
@@ -461,6 +718,7 @@ impl Controller {
         }
         self.save();
         self.send_canvas();
+        self.send_latency();
     }
 
     fn send_canvas(&mut self) {
@@ -935,7 +1193,8 @@ impl Controller {
                 let skip = self.logs.len().saturating_sub(LOG_SEND);
                 let logs: Vec<Value> = self.logs.iter().skip(skip).map(entry_json).collect();
                 let canvas = canvas::to_json(&self.view, &|id| state_name(&self.manager.state(id)));
-                let hello = json!({"ev": "hello", "language": self.glob["language"], "cards": cards, "logs": logs, "stats": self.stats_json(), "canvas": canvas, "undo": !self.undo.is_empty(), "redo": !self.redo.is_empty()});
+                let hello = json!({"ev": "hello", "language": self.glob["language"], "cards": cards, "logs": logs, "stats": self.stats_json(), "canvas": canvas, "undo": !self.undo.is_empty(), "redo": !self.redo.is_empty(),
+                    "settings": self.settings_json(), "latency": self.latency_json()});
                 if let Some(c) = self.clients.get_mut(&n) {
                     c.ready = ipc::send(&mut c.stream, &hello).is_ok();
                 }
@@ -959,6 +1218,12 @@ impl Controller {
             "toggle" => self.toggle(id),
             "stop_all" => self.stop_all(),
             "move" | "connect" | "disconnect" | "delete" | "add" | "duplicate" | "rename" => self.edit(cmd, v),
+            "settings_save" => self.save_settings(v),
+            "latency" => {
+                let keys: Vec<String> = v["keys"].as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect();
+                self.test_latency(&keys);
+            }
+            "quit" => (self.hooks.quit)(),
             "undo" => self.undo_step(false),
             "redo" => self.undo_step(true),
             "edit_open" | "edit_preview" | "edit_action" | "edit_save" => self.editor(n, cmd, v),
@@ -1088,6 +1353,17 @@ impl Controller {
         }
         self.broadcast(&json!({"ev": "flow", "links": rates}));
         self.flow_sent = rates;
+    }
+}
+
+/// the settings page's sing-box line: the program the cards use and its version
+fn engine_text(glob: &Map<String, Value>) -> String {
+    match proxydock_core::singbox::find_binary(glob) {
+        Some(exe) => match proxydock_core::singbox::version::of(&exe) {
+            Some(v) => format!("sing-box {v} · {}", exe.display()),
+            None => exe.display().to_string(),
+        },
+        None => tr("sing-box was not found"),
     }
 }
 

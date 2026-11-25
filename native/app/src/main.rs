@@ -116,6 +116,12 @@ fn open_ui(page: u32) {
     let exe = std::env::current_exe().unwrap().with_file_name("proxydock-ui.exe");
     let mut cmd = std::process::Command::new(exe);
     cmd.env(proxydock::ipc::ENV, core.ipc_env()).env("PROXYDOCK_PAGE", page.to_string());
+    // "App scale": on top of the display's own scale (Python QT_SCALE_FACTOR)
+    let scale = core.setting("ui_scale").as_f64().unwrap_or(100.0) / 100.0;
+    let dpi = unsafe { windows_sys::Win32::UI::HiDpi::GetDpiForSystem() } as f64 / 96.0;
+    if (scale - 1.0).abs() > 1e-6 {
+        cmd.env("SLINT_SCALE_FACTOR", format!("{:.3}", dpi * scale));
+    }
     *child = cmd.spawn().ok();
 }
 
@@ -128,6 +134,9 @@ fn quit() {
     }
     unsafe { windows_sys::Win32::UI::WindowsAndMessaging::PostQuitMessage(0) };
 }
+
+/// a thread message: quit the app (sent by the controller)
+const WM_QUIT_APP: u32 = 0x8000 + 1;
 
 const ID_OPEN: u32 = 1;
 const ID_LOG: u32 = 2;
@@ -189,8 +198,15 @@ fn run_tray(show_at_start: Option<u32>) {
 
     // physical pixels everywhere (tray click positions, the menu's own drawing)
     unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
-    let notify: controller::Notify = std::sync::Arc::new(|text: &str| tray_message(text));
-    let core = match controller::spawn_with(proxydock_core::paths::config_path(), notify) {
+    // the controller's thread asks this one to quit (it cannot wait for itself)
+    let main_thread = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
+    let hooks = controller::Hooks {
+        notify: std::sync::Arc::new(|text: &str| tray_message(text)),
+        quit: std::sync::Arc::new(move || unsafe {
+            PostThreadMessageW(main_thread, WM_QUIT_APP, 0, 0);
+        }),
+    };
+    let core = match controller::spawn_with(proxydock_core::paths::config_path(), hooks) {
         Ok(h) => h,
         Err(e) => {
             eprintln!("ProxyDock: {e}");
@@ -224,6 +240,10 @@ fn run_tray(show_at_start: Option<u32>) {
     unsafe {
         let mut msg: MSG = std::mem::zeroed();
         while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
+            if msg.hwnd.is_null() && msg.message == WM_QUIT_APP {
+                quit();
+                continue;
+            }
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }

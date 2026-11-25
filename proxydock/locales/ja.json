@@ -1053,5 +1053,12 @@
  "{who} -> {target} not in the allow list": "{who} -> {target} 許可リストにありません",
  "{who} UDP session ended · ↑ {fmt_size} ↓ {fmt_size2} · {value:.1f}s{extra}": "{who} UDP セッション終了 · ↑ {fmt_size} ↓ {fmt_size2} · {value:.1f}s{extra}",
  "→ output {n}": "→ 出力 {n}",
- "Shadowsocks cipher '{value}' is not supported": "Shadowsocks の暗号方式 '{value}' には対応していません"
+ "Shadowsocks cipher '{value}' is not supported": "Shadowsocks の暗号方式 '{value}' には対応していません",
+ "Close": "閉じる",
+ "This block has no settings to edit yet": "このブロックにはまだ編集できる設定がありません",
+ "Could not get the latest sing-box: {error}": "最新の sing-box を取得できませんでした: {error}",
+ "Downloaded sing-box {version}; each proxy uses it from its next start": "sing-box {version} をダウンロードしました。各プロキシは次回の起動から使用します",
+ "Scales text and UI elements together (applies after the window is opened again)": "文字と UI 要素をまとめて拡大縮小します（ウィンドウを開き直すと適用）",
+ "Settings have unsaved changes": "適用していない変更があります",
+ "Revert": "元に戻す"
 }

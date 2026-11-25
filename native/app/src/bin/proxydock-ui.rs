@@ -165,6 +165,8 @@ impl Models {
                 card: n["card"].as_str().unwrap_or("").into(),
                 state: n["state"].as_str().unwrap_or("").into(),
                 rate: SharedString::new(),
+                badge: SharedString::new(),
+                badge_tone: 0,
             });
         }
         let mut links = vec![];
@@ -186,6 +188,25 @@ impl Models {
         self.links.set_vec(links);
         *self.link_meta.borrow_mut() = meta;
         *self.keys.borrow_mut() = keys;
+        self.apply_badges();
+    }
+
+    /// the latency badges (kept from the core's last "latency") on their blocks
+    fn apply_badges(&self) {
+        let keys = self.keys.borrow();
+        BADGES.with(|b| {
+            let b = b.borrow();
+            for i in 0..self.nodes.row_count() {
+                let Some(mut n) = self.nodes.row_data(i) else { continue };
+                let key = keys.get(i).map(String::as_str).unwrap_or("");
+                let (text, tone) = b.get(key).cloned().unwrap_or_default();
+                if n.badge != text.as_str() || n.badge_tone != tone {
+                    n.badge = text.into();
+                    n.badge_tone = tone;
+                    self.nodes.set_row_data(i, n);
+                }
+            }
+        });
     }
 
     /// a card's state on its canvas block
@@ -338,6 +359,10 @@ fn field_rows(fields: &[Value]) -> Vec<FieldRow> {
 }
 
 thread_local! {
+    /// latency badges by block key: (text, tone)
+    static BADGES: std::cell::RefCell<HashMap<String, (String, i32)>> = std::cell::RefCell::new(HashMap::new());
+    /// "Quit with the X button"
+    static CLOSE_EXITS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static NOTICE_SEQ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static TOAST_SEQ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     /// the block whose title the rename box edits
@@ -390,7 +415,117 @@ fn clipboard_text() -> String {
     String::new()
 }
 
+/// the settings page from the core's "settings" (values, choices, what it found)
+fn show_settings(app: &App, v: &Value) {
+    let st = app.global::<Settings>();
+    let vals = &v["values"];
+    let b = |k: &str| vals[k] == json!(true);
+    let i = |k: &str| vals[k].as_i64().unwrap_or(0) as i32;
+    let list = |k: &str| -> ModelRc<SharedString> { ModelRc::new(VecModel::from(strings_of(&v[k]))) };
+    st.set_languages(list("languages"));
+    st.set_themes(list("themes"));
+    st.set_scales(list("scales"));
+    st.set_allowed(vals["allowed_domains"].as_str().unwrap_or("").into());
+    st.set_private(b("block_private"));
+    st.set_timeout(i("timeout"));
+    st.set_logconn(b("log_connections"));
+    st.set_logclose(b("log_close"));
+    st.set_dns(vals["dns_server"].as_str().unwrap_or("").into());
+    st.set_dnsvia(b("dns_via_outbound"));
+    st.set_logfile(b("log_to_file"));
+    st.set_language(i("language"));
+    st.set_theme(i("theme"));
+    st.set_scale(i("ui_scale"));
+    st.set_logsize(i("log_font_size"));
+    st.set_close(b("close_exits"));
+    st.set_latest(b("singbox_latest"));
+    st.set_saved_allowed(vals["allowed_domains"].as_str().unwrap_or("").into());
+    st.set_saved_private(b("block_private"));
+    st.set_saved_timeout(i("timeout"));
+    st.set_saved_logconn(b("log_connections"));
+    st.set_saved_logclose(b("log_close"));
+    st.set_saved_dns(vals["dns_server"].as_str().unwrap_or("").into());
+    st.set_saved_dnsvia(b("dns_via_outbound"));
+    st.set_saved_logfile(b("log_to_file"));
+    st.set_saved_language(i("language"));
+    st.set_saved_theme(i("theme"));
+    st.set_saved_scale(i("ui_scale"));
+    st.set_saved_logsize(i("log_font_size"));
+    st.set_saved_close(b("close_exits"));
+    st.set_saved_latest(b("singbox_latest"));
+    st.set_engine(v["engine"].as_str().unwrap_or("").into());
+    st.set_log_dir(v["log_dir"].as_str().unwrap_or("").into());
+    // what applies to this window right away
+    app.set_theme(i("theme"));
+    app.set_log_px(i("log_font_size") as f32 * 1.2);
+    CLOSE_EXITS.with(|c| c.set(b("close_exits")));
+}
+
+/// the core's latency badges and the test's progress
+fn show_latency(app: &App, m: &Models, v: &Value) {
+    BADGES.with(|b| {
+        let mut b = b.borrow_mut();
+        b.clear();
+        for (k, x) in v["badges"].as_object().into_iter().flatten() {
+            b.insert(k.clone(), (x[0].as_str().unwrap_or("").to_string(), x[1].as_i64().unwrap_or(0) as i32));
+        }
+    });
+    m.apply_badges();
+    app.set_latency_progress(v["progress"].as_str().unwrap_or("").into());
+}
+
+fn strings_of(v: &Value) -> Vec<SharedString> {
+    v.as_array().into_iter().flatten().filter_map(Value::as_str).map(SharedString::from).collect()
+}
+
+/// the settings page's texts (Python `SettingsInterface`)
+fn settings_text() -> SettingsText {
+    use proxydock_core::singbox::latest;
+    let t = |s: &str| SharedString::from(tr(s));
+    SettingsText {
+        title: t("Settings"),
+        apply: t("Apply"),
+        changed: t("Settings have unsaved changes"),
+        revert: t("Revert"),
+        defaults: t("Proxy defaults (apply to items set to 'Use global' in each proxy)"),
+        allowed: t("Allowed domains"),
+        allowed_desc: t("Comma separated · * = all · *.example.com = including subdomains"),
+        private: t("Block private network destinations"),
+        private_desc: t("Refuses connections to loopback, private and link-local addresses"),
+        timeout: t("Idle timeout (s)"),
+        timeout_desc: t("Time after which an idle TCP connection is closed"),
+        logconn: t("Log connections"),
+        logconn_desc: t("When off, successful connections are not logged (errors always are)"),
+        logclose: t("Log connection close details"),
+        logclose_desc: t("Upload/download amount, duration and reason when a connection ends"),
+        dns: t("DNS server"),
+        dns_desc: t("Empty = the PC's DNS. Otherwise 1.1.1.1 (UDP), tcp://, tls:// (DoT), https://…/dns-query (DoH), quic:// or h3://. Used where ProxyDock looks names up itself (Direct, IP rules, TUN). Needs the sing-box engine"),
+        dnsvia: t("DNS through the outbound"),
+        dnsvia_desc: t("The card's own lookups go through its tunnel or upstream instead of leaving this PC directly (needs a DNS server above)"),
+        engine: t("Proxy engine"),
+        latest: t(latest::SETTING_LABEL),
+        latest_badge: t(latest::SETTING_BADGE),
+        latest_desc: t(latest::SETTING_HELP),
+        logs: t("Logs"),
+        logfile: t("Save to file"),
+        open_folder: t("Open folder"),
+        display: t("Display"),
+        language: t("Language"),
+        language_desc: t("Applies right away"),
+        theme: t("Theme"),
+        theme_desc: t("Follow the system or force light/dark"),
+        scale: t("App scale"),
+        scale_desc: t("Scales text and UI elements together (applies after the window is opened again)"),
+        logsize: t("Log font size"),
+        logsize_desc: t("Font size of the log and license views (pt)"),
+        close: t("Quit with the X button"),
+        close_desc: t("When off, the app keeps running in the tray after X"),
+    }
+}
+
 fn labels(app: &App) {
+    app.global::<Settings>().set_text(settings_text());
+    app.set_t_latency(tr("Test latency").into());
     app.set_t_close(tr("Close").into());
     app.set_t_save(tr("Save").into());
     app.set_t_cancel(tr("Cancel").into());
@@ -633,6 +768,48 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
     {
+        let (send, models, key_of) = (send.clone(), models.clone(), key_of.clone());
+        app.on_test_latency(move || {
+            // the selected outbound blocks, or (none selected) every one
+            let keys: Vec<String> = models.nodes.iter().filter(|n| n.selected).map(|n| key_of(n.id)).collect();
+            send(json!({"cmd": "latency", "keys": keys}));
+        });
+    }
+    {
+        let st = app.global::<Settings>();
+        let (send, weak) = (send.clone(), app.as_weak());
+        st.on_apply(move || {
+            let Some(a) = weak.upgrade() else { return };
+            let st = a.global::<Settings>();
+            send(json!({"cmd": "settings_save", "values": {
+                "allowed_domains": st.get_allowed().as_str(), "block_private": st.get_private(), "timeout": st.get_timeout(),
+                "log_connections": st.get_logconn(), "log_close": st.get_logclose(), "dns_server": st.get_dns().as_str(),
+                "dns_via_outbound": st.get_dnsvia(), "log_to_file": st.get_logfile(), "language": st.get_language(),
+                "theme": st.get_theme(), "ui_scale": st.get_scale(), "log_font_size": st.get_logsize(),
+                "close_exits": st.get_close(), "singbox_latest": st.get_latest(),
+            }}));
+        });
+        let weak = app.as_weak();
+        st.on_open_log_dir(move || {
+            let Some(a) = weak.upgrade() else { return };
+            let dir = a.global::<Settings>().get_log_dir().to_string();
+            let _ = std::fs::create_dir_all(&dir);
+            if let Err(e) = std::process::Command::new("explorer").arg(&dir).spawn() {
+                show_toast(&a, &format!("{}: {e}", tr("Cannot open the folder")), false, 5.0);
+            }
+        });
+    }
+    {
+        // "Quit with the X button": the whole app quits, else only this window closes (the tray keeps running)
+        let send = send.clone();
+        app.window().on_close_requested(move || {
+            if CLOSE_EXITS.with(|c| c.get()) {
+                send(json!({"cmd": "quit"}));
+            }
+            slint::CloseRequestResponse::HideWindow
+        });
+    }
+    {
         let w = writer.clone();
         app.on_stop_all(move || {
             let _ = ipc::send(&mut w.lock().unwrap(), &json!({"cmd": "stop_all"}));
@@ -655,7 +832,9 @@ fn main() -> Result<(), slint::PlatformError> {
                             m.cards.set_vec(v["cards"].as_array().into_iter().flatten().map(card_row).collect::<Vec<_>>());
                             m.add_logs(v["logs"].as_array().map(Vec::as_slice).unwrap_or(&[]));
                             m.set_stats(&v["stats"]);
+                            show_latency(&app, &m, &v["latency"]);
                             m.set_canvas(&v["canvas"]);
+                            show_settings(&app, &v["settings"]);
                             app.set_can_undo(v["undo"] == json!(true));
                             app.set_can_redo(v["redo"] == json!(true));
                             // debug builds: PROXYDOCK_EDIT=<block id>[,<button>] opens its editor (screenshots without clicking)
@@ -724,6 +903,12 @@ fn main() -> Result<(), slint::PlatformError> {
                         "error" => show_toast(&app, v["message"].as_str().unwrap_or(""), false, 5.0),
                         // a settings change (Python `on_notify` while the window is open: an InfoBar for 2.5 s)
                         "info" => show_toast(&app, v["message"].as_str().unwrap_or(""), true, 2.5),
+                        "latency" => show_latency(&app, &m, &v["latency"]),
+                        "settings" => show_settings(&app, &v["settings"]),
+                        "language" => {
+                            set_language(v["language"].as_str().unwrap_or("en"));
+                            labels(&app);
+                        }
                         "undo" => {
                             app.set_can_undo(v["undo"] == json!(true));
                             app.set_can_redo(v["redo"] == json!(true));

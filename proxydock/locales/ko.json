@@ -1053,5 +1053,12 @@
  "{who} -> {target} not in the allow list": "{who} -> {target} 허용 목록에 없음",
  "{who} UDP session ended · ↑ {fmt_size} ↓ {fmt_size2} · {value:.1f}s{extra}": "{who} UDP 세션 종료 · ↑ {fmt_size} ↓ {fmt_size2} · {value:.1f}s{extra}",
  "→ output {n}": "→ 출력 {n}",
- "Shadowsocks cipher '{value}' is not supported": "Shadowsocks 암호 방식 '{value}'은(는) 지원하지 않습니다"
+ "Shadowsocks cipher '{value}' is not supported": "Shadowsocks 암호 방식 '{value}'은(는) 지원하지 않습니다",
+ "Close": "닫기",
+ "This block has no settings to edit yet": "이 블록은 아직 편집할 설정이 없습니다",
+ "Could not get the latest sing-box: {error}": "최신 sing-box를 받지 못했습니다: {error}",
+ "Downloaded sing-box {version}; each proxy uses it from its next start": "sing-box {version}을(를) 받았습니다. 각 프록시는 다음에 시작할 때부터 사용합니다",
+ "Scales text and UI elements together (applies after the window is opened again)": "글자와 UI 요소의 크기를 함께 조절합니다(창을 다시 열면 적용)",
+ "Settings have unsaved changes": "적용하지 않은 변경 사항이 있습니다",
+ "Revert": "되돌리기"
 }

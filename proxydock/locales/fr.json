@@ -1053,5 +1053,12 @@
  "{who} -> {target} not in the allow list": "{who} -> {target} absent de la liste autorisée",
  "{who} UDP session ended · ↑ {fmt_size} ↓ {fmt_size2} · {value:.1f}s{extra}": "{who} session UDP terminée · ↑ {fmt_size} ↓ {fmt_size2} · {value:.1f}s{extra}",
  "→ output {n}": "→ sortie {n}",
- "Shadowsocks cipher '{value}' is not supported": "Le chiffrement Shadowsocks « {value} » n'est pas pris en charge"
+ "Shadowsocks cipher '{value}' is not supported": "Le chiffrement Shadowsocks « {value} » n'est pas pris en charge",
+ "Close": "Fermer",
+ "This block has no settings to edit yet": "Ce bloc n'a pas encore de réglages à modifier",
+ "Could not get the latest sing-box: {error}": "Impossible d'obtenir le dernier sing-box : {error}",
+ "Downloaded sing-box {version}; each proxy uses it from its next start": "sing-box {version} téléchargé ; chaque proxy l'utilise à partir de son prochain démarrage",
+ "Scales text and UI elements together (applies after the window is opened again)": "Met à l'échelle le texte et l'interface ensemble (s'applique à la réouverture de la fenêtre)",
+ "Settings have unsaved changes": "Des modifications ne sont pas appliquées",
+ "Revert": "Annuler"
 }

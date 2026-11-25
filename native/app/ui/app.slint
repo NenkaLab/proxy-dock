@@ -1,6 +1,6 @@
 // ProxyDock window (proxydock-ui.exe): Material 3 Expressive on Slint's "material" style (build.rs), same look as
 // the prototype. Pages so far: the proxy cards and the log; everything comes from the core process over ipc.
-import { Button, ComboBox, LineEdit, ListView, Palette, ScrollView, Switch, TextEdit } from "std-widgets.slint";
+import { Button, ComboBox, LineEdit, ListView, Palette, ScrollView, SpinBox, Switch, TextEdit } from "std-widgets.slint";
 import {
     NodeEditor, BaseNode, Pin, PinTypes, NodeEditorEvents, NodeEditorInternalCallbacks, NodeEditorComputations, LinkData,
 } from "@nodeeditor";
@@ -63,6 +63,21 @@ export struct NodeData {
     state: string,
     // traffic through the block right now ("" when none)
     rate: string,
+    // an outbound block's latency: "123 ms", "✕", "…" ("" = none); tone 0 testing, 1 fast, 2 slow, 3 very slow / failed
+    badge: string,
+    badge-tone: int,
+}
+
+// the settings page's texts (translated in proxydock-ui.rs)
+export struct SettingsText {
+    title: string, apply: string, changed: string, revert: string,
+    defaults: string, allowed: string, allowed-desc: string, private: string, private-desc: string,
+    timeout: string, timeout-desc: string, logconn: string, logconn-desc: string, logclose: string, logclose-desc: string,
+    dns: string, dns-desc: string, dnsvia: string, dnsvia-desc: string,
+    engine: string, latest: string, latest-badge: string, latest-desc: string,
+    logs: string, logfile: string, open-folder: string,
+    display: string, language: string, language-desc: string, theme: string, theme-desc: string,
+    scale: string, scale-desc: string, logsize: string, logsize-desc: string, close: string, close-desc: string,
 }
 
 // one field of the block editor (src/bin/proxydock-ui.rs fills it from core::form)
@@ -117,6 +132,8 @@ component ProxyNode inherits BaseNode {
     in property <[Wire]> wires;
     in property <string> state;
     in property <string> rate;
+    in property <string> badge;
+    in property <int> badge-tone;
     callback toggle();
     callback edit();
 
@@ -171,11 +188,25 @@ component ProxyNode inherits BaseNode {
         }
         Text {
             x: 20px; y: 34px;
-            width: root.node-width - 34px;
+            width: root.node-width - 34px - (root.badge != "" ? badge-pill.width + 8px : 0px);
             text: root.detail;
             font-size: 12px;
             color: root.on-container.with-alpha(0.72);
             overflow: elide;
+        }
+        badge-pill := Rectangle {
+            visible: root.badge != "";
+            x: root.node-width - self.width - 12px; y: 33px;
+            width: badge-text.preferred-width + 14px;
+            height: 18px;
+            border-radius: 9px;
+            background: root.badge-tone == 1 ? #3fa34d : root.badge-tone == 2 ? #d9a21b : root.badge-tone == 3 ? #e5534b : #9aa0a6;
+            badge-text := Text {
+                text: root.badge;
+                font-size: 11px;
+                font-weight: 700;
+                color: #ffffff;
+            }
         }
         if root.lanes: Rectangle {
             x: 12px;
@@ -198,10 +229,11 @@ component ProxyNode inherits BaseNode {
             x: root.node-width - (root.state != "" ? 70px : 38px); y: 8px;
             width: 30px; height: 30px; border-radius: 15px;
             background: edit-ta.has-hover ? root.on-container.with-alpha(0.14) : transparent;
-            Text {
-                text: "✎";
-                font-size: 14px;
-                color: root.on-container;
+            Image {
+                width: 18px;
+                height: 18px;
+                source: @image-url("icons/edit.svg");
+                colorize: root.on-container;
             }
             edit-ta := TouchArea { clicked => { root.edit(); } }
         }
@@ -274,22 +306,35 @@ component ProxyNode inherits BaseNode {
 
 component ToolbarButton inherits Rectangle {
     in property <string> text;
+    in property <image> icon;
+    // no room: the icon alone
+    in property <bool> compact;
     in property <bool> filled;
     in property <bool> enabled: true;
     callback clicked();
     height: 44px;
-    width: label.preferred-width + 36px;
+    width: root.compact ? 44px : label.preferred-width + 58px;
+    accessible-role: button;
+    accessible-label: root.text;
     opacity: root.enabled ? 1 : 0.38;
     // pressed buttons square off, then spring back
     border-radius: ta.pressed ? 12px : 22px;
     background: filled ? M3.primary : ta.has-hover && root.enabled ? M3.on-surface.with-alpha(0.08) : transparent;
     animate border-radius { duration: Motion.fast-spatial; easing: cubic-bezier(0.42, 1.67, 0.21, 0.90); }
+    Image {
+        x: root.compact ? (parent.width - self.width) / 2 : 14px;
+        width: 20px;
+        height: 20px;
+        source: root.icon;
+        colorize: root.filled ? M3.on-primary : M3.on-surface;
+    }
     label := Text {
+        x: 42px;
+        visible: !root.compact;
         text: root.text;
         font-size: 14px;
         font-weight: 600;
         color: root.filled ? M3.on-primary : M3.on-surface;
-        horizontal-alignment: center;
         vertical-alignment: center;
     }
     ta := TouchArea {
@@ -376,7 +421,7 @@ component FormRow inherits Rectangle {
 }
 
 component RailItem inherits Rectangle {
-    in property <string> glyph;
+    in property <image> icon;
     in property <string> label;
     in property <bool> active;
     callback clicked;
@@ -392,12 +437,11 @@ component RailItem inherits Rectangle {
                 border-radius: 16px;
                 background: root.active ? M3.secondary-container : (ta.has-hover ? M3.surface-container-high : transparent);
                 animate background { duration: Motion.fast-effects; }
-                Text {
-                    text: root.glyph;
-                    font-size: 18px;
-                    color: root.active ? M3.on-secondary-container : M3.on-surface-variant;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
+                Image {
+                    width: 22px;
+                    height: 22px;
+                    source: root.icon;
+                    colorize: root.active ? M3.on-secondary-container : M3.on-surface-variant;
                 }
             }
         }
@@ -482,7 +526,8 @@ component Card inherits Rectangle {
         VerticalLayout {
             alignment: center;
             Button {
-                text: "✎";
+                icon: @image-url("icons/edit.svg");
+                colorize-icon: true;
                 clicked => { root.edit(card.id); }
             }
         }
@@ -494,6 +539,307 @@ component Card inherits Rectangle {
                 clicked => { root.toggle(card.id); }
             }
         }
+    }
+}
+
+// The settings page's values, choices and texts (proxydock-ui.rs fills them from the core's "settings")
+export global Settings {
+    in property <SettingsText> text;
+    in-out property <string> allowed;
+    in-out property <bool> private;
+    in-out property <int> timeout: 120;
+    in-out property <bool> logconn;
+    in-out property <bool> logclose;
+    in-out property <string> dns;
+    in-out property <bool> dnsvia;
+    in-out property <bool> logfile;
+    in-out property <int> language;
+    in-out property <int> theme;
+    in-out property <int> scale;
+    in-out property <int> logsize: 10;
+    in-out property <bool> close;
+    in-out property <bool> latest;
+    in property <[string]> languages;
+    in property <[string]> themes;
+    in property <[string]> scales;
+    in property <string> engine;
+    in property <string> log-dir;
+    // the values as saved: the apply bar shows while anything differs
+    in property <string> saved-allowed;
+    in property <bool> saved-private;
+    in property <int> saved-timeout;
+    in property <bool> saved-logconn;
+    in property <bool> saved-logclose;
+    in property <string> saved-dns;
+    in property <bool> saved-dnsvia;
+    in property <bool> saved-logfile;
+    in property <int> saved-language;
+    in property <int> saved-theme;
+    in property <int> saved-scale;
+    in property <int> saved-logsize;
+    in property <bool> saved-close;
+    in property <bool> saved-latest;
+    out property <bool> dirty: allowed != saved-allowed || private != saved-private || timeout != saved-timeout || logconn != saved-logconn || logclose != saved-logclose || dns != saved-dns || dnsvia != saved-dnsvia || logfile != saved-logfile || language != saved-language || theme != saved-theme || scale != saved-scale || logsize != saved-logsize || close != saved-close || latest != saved-latest;
+    public function revert() {
+        self.allowed = self.saved-allowed;
+        self.private = self.saved-private;
+        self.timeout = self.saved-timeout;
+        self.logconn = self.saved-logconn;
+        self.logclose = self.saved-logclose;
+        self.dns = self.saved-dns;
+        self.dnsvia = self.saved-dnsvia;
+        self.logfile = self.saved-logfile;
+        self.language = self.saved-language;
+        self.theme = self.saved-theme;
+        self.scale = self.saved-scale;
+        self.logsize = self.saved-logsize;
+        self.close = self.saved-close;
+        self.latest = self.saved-latest;
+    }
+    callback apply();
+    callback open-log-dir();
+}
+
+// A group of settings: a rounded container with an icon and a title
+component SettingsSection inherits Rectangle {
+    in property <string> title;
+    in property <image> icon;
+    border-radius: 24px;
+    background: M3.surface-container-low;
+    VerticalLayout {
+        padding: 20px;
+        padding-top: 16px;
+        spacing: 6px;
+        HorizontalLayout {
+            spacing: 10px;
+            padding-bottom: 4px;
+            Image {
+                width: 22px;
+                height: 22px;
+                y: (parent.height - self.height) / 2;
+                source: root.icon;
+                colorize: M3.primary;
+            }
+            Text {
+                text: root.title;
+                font-size: 16px;
+                font-weight: 700;
+                color: M3.on-surface;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+                vertical-alignment: center;
+            }
+        }
+        @children
+    }
+}
+
+// One setting: what it is on the left, its control on the right (below it when the description runs long)
+component SettingRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> desc;
+    in property <string> badge;
+    spacing: 16px;
+    padding-top: 8px;
+    padding-bottom: 8px;
+    VerticalLayout {
+        horizontal-stretch: 1;
+        spacing: 2px;
+        alignment: center;
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: root.label;
+                font-size: 14px;
+                font-weight: 600;
+                color: M3.on-surface;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+                vertical-alignment: center;
+            }
+            if root.badge != "": Rectangle {
+                width: badge-label.preferred-width + 16px;
+                height: 22px;
+                border-radius: 11px;
+                background: M3.tertiary-container;
+                badge-label := Text {
+                    text: root.badge;
+                    font-size: 11px;
+                    font-weight: 700;
+                    color: M3.on-tertiary-container;
+                }
+            }
+        }
+        if root.desc != "": Text {
+            text: root.desc;
+            font-size: 12px;
+            color: M3.on-surface-variant;
+            wrap: word-wrap;
+        }
+    }
+    HorizontalLayout {
+        alignment: end;
+        spacing: 8px;
+        @children
+    }
+}
+
+component SettingsDefaults inherits SettingsSection {
+    title: Settings.text.defaults;
+    icon: @image-url("icons/tune.svg");
+    VerticalLayout {
+        spacing: 4px;
+        Text {
+            text: Settings.text.allowed;
+            font-size: 14px;
+            font-weight: 600;
+            color: M3.on-surface;
+        }
+        LineEdit { text <=> Settings.allowed; }
+        Text {
+            text: Settings.text.allowed-desc;
+            font-size: 12px;
+            color: M3.on-surface-variant;
+            wrap: word-wrap;
+        }
+    }
+    SettingRow {
+        label: Settings.text.private;
+        desc: Settings.text.private-desc;
+        Switch { checked <=> Settings.private; }
+    }
+    SettingRow {
+        label: Settings.text.timeout;
+        desc: Settings.text.timeout-desc;
+        SpinBox {
+            width: 150px;
+            minimum: 10;
+            maximum: 86400;
+            value <=> Settings.timeout;
+        }
+    }
+    SettingRow {
+        label: Settings.text.logconn;
+        desc: Settings.text.logconn-desc;
+        Switch { checked <=> Settings.logconn; }
+    }
+    SettingRow {
+        label: Settings.text.logclose;
+        desc: Settings.text.logclose-desc;
+        Switch { checked <=> Settings.logclose; }
+    }
+    VerticalLayout {
+        spacing: 4px;
+        padding-top: 8px;
+        Text {
+            text: Settings.text.dns;
+            font-size: 14px;
+            font-weight: 600;
+            color: M3.on-surface;
+        }
+        LineEdit {
+            text <=> Settings.dns;
+            placeholder-text: "1.1.1.1 · tls://dns.google · https://cloudflare-dns.com/dns-query";
+        }
+        Text {
+            text: Settings.text.dns-desc;
+            font-size: 12px;
+            color: M3.on-surface-variant;
+            wrap: word-wrap;
+        }
+    }
+    SettingRow {
+        label: Settings.text.dnsvia;
+        desc: Settings.text.dnsvia-desc;
+        Switch { checked <=> Settings.dnsvia; }
+    }
+}
+
+component SettingsDisplay inherits SettingsSection {
+    title: Settings.text.display;
+    icon: @image-url("icons/palette.svg");
+    SettingRow {
+        label: Settings.text.language;
+        desc: Settings.text.language-desc;
+        ComboBox {
+            width: 170px;
+            model: Settings.languages;
+            current-index <=> Settings.language;
+        }
+    }
+    SettingRow {
+        label: Settings.text.theme;
+        desc: Settings.text.theme-desc;
+        ComboBox {
+            width: 170px;
+            model: Settings.themes;
+            current-index <=> Settings.theme;
+        }
+    }
+    SettingRow {
+        label: Settings.text.scale;
+        desc: Settings.text.scale-desc;
+        ComboBox {
+            width: 170px;
+            model: Settings.scales;
+            current-index <=> Settings.scale;
+        }
+    }
+    SettingRow {
+        label: Settings.text.logsize;
+        desc: Settings.text.logsize-desc;
+        SpinBox {
+            width: 150px;
+            minimum: 8;
+            maximum: 20;
+            value <=> Settings.logsize;
+        }
+    }
+    SettingRow {
+        label: Settings.text.close;
+        desc: Settings.text.close-desc;
+        Switch { checked <=> Settings.close; }
+    }
+}
+
+component SettingsEngine inherits SettingsSection {
+    title: Settings.text.engine;
+    icon: @image-url("icons/memory.svg");
+    Text {
+        text: Settings.engine;
+        font-size: 12px;
+        font-family: "JetBrains Mono";
+        color: M3.on-surface-variant;
+        wrap: char-wrap;
+    }
+    SettingRow {
+        label: Settings.text.latest;
+        badge: Settings.text.latest-badge;
+        desc: Settings.text.latest-desc;
+        Switch { checked <=> Settings.latest; }
+    }
+}
+
+component SettingsLogs inherits SettingsSection {
+    title: Settings.text.logs;
+    icon: @image-url("icons/description.svg");
+    SettingRow {
+        label: Settings.text.logfile;
+        Button {
+            text: Settings.text.open-folder;
+            icon: @image-url("icons/folder_open.svg");
+            colorize-icon: true;
+            clicked => { Settings.open-log-dir(); }
+        }
+        Switch { checked <=> Settings.logfile; }
+    }
+    // a path has no spaces to wrap at
+    Text {
+        text: Settings.log-dir;
+        font-size: 12px;
+        font-family: "JetBrains Mono";
+        color: M3.on-surface-variant;
+        wrap: char-wrap;
     }
 }
 
@@ -516,6 +862,17 @@ export component App inherits Window {
     in property <string> t-duplicate: "Duplicate";
     in property <bool> can-undo;
     in property <bool> can-redo;
+    in property <string> t-latency: "Test latency";
+    // "Testing… 2/5" while a latency test runs
+    in property <string> latency-progress;
+    callback test-latency();
+    // the saved theme: 0 the system's, 1 light, 2 dark
+    in property <int> theme;
+    changed theme => {
+        Palette.color-scheme = self.theme == 1 ? ColorScheme.light : self.theme == 2 ? ColorScheme.dark : ColorScheme.unknown;
+    }
+    // the log's font size (px)
+    in property <float> log-px: 12;
     // the title box of "Rename" (F2): open, and the text typed
     in-out property <bool> rename-open;
     in-out property <string> rename-text;
@@ -605,25 +962,32 @@ export component App inherits Window {
         VerticalLayout {
             width: 88px;
             padding-top: 12px;
+            padding-bottom: 12px;
             spacing: 4px;
-            alignment: start;
             RailItem {
-                glyph: "◇";
+                icon: @image-url("icons/account_tree.svg");
                 label: root.t-canvas;
                 active: root.page == 0;
                 clicked => { root.page = 0; }
             }
             RailItem {
-                glyph: "▦";
+                icon: @image-url("icons/dns.svg");
                 label: root.t-proxy;
                 active: root.page == 1;
                 clicked => { root.page = 1; }
             }
             RailItem {
-                glyph: "≡";
+                icon: @image-url("icons/receipt_long.svg");
                 label: root.t-logs;
                 active: root.page == 2;
                 clicked => { root.page = 2; }
+            }
+            Rectangle { vertical-stretch: 1; }
+            RailItem {
+                icon: @image-url("icons/settings.svg");
+                label: Settings.text.title;
+                active: root.page == 4;
+                clicked => { root.page = 4; }
             }
         }
         // page container
@@ -702,6 +1066,8 @@ export component App inherits Window {
                                 wires: node.wires;
                                 state: node.state;
                                 rate: node.rate;
+                                badge: node.badge;
+                                badge-tone: node.badge-tone;
                                 toggle => { root.toggle(node.card); }
                                 edit => { root.edit-block(node.id); }
                                 world-x: node.x * 1px;
@@ -719,7 +1085,7 @@ export component App inherits Window {
                         Rectangle {
                             x: (parent.width - self.width) / 2;
                             y: parent.height - self.height - 24px;
-                            width: bar.preferred-width + 16px;
+                            width: bar.preferred-width;
                             height: 60px;
                             border-radius: 30px;
                             background: M3.surface-container-high;
@@ -729,30 +1095,57 @@ export component App inherits Window {
                             bar := HorizontalLayout {
                                 padding: 8px;
                                 spacing: 4px;
-                                ToolbarButton { text: "+ " + root.t-add-inbound; clicked => { root.add-block(0); } }
-                                ToolbarButton { text: "+ " + root.t-add-router; clicked => { root.add-block(1); } }
-                                ToolbarButton { text: "+ " + root.t-add-relay; clicked => { root.add-block(3); } }
-                                ToolbarButton { text: "+ " + root.t-add-outbound; clicked => { root.add-block(2); } }
-                                ToolbarButton { text: root.t-undo; enabled: root.can-undo; clicked => { root.undo(); } }
-                                ToolbarButton { text: root.t-redo; enabled: root.can-redo; clicked => { root.redo(); } }
-                                ToolbarButton { text: root.t-rename; clicked => { root.rename-selected(); } }
-                                ToolbarButton { text: root.t-duplicate; clicked => { root.duplicate-selected(); } }
-                                ToolbarButton { text: root.t-delete; filled: true; clicked => { root.delete-selected(); } }
+                                ToolbarButton { text: root.t-add-inbound; icon: @image-url("icons/login.svg"); compact: tool-row.add-compact; clicked => { root.add-block(0); } }
+                                ToolbarButton { text: root.t-add-router; icon: @image-url("icons/alt_route.svg"); compact: tool-row.add-compact; clicked => { root.add-block(1); } }
+                                ToolbarButton { text: root.t-add-relay; icon: @image-url("icons/swap_horiz.svg"); compact: tool-row.add-compact; clicked => { root.add-block(3); } }
+                                ToolbarButton { text: root.t-add-outbound; icon: @image-url("icons/logout.svg"); compact: tool-row.add-compact; clicked => { root.add-block(2); } }
+                                Rectangle { width: 1px; background: M3.outline-variant; }
+                                ToolbarButton { text: root.t-undo; icon: @image-url("icons/undo.svg"); compact: tool-row.all-compact; enabled: root.can-undo; clicked => { root.undo(); } }
+                                ToolbarButton { text: root.t-redo; icon: @image-url("icons/redo.svg"); compact: tool-row.all-compact; enabled: root.can-redo; clicked => { root.redo(); } }
+                                ToolbarButton { text: root.t-rename; icon: @image-url("icons/edit.svg"); compact: tool-row.all-compact; clicked => { root.rename-selected(); } }
+                                ToolbarButton { text: root.t-duplicate; icon: @image-url("icons/content_copy.svg"); compact: tool-row.all-compact; clicked => { root.duplicate-selected(); } }
+                                ToolbarButton {
+                                    text: root.latency-progress != "" ? root.latency-progress : root.t-latency;
+                                    icon: @image-url("icons/speed.svg");
+                                    compact: tool-row.all-compact && root.latency-progress == "";
+                                    enabled: root.latency-progress == "";
+                                    clicked => { root.test-latency(); }
+                                }
+                                ToolbarButton { text: root.t-delete; icon: @image-url("icons/delete.svg"); compact: tool-row.all-compact; filled: true; clicked => { root.delete-selected(); } }
                             }
                         }
-                        if root.toast != "": Rectangle {
-                            x: (parent.width - self.width) / 2;
-                            y: parent.height - 24px - 60px - 12px - self.height;
-                            width: min(parent.width - 40px, toast-text.preferred-width + 40px);
-                            height: toast-text.preferred-height + 24px;
-                            border-radius: 12px;
-                            background: root.toast-info ? M3.secondary-container : M3.error-container;
-                            toast-text := Text {
-                                width: parent.width - 40px;
-                                text: root.toast;
-                                wrap: word-wrap;
-                                color: root.toast-info ? M3.on-secondary-container : M3.on-error-container;
-                                horizontal-alignment: center;
+                        // the toolbar's widths with and without text: the buttons drop their text when it does not fit
+                        tool-row := Rectangle {
+                            visible: false;
+                            property <length> room: parent.width - 48px;
+                            out property <bool> add-compact: full.preferred-width > self.room;
+                            out property <bool> all-compact: mid.preferred-width > self.room;
+                            full := HorizontalLayout {
+                                padding: 8px;
+                                spacing: 4px;
+                                ToolbarButton { text: root.t-add-inbound; }
+                                ToolbarButton { text: root.t-add-router; }
+                                ToolbarButton { text: root.t-add-relay; }
+                                ToolbarButton { text: root.t-add-outbound; }
+                                Rectangle { width: 1px; }
+                                ToolbarButton { text: root.t-undo; }
+                                ToolbarButton { text: root.t-redo; }
+                                ToolbarButton { text: root.t-rename; }
+                                ToolbarButton { text: root.t-duplicate; }
+                                ToolbarButton { text: root.t-latency; }
+                                ToolbarButton { text: root.t-delete; }
+                            }
+                            mid := HorizontalLayout {
+                                padding: 8px;
+                                spacing: 4px;
+                                for i in 4: ToolbarButton { compact: true; }
+                                Rectangle { width: 1px; }
+                                ToolbarButton { text: root.t-undo; }
+                                ToolbarButton { text: root.t-redo; }
+                                ToolbarButton { text: root.t-rename; }
+                                ToolbarButton { text: root.t-duplicate; }
+                                ToolbarButton { text: root.t-latency; }
+                                ToolbarButton { text: root.t-delete; }
                             }
                         }
                     }
@@ -847,6 +1240,98 @@ export component App inherits Window {
                             }
                         }
                     }
+                    settings-page := VerticalLayout {
+                        visible: root.page == 4;
+                        spacing: 12px;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                text: Settings.text.title;
+                                font-size: 26px;
+                                font-weight: 700;
+                                color: M3.on-surface;
+                                horizontal-stretch: 1;
+                                vertical-alignment: center;
+                            }
+                        }
+                        settings-scroll := ScrollView {
+                            // two columns of sections when there is room, one otherwise; never wider than reads well
+                            out property <bool> wide: self.visible-width >= 720px;
+                            out property <length> content-w: min(self.visible-width - 16px, 1360px);
+                            VerticalLayout {
+                                padding-right: 16px;
+                                // room for the apply bar
+                                padding-bottom: 96px;
+                                alignment: start;
+                                if settings-scroll.wide: HorizontalLayout {
+                                    width: settings-scroll.content-w;
+                                    spacing: 16px;
+                                    VerticalLayout {
+                                        // equal halves (long texts would otherwise widen one column)
+                                        width: (settings-scroll.content-w - 16px) / 2;
+                                        spacing: 16px;
+                                        alignment: start;
+                                        SettingsDefaults {}
+                                    }
+                                    VerticalLayout {
+                                        // equal halves (long texts would otherwise widen one column)
+                                        width: (settings-scroll.content-w - 16px) / 2;
+                                        spacing: 16px;
+                                        alignment: start;
+                                        SettingsDisplay {}
+                                        SettingsEngine {}
+                                        SettingsLogs {}
+                                    }
+                                }
+                                if !settings-scroll.wide: VerticalLayout {
+                                    width: min(settings-scroll.content-w, 720px);
+                                    spacing: 16px;
+                                    SettingsDefaults {}
+                                    SettingsDisplay {}
+                                    SettingsEngine {}
+                                    SettingsLogs {}
+                                }
+                            }
+                        }
+                    }
+                    // the apply bar: only while a setting differs from the saved one
+                    if root.page == 4 && Settings.dirty: Rectangle {
+                        x: (parent.width - self.width) / 2;
+                        y: parent.height - self.height - 4px;
+                        width: min(parent.width - 16px, apply-row.preferred-width);
+                        height: 60px;
+                        border-radius: 30px;
+                        background: M3.surface-container-high;
+                        drop-shadow-blur: 12px;
+                        drop-shadow-offset-y: 3px;
+                        drop-shadow-color: #00000048;
+                        apply-row := HorizontalLayout {
+                            padding: 8px;
+                            padding-left: 24px;
+                            spacing: 8px;
+                            Text {
+                                text: Settings.text.changed;
+                                font-size: 14px;
+                                font-weight: 600;
+                                color: M3.on-surface;
+                                vertical-alignment: center;
+                                overflow: elide;
+                                horizontal-stretch: 1;
+                            }
+                            Rectangle { width: 8px; }
+                            ToolbarButton {
+                                text: Settings.text.revert;
+                                icon: @image-url("icons/undo.svg");
+                                clicked => { Settings.revert(); }
+                            }
+                            ToolbarButton {
+                                text: Settings.text.apply;
+                                icon: @image-url("icons/save.svg");
+                                filled: true;
+                                clicked => { Settings.apply(); }
+                            }
+                        }
+                    }
                     VerticalLayout {
                         visible: root.page == 2;
                         spacing: 12px;
@@ -864,8 +1349,8 @@ export component App inherits Window {
                                 for line in root.logs: Text {
                                     text: line.text;
                                     font-family: "JetBrains Mono";
-                                    font-size: 12px;
-                                    height: 20px;
+                                    font-size: root.log-px * 1px;
+                                    height: max(20px, root.log-px * 1.65px);
                                     x: 12px;
                                     color: line.tone == 2 ? M3.error : line.tone == 1 ? #b26a00 : line.tone == 3 ? M3.on-surface-variant : M3.on-surface;
                                     vertical-alignment: center;
@@ -875,6 +1360,24 @@ export component App inherits Window {
                     }
                 }
             }
+        }
+    }
+    if root.toast != "": Rectangle {
+        // above the canvas toolbar on the canvas, at the bottom elsewhere
+        x: 88px + (root.width - 88px - self.width) / 2;
+        y: root.height - (root.page == 0 ? 24px + 60px + 12px : 28px) - self.height;
+        width: min(root.width - 88px - 40px, toast-text.preferred-width + 40px);
+        height: toast-text.preferred-height + 24px;
+        border-radius: 12px;
+        background: root.toast-info ? M3.secondary-container : M3.error-container;
+        drop-shadow-blur: 8px;
+        drop-shadow-color: #00000030;
+        toast-text := Text {
+            width: parent.width - 40px;
+            text: root.toast;
+            wrap: word-wrap;
+            color: root.toast-info ? M3.on-secondary-container : M3.on-error-container;
+            horizontal-alignment: center;
         }
     }
     Rectangle {

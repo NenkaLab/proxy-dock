@@ -1053,5 +1053,12 @@
  "{who} -> {target} not in the allow list": "{who} -> {target} 不在允许列表中",
  "{who} UDP session ended · ↑ {fmt_size} ↓ {fmt_size2} · {value:.1f}s{extra}": "{who} UDP 会话结束 · ↑ {fmt_size} ↓ {fmt_size2} · {value:.1f}s{extra}",
  "→ output {n}": "→ 输出 {n}",
- "Shadowsocks cipher '{value}' is not supported": "不支持 Shadowsocks 加密方式“{value}”"
+ "Shadowsocks cipher '{value}' is not supported": "不支持 Shadowsocks 加密方式“{value}”",
+ "Close": "关闭",
+ "This block has no settings to edit yet": "此块暂无可编辑的设置",
+ "Could not get the latest sing-box: {error}": "无法获取最新的 sing-box：{error}",
+ "Downloaded sing-box {version}; each proxy uses it from its next start": "已下载 sing-box {version}，各代理将在下次启动时使用",
+ "Scales text and UI elements together (applies after the window is opened again)": "同时缩放文字和界面元素（重新打开窗口后生效）",
+ "Settings have unsaved changes": "有尚未应用的更改",
+ "Revert": "还原"
 }
