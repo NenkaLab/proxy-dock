@@ -135,6 +135,9 @@ export struct CardRow {
     action: string,
 }
 
+// a dot moving along a link with traffic (world coordinates; size in world px)
+export struct FlowDot { x: float, y: float, size: float, color: color }
+
 export struct LogRow {
     text: string,
     // 0 normal, 1 warning, 2 problem (failure, auth, block, error), 3 connection
@@ -2469,6 +2472,8 @@ export component App inherits Window {
     // canvas
     in property <[NodeData]> nodes;
     in property <[LinkData]> links <=> editor.links;
+    // dots moving along the links that carry traffic (proxydock-ui.rs `flow_dots_tick`)
+    in property <[FlowDot]> flow-dots;
     in-out property <string> grid-commands <=> editor.grid-commands;
     out property <float> width_: editor.width / 1px;
     out property <float> height_: editor.height / 1px;
@@ -2735,6 +2740,15 @@ export component App inherits Window {
                             // the software renderer keeps rectangle sizes in i16: a smaller world than the default
                             world-content-size: 8000px;
                             max-zoom: 2.0;
+                            // over the links, under the blocks
+                            for d in root.flow-dots: Rectangle {
+                                x: (d.x - d.size / 2) * 1px;
+                                y: (d.y - d.size / 2) * 1px;
+                                width: d.size * 1px;
+                                height: d.size * 1px;
+                                border-radius: d.size / 2 * 1px;
+                                background: d.color;
+                            }
                             for node in root.nodes: ProxyNode {
                                 node-id: node.id;
                                 title: node.title;

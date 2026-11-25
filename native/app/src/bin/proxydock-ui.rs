@@ -133,6 +133,8 @@ struct Models {
     link_meta: std::cell::RefCell<Vec<(Color, i32, i32)>>,
     /// canvas key of each block (node id - 1)
     keys: std::cell::RefCell<Vec<String>>,
+    /// bytes per second on each link (same order as `links`), for the moving dots
+    rates: std::cell::RefCell<Vec<f64>>,
 }
 
 impl Models {
@@ -224,10 +226,13 @@ impl Models {
     fn set_flow(&self, rates: &[Value]) {
         let meta = self.link_meta.borrow();
         let mut per_node: HashMap<i32, (f64, f64)> = HashMap::new(); // (in, out)
+        let mut link_rates = self.rates.borrow_mut();
+        link_rates.clear();
         for i in 0..self.links.row_count() {
             let Some(mut l) = self.links.row_data(i) else { continue };
             let Some((color, a, b)) = meta.get(i).copied() else { continue };
             let r = rates.get(l.id as usize - 1).and_then(Value::as_f64).unwrap_or(0.0);
+            link_rates.push(r);
             per_node.entry(a).or_default().1 += r;
             per_node.entry(b).or_default().0 += r;
             // 2 px idle; with traffic 3..8 px on a log scale (1 KB/s .. 100 MB/s)
@@ -383,6 +388,103 @@ fn mark_groups(rows: &mut [FieldRow]) {
         rows[i].joined = joins[n];
         rows[i].held = joins.get(n + 1).copied().unwrap_or(false);
     }
+}
+
+type CurveOf = Box<dyn Fn(i32, i32) -> Option<slint_node_editor::path::CubicBezier>>;
+
+thread_local! {
+    /// a link's curve on the canvas (world units) by its two pins
+    static CURVE: std::cell::RefCell<Option<CurveOf>> = const { std::cell::RefCell::new(None) };
+    /// the moving dots: their timer, each link's offset along its curve, the last tick and the dots' buffer
+    static FLOW_TIMER: slint::Timer = slint::Timer::default();
+    static FLOW_STATE: std::cell::RefCell<(Vec<f32>, Option<std::time::Instant>, Vec<FlowDot>)> = const { std::cell::RefCell::new((Vec::new(), None, Vec::new())) };
+}
+
+/// Dots along the links that carry traffic, moving toward the exit (faster with more traffic), 20 frames a second. They run only
+/// while the canvas is shown, the window is not minimised and some link has traffic: the timer stops itself
+/// otherwise and the next "flow" (every second) starts it again.
+fn start_flow_dots(app: &App) {
+    if FLOW_TIMER.with(|t| t.running()) {
+        return;
+    }
+    let weak = app.as_weak();
+    FLOW_TIMER.with(|t| {
+        t.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(50), move || {
+            let Some(app) = weak.upgrade() else { return };
+            if !flow_dots_tick(&app) {
+                FLOW_TIMER.with(|t| t.stop());
+                FLOW_STATE.with(|s| s.borrow_mut().1 = None);
+                if app.get_flow_dots().row_count() > 0 {
+                    app.set_flow_dots(ModelRc::default());
+                }
+            }
+        });
+    });
+}
+
+/// One frame of the dots; false when there is nothing to move (or nothing to show it on)
+fn flow_dots_tick(app: &App) -> bool {
+    const SPACING: f32 = 44.0; // world px between dots
+    if app.get_page() != 0 || app.window().is_minimized() {
+        return false;
+    }
+    let Some(m) = MODELS.with(|m| m.borrow().clone()) else { return false };
+    let rates = m.rates.borrow();
+    if !rates.iter().any(|r| *r > 0.0) {
+        return false;
+    }
+    FLOW_STATE.with(|st| {
+        let mut st = st.borrow_mut();
+        let (offsets, last, dots) = &mut *st;
+        let now = std::time::Instant::now();
+        let dt = last.map_or(0.0, |l| (now - l).as_secs_f32().min(0.1));
+        *last = Some(now);
+        offsets.resize(rates.len(), 0.0);
+        dots.clear();
+        CURVE.with(|c| {
+            let c = c.borrow();
+            let Some(curve_of) = c.as_ref() else { return };
+            let mut pts = [(0.0f32, 0.0f32); 25];
+            let mut lens = [0.0f32; 25];
+            for (i, r) in rates.iter().enumerate() {
+                if *r <= 0.0 {
+                    continue;
+                }
+                let Some(l) = m.links.row_data(i) else { continue };
+                let Some(curve) = curve_of(l.start_pin_id, l.end_pin_id) else { continue };
+                // the curve as 24 straight pieces, with the length up to each point
+                for k in 0..pts.len() {
+                    pts[k] = curve.eval(k as f32 / 24.0);
+                    if k > 0 {
+                        let (dx, dy) = (pts[k].0 - pts[k - 1].0, pts[k].1 - pts[k - 1].1);
+                        lens[k] = lens[k - 1] + (dx * dx + dy * dy).sqrt();
+                    }
+                }
+                let total = lens[24];
+                if total < 1.0 {
+                    continue;
+                }
+                // 1 KB/s .. 100 MB/s on a log scale: speed 40..200 world px/s, size 7..12 (wider than the line: 3..8)
+                let t = ((r.max(1024.0).log10() - 3.0) / 5.0).clamp(0.0, 1.0) as f32;
+                offsets[i] = (offsets[i] + (40.0 + 160.0 * t) * dt) % SPACING;
+                let color = l.color.brighter(0.6);
+                let mut d = offsets[i];
+                let mut k = 1;
+                while d < total {
+                    while k < 24 && lens[k] < d {
+                        k += 1;
+                    }
+                    let seg = (lens[k] - lens[k - 1]).max(1e-3);
+                    let f = ((d - lens[k - 1]) / seg).clamp(0.0, 1.0);
+                    let (a, b) = (pts[k - 1], pts[k]);
+                    dots.push(FlowDot { x: a.0 + (b.0 - a.0) * f, y: a.1 + (b.1 - a.1) * f, size: 7.0 + 5.0 * t, color });
+                    d += SPACING;
+                }
+            }
+        });
+        app.set_flow_dots(ModelRc::new(VecModel::from(dots.clone())));
+    });
+    true
 }
 
 thread_local! {
@@ -760,6 +862,7 @@ fn main() -> Result<(), slint::PlatformError> {
         links: Rc::new(VecModel::default()),
         link_meta: Default::default(),
         keys: Default::default(),
+        rates: Default::default(),
     });
     app.set_cards(ModelRc::from(models.cards.clone()));
     app.set_logs(ModelRc::from(models.logs.clone()));
@@ -792,6 +895,13 @@ fn main() -> Result<(), slint::PlatformError> {
             }
         });
         let controller = setup.controller().clone();
+        {
+            // the links' curves, for the moving dots
+            let controller = controller.clone();
+            CURVE.with(|c| {
+                *c.borrow_mut() = Some(Box::new(move |a, b| controller.cache().borrow().link_curve_world(a, b, controller.bezier_offset())));
+            });
+        }
         wire_node_editor!(app, setup);
         wire_selection!(app, setup, nodes, links);
         app.on_compute_link_at({
@@ -1182,7 +1292,10 @@ fn main() -> Result<(), slint::PlatformError> {
                                 }
                             }
                         }
-                        "flow" => m.set_flow(v["links"].as_array().map(Vec::as_slice).unwrap_or(&[])),
+                        "flow" => {
+                            m.set_flow(v["links"].as_array().map(Vec::as_slice).unwrap_or(&[]));
+                            start_flow_dots(&app);
+                        }
                         "graph" => {
                             m.cards.set_vec(v["cards"].as_array().into_iter().flatten().map(card_row).collect::<Vec<_>>());
                             m.set_canvas(&v["canvas"]);
