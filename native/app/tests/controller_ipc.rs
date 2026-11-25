@@ -779,6 +779,11 @@ fn pc_block_and_start_at_login() {
     let now = platform::get_system_proxy().unwrap();
     assert_eq!((now["ProxyEnable"].clone(), now["ProxyServer"].clone()), (json!(1), json!(server)));
     assert_eq!(now["ProxyOverride"], json!("localhost;127.*;<local>"));
+    // (the file is saved just after the registry changes)
+    let until = Instant::now() + Duration::from_secs(5);
+    while saved(&path)["graph"]["pc"]["applied"] != json!(true) && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(50));
+    }
     let pc = saved(&path)["graph"]["pc"].clone();
     assert_eq!((pc["applied"].clone(), pc["backup"]["ProxyServer"].clone()), (json!(true), json!("old.example:3128")));
     assert_eq!(h.pc_card().as_deref(), Some("web"));
@@ -790,6 +795,10 @@ fn pc_block_and_start_at_login() {
         std::thread::sleep(Duration::from_millis(100));
     }
     assert_eq!(platform::get_system_proxy().unwrap()["ProxyEnable"], json!(0));
+    let until = Instant::now() + Duration::from_secs(5);
+    while saved(&path)["graph"]["pc"]["applied"] != json!(false) && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(50));
+    }
     assert_eq!(saved(&path)["graph"]["pc"]["applied"], json!(false));
 
     // a SOCKS5 card cannot be the system proxy: said so
