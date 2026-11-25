@@ -88,6 +88,7 @@ export struct SettingsText {
     text-size: string, text-size-desc: string, fonts: string, ui-font: string, ui-font-desc: string,
     mono-font: string, mono-font-desc: string,
     startup: string, login: string, login-desc: string, hidden: string, hidden-desc: string, admin: string, admin-desc: string,
+    updates: string, check-updates: string, check-updates-desc: string,
     firewall: string, fw-block: string, fw-block-desc: string, fw-on: string, fw-off: string,
 }
 
@@ -866,6 +867,8 @@ export global Settings {
     in property <string> fw-text;
     in property <int> fw-state: -1;
     callback set-login(bool);
+    in-out property <bool> check-updates;
+    in property <bool> saved-check-updates;
     callback set-hidden(bool);
     callback firewall(bool);
     in property <[string]> languages;
@@ -889,7 +892,7 @@ export global Settings {
     in property <int> saved-logsize;
     in property <bool> saved-close;
     in property <bool> saved-latest;
-    out property <bool> dirty: admin != saved-admin || text-size != saved-text-size || ui-font != saved-ui-font
+    out property <bool> dirty: admin != saved-admin || check-updates != saved-check-updates || text-size != saved-text-size || ui-font != saved-ui-font
         || mono-font != saved-mono-font || allowed != saved-allowed || private != saved-private || timeout != saved-timeout || logconn != saved-logconn || logclose != saved-logclose || dns != saved-dns || dnsvia != saved-dnsvia || logfile != saved-logfile || language != saved-language || theme != saved-theme || scale != saved-scale || logsize != saved-logsize || close != saved-close || latest != saved-latest;
     public function revert() {
         self.allowed = self.saved-allowed;
@@ -907,6 +910,7 @@ export global Settings {
         self.close = self.saved-close;
         self.latest = self.saved-latest;
         self.admin = self.saved-admin;
+        self.check-updates = self.saved-check-updates;
         self.text-size = self.saved-text-size;
         self.ui-font = self.saved-ui-font;
         self.mono-font = self.saved-mono-font;
@@ -1099,6 +1103,16 @@ component SettingsStartup inherits SettingsSection {
         label: Settings.text.admin;
         desc: Settings.text.admin-desc;
         Switch { checked <=> Settings.admin; }
+    }
+}
+
+component SettingsUpdates inherits SettingsSection {
+    title: Settings.text.updates;
+    icon: @image-url("icons/sync.svg");
+    SettingRow {
+        label: Settings.text.check-updates;
+        desc: Settings.text.check-updates-desc;
+        Switch { checked <=> Settings.check-updates; }
     }
 }
 
@@ -1824,6 +1838,23 @@ component AboutPage inherits VerticalLayout {
                     }
                 }
                 SettingsSection {
+                    title: Info.s-version;
+                    icon: @image-url("icons/info.svg");
+                    SettingRow {
+                        label: "ProxyDock " + Info.app-version;
+                        desc: Upd.status;
+                        if Upd.has-release: Button {
+                            text: Upd.t-details;
+                            clicked => { Upd.dialog = true; }
+                        }
+                        Button {
+                            text: Upd.t-check;
+                            enabled: !Upd.busy;
+                            clicked => { Upd.check(); }
+                        }
+                    }
+                }
+                SettingsSection {
                     title: Info.s-engines;
                     icon: @image-url("icons/memory.svg");
                     for e in Info.engines: SettingRow {
@@ -1975,6 +2006,137 @@ component LicensePage inherits VerticalLayout {
             content: lic-scroll.content-height;
             view: lic-scroll.visible-height;
             fade-color: M3.surface-container-low;
+        }
+    }
+}
+
+// --- updates (Python ui/updater.py) ---
+
+export global Upd {
+    in property <string> status;
+    in property <bool> busy;
+    in property <bool> has-release;
+    in property <string> title;
+    in property <string> installed;
+    in property <styled-text> notes;
+    // "Download and install (12.3 MB)" or "Open the release page"
+    in property <string> action;
+    in-out property <bool> dialog;
+    in-out property <bool> downloading;
+    in property <float> progress;
+    in property <string> progress-text;
+    in property <string> file;
+    in-out property <bool> ask-install;
+    // texts
+    in property <string> t-check;
+    in property <string> t-details;
+    in property <string> t-later;
+    in property <string> t-downloading;
+    in property <string> t-cancel;
+    in property <string> t-install-title;
+    in property <string> t-install-text;
+    in property <string> t-install;
+    callback check();
+    callback act();
+    callback cancel();
+    callback install();
+}
+
+// a dialog over the window: a scrim and a rounded card
+component Dialog inherits Rectangle {
+    in property <length> card-width: 560px;
+    background: #00000070;
+    TouchArea { }
+    Rectangle {
+        width: min(parent.width - 64px, root.card-width);
+        height: min(parent.height - 64px, dlg-lay.preferred-height);
+        border-radius: 28px;
+        background: M3.surface-container-high;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #00000060;
+        dlg-lay := VerticalLayout {
+            padding: 24px;
+            spacing: 14px;
+            @children
+        }
+    }
+}
+
+component UpdateDialogs inherits Rectangle {
+    if Upd.dialog: Dialog {
+        card-width: 620px;
+        Text { text: Upd.title; font-size: 20px * Type.scale; font-weight: 700; color: M3.on-surface; wrap: word-wrap; }
+        Text { text: Upd.installed; font-size: 12px * Type.scale; color: M3.on-surface-variant; }
+        Rectangle {
+            // the notes' own height, at most 320 px (then they scroll)
+            height: min(notes-text.preferred-height + 24px, 320px);
+            border-radius: 16px;
+            background: M3.surface-container-low;
+            clip: true;
+            notes-scroll-box := ScrollView {
+                notes-text := StyledText {
+                    x: 16px;
+                    y: 12px;
+                    width: notes-scroll-box.visible-width - 32px;
+                    text: Upd.notes;
+                    default-color: M3.on-surface;
+                    default-font-size: 13px * Type.scale;
+                    link-color: M3.primary;
+                    link-clicked(link) => { Info.open-url(link); }
+                }
+            }
+        }
+        HorizontalLayout {
+            alignment: end;
+            spacing: 8px;
+            Button { text: Upd.t-later; clicked => { Upd.dialog = false; } }
+            Button {
+                text: Upd.action;
+                primary: true;
+                clicked => {
+                    Upd.dialog = false;
+                    Upd.act();
+                }
+            }
+        }
+    }
+    if Upd.downloading: Dialog {
+        card-width: 480px;
+        Text { text: Upd.t-downloading; font-size: 20px * Type.scale; font-weight: 700; color: M3.on-surface; }
+        Text { text: Upd.file; font-size: 12px * Type.scale; color: M3.on-surface-variant; overflow: elide; }
+        Rectangle {
+            height: 8px;
+            border-radius: 4px;
+            background: M3.surface-container-highest;
+            Rectangle {
+                x: 0;
+                width: parent.width * max(0, min(1, Upd.progress));
+                border-radius: 4px;
+                background: M3.primary;
+            }
+        }
+        Text { text: Upd.progress-text; font-size: 13px * Type.scale; color: M3.on-surface; }
+        HorizontalLayout {
+            alignment: end;
+            Button { text: Upd.t-cancel; clicked => { Upd.cancel(); } }
+        }
+    }
+    if Upd.ask-install: Dialog {
+        card-width: 480px;
+        Text { text: Upd.t-install-title; font-size: 20px * Type.scale; font-weight: 700; color: M3.on-surface; }
+        Text { text: Upd.t-install-text; font-size: 14px * Type.scale; color: M3.on-surface; wrap: word-wrap; }
+        HorizontalLayout {
+            alignment: end;
+            spacing: 8px;
+            Button { text: Upd.t-later; clicked => { Upd.ask-install = false; } }
+            Button {
+                text: Upd.t-install;
+                primary: true;
+                clicked => {
+                    Upd.ask-install = false;
+                    Upd.install();
+                }
+            }
         }
     }
 }
@@ -2493,6 +2655,7 @@ export component App inherits Window {
                                             SettingsDefaults {}
                                             if Settings.windows: SettingsStartup {}
                                             if Settings.windows: SettingsFirewall {}
+                                            SettingsUpdates {}
                                         }
                                         VerticalLayout {
                                             // equal halves (long texts would otherwise widen one column)
@@ -2511,6 +2674,7 @@ export component App inherits Window {
                                         SettingsDefaults {}
                                         if Settings.windows: SettingsStartup {}
                                         if Settings.windows: SettingsFirewall {}
+                                        SettingsUpdates {}
                                         SettingsDisplay {}
                                         SettingsFonts {}
                                         SettingsEngine {}
@@ -2606,6 +2770,7 @@ export component App inherits Window {
             }
         }
     }
+    UpdateDialogs { }
     if root.toast != "": Rectangle {
         // above the canvas toolbar on the canvas, at the bottom elsewhere
         x: 88px + (root.width - 88px - self.width) / 2;

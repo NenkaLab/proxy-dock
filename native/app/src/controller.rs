@@ -68,6 +68,21 @@ impl Default for Hooks {
 /// seconds of throughput the statistics graph shows (Python `stats.POINTS`)
 pub const STAT_POINTS: usize = 60;
 
+/// the first automatic update check after starting (Python: 10 s)
+const UPDATE_FIRST: Duration = Duration::from_secs(10);
+
+/// updates (Python `ui/updater.py`): the newer release found, what the About page says, a download in progress
+#[derive(Default)]
+struct UpdateState {
+    release: Option<proxydock_core::update::Release>,
+    status: String,
+    checking: bool,
+    downloading: bool,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+    /// the startup check (once, when due)
+    next_check: Option<Instant>,
+}
+
 /// outbound blocks measured at the same time (Python: a pool of 4)
 const LATENCY_WORKERS: usize = 4;
 
@@ -252,6 +267,7 @@ pub fn spawn_with(config_path: PathBuf, hooks: Hooks) -> std::io::Result<Handle>
         firewall: None,
         fw_busy: false,
         engines: None,
+        update: UpdateState { next_check: Some(Instant::now() + UPDATE_FIRST), ..Default::default() },
         engine_text: String::new(),
         latency: HashMap::new(),
         latency_busy: std::collections::HashSet::new(),
@@ -325,6 +341,7 @@ struct Controller {
     fw_busy: bool,
     /// the About page's engines: [name, program, version] (None while they are being asked)
     engines: Option<Vec<Value>>,
+    update: UpdateState,
     /// the settings page's sing-box line (path and version)
     engine_text: String,
     /// latency of outbound blocks: id -> (ok, ms, error, what it depends on)
@@ -499,7 +516,7 @@ impl Controller {
                 "dns_via_outbound": g["dns_via_outbound"], "log_to_file": g["log_to_file"],
                 "language": index(&codes, &g["language"]), "theme": index(&config::THEMES, &g["theme"]), "ui_scale": scale,
                 "log_font_size": g["log_font_size"], "close_exits": g["close_exits"], "singbox_latest": g["singbox_latest"],
-                "run_as_admin": g["run_as_admin"],
+                "run_as_admin": g["run_as_admin"], "check_updates": g["check_updates"],
                 "text_size": config::TEXT_SIZES.iter().position(|x| Some(*x) == g["text_size"].as_i64()).unwrap_or(1),
                 "ui_font": g["ui_font"], "mono_font": g["mono_font"],
             },
@@ -547,7 +564,7 @@ impl Controller {
         let pick = |list: &[&str], k: &str| list.get(vals[k].as_u64().unwrap_or(0) as usize).copied().unwrap_or(list[0]).to_string();
         let codes: Vec<&str> = proxydock_core::i18n::LANGUAGES.iter().map(|(c, _)| *c).collect();
         let mut g = self.glob.clone();
-        for k in ["block_private", "log_connections", "log_close", "dns_via_outbound", "log_to_file", "close_exits", "singbox_latest", "run_as_admin"] {
+        for k in ["block_private", "log_connections", "log_close", "dns_via_outbound", "log_to_file", "close_exits", "singbox_latest", "run_as_admin", "check_updates"] {
             g.insert(k.into(), json!(vals[k] == json!(true)));
         }
         for k in ["timeout", "log_font_size"] {
@@ -948,6 +965,157 @@ impl Controller {
             "app_dir": self.config_path.parent().map(|d| d.display().to_string()).unwrap_or_default(),
             "engines": self.engines,
         })
+    }
+
+    /// what the window shows about updates: the status, and the newer release with what installing it does
+    fn update_json(&self) -> Value {
+        use proxydock_core::update;
+        let u = &self.update;
+        let release = u.release.as_ref().map(|r| {
+            let exe = std::env::current_exe().unwrap_or_default();
+            let (os, arch) = update::platform_key();
+            let asset = update::install_kind(&exe).and_then(|k| update::pick_asset(r, os, arch, k));
+            let size = asset.as_ref().and_then(|a| r.assets.get(a)).map_or(0, |a| a.1);
+            json!({"version": r.version, "notes": r.notes, "url": r.url, "asset": asset, "size": size})
+        });
+        json!({"status": u.status, "busy": u.checking || u.downloading, "release": release, "current": update::current_version()})
+    }
+
+    fn send_update(&mut self) {
+        let msg = json!({"ev": "update", "update": self.update_json()});
+        self.broadcast(&msg);
+    }
+
+    /// Look for a newer release (Python `Updater.check`); `manual` from the About page's button
+    fn check_update(&mut self, manual: bool) {
+        if self.update.checking {
+            return;
+        }
+        self.update.checking = true;
+        self.update.status = tr("Checking for updates…");
+        self.send_update();
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let r = proxydock_core::update::check();
+            let _ = tx.send(Msg::Work(Box::new(move |c: &mut Controller| c.on_update_checked(r, manual))));
+        });
+    }
+
+    fn on_update_checked(&mut self, r: Result<Option<proxydock_core::update::Release>, String>, manual: bool) {
+        self.update.checking = false;
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+        self.glob.insert("update_checked".into(), json!(now));
+        self.save();
+        match r {
+            Err(e) => {
+                self.update.status = tr("Update check failed");
+                self.app_log(Level::Warn, &tr("Update check failed: {e}").replace("{e}", &e));
+                if manual {
+                    self.broadcast(&json!({"ev": "error", "message": format!("{}: {e}", tr("Update check failed"))}));
+                }
+            }
+            Ok(None) => {
+                self.update.release = None;
+                self.update.status = tr("This is the latest version");
+                if manual {
+                    let text = tr("{APP_NAME} {version} is the latest version").replace("{APP_NAME}", "ProxyDock").replace("{version}", proxydock_core::update::current_version());
+                    self.broadcast(&json!({"ev": "info", "message": text}));
+                }
+            }
+            Ok(Some(rel)) => {
+                let text = tr("Version {version} is available").replace("{version}", &rel.version);
+                self.update.status = text.clone();
+                self.update.release = Some(rel);
+                self.app_log(Level::Info, &text);
+                if !manual {
+                    // the window shows it (with a way to the details); with no window, the tray
+                    self.notify_user(&text);
+                }
+            }
+        }
+        // (the release first, then the dialog that shows it)
+        self.send_update();
+        if manual && self.update.release.is_some() {
+            self.broadcast(&json!({"ev": "update_dialog"}));
+        }
+    }
+
+    /// Download the release file, check it, then the window asks before installing (Python `start_download`)
+    fn download_update(&mut self) {
+        use proxydock_core::update;
+        let Some(rel) = self.update.release.clone() else { return };
+        let exe = std::env::current_exe().unwrap_or_default();
+        let (os, arch) = update::platform_key();
+        let Some(kind) = update::install_kind(&exe) else { return };
+        let Some(name) = update::pick_asset(&rel, os, arch, kind) else { return };
+        if self.update.downloading {
+            return;
+        }
+        self.update.downloading = true;
+        self.update.cancel.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.app_log(Level::Info, &tr("Downloading {name}").replace("{name}", &name));
+        self.send_update();
+        let (tx, cancel) = (self.tx.clone(), self.update.cancel.clone());
+        std::thread::spawn(move || {
+            let folder = std::env::temp_dir().join(format!("proxydock-update-{}", std::process::id()));
+            let _ = std::fs::create_dir_all(&folder);
+            let tx2 = tx.clone();
+            let progress = move |done: u64, total: u64| {
+                let _ = tx2.send(Msg::Work(Box::new(move |c: &mut Controller| {
+                    let msg = json!({"ev": "update_progress", "done": done, "total": total});
+                    c.broadcast(&msg);
+                })));
+            };
+            let r = update::fetch_verified(&rel, &name, &folder, &progress, &|| cancel.load(std::sync::atomic::Ordering::SeqCst));
+            let _ = tx.send(Msg::Work(Box::new(move |c: &mut Controller| c.on_update_downloaded(r))));
+        });
+    }
+
+    fn on_update_downloaded(&mut self, r: Result<std::path::PathBuf, proxydock_core::update::FetchError>) {
+        use proxydock_core::update::FetchError;
+        self.update.downloading = false;
+        self.send_update();
+        match r {
+            Ok(path) => {
+                self.app_log(Level::Info, &tr("Downloaded and verified (SHA-256): {path}").replace("{path}", &path.display().to_string()));
+                let msg = json!({"ev": "update_ready", "path": path.display().to_string()});
+                self.broadcast(&msg);
+            }
+            Err(FetchError::Cancelled) => {
+                self.app_log(Level::Info, &tr("Update download cancelled"));
+                self.broadcast(&json!({"ev": "update_ready", "path": ""}));
+            }
+            Err(FetchError::Failed(e)) => {
+                self.app_log(Level::Error, &tr("Update download failed: {e}").replace("{e}", &e));
+                self.broadcast(&json!({"ev": "update_ready", "path": ""}));
+                self.broadcast(&json!({"ev": "error", "message": format!("{}: {e}", tr("Update download failed"))}));
+            }
+        }
+    }
+
+    /// Run the installer and quit; it closes this program, updates it and starts it again (Python `install`)
+    fn install_update(&mut self, path: &str) {
+        let setup = std::path::Path::new(path);
+        let app_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.to_path_buf())).unwrap_or_default();
+        if !setup.is_file() || proxydock_core::update::install_kind(&std::env::current_exe().unwrap_or_default()).is_none() {
+            return;
+        }
+        let cmd = proxydock_core::update::installer_command(setup, &app_dir, &proxydock_core::i18n::current());
+        self.app_log(Level::Info, &tr("Starting the installer: {path}").replace("{path}", path));
+        let mut c = std::process::Command::new(&cmd[0]);
+        c.args(&cmd[1..]);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            c.creation_flags(0x0000_0008 | 0x0000_0200); // detached, its own group
+        }
+        match c.spawn() {
+            Ok(_) => (self.hooks.quit)(),
+            Err(e) => {
+                self.app_log(Level::Error, &tr("Update failed: {e}").replace("{e}", &e.to_string()));
+                self.broadcast(&json!({"ev": "error", "message": format!("{}: {e}", tr("Update failed"))}));
+            }
+        }
     }
 
     fn send_settings(&mut self) {
@@ -1586,7 +1754,8 @@ impl Controller {
                 let canvas = canvas::to_json(&self.view, &|id| state_name(&self.manager.state(id)));
                 let hello = json!({"ev": "hello", "language": self.glob["language"], "cards": cards, "logs": logs, "stats": self.stats_json(), "canvas": canvas, "undo": !self.undo.is_empty(), "redo": !self.redo.is_empty(),
                     "settings": self.settings_json(), "latency": self.latency_json(),
-                    "history": self.stat_history_json(), "conn": self.conn_sites_json(), "about": self.about_json()});
+                    "history": self.stat_history_json(), "conn": self.conn_sites_json(), "about": self.about_json(),
+                    "update": self.update_json()});
                 if let Some(c) = self.clients.get_mut(&n) {
                     c.ready = ipc::send(&mut c.stream, &hello).is_ok();
                 }
@@ -1616,6 +1785,13 @@ impl Controller {
                 self.test_latency(&keys);
             }
             "quit" => (self.hooks.quit)(),
+            "update_check" => self.check_update(true),
+            "update_download" => self.download_update(),
+            "update_cancel" => self.update.cancel.store(true, std::sync::atomic::Ordering::SeqCst),
+            "update_install" => {
+                let path = v["path"].as_str().unwrap_or("").to_string();
+                self.install_update(&path);
+            }
             "startup" | "startup_hidden" | "pc_off" | "pc_restore" | "firewall" | "set_switch" | "select_member" => self.platform_command(v),
             "conn_test" => self.conn_test(id),
             "test_site_add" => {
@@ -1935,6 +2111,13 @@ impl Controller {
             let Some(p) = self.proxy(&id).cloned() else { continue };
             if p["auto_restart"] == json!(true) && !matches!(self.manager.state(&id), State::Running | State::Starting) {
                 let _ = self.manager.start(&p, &self.glob);
+            }
+        }
+        if self.update.next_check.is_some_and(|t| now >= t) {
+            self.update.next_check = None;
+            let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+            if proxydock_core::update::due(&self.glob, unix) {
+                self.check_update(false);
             }
         }
         let point = self.stat_tick();

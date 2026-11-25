@@ -913,3 +913,33 @@ fn settings_v2_become_a_graph() {
     h.quit(Duration::from_secs(10));
     let _ = std::fs::remove_dir_all(&home);
 }
+
+#[test]
+fn update_check_finds_a_newer_release() {
+    let _serial = serial();
+    let home = std::env::temp_dir().join(format!("proxydock-upd-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let path = home.join("config.json");
+    // no automatic check at startup in this test (switched off)
+    std::fs::write(&path, json!({"version": 3, "global": {"check_updates": false}, "graph": {}}).to_string()).unwrap();
+    let release = json!({"tag_name": "v99.0.0", "name": "ProxyDock 99", "body": "**New**", "html_url": "https://github.com/x/releases/v99",
+                         "assets": [{"name": "ProxyDock-99.0.0-windows-x64-setup.exe", "browser_download_url": "https://dl/x", "size": 5242880}]});
+    // (debug builds read the release from here instead of GitHub)
+    unsafe { std::env::set_var("PROXYDOCK_UPDATE_URL", serve_once(release.to_string())) };
+    let h = controller::spawn(path.clone()).unwrap();
+    let (mut w, rx) = connect(&h, &h.token);
+    let hello = expect(&rx, 5, |v| v["ev"] == "hello").expect("hello");
+    assert_eq!(hello["update"]["release"], Value::Null);
+    ipc::send(&mut w, &json!({"cmd": "update_check"})).unwrap();
+    let u = expect(&rx, 10, |v| v["ev"] == "update" && v["update"]["release"].is_object()).expect("release");
+    assert_eq!(u["update"]["release"]["version"], "99.0.0");
+    assert_eq!(u["update"]["status"], "Version 99.0.0 is available");
+    // this copy was not installed by the setup program: the release page instead of a download
+    assert_eq!(u["update"]["release"]["asset"], Value::Null);
+    assert!(expect(&rx, 5, |v| v["ev"] == "update_dialog").is_some());
+    assert!(saved(&path)["global"]["update_checked"].as_i64().unwrap() > 0);
+    unsafe { std::env::remove_var("PROXYDOCK_UPDATE_URL") };
+    h.quit(Duration::from_secs(10));
+    let _ = std::fs::remove_dir_all(&home);
+}

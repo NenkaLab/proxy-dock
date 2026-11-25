@@ -454,6 +454,8 @@ fn show_settings(app: &App, v: &Value) {
     st.set_saved_close(b("close_exits"));
     st.set_saved_latest(b("singbox_latest"));
     st.set_saved_admin(b("run_as_admin"));
+    st.set_check_updates(b("check_updates"));
+    st.set_saved_check_updates(b("check_updates"));
     st.set_sizes(list("text_sizes"));
     st.set_text_size(i("text_size"));
     st.set_saved_text_size(i("text_size"));
@@ -647,6 +649,9 @@ fn settings_text() -> SettingsText {
         hidden_desc: t("Do not show the 'running' notification when started automatically"),
         admin: t("Run as administrator"),
         admin_desc: t("ProxyDock restarts itself with administrator rights (UAC prompt) when it starts, so TUN cards start without asking. Applies from the next start."),
+        updates: t("Updates"),
+        check_updates: t("Check for updates at startup"),
+        check_updates_desc: t("Asks GitHub for the latest release at most once a day. Only the app version is sent (as the User-Agent)."),
         firewall: t("Windows Firewall"),
         fw_block: t("Block external access"),
         fw_block_desc: t("Blocks connections from other PCs to ProxyDock (all proxies, needs administrator rights). Turn off to use servers for other devices (Shadowsocks, Hysteria2, etc.)"),
@@ -660,6 +665,15 @@ fn labels(app: &App) {
     stats_labels(app);
     conn_labels(app);
     info_labels(app, &proxydock_core::i18n::current());
+    let u = app.global::<Upd>();
+    u.set_t_check(tr("Check for updates").into());
+    u.set_t_details(tr("Details").into());
+    u.set_t_later(tr("Later").into());
+    u.set_t_downloading(tr("Downloading the update").into());
+    u.set_t_cancel(tr("Cancel").into());
+    u.set_t_install_title(tr("Install the update?").into());
+    u.set_t_install_text(tr("ProxyDock closes, the installer updates it and then starts it again. Running proxies stop until then.").into());
+    u.set_t_install(tr("Install").into());
     app.set_t_latency(tr("Test latency").into());
     app.set_t_close(tr("Close").into());
     app.set_t_save(tr("Save").into());
@@ -933,7 +947,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 "log_connections": st.get_logconn(), "log_close": st.get_logclose(), "dns_server": st.get_dns().as_str(),
                 "dns_via_outbound": st.get_dnsvia(), "log_to_file": st.get_logfile(), "language": st.get_language(),
                 "theme": st.get_theme(), "ui_scale": st.get_scale(), "log_font_size": st.get_logsize(),
-                "close_exits": st.get_close(), "singbox_latest": st.get_latest(), "run_as_admin": st.get_admin(),
+                "close_exits": st.get_close(), "singbox_latest": st.get_latest(), "run_as_admin": st.get_admin(), "check_updates": st.get_check_updates(),
                 "text_size": st.get_text_size(),
                 "ui_font": FONTS.with(|f| f.borrow().ui.get((st.get_ui_font() - 1).max(-1) as usize).cloned().filter(|_| st.get_ui_font() > 0).unwrap_or_default()),
                 "mono_font": FONTS.with(|f| f.borrow().mono.get((st.get_mono_font() - 1).max(-1) as usize).cloned().filter(|_| st.get_mono_font() > 0).unwrap_or_default()),
@@ -1048,6 +1062,36 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
     {
+        // updates: check, then download (or the release page), then install
+        let u = app.global::<Upd>();
+        let send_c = send.clone();
+        u.on_check(move || send_c(json!({"cmd": "update_check"})));
+        let (send_a, weak) = (send.clone(), app.as_weak());
+        u.on_act(move || {
+            match UPDATE_PAGE.with(|p| p.borrow().clone()) {
+                Some(page) => {
+                    let _ = open_with_system(&page);
+                }
+                None => {
+                    if let Some(a) = weak.upgrade() {
+                        let u = a.global::<Upd>();
+                        u.set_progress(0.0);
+                        u.set_progress_text(tr("Starting…").into());
+                        u.set_downloading(true);
+                    }
+                    send_a(json!({"cmd": "update_download"}));
+                }
+            }
+        });
+        let send_x = send.clone();
+        u.on_cancel(move || send_x(json!({"cmd": "update_cancel"})));
+        let send_i = send.clone();
+        u.on_install(move || {
+            let path = UPDATE_FILE.with(|f| f.borrow().clone());
+            send_i(json!({"cmd": "update_install", "path": path}));
+        });
+    }
+    {
         let w = writer.clone();
         app.on_stop_all(move || {
             let _ = ipc::send(&mut w.lock().unwrap(), &json!({"cmd": "stop_all"}));
@@ -1079,6 +1123,7 @@ fn main() -> Result<(), slint::PlatformError> {
                             conn_sites(&app, &v["conn"]);
                             conn_cards(&app, &m);
                             show_about(&app, &v["about"]);
+                            show_update(&app, &v["update"]);
                             stats_render(&app, &running_cards(&m));
                             app.set_can_undo(v["undo"] == json!(true));
                             app.set_can_redo(v["redo"] == json!(true));
@@ -1172,6 +1217,22 @@ fn main() -> Result<(), slint::PlatformError> {
                         }
                         "conn_sites" => conn_sites(&app, &v["conn"]),
                         "about" => show_about(&app, &v["about"]),
+                        "update" => show_update(&app, &v["update"]),
+                        "update_dialog" => app.global::<Upd>().set_dialog(true),
+                        "update_progress" => {
+                            let (done, total) = (v["done"].as_f64().unwrap_or(0.0), v["total"].as_f64().unwrap_or(0.0));
+                            let u = app.global::<Upd>();
+                            u.set_progress(if total > 0.0 { (done / total) as f32 } else { 0.0 });
+                            let mb = |n: f64| format!("{:.1} MB", n / (1024.0 * 1024.0));
+                            u.set_progress_text(if total > 0.0 { format!("{} / {}", mb(done), mb(total)) } else { mb(done) }.into());
+                        }
+                        "update_ready" => {
+                            let u = app.global::<Upd>();
+                            u.set_downloading(false);
+                            let path = v["path"].as_str().unwrap_or("");
+                            UPDATE_FILE.with(|f| *f.borrow_mut() = path.to_string());
+                            u.set_ask_install(!path.is_empty());
+                        }
                         "conn_start" | "conn_result" | "conn_done" => conn_event(&app, &v),
                         "log" => m.add_logs(v["entries"].as_array().map(Vec::as_slice).unwrap_or(&[])),
                         _ => {}
@@ -1805,4 +1866,50 @@ fn show_license(app: &App) {
     let list = licenses();
     let k = (i.get_lic_index().max(0) as usize).min(list.len() - 1);
     i.set_lic_text(list[k].1.into());
+}
+
+// --- updates (Python ui/updater.py) ---
+
+thread_local! {
+    /// the update file downloaded and verified, waiting for "Install"
+    static UPDATE_FILE: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+    /// the release page (when this copy cannot install the update itself)
+    static UPDATE_PAGE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// the About page's update line and the release dialog from the core's "update"
+fn show_update(app: &App, v: &Value) {
+    let u = app.global::<Upd>();
+    u.set_status(v["status"].as_str().unwrap_or("").into());
+    u.set_busy(v["busy"] == json!(true));
+    let rel = &v["release"];
+    u.set_has_release(rel.is_object());
+    if !rel.is_object() {
+        return;
+    }
+    let version = rel["version"].as_str().unwrap_or("");
+    u.set_title(tr("{APP_NAME} {version} is available").replace("{APP_NAME}", "ProxyDock").replace("{version}", version).into());
+    u.set_installed(tr("Installed version: {version}").replace("{version}", v["current"].as_str().unwrap_or("")).into());
+    let notes = rel["notes"].as_str().filter(|n| !n.is_empty()).map(String::from).unwrap_or_else(|| tr("No release notes."));
+    // (Slint's styled text has no headings: they become bold lines)
+    let notes: String = notes
+        .lines()
+        .map(|l| match l.trim_start().strip_prefix('#') {
+            Some(h) => format!("**{}**", h.trim_start_matches('#').trim()),
+            None => l.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    u.set_notes(styled(&notes));
+    let installs = rel["asset"].is_string();
+    let size = rel["size"].as_f64().unwrap_or(0.0);
+    let action = if installs {
+        tr("Download and install") + &if size > 0.0 { format!(" ({:.1} MB)", size / (1024.0 * 1024.0)) } else { String::new() }
+    } else {
+        tr("Open the release page")
+    };
+    u.set_action(action.into());
+    u.set_file(rel["asset"].as_str().unwrap_or("").into());
+    let page = rel["url"].as_str().filter(|x| !x.is_empty()).unwrap_or(proxydock_core::update::RELEASES_URL);
+    UPDATE_PAGE.with(|p| *p.borrow_mut() = (!installs).then(|| page.to_string()));
 }
