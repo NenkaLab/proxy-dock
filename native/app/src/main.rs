@@ -200,11 +200,28 @@ static TOOLTIP: Mutex<String> = Mutex::new(String::new());
 /// named events a second start sets (the window / the log page)
 const SHOW_EVENTS: [&str; 2] = ["Local\\ProxyDockRustShow", "Local\\ProxyDockRustShowLogs"];
 
+/// A single-instance object's name: with PROXYDOCK_HOME (another settings folder, as for trying things out) one
+/// of its own per folder, so such a copy neither wakes nor blocks the ProxyDock in use.
+fn instance_name(base: &str) -> Vec<u16> {
+    let name = match std::env::var("PROXYDOCK_HOME") {
+        Ok(home) if !home.is_empty() => {
+            // (FNV-1a of the folder, case-insensitive like Windows paths)
+            let h = home
+                .to_lowercase()
+                .bytes()
+                .fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3));
+            format!("{base}.{h:016x}")
+        }
+        _ => base.to_string(),
+    };
+    name.encode_utf16().chain(Some(0)).collect()
+}
+
 /// A second start: ask the running ProxyDock to show its window (the log page with --logs), then end
 fn wake_first_instance(logs: bool) {
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::{EVENT_MODIFY_STATE, OpenEventW, SetEvent};
-    let name: Vec<u16> = SHOW_EVENTS[logs as usize].encode_utf16().chain(Some(0)).collect();
+    let name = instance_name(SHOW_EVENTS[logs as usize]);
     unsafe {
         let h = OpenEventW(EVENT_MODIFY_STATE, 0, name.as_ptr());
         if !h.is_null() {
@@ -220,7 +237,7 @@ fn listen_for_second_start(main_thread: u32) {
     let handles: Vec<_> = SHOW_EVENTS
         .iter()
         .map(|n| {
-            let name: Vec<u16> = n.encode_utf16().chain(Some(0)).collect();
+            let name = instance_name(n);
             unsafe { CreateEventW(std::ptr::null(), 0, 0, name.as_ptr()) }
         })
         .collect();
@@ -377,7 +394,7 @@ fn menu_entries() -> (Vec<menu::Entry>, Box<dyn Fn(u32)>) {
 fn first_instance() -> Option<windows_sys::Win32::Foundation::HANDLE> {
     use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError};
     use windows_sys::Win32::System::Threading::CreateMutexW;
-    let name: Vec<u16> = "Local\\ProxyDockRustCore".encode_utf16().chain(Some(0)).collect();
+    let name = instance_name("Local\\ProxyDockRustCore");
     let h = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
     if h.is_null() {
         return None;

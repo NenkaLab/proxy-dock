@@ -3419,8 +3419,6 @@ export component App inherits Window {
     // the toast is a plain message (a settings change), not a refusal
     in property <bool> toast-info;
     // a message in the editor (a button's result): text and whether it went well
-    in property <string> form-notice;
-    in property <bool> form-notice-ok;
     // world coordinates of the visible canvas centre (new blocks go there)
     out property <float> view-center-x: (editor.width / 2 - editor.pan-x) / editor.zoom / 1px;
     out property <float> view-center-y: (editor.height / 2 - editor.pan-y) / editor.zoom / 1px;
@@ -4113,19 +4111,6 @@ export component App inherits Window {
                         width: min(parent.width, root.content-max);
                         x: (parent.width - self.width) / 2;
                         spacing: 12px;
-                        if root.form-notice != "": Rectangle {
-                            border-radius: 12px;
-                            background: root.form-notice-ok ? M3.secondary-container : M3.error-container;
-                            height: notice-text.preferred-height + 28px;
-                            notice-text := Text {
-                                x: 16px;
-                                width: parent.width - 32px;
-                                font-size: 14px * Type.scale;
-                                text: root.form-notice;
-                                color: root.form-notice-ok ? M3.on-secondary-container : M3.on-error-container;
-                                wrap: word-wrap;
-                            }
-                        }
                         if root.form-errors.length > 0: Rectangle {
                             border-radius: 12px;
                             background: M3.error-container;
@@ -4500,7 +4485,8 @@ export component App inherits Window {
         x: root.rail-w + (root.width - root.rail-w - self.width) / 2;
         y: root.height - (root.page == 0 ? 24px + 64px + 12px : 28px) - self.height;
         property <length> action-w: root.toast-action != "" ? toast-btn.preferred-width + 12px : 0px;
-        width: min(root.width - root.rail-w - 40px, toast-text.preferred-width + 40px + self.action-w);
+        // (an M3 snackbar: at most 560 wide, text from the left)
+        width: min(root.width - root.rail-w - 40px, 560px, toast-text.preferred-width + 40px + self.action-w);
         height: max(toast-text.preferred-height + 24px, root.toast-action != "" ? 56px : 0px);
         border-radius: 12px;
         background: root.toast-info ? M3.secondary-container : M3.error-container;
@@ -4512,8 +4498,9 @@ export component App inherits Window {
             font-size: 14px * Type.scale;
             text: root.toast;
             wrap: word-wrap;
+            vertical-alignment: center;
             color: root.toast-info ? M3.on-secondary-container : M3.on-error-container;
-            horizontal-alignment: root.toast-action != "" ? left : center;
+            horizontal-alignment: left;
         }
         toast-btn := AppButton {
             visible: root.toast-action != "";

@@ -1580,7 +1580,6 @@ thread_local! {
     static BADGES: std::cell::RefCell<HashMap<String, (String, i32)>> = std::cell::RefCell::new(HashMap::new());
     /// "Quit with the X button"
     static CLOSE_EXITS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    static NOTICE_SEQ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static TOAST_SEQ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     /// the block whose title the rename box edits
     static RENAME_KEY: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
@@ -3388,9 +3387,6 @@ fn main() -> Result<(), slint::PlatformError> {
                                     }
                                     // the core's draft has every value typed so far
                                     e.values.clear();
-                                    if fresh {
-                                        app.set_form_notice(SharedString::new());
-                                    }
                                 });
                                 let rows = field_rows(v["fields"].as_array().map(Vec::as_slice).unwrap_or(&[]));
                                 app.set_form_fields(ModelRc::new(VecModel::from(rows)));
@@ -3401,20 +3397,15 @@ fn main() -> Result<(), slint::PlatformError> {
                             "notice" => {
                                 let (title, text) =
                                     (v["title"].as_str().unwrap_or(""), v["text"].as_str().unwrap_or(""));
-                                let msg = if text.is_empty() { title.to_string() } else { format!("{title}\n{text}") };
-                                app.set_form_notice(msg.as_str().into());
-                                app.set_form_notice_ok(v["ok"] == json!(true));
-                                // the same message twice in a row stays (each one restarts the timer)
-                                NOTICE_SEQ.with(|n| n.set(n.get() + 1));
-                                let seq = NOTICE_SEQ.with(|n| n.get());
-                                let weak = app.as_weak();
-                                slint::Timer::single_shot(std::time::Duration::from_secs(7), move || {
-                                    if let Some(a) = weak.upgrade()
-                                        && NOTICE_SEQ.with(|n| n.get()) == seq
-                                    {
-                                        a.set_form_notice(SharedString::new());
-                                    }
-                                });
+                                // a short result (port free, connection works...): a snackbar at the bottom; a
+                                // success says just what it found, a failure also what failed
+                                let ok = v["ok"] == json!(true);
+                                let msg = match (text.is_empty(), ok) {
+                                    (true, _) => title.to_string(),
+                                    (false, true) => text.to_string(),
+                                    (false, false) => format!("{title}\n{text}"),
+                                };
+                                show_toast(&app, &msg, ok, if ok { 4.0 } else { 7.0 });
                             }
                             // a file to save (a WireGuard device's .conf): Windows' save dialog, then written
                             "save_file" => {
