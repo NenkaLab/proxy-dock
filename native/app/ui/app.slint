@@ -2,10 +2,10 @@
 // the prototype. Pages so far: the proxy cards and the log; everything comes from the core process over ipc.
 import { ListView, Palette, ScrollView } from "std-widgets.slint";
 import {
-    NodeEditor, BaseNode, Pin, PinTypes, NodeEditorEvents, NodeEditorInternalCallbacks, NodeEditorComputations, LinkData, GroupData, GroupStyleDefaults,
+    NodeEditor, BaseNode, Pin, PinTypes, NodeEditorEvents, NodeEditorInternalCallbacks, NodeEditorComputations, LinkData, GroupData, GroupStyleDefaults, DragState,
 } from "@nodeeditor";
 
-export { PinTypes, NodeEditorEvents, NodeEditorInternalCallbacks, NodeEditorComputations }
+export { PinTypes, NodeEditorEvents, NodeEditorInternalCallbacks, NodeEditorComputations, DragState }
 import "../../../fonts/PretendardVariable.ttf";
 import "../../../fonts/JetBrainsMono.ttf";
 
@@ -343,6 +343,8 @@ component ProxyNode inherits BaseNode {
     in property <[OutColor]> out-colors;
     // a colour swatch clicked: the output's key ("" = the block), where (window coordinates)
     callback pick-color(string, length, length);
+    // a wireless half: its pair number ("#3") on a pill; clicked to change it
+    callback edit-number();
     in property <string> rate;
     in property <string> badge;
     in property <int> badge-tone;
@@ -531,6 +533,22 @@ component ProxyNode inherits BaseNode {
             swatch-ta := TouchArea {
                 clicked => { root.pick-color("", self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y); }
             }
+        }
+        // a wireless half's pair number: click to change it (Python: double-click the number)
+        if root.kind == 3 && root.detail != "" && root.ins + root.outs <= 1: Rectangle {
+            x: root.node-width - 44px - self.width - 6px;
+            y: 12px;
+            width: num-text.preferred-width + 20px;
+            height: 24px;
+            border-radius: 12px;
+            background: num-ta.has-hover ? root.on-container.with-alpha(0.22) : root.on-container.with-alpha(0.12);
+            num-text := Text {
+                text: root.detail;
+                font-size: 12px * Type.scale;
+                font-weight: 700;
+                color: root.on-container;
+            }
+            num-ta := TouchArea { clicked => { root.edit-number(); } }
         }
         // the editor (blocks that have settings: all but the PC block)
         if root.kind <= 3: Rectangle {
@@ -3206,6 +3224,12 @@ export component App inherits Window {
     in property <[FlowDot]> pair-dots;
     // links that carry a mix of colours: drawn dotted (Python: dashed)
     in property <[FlowDot]> mix-dots;
+    // a block dragged over a group's box: the box it would become (world units), shown while it fits
+    in property <bool> drop-show;
+    in property <float> drop-x;
+    in property <float> drop-y;
+    in property <float> drop-w;
+    in property <float> drop-h;
     // the colour palette (Python's swatch menu): open, where, what for, the colours and their names
     in-out property <bool> palette-open;
     in-out property <length> palette-x;
@@ -3248,6 +3272,8 @@ export component App inherits Window {
     in property <float> log-px: 12;
     // the title box of "Rename" (F2): open, and the text typed
     in-out property <bool> rename-open;
+    // the box's title when it is not a rename ("Pair number"); "" = "Rename"
+    in-out property <string> rename-title;
     in-out property <string> rename-text;
     callback undo();
     callback redo();
@@ -3327,6 +3353,8 @@ export component App inherits Window {
     callback set-switch(string, bool);
     // an arrow key on the canvas: "left" / "right" / "up" / "down"
     callback canvas-nav(string);
+    // a wireless pair's number to change (the rename box)
+    callback edit-number(int);
     // a card's "At start" / "Auto-restart" (its block's chips)
     callback set-flag(string, string, bool);
     // a canvas block's key by its node id
@@ -3353,6 +3381,13 @@ export component App inherits Window {
     callback group-selected <=> editor.group-selected;
     // canvas groups (proxydock-ui.rs keeps them): the rows, the one selected, how many blocks are selected
     in property <[GroupData]> groups;
+    // the list page's PC bar (Python `PcBar`): off | waiting | applied | error | unsupported, and its text
+    in property <string> pc-state: "off";
+    in property <string> pc-text;
+    in property <string> t-pc: "PC (system proxy)";
+    in property <string> t-pc-restore: "Restore previous";
+    in property <string> t-pc-off: "Off (default)";
+    callback pc-action(string);
     in property <int> group-sel: 0;
     in property <bool> group-sel-collapsed;
     in property <int> sel-count: 0;
@@ -3658,6 +3693,20 @@ export component App inherits Window {
                                 border-radius: d.size / 2 * 1px;
                                 background: d.color;
                             }
+                            // (animated: it grows to take the block in, and back when the drag goes elsewhere)
+                            Rectangle {
+                                x: root.drop-x * 1px;
+                                y: root.drop-y * 1px;
+                                width: root.drop-w * 1px;
+                                height: root.drop-h * 1px;
+                                opacity: root.drop-show ? 1 : 0;
+                                border-radius: 24px;
+                                border-width: 3px;
+                                border-color: M3.primary;
+                                background: M3.primary.with-alpha(0.10);
+                                animate x, y, width, height { duration: 220ms; easing: cubic-bezier(0.2, 0, 0, 1); }
+                                animate opacity { duration: 150ms; }
+                            }
                             for d in root.mix-dots: Rectangle {
                                 x: (d.x - d.size / 2) * 1px;
                                 y: (d.y - d.size / 2) * 1px;
@@ -3697,6 +3746,7 @@ export component App inherits Window {
                                 group-color: node.swatch;
                                 out-colors: node.out-colors;
                                 pick-color(out, x, y) => { root.open-palette(node.id, out, x, y); }
+                                edit-number => { root.edit-number(node.id); }
                                 set-switch(on) => { root.set-switch(root.node-key(node.id), on); }
                                 wires: node.wires;
                                 state: node.state;
@@ -3837,7 +3887,58 @@ export component App inherits Window {
                                     alignment: start;
                                     spacing: 8px;
                                     // inbound blocks (the cards)
-                                    ListTitle { text: root.t-sec-inbound; first: true; }
+                                    // PC (system proxy): its state, "Restore previous", "Off (default)"
+                                    Rectangle {
+                                        height: max(72px, pc-lay.preferred-height);
+                                        border-radius: 16px;
+                                        background: M3.surface-container;
+                                        pc-lay := HorizontalLayout {
+                                            padding-left: 20px;
+                                            padding-right: 16px;
+                                            padding-top: 12px;
+                                            padding-bottom: 12px;
+                                            spacing: 16px;
+                                            Rectangle {
+                                                width: 12px;
+                                                height: 12px;
+                                                y: (parent.height - self.height) / 2;
+                                                border-radius: 6px;
+                                                background: root.pc-state == "applied" ? #2e9e4f : root.pc-state == "waiting" ? #c99a06
+                                                    : root.pc-state == "error" ? #c42b1c : #8a8a8a;
+                                            }
+                                            VerticalLayout {
+                                                horizontal-stretch: 1;
+                                                alignment: center;
+                                                spacing: 2px;
+                                                Text {
+                                                    text: root.t-pc;
+                                                    font-size: 16px * Type.scale;
+                                                    color: M3.on-surface;
+                                                }
+                                                Text {
+                                                    text: root.pc-text;
+                                                    font-size: 14px * Type.scale;
+                                                    color: M3.on-surface-variant;
+                                                    wrap: word-wrap;
+                                                }
+                                            }
+                                            AppButton {
+                                                y: (parent.height - self.height) / 2;
+                                                text: root.t-pc-restore;
+                                                icon: @image-url("icons/undo.svg");
+                                                enabled: root.pc-state != "unsupported";
+                                                clicked => { root.pc-action("restore"); }
+                                            }
+                                            AppButton {
+                                                y: (parent.height - self.height) / 2;
+                                                text: root.t-pc-off;
+                                                icon: @image-url("icons/power_settings_new.svg");
+                                                enabled: root.pc-state != "unsupported";
+                                                clicked => { root.pc-action("off"); }
+                                            }
+                                        }
+                                    }
+                                    ListTitle { text: root.t-sec-inbound; }
                                     if root.cards.length == 0: Text {
                                         text: root.t-empty;
                                         color: M3.on-surface-variant;
@@ -4548,7 +4649,7 @@ export component App inherits Window {
                     padding: 24px;
                     spacing: 16px;
                     Text {
-                        text: root.t-rename;
+                        text: root.rename-title != "" ? root.rename-title : root.t-rename;
                         font-size: 20px * Type.scale;
                         font-weight: 700;
                         color: M3.on-surface;

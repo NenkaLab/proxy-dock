@@ -1306,6 +1306,9 @@ impl Controller {
     fn canvas_json(&self) -> Value {
         let mut canvas = canvas::to_json(&self.view, &|id| state_name(&self.manager.state(id)));
         canvas["groups"] = self.graph.get("groups").cloned().unwrap_or(json!([]));
+        // the list page's PC bar (Python `PcBar`): its state and text
+        let (state, text) = self.pc_status();
+        canvas["pc_status"] = json!([state, text]);
         for n in canvas["nodes"].as_array_mut().into_iter().flatten() {
             let key = n["key"].as_str().unwrap_or("").to_string();
             n["menu"] = edit::block_menu(&self.graph, &key);
@@ -1713,6 +1716,12 @@ impl Controller {
                 }
                 Ok(())
             }
+            // a wireless pair's number (its key is "number:<id>")
+            "rename" if s("key").starts_with("number:") => match edit::set_wireless_number(&mut self.graph, &s("key")["number:".len()..], &s("name")) {
+                Ok(true) => Ok(()),
+                Ok(false) => return,
+                Err(e) => Err(format!("{}\n{e}", tr("Cannot change the number"))),
+            },
             // a canvas group's title (its key is "group:<id>")
             "rename" if s("key").starts_with("group:") => {
                 if !edit::rename_group(&mut self.graph, &s("key")["group:".len()..], &s("name")) {
@@ -1727,6 +1736,13 @@ impl Controller {
                 let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
                 if edit::group_blocks(&mut self.graph, &refs).is_none() {
                     self.broadcast(&json!({"ev": "error", "message": tr("Select two blocks or more")}));
+                    return;
+                }
+                Ok(())
+            }
+            // a block dropped onto a group's box
+            "group_add" => {
+                if !edit::add_to_group(&mut self.graph, &s("id"), &s("key")) {
                     return;
                 }
                 Ok(())
@@ -2076,7 +2092,7 @@ impl Controller {
                 };
                 self.send_to(n, &msg);
             }
-            "move" | "connect" | "disconnect" | "delete" | "duplicate" | "rename" | "color" | "group" | "ungroup" | "group_color" | "group_collapse" => self.edit(cmd, v),
+            "move" | "connect" | "disconnect" | "delete" | "duplicate" | "rename" | "color" | "group" | "ungroup" | "group_color" | "group_collapse" | "group_add" => self.edit(cmd, v),
             "add" => {
                 // (Python opens the editor for a new outbound other than Direct, and for a router / IF)
                 if let Some(open) = self.add_block(v) {

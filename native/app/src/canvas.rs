@@ -355,10 +355,10 @@ pub fn build(g: &Obj, summary: &dyn Fn(&str) -> String, unlinked: &dyn Fn(&str) 
                 let lane = ins.first().map(|l| s(l, "id")).unwrap_or("");
                 let src = lane_sources(g, lane);
                 let dest = idx.follow(Some(lane)).and_then(|t| name_of(g, &t)).unwrap_or_else(|| tr("not connected"));
-                a.lines = vec![(format!("#{number} · → {dest}"), NORMAL)];
-                z.lines = vec![(format!("#{number} · ← {}", if src.is_empty() { "-".to_string() } else { src.join(", ") }), NORMAL)];
+                a.lines = vec![(format!("→ {dest}"), NORMAL)];
+                z.lines = vec![(format!("← {}", if src.is_empty() { "-".to_string() } else { src.join(", ") }), NORMAL)];
             } else {
-                let text = format!("#{number} · ⚠ {}", tr("partner deleted"));
+                let text = format!("⚠ {}", tr("partner deleted"));
                 a.lines = vec![(text.clone(), WARN)];
                 z.lines = vec![(text, WARN)];
             }

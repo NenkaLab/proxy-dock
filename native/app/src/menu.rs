@@ -15,6 +15,7 @@ use windows_sys::Win32::{
     UI::WindowsAndMessaging::*,
 };
 
+#[derive(Clone, PartialEq)]
 pub enum Entry {
     Item { label: String, id: u32 },
     /// a small caption over the choices that follow (not clickable)
@@ -64,7 +65,15 @@ struct State {
     on_pick: Box<dyn Fn(u32)>,
     size: (i32, i32),
     tracking: bool,
+    /// where it was opened (its corner follows a new size), and what makes its entries again
+    anchor: (i32, i32),
+    rebuild: Option<Rebuild>,
 }
+
+/// the menu's entries and what picking one does, made again while it is open
+pub type Rebuild = Box<dyn Fn() -> (Vec<Entry>, Box<dyn Fn(u32)>)>;
+
+const REFRESH_TIMER: usize = 1;
 
 thread_local! {
     static MENU: RefCell<Option<State>> = const { RefCell::new(None) };
@@ -443,6 +452,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             }
             0
         }
+        // once a second: the entries again (a card started, a switch moved); drawn again only if they changed
+        WM_TIMER if wparam == REFRESH_TIMER => {
+            refresh();
+            0
+        }
         WM_ACTIVATE => {
             // clicked somewhere else
             if (wparam & 0xffff) as u32 == WA_INACTIVE {
@@ -460,6 +474,65 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 
 static REGISTERED: AtomicBool = AtomicBool::new(false);
 const CLASS: &str = "ProxyDockTrayMenu";
+
+/// where the menu goes for cursor point (x, y): up and to the left like Windows' own tray menus, flipped where
+/// the screen ends; (left, top) of the surface
+unsafe fn place(x: i32, y: i32, sw: f32, sh: f32) -> (i32, i32) {
+    let mut mi: MONITORINFO = unsafe { std::mem::zeroed() };
+    mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+    unsafe { GetMonitorInfoW(MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST), &mut mi) };
+    let work = mi.rcWork;
+    let (sw_i, sh_i) = (sw.ceil() as i32, sh.ceil() as i32);
+    let mut left = x - sw_i;
+    if left < work.left {
+        left = x;
+    }
+    left = left.min(work.right - sw_i);
+    let mut top = y - sh_i;
+    if top < work.top {
+        top = y;
+    }
+    (left, top.min(work.bottom - sh_i))
+}
+
+/// the open menu with its entries made again (kept as it is when they did not change)
+fn refresh() {
+    let Some(rebuild) = MENU.with(|m| m.borrow_mut().as_mut().and_then(|st| st.rebuild.take())) else { return };
+    let (entries, on_pick) = rebuild();
+    MENU.with(|m| {
+        let mut m = m.borrow_mut();
+        let Some(st) = m.as_mut() else { return };
+        st.rebuild = Some(rebuild);
+        if st.entries == entries {
+            return;
+        }
+        st.width = menu_width(&st.font, &entries, st.scale);
+        let (sw, sh) = surface_size(&entries, st.scale, st.width);
+        st.entries = entries;
+        st.on_pick = on_pick;
+        st.hover = None;
+        let margin = SHADOW * st.scale;
+        let (w, h) = ((sw + margin * 2.0).ceil() as i32, (sh + margin * 2.0).ceil() as i32);
+        unsafe {
+            let (left, top) = place(st.anchor.0, st.anchor.1, sw, sh);
+            SetWindowPos(st.hwnd, HWND_TOPMOST, left - margin as i32, top - margin as i32, w, h, SWP_NOACTIVATE);
+        }
+        st.size = (w, h);
+        render(st);
+    });
+}
+
+/// `show`, drawn again once a second from `rebuild` while it is open
+pub fn show_live(x: i32, y: i32, rebuild: Rebuild) {
+    let (entries, on_pick) = rebuild();
+    show(x, y, entries, on_pick);
+    MENU.with(|m| {
+        if let Some(st) = m.borrow_mut().as_mut() {
+            st.rebuild = Some(rebuild);
+            unsafe { SetTimer(st.hwnd, REFRESH_TIMER, 1000, None) };
+        }
+    });
+}
 
 /// Show the menu with its corner at the cursor point (x, y) (physical px), kept inside the monitor's work area.
 pub fn show(x: i32, y: i32, entries: Vec<Entry>, on_pick: impl Fn(u32) + 'static) {
@@ -506,22 +579,7 @@ pub fn show(x: i32, y: i32, entries: Vec<Entry>, on_pick: impl Fn(u32) + 'static
         let margin = SHADOW * scale;
         let (w, h) = ((sw + margin * 2.0).ceil() as i32, (sh + margin * 2.0).ceil() as i32);
 
-        // like Windows' own tray menus: up and to the left of the cursor, flipped where the screen ends
-        let mut mi: MONITORINFO = std::mem::zeroed();
-        mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
-        GetMonitorInfoW(MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST), &mut mi);
-        let work = mi.rcWork;
-        let (sw_i, sh_i) = (sw.ceil() as i32, sh.ceil() as i32);
-        let mut left = x - sw_i;
-        if left < work.left {
-            left = x;
-        }
-        left = left.min(work.right - sw_i);
-        let mut top = y - sh_i;
-        if top < work.top {
-            top = y;
-        }
-        top = top.min(work.bottom - sh_i);
+        let (left, top) = place(x, y, sw, sh);
         SetWindowPos(hwnd, HWND_TOPMOST, left - margin as i32, top - margin as i32, w, h, SWP_NOACTIVATE);
 
         let st = State {
@@ -535,6 +593,8 @@ pub fn show(x: i32, y: i32, entries: Vec<Entry>, on_pick: impl Fn(u32) + 'static
             on_pick: Box::new(on_pick),
             size: (w, h),
             tracking: false,
+            anchor: (x, y),
+            rebuild: None,
         };
         render(&st);
         MENU.with(|m| *m.borrow_mut() = Some(st));

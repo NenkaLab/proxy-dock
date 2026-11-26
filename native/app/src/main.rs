@@ -260,8 +260,16 @@ fn state_text(s: &State) -> String {
 }
 
 fn show_menu(x: i32, y: i32) {
+    if CORE.get().is_none() {
+        return;
+    }
+    menu::show_live(x, y, Box::new(menu_entries));
+}
+
+/// the tray menu as things are now, and what each entry does
+fn menu_entries() -> (Vec<menu::Entry>, Box<dyn Fn(u32)>) {
     use menu::Entry;
-    let Some(core) = CORE.get() else { return };
+    let core = CORE.get().unwrap();
     let cards = core.cards();
     // (Python: the first item opens or closes the window)
     let open = ui_window().is_some();
@@ -309,7 +317,7 @@ fn show_menu(x: i32, y: i32) {
     entries.push(Entry::Divider);
     entries.push(Entry::Item { label: tr("Restart"), id: ID_RESTART });
     entries.push(Entry::Item { label: tr("Quit"), id: ID_QUIT });
-    menu::show(x, y, entries, move |id| match id {
+    let pick = move |id: u32| match id {
         ID_OPEN => open_ui(0),
         ID_CLOSE => close_ui(),
         ID_RESTART => restart(false),
@@ -330,7 +338,8 @@ fn show_menu(x: i32, y: i32) {
             }
         }
         _ => {}
-    });
+    };
+    (entries, Box::new(pick))
 }
 
 /// Only one core process per user (a second one would start the autostart cards again): the mutex that says so,

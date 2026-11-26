@@ -286,6 +286,27 @@ pub fn group_blocks(g: &mut Obj, keys: &[&str]) -> Option<String> {
     Some(id)
 }
 
+/// block `key` into group `gid` (out of any other group); false when it is already there or either is unknown
+pub fn add_to_group(g: &mut Obj, gid: &str, key: &str) -> bool {
+    if !graph::canvas_keys(g).contains(key) || group_of(g, key).as_deref() == Some(gid) {
+        return false;
+    }
+    if !g.get("groups").and_then(Value::as_array).is_some_and(|a| a.iter().any(|x| x["id"] == json!(gid))) {
+        return false;
+    }
+    for x in groups_mut(g).iter_mut() {
+        let target = x["id"] == json!(gid);
+        if let Some(m) = x["members"].as_array_mut() {
+            m.retain(|k| k != key);
+            if target {
+                m.push(json!(key));
+            }
+        }
+    }
+    graph::clean_groups(g);
+    true
+}
+
 /// the group goes, its blocks stay where they are
 pub fn ungroup(g: &mut Obj, gid: &str) -> bool {
     let before = g.get("groups").and_then(Value::as_array).map_or(0, Vec::len);
@@ -492,6 +513,26 @@ pub fn add(g: &mut Obj, kind: i32, x: f64, y: f64) -> String {
 /// Rename a block from its title on the canvas (Python `rename_node`, `set_wireless_title`). Returns the name the
 /// settings log shows, or None when nothing changes (an empty or the same name, the PC block). A wireless half
 /// keeps its title as typed (titles may repeat); other blocks get a free name ("base 2", ...).
+/// Python `set_wireless_number`: the pair number of wireless pair `rid` (1..9999, not another pair's). Ok(true):
+/// changed; Ok(false): the same; Err: why not.
+pub fn set_wireless_number(g: &mut Obj, rid: &str, text: &str) -> Result<bool, String> {
+    let rid = block_of(rid).0;
+    let number = crate::py::strip(text).trim_start_matches('#').parse::<i64>().ok().filter(|n| (1..=graph::MAX_WIRELESS).contains(n));
+    let Some(number) = number else {
+        return Err(tr("Enter a number from 1 to {max}").replace("{max}", &graph::MAX_WIRELESS.to_string()));
+    };
+    let taken = arr(g, "relays").iter().any(|r| r["id"] != json!(rid) && r["wireless"] == json!(true) && r["number"] == json!(number));
+    if taken {
+        return Err(tr("#{n} is already used by another wireless pair").replace("{n}", &number.to_string()));
+    }
+    let Some(r) = arr(g, "relays").iter_mut().find(|r| r["id"] == json!(rid) && r["wireless"] == json!(true)) else { return Ok(false) };
+    if r["number"] == json!(number) {
+        return Ok(false);
+    }
+    r["number"] = json!(number);
+    Ok(true)
+}
+
 pub fn rename(g: &mut Obj, key: &str, name: &str) -> Option<String> {
     let (id, out_half) = block_of(key);
     let name: String = crate::py::strip(name).chars().take(60).collect();
@@ -618,6 +659,18 @@ mod tests {
     }
 
     #[test]
+    fn wireless_numbers() {
+        let mut g = sample();
+        let a = add_wireless(&mut g, 0.0, 0.0);
+        let b = add_wireless(&mut g, 0.0, 100.0);
+        assert_eq!(set_wireless_number(&mut g, &a, "#7"), Ok(true));
+        assert_eq!(set_wireless_number(&mut g, &format!("{a}/out"), "7"), Ok(false));
+        assert!(set_wireless_number(&mut g, &b, "7").unwrap_err().contains('7'));
+        assert!(set_wireless_number(&mut g, &b, "0").is_err());
+        assert!(set_wireless_number(&mut g, &b, "x").is_err());
+    }
+
+    #[test]
     fn canvas_groups() {
         let mut g = sample();
         assert!(!g.contains_key("groups"), "no groups: no key (Python's graphs stay the same)");
@@ -639,6 +692,10 @@ mod tests {
         delete(&mut g, "a");
         graph::clean_groups(&mut g);
         assert_eq!(g["groups"].as_array().unwrap().len(), 1);
+        // dropped onto a group: in it (and out of the other)
+        assert!(add_to_group(&mut g, &id2, "b"));
+        assert_eq!(group_of(&g, "b"), Some(id2.clone()));
+        assert!(!add_to_group(&mut g, &id2, "b"), "already in it");
         assert!(ungroup(&mut g, &id2));
         assert!(!g.contains_key("groups"));
     }

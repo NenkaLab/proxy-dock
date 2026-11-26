@@ -442,6 +442,69 @@ fn groups_follow(app: &App, models: &Models, rects: &HashMap<i32, (f32, f32, f32
     }
 }
 
+thread_local! {
+    /// the group a dragged block is over (row id), for the preview, and that box as it was
+    static DROP_TARGET: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
+    static DROP_BASE: std::cell::Cell<(f32, f32, f32, f32)> = const { std::cell::Cell::new((0.0, 0.0, 0.0, 0.0)) };
+}
+
+/// the expanded group row a block's rectangle (world) would drop into: its centre inside the box, not its own
+/// group, not collapsed
+fn drop_group(groups: &VecModel<GroupData>, own: i32, rect: (f32, f32, f32, f32)) -> Option<GroupData> {
+    let (cx, cy) = (rect.0 + rect.2 / 2.0, rect.1 + rect.3 / 2.0);
+    groups.iter().find(|g| g.id != own && !g.collapsed && cx >= g.x && cx <= g.x + g.width && cy >= g.y && cy <= g.y + g.height)
+}
+
+/// While a block is dragged: over another group's box, an outline grows from the box to take the block in; it
+/// goes back to the box (and fades) when the block leaves or the drag ends.
+fn drop_preview(app: &App, models: &Models) {
+    let ds = app.global::<DragState>();
+    let node = ds.get_dragged_node_id();
+    let dragging = ds.get_is_dragging() && node != 0;
+    let hit = dragging
+        .then(|| models.nodes.iter().find(|n| n.id == node && n.kind != 5))
+        .flatten()
+        .and_then(|n| {
+            let (w, h) = SIZES.with(|s| s.borrow().get(&n.id).copied().unwrap_or((260.0, 120.0)));
+            let rect = (n.x + ds.get_drag_offset_x(), n.y + ds.get_drag_offset_y(), w, h);
+            drop_group(&models.groups, n.group_id, rect).map(|g| (g, rect))
+        });
+    match hit {
+        Some((g, r)) => {
+            if DROP_TARGET.with(|t| t.get()) != g.id {
+                // start from the box as it is (no animation for this jump), then grow
+                app.set_drop_show(false);
+                app.set_drop_x(g.x);
+                app.set_drop_y(g.y);
+                app.set_drop_w(g.width);
+                app.set_drop_h(g.height);
+                DROP_TARGET.with(|t| t.set(g.id));
+                DROP_BASE.with(|b| b.set((g.x, g.y, g.width, g.height)));
+            }
+            let x0 = g.x.min(r.0 - GROUP_PAD);
+            let y0 = g.y.min(r.1 - GROUP_PAD);
+            let x1 = (g.x + g.width).max(r.0 + r.2 + GROUP_PAD);
+            let y1 = (g.y + g.height).max(r.1 + r.3 + GROUP_PAD);
+            app.set_drop_show(true);
+            app.set_drop_x(x0);
+            app.set_drop_y(y0);
+            app.set_drop_w(x1 - x0);
+            app.set_drop_h(y1 - y0);
+        }
+        None => {
+            if DROP_TARGET.with(|t| t.replace(0)) != 0 {
+                // back to the box's own size, fading out
+                let (x, y, w, h) = DROP_BASE.with(|b| b.get());
+                app.set_drop_x(x);
+                app.set_drop_y(y);
+                app.set_drop_w(w);
+                app.set_drop_h(h);
+                app.set_drop_show(false);
+            }
+        }
+    }
+}
+
 /// the core's id of group row `gid`
 fn group_key(gid: i32) -> String {
     GROUPS.with(|g| g.borrow().get((gid - 1).max(0) as usize).map(|x| x.0.clone()).unwrap_or_default())
@@ -1933,6 +1996,9 @@ fn labels(app: &App) {
     }
     app.set_t_copy(tr("Copy address/link for clients").into());
     app.set_t_search(tr("Search").into());
+    app.set_t_pc(tr("PC (system proxy)").into());
+    app.set_t_pc_restore(tr("Restore previous").into());
+    app.set_t_pc_off(tr("Off (default)").into());
     app.set_t_group(tr("Group blocks").into());
     app.set_t_ungroup(tr("Ungroup").into());
     app.set_t_collapse(tr("Collapse").into());
@@ -2030,7 +2096,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let send = send.clone();
         app.on_log_route(move |card, message| send(json!({"cmd": "route_of", "id": card.as_str(), "message": message.as_str()})));
     }
-    // canvas: moving and selecting blocks (positions stay in this window until saving settings is ported)
+    // canvas: moving and selecting blocks (a move is saved by the core when the drag ends)
     {
         let nodes = models.nodes.clone();
         let links = models.links.clone();
@@ -2059,9 +2125,18 @@ fn main() -> Result<(), slint::PlatformError> {
                     .filter(|(i, n)| n.kind != 5 && before.get(*i) != Some(&(n.x, n.y)))
                     .map(|(_, n)| json!({"key": key_of(n.id), "x": n.x, "y": n.y}))
                     .collect();
-                let _ = Dragged::Node(0);
                 if !moved.is_empty() {
                     send(json!({"cmd": "move", "blocks": moved}));
+                }
+                // a single block dropped onto another group's box joins that group
+                if let Dragged::Node(id) = dragged {
+                    let selected = nodes.iter().filter(|n| n.selected).count();
+                    if let Some(n) = nodes.iter().find(|n| n.id == id && n.kind != 5).filter(|_| selected <= 1) {
+                        let (w, h) = SIZES.with(|s| s.borrow().get(&n.id).copied().unwrap_or((260.0, 120.0)));
+                        if let Some(g) = drop_group(&groups, n.group_id, (n.x, n.y, w, h)) {
+                            send(json!({"cmd": "group_add", "id": group_key(g.id), "key": key_of(n.id)}));
+                        }
+                    }
                 }
             }
         });
@@ -2090,6 +2165,19 @@ fn main() -> Result<(), slint::PlatformError> {
                 pair_focus(&a, &models, &rects);
                 mix_dots(&a, &models, &rects);
                 groups_follow(&a, &models, &rects);
+            });
+            std::mem::forget(t);
+        }
+        {
+            // a block dragged over a group: the drop preview, 30 times a second while dragging
+            let (weak, models) = (app.as_weak(), models.clone());
+            let t = slint::Timer::default();
+            t.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(33), move || {
+                if let Some(a) = weak.upgrade() {
+                    if a.get_page() == 0 && (a.global::<DragState>().get_is_dragging() || a.get_drop_show()) {
+                        drop_preview(&a, &models);
+                    }
+                }
             });
             std::mem::forget(t);
         }
@@ -2305,6 +2393,9 @@ fn main() -> Result<(), slint::PlatformError> {
                 i => apply(PALETTE.get(i as usize).map(|p| p.0.to_string()).unwrap_or_default()),
             }
         });
+        // the list page's PC bar: "Restore previous" / "Off (default)"
+        let send_pc = send.clone();
+        app.on_pc_action(move |what| send_pc(json!({"cmd": if what == "off" { "pc_off" } else { "pc_restore" }})));
         let send11 = send.clone();
         app.on_set_flag(move |card, key, on| send11(json!({"cmd": "set_flag", "id": card.as_str(), "key": key.as_str(), "on": on})));
         let key_of11 = key_of.clone();
@@ -2555,6 +2646,7 @@ fn main() -> Result<(), slint::PlatformError> {
             let Some(a) = weak.upgrade() else { return };
             RENAME_KEY.with(|k| *k.borrow_mut() = key);
             a.set_rename_text(n.title.clone());
+            a.set_rename_title(SharedString::new());
             a.set_rename_open(true);
         });
         // canvas groups: make one of the selection, and the selected group's bar
@@ -2564,6 +2656,16 @@ fn main() -> Result<(), slint::PlatformError> {
             send4(json!({"cmd": "group", "keys": keys}));
         });
         let weak = app.as_weak();
+        // a wireless pair's number: the rename box with the number
+        let (models9, key_of9, weak9) = (models.clone(), key_of.clone(), weak.clone());
+        app.on_edit_number(move |id| {
+            let Some(a) = weak9.upgrade() else { return };
+            let Some(n) = models9.nodes.iter().find(|n| n.id == id) else { return };
+            RENAME_KEY.with(|k| *k.borrow_mut() = format!("number:{}", key_of9(id)));
+            a.set_rename_text(n.detail.trim_start_matches('#').into());
+            a.set_rename_title(tr("Pair number").into());
+            a.set_rename_open(true);
+        });
         let weak5 = weak.clone();
         app.on_group_rename(move || {
             let Some(a) = weak5.upgrade() else { return };
@@ -2571,6 +2673,7 @@ fn main() -> Result<(), slint::PlatformError> {
             let Some(row) = a.get_groups().iter().find(|g| g.id == gid) else { return };
             RENAME_KEY.with(|k| *k.borrow_mut() = format!("group:{}", group_key(gid)));
             a.set_rename_text(row.title.clone());
+            a.set_rename_title(SharedString::new());
             a.set_rename_open(true);
         });
         let send6 = send.clone();
@@ -2878,6 +2981,8 @@ fn main() -> Result<(), slint::PlatformError> {
                             m.set_stats(&v["stats"]);
                             show_latency(&app, &m, &v["latency"]);
                             m.set_canvas(&v["canvas"]);
+                            app.set_pc_state(v["canvas"]["pc_status"][0].as_str().unwrap_or("off").into());
+                            app.set_pc_text(v["canvas"]["pc_status"][1].as_str().unwrap_or("").into());
                             show_settings(&app, &v["settings"]);
                             stats_history(&v["history"]);
                             stats_push(&v["stats"], &Value::Null);
@@ -2902,6 +3007,8 @@ fn main() -> Result<(), slint::PlatformError> {
                         "graph" => {
                             m.cards.set_vec(v["cards"].as_array().into_iter().flatten().map(card_row).collect::<Vec<_>>());
                             m.set_canvas(&v["canvas"]);
+                            app.set_pc_state(v["canvas"]["pc_status"][0].as_str().unwrap_or("off").into());
+                            app.set_pc_text(v["canvas"]["pc_status"][1].as_str().unwrap_or("").into());
                             log_sources(&app, &m.cards.iter().map(|c| (c.id.to_string(), c.name.to_string())).collect::<Vec<_>>());
                             stats_meta(&v["stat_meta"]);
                             conn_cards(&app, &m);
