@@ -62,3 +62,30 @@ jobs:
 
       - name: Tests
         run: python tests/run_tests.py
+
+  rust:
+    # the Rust app (native/): Windows only for now
+    name: rust (windows)
+    runs-on: windows-latest
+    env:
+      GITHUB_TOKEN: ${{ github.token }}     # engine downloads (tools/fetch_singbox.py) use the API
+      PYTHONIOENCODING: utf-8
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      # (rustup installs the toolchain native/rust-toolchain.toml names)
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+
+      - name: Native engines (sing-box, Hysteria)
+        run: python tools/fetch_singbox.py
+
+      - name: Tests
+        working-directory: native
+        run: cargo test --workspace

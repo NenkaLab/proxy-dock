@@ -1,6 +1,7 @@
 """Build the Rust app (native/) for Windows: the program folder, a zip and the installer.
 
     python tools/build_rust.py [--version X.Y.Z] [--no-installer]
+    python tools/build_rust.py --current           # print the version (native/Cargo.toml)
 
 Steps: cargo build --release (the version is built in through PROXYDOCK_VERSION), then dist/rust/ProxyDock with
 ProxyDock.exe (the tray + core), proxydock-ui.exe (the window), bin/windows-amd64 (sing-box, Hysteria; from
@@ -116,12 +117,16 @@ def installer(version):
 
 
 def main():
-    if sys.platform != "win32":
-        raise SystemExit("the Rust app is Windows-only for now")
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--version", default=None, help="the version to build in (default: native/Cargo.toml's)")
     ap.add_argument("--no-installer", action="store_true")
+    ap.add_argument("--current", action="store_true", help="print the version in native/Cargo.toml and stop")
     args = ap.parse_args()
+    if args.current:
+        print(cargo_version())
+        return
+    if sys.platform != "win32":
+        raise SystemExit("the Rust app is Windows-only for now")
     version = args.version or cargo_version()
     if not re.fullmatch(r"\d+\.\d+\.\d+", version):
         raise SystemExit(f"not a version: {version}")
