@@ -16,9 +16,16 @@ env:
 
 jobs:
   rust:
-    # the app (native/): Windows only for now
-    name: rust (windows)
-    runs-on: windows-latest
+    # the app (native/) on every system it builds for: format, lints, tests, a release build
+    name: rust (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: windows, os: windows-latest }
+          - { name: linux, os: ubuntu-latest }
+          - { name: macos, os: macos-latest }
+    runs-on: ${{ matrix.os }}
     env:
       GITHUB_TOKEN: ${{ github.token }}     # engine downloads (tools/fetch_singbox.py) use the API
     steps:
@@ -28,12 +35,21 @@ jobs:
         with:
           python-version: "3.14"
 
+      # Linux: the window (fontconfig, xkbcommon) and the tray icon (GTK, AppIndicator, xdo)
+      - name: System packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libfontconfig1-dev libfreetype-dev \
+            libxkbcommon-dev libwayland-dev libgtk-3-dev libayatana-appindicator3-dev libxdo-dev
+
       # (rustup installs the toolchain and components native/rust-toolchain.toml names)
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: native
 
       - name: Format
+        if: runner.os == 'Windows'
         working-directory: native
         run: cargo fmt --check
 
@@ -47,6 +63,18 @@ jobs:
       - name: Tests
         working-directory: native
         run: cargo test --workspace
+
+      - name: Release build
+        working-directory: native
+        run: cargo build --release -p proxydock
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proxydock-${{ matrix.name }}
+          path: |
+            native/target/release/proxydock${{ runner.os == 'Windows' && '.exe' || '' }}
+            native/target/release/proxydock-ui${{ runner.os == 'Windows' && '.exe' || '' }}
+          if-no-files-found: error
 
   parity:
     # the Rust core against the Python app it replaced (its last state on main, native/tools/pyapp.py PY_REF)

@@ -4,7 +4,7 @@
 
 ## 자동 테스트
 
-모두 `native/` 폴더에서 실행합니다. GitHub Actions의 CI(`.github/workflows/ci.yml`)가 main push·PR마다 같은 것을 돌립니다.
+모두 `native/` 폴더에서 실행합니다. GitHub Actions의 CI(`.github/workflows/ci.yml`)가 main push·PR마다 같은 것을 Windows·Linux·macOS에서 돌리고, 각 OS의 릴리스 빌드(`proxydock`, `proxydock-ui`)를 아티팩트로 올립니다. 설치기와 릴리스는 아직 Windows만 만듭니다.
 
 ```powershell
 python ..\tools\fetch_singbox.py      # sing-box·Hysteria 엔진 (처음 한 번, bin\windows-amd64)
