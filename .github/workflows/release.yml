@@ -49,6 +49,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: native
+          cache-on-failure: true
 
       - name: Check the tag matches the version
         if: startsWith(github.ref, 'refs/tags/v')
@@ -59,6 +60,12 @@ jobs:
             echo "::error::tag ${GITHUB_REF_NAME} does not match native/Cargo.toml version ${version}"
             exit 1
           fi
+
+      # the engines: downloaded again only when their versions change (tools/fetch_singbox.py skips what is there)
+      - uses: actions/cache@v4
+        with:
+          path: bin
+          key: engines-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native/core/src/singbox/mod.rs') }}
 
       - name: Native engines (sing-box, Hysteria)
         run: python tools/fetch_singbox.py

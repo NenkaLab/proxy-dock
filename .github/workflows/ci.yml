@@ -47,6 +47,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: native
+          cache-on-failure: true
 
       - name: Format
         if: runner.os == 'Windows'
@@ -56,6 +57,12 @@ jobs:
       - name: Clippy
         working-directory: native
         run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # the engines: downloaded again only when their versions change (tools/fetch_singbox.py skips what is there)
+      - uses: actions/cache@v4
+        with:
+          path: bin
+          key: engines-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native/core/src/singbox/mod.rs') }}
 
       - name: Native engines (sing-box, Hysteria)
         run: python tools/fetch_singbox.py
@@ -100,6 +107,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: native
+          cache-on-failure: true
 
       - name: Python app's requirements
         run: python -m pip install --disable-pip-version-check -r py/requirements.txt

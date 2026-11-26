@@ -122,7 +122,27 @@ def fetch(target):
     print(f"ok: {path} (sha256 of archive verified)")
 
 
+def stamp_path(target):
+    """bin/<target>/.versions: the engine versions a fetch put there (a restored cache skips the download)"""
+    return os.path.join(ROOT, "bin", target, ".versions")
+
+
+def up_to_date(target):
+    ext = ".exe" if target.startswith("windows") else ""
+    have = all(os.path.isfile(os.path.join(ROOT, "bin", target, n + ext)) for n in ("sing-box", "hysteria"))
+    try:
+        with open(stamp_path(target), encoding="ascii") as f:
+            return have and f.read().split() == [SINGBOX_VERSION, HYSTERIA_VERSION]
+    except OSError:
+        return False
+
+
 if __name__ == "__main__":
     t = sys.argv[1] if len(sys.argv) > 1 else platform_dir()
+    if up_to_date(t):
+        print(f"ok: bin/{t} already has sing-box {SINGBOX_VERSION} and Hysteria {HYSTERIA_VERSION}")
+        sys.exit(0)
     fetch(t)
     fetch_hysteria(t)
+    with open(stamp_path(t), "w", encoding="ascii", newline="\n") as f:
+        f.write(f"{SINGBOX_VERSION} {HYSTERIA_VERSION}\n")
