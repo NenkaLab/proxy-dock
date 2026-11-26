@@ -939,6 +939,22 @@ pub fn set_lane_map(g: &mut Obj, rid: &str, input: usize, output: Option<usize>)
     Ok(true)
 }
 
+/// A pass-through wired straight (lane i to lane i, both sides as many as its inputs) or freely (its wiring kept)
+/// - the editor's "Wiring" from the canvas. False when nothing changed.
+pub fn set_relay_routed(g: &mut Obj, rid: &str, routed: bool) -> bool {
+    let Some(mut n) = graph::find(g, rid).filter(|(k, _)| *k == "relay").map(|(_, n)| n.clone()) else { return false };
+    if n["wireless"] == json!(true) || (n["routed"] == json!(true)) == routed {
+        return false;
+    }
+    n["routed"] = json!(routed);
+    if !routed {
+        let count = n["inputs"].as_array().map_or(1, Vec::len);
+        crate::form::set_lane_count(&mut n, "inputs", count);
+    }
+    *g = crate::form::with_node(g, "relay", &n);
+    true
+}
+
 /// Remove one lane (an input or output lane id) of a pass-through (Python `graph.remove_lane`): a straight block
 /// loses it on both sides, a routed one only on that side; one lane per side stays. Links into lanes that are
 /// gone are cut.
@@ -1026,6 +1042,12 @@ pub fn block_menu(g: &Obj, key: &str) -> Value {
             if routed {
                 head.push(item("lane.add.outputs", tr("Add an output lane")));
             }
+            // (the editor's "Wiring": the other one)
+            head.push(if routed {
+                item("lane.mode.straight", format!("{}: {}", tr("Wiring"), tr("Straight")))
+            } else {
+                item("lane.mode.routed", format!("{}: {}", tr("Wiring"), tr("Routed (wire lanes freely)")))
+            });
             for (side, label) in [("inputs", "Input {n}"), ("outputs", "Output {n}")] {
                 let lanes = b[side].as_array().cloned().unwrap_or_default();
                 if lanes.len() > 1 && (routed || side == "inputs") {
@@ -1187,6 +1209,24 @@ mod tests {
             "routers": [{"id": "r", "name": "R", "rules": [{"id": "x", "name": "x", "match": {}}]}],
             "relays": [{"id": "rl", "name": "L", "inputs": [{"id": "L1"}, {"id": "L2"}]}],
         }))
+    }
+
+    #[test]
+    fn relay_wiring_mode() {
+        let mut g = sample();
+        let rl = |g: &Obj| graph::find(g, "rl").unwrap().1.clone();
+        assert!(set_relay_routed(&mut g, "rl", true));
+        assert!(!set_relay_routed(&mut g, "rl", true));
+        // routed: an output lane added on its own, input 1 wired to output 3
+        assert!(add_lane(&mut g, "rl", "outputs"));
+        assert_eq!(set_lane_map(&mut g, "rl", 0, Some(2)), Ok(true));
+        assert_eq!(rl(&g)["outputs"].as_array().unwrap().len(), 3);
+        // straight again: as many outputs as inputs, lane i to lane i
+        assert!(set_relay_routed(&mut g, "rl", false));
+        let n = rl(&g);
+        let (ins, outs) = (n["inputs"].as_array().unwrap(), n["outputs"].as_array().unwrap());
+        assert_eq!((ins.len(), outs.len()), (2, 2));
+        assert!(ins.iter().zip(outs).all(|(i, o)| i["out"] == o["id"]));
     }
 
     #[test]

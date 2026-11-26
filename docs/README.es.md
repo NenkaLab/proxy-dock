@@ -40,14 +40,17 @@ Los proxies funcionan con [sing-box](https://github.com/SagerNet/sing-box), incl
 
 ## Ejecutar
 
-Windows 10 / 11: `ProxyDock-<versión>-windows-x64-setup.exe` la instala para tu usuario (sin permisos de administrador);
-el `.zip` es la misma aplicación como carpeta. Descárgala de [Releases](https://github.com/NenkaLab/proxy-dock/releases).
+Descárgala de [Releases](https://github.com/NenkaLab/proxy-dock/releases):
 
-Los ajustes se guardan en `%APPDATA%\ProxyDock`; la versión 3 sigue usando los ajustes de la 2.x. La página **Cómo usar** de la
-aplicación explica el resto.
+- **Windows 10 / 11**: `ProxyDock-<versión>-windows-x64-setup.exe` la instala para tu usuario (sin permisos de
+  administrador); el `.zip` es la misma aplicación como carpeta.
+- **macOS** (Apple Silicon): abre el `.dmg` y arrastra ProxyDock a Aplicaciones. No está firmada por Apple: la primera
+  vez, clic derecho → Abrir.
+- **Linux** (x64): el `.AppImage` se ejecuta tal cual (antes `chmod +x`); el `.tar.gz` es la misma aplicación como carpeta.
 
-ProxyDock 3 es una reescritura en Rust y por ahora solo funciona en Windows. En macOS y Linux usa la 2.x (la aplicación
-Python, en la rama [`old`](https://github.com/NenkaLab/proxy-dock/tree/old) y en las versiones 2.x).
+Los ajustes se guardan en `%APPDATA%\ProxyDock` (Windows), `~/Library/Application Support/ProxyDock` (macOS) o
+`~/.config/ProxyDock` (Linux); la versión 3 sigue usando los ajustes de la 2.x. La página **Cómo usar** de la aplicación
+explica el resto. ProxyDock 3 es una reescritura en Rust; la 2.x (la aplicación Python) está en la rama [`old`](https://github.com/NenkaLab/proxy-dock/tree/old).
 
 ## Compilar
 
@@ -56,7 +59,12 @@ Comprobaciones antes de publicar: [TESTING.md](../TESTING.md) (en coreano).
 
 ## Limitaciones
 
-- Solo Windows (macOS / Linux: 2.x).
+- macOS y Linux se compilan y prueban automáticamente, pero aún no se han probado en equipos reales.
+- macOS / Linux: no hay regla que bloquee otros PC (usa el cortafuegos del sistema), no hay «Ejecutar como
+  administrador» al iniciar (una tarjeta TUN pide la contraseña al iniciarse), no se lee el perfil de color del monitor
+  (se supone sRGB), las contraseñas de los ajustes no se cifran (como en la 2.x) y los botones atrás / adelante del
+  ratón no navegan.
+- Linux: el proxy del sistema (bloque PC) solo se configura en GNOME y KDE; las notificaciones necesitan `notify-send`.
 - TUN todavía no se ha probado en equipos reales.
 - SOCKS4 no tiene contraseña: úsalo solo en este PC.
 

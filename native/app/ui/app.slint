@@ -107,6 +107,8 @@ export struct NodeData {
     in-labels: [string],
     out-labels: [string],
     wires: [Wire],
+    // pass-through: wired freely (its inputs and outputs added to apart)
+    routed: bool,
     // a card block: its id and state ("running" / "starting" / "stopped" / "error"), else ""
     card: string,
     state: string,
@@ -147,6 +149,8 @@ export global CanvasText {
     in property <string> switched-on: "Switched on";
     in property <string> switched-off: "Switched off";
     in property <string> add-lane: "Add a lane";
+    in property <string> add-input: "Input";
+    in property <string> add-output: "Output";
     in property <string> stop: "Stop";
     in property <string> add-inbound: "Add inbound";
     in property <string> add-outbound: "Add outbound";
@@ -363,6 +367,7 @@ component ProxyNode inherits BaseNode {
     in property <[string]> in-labels;
     in property <[string]> out-labels;
     in property <[Wire]> wires;
+    in property <bool> routed;
     in property <string> state;
     in property <string> state-text;
     in property <[InfoLine]> lines;
@@ -720,11 +725,13 @@ component ProxyNode inherits BaseNode {
             root.drag-y = self.y + self.mouse-y;
         }
     }
-    // "+ Add a lane" under the lanes (Python's footer)
-    if root.lane-edit: Rectangle {
-        x: 12px;
+    // "+ Add a lane" under the lanes (Python's footer); a freely wired block: "+ Input" and "+ Output" (its two
+    // sides grow apart, as in the editor)
+    for btn[k] in root.lane-edit ? (root.routed ? 2 : 1) : 0: Rectangle {
+        property <length> w: (root.node-width - 24px - (root.routed ? 8px : 0px)) / (root.routed ? 2 : 1);
+        x: 12px + k * (self.w + 8px);
         y: root.node-height - root.foot-h;
-        width: root.node-width - 24px;
+        width: self.w;
         height: 28px;
         border-radius: 14px;
         background: add-ta.pressed ? root.on-container.with-alpha(0.16) : add-ta.has-hover ? root.on-container.with-alpha(0.12) : root.on-container.with-alpha(0.06);
@@ -739,14 +746,15 @@ component ProxyNode inherits BaseNode {
                 colorize: root.on-container;
             }
             Text {
-                text: CanvasText.add-lane;
+                text: !root.routed ? CanvasText.add-lane : k == 0 ? CanvasText.add-input : CanvasText.add-output;
                 font-size: 12px * Type.scale;
                 font-weight: 500;
                 color: root.on-container;
                 vertical-alignment: center;
+                overflow: elide;
             }
         }
-        add-ta := TouchArea { clicked => { root.menu-action("lane.add.inputs"); } }
+        add-ta := TouchArea { clicked => { root.menu-action(k == 0 ? "lane.add.inputs" : "lane.add.outputs"); } }
     }
 
     // each port's name, small, inside the block next to its dot (M3 Label Small)
@@ -3874,6 +3882,9 @@ export component App inherits Window {
     in property <string> t-copy: "Copy";
     callback field-changed(string, string);
     callback form-save();
+    // the page title bar dragged / double-clicked (proxydock-ui.rs: winit moves the window)
+    callback drag-window();
+    callback toggle-maximized();
     callback form-pressed(string, int);
     // text to read or copy (a WireGuard device's config)
     in property <string> t-close: "Close";
@@ -3984,9 +3995,12 @@ export component App inherits Window {
         : root.page == 5 ? Stats.title : root.page == 6 ? Conn.title
         : root.page == 7 ? root.cats[10].label : root.page == 8 ? root.cats[11].label : root.page == 9 ? root.cats[12].label : "";
     // the title bar (M3 small top app bar): 64 high, the page's title (Title Large), its actions on the right
-    property <length> bar-h: max(64px, 22px * Type.scale * 2.4);
+    out property <length> bar-h: max(64px, 22px * Type.scale * 2.4);
+    // the page title bar's empty part, from the rail to the page's actions (Windows 11: a caption, see `caption`)
+    out property <length> drag-left: root.rail-w + 24px;
+    out property <length> drag-right: root.rail-w + 24px + title-acts.width - title-acts.preferred-width - 12px;
     // the navigation rail's width (M3 Expressive collapsed rail)
-    property <length> rail-w: 96px;
+    out property <length> rail-w: 96px;
     // every page's content (not the title bar, not the canvas) is at most this wide, in the middle of the room
     property <length> content-max: 1040px;
 
@@ -4257,6 +4271,7 @@ export component App inherits Window {
                                 edit-number => { root.edit-number(node.id); }
                                 set-switch(on) => { root.set-switch(root.node-key(node.id), on); }
                                 wires: node.wires;
+                                routed: node.routed;
                                 state: node.state;
                                 rate: node.rate;
                                 badge: node.badge;
@@ -4834,6 +4849,14 @@ export component App inherits Window {
         y: root.caption-h;
         width: root.width - root.rail-w - 48px;
         height: root.bar-h;
+        // its empty part moves the window like a title bar (a double click maximises / restores)
+        TouchArea {
+            pointer-event(e) => {
+                if e.button == PointerEventButton.left && e.kind == PointerEventKind.down {
+                    root.drag-window();
+                }
+            }
+        }
         title-acts := PageActions {
             x: 0;
             y: (parent.height - 40px) / 2;

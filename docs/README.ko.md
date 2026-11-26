@@ -37,13 +37,17 @@
 
 ## 실행
 
-Windows 10 / 11: `ProxyDock-<버전>-windows-x64-setup.exe`가 현재 사용자에게 설치합니다(관리자 권한 필요 없음).
-`.zip`은 같은 앱을 폴더로 담은 것입니다. [Releases](https://github.com/NenkaLab/proxy-dock/releases)에서 받습니다.
+[Releases](https://github.com/NenkaLab/proxy-dock/releases)에서 받습니다.
 
-설정은 `%APPDATA%\ProxyDock`에 저장되며, 버전 3은 2.x의 설정을 그대로 읽어 씁니다. 나머지는 앱의 **사용법** 페이지에 있습니다.
+- **Windows 10 / 11**: `ProxyDock-<버전>-windows-x64-setup.exe`가 현재 사용자에게 설치합니다(관리자 권한 필요 없음).
+  `.zip`은 같은 앱을 폴더로 담은 것입니다.
+- **macOS**(Apple Silicon): `.dmg`를 열어 ProxyDock을 응용 프로그램 폴더로 끌어 넣습니다. Apple 서명이 없어서 처음
+  한 번은 오른쪽 클릭 → 열기로 엽니다.
+- **Linux**(x64): `.AppImage`를 그대로 실행합니다(먼저 `chmod +x`). `.tar.gz`는 같은 앱을 폴더로 담은 것입니다.
 
-ProxyDock 3은 Rust로 새로 만든 버전이며 지금은 Windows에서만 동작합니다. macOS와 Linux는 2.x(Python 앱,
-[`old`](https://github.com/NenkaLab/proxy-dock/tree/old) 브랜치와 2.x 릴리스)를 쓰세요.
+설정은 `%APPDATA%\ProxyDock`(Windows), `~/Library/Application Support/ProxyDock`(macOS),
+`~/.config/ProxyDock`(Linux)에 저장되며, 버전 3은 2.x의 설정을 그대로 읽어 씁니다. 나머지는 앱의 **사용법**
+페이지에 있습니다. ProxyDock 3은 Rust로 새로 만든 버전이며, 2.x(Python 앱)는 [`old`](https://github.com/NenkaLab/proxy-dock/tree/old) 브랜치에 있습니다.
 
 ## 빌드
 
@@ -52,7 +56,11 @@ ProxyDock 3은 Rust로 새로 만든 버전이며 지금은 Windows에서만 동
 
 ## 제한
 
-- Windows 전용입니다(macOS / Linux: 2.x).
+- macOS와 Linux는 자동 빌드·테스트는 하지만 실제 기기에서는 아직 확인하지 않았습니다.
+- macOS / Linux: 다른 PC를 막는 방화벽 규칙이 없고(시스템 방화벽을 쓰세요), 시작할 때 "관리자로 실행"이 없으며(TUN
+  카드는 시작할 때 암호를 묻습니다), 모니터 색 프로파일을 읽지 않고(sRGB로 봄), 설정의 비밀번호를 암호화하지
+  않으며(2.x와 같음), 마우스 뒤로/앞으로 버튼으로 이동하지 않습니다.
+- Linux: 시스템 프록시(PC 블록)는 GNOME과 KDE에서만 설정됩니다. 알림에는 `notify-send`가 필요합니다.
 - TUN은 아직 실제 환경에서 시험하지 않았습니다.
 - SOCKS4는 비밀번호가 없으니 이 PC에서만 쓰세요.
 

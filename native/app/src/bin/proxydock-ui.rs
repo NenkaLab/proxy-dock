@@ -687,7 +687,6 @@ fn go_forward(app: &App) {
 
 // --- the window's size and place (Python `restore_state / save_state`, window.json) ---
 
-#[cfg(windows)]
 fn window_state_path() -> std::path::PathBuf {
     proxydock_core::paths::app_dir().join("window.json")
 }
@@ -739,30 +738,52 @@ fn save_window_state(app: &App) {
     #[cfg(windows)]
     {
         let Some((l, t, r, b, max)) = placement::get(owner_hwnd(app)) else { return };
-        let path = window_state_path();
-        // (the Python app's "geometry" stays as it was)
-        let mut data: serde_json::Map<String, Value> =
-            std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-        data.insert("rust".into(), json!({"left": l, "top": t, "right": r, "bottom": b, "maximized": max}));
-        let _ = std::fs::create_dir_all(path.parent().unwrap());
-        let tmp = path.with_extension("json.tmp");
-        if std::fs::write(&tmp, Value::Object(data).to_string()).is_ok() {
-            let _ = std::fs::rename(&tmp, &path);
-        }
+        write_window_state(json!({"left": l, "top": t, "right": r, "bottom": b, "maximized": max}));
     }
+    // macOS / Linux: the window's own place and size (physical pixels; a maximised window keeps its last normal
+    // size, as Windows' placement does)
     #[cfg(not(windows))]
-    let _ = app;
+    {
+        let w = app.window();
+        let (p, s) = (w.position(), w.size());
+        let max = w.is_maximized();
+        let old = read_window_state();
+        let normal = if max && old["right"].is_i64() {
+            (old["left"].clone(), old["top"].clone(), old["right"].clone(), old["bottom"].clone())
+        } else {
+            (json!(p.x), json!(p.y), json!(p.x + s.width as i32), json!(p.y + s.height as i32))
+        };
+        write_window_state(
+            json!({"left": normal.0, "top": normal.1, "right": normal.2, "bottom": normal.3, "maximized": max}),
+        );
+    }
+}
+
+/// window.json's "rust" entry (the Python app's "geometry" stays as it was)
+fn read_window_state() -> Value {
+    std::fs::read_to_string(window_state_path())
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .map(|v| v["rust"].clone())
+        .unwrap_or(Value::Null)
+}
+
+fn write_window_state(rust: Value) {
+    let path = window_state_path();
+    let mut data: serde_json::Map<String, Value> =
+        std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    data.insert("rust".into(), rust);
+    let _ = std::fs::create_dir_all(path.parent().unwrap());
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, Value::Object(data).to_string()).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
+    }
 }
 
 fn restore_window_state(app: &App) {
     #[cfg(windows)]
     {
-        let Some(v) =
-            std::fs::read_to_string(window_state_path()).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        else {
-            return;
-        };
-        let w = &v["rust"];
+        let w = &read_window_state();
         let n = |k: &str| w[k].as_i64().unwrap_or(0) as i32;
         if w.is_object() {
             placement::set(
@@ -776,7 +797,19 @@ fn restore_window_state(app: &App) {
         }
     }
     #[cfg(not(windows))]
-    let _ = app;
+    {
+        let w = read_window_state();
+        let n = |k: &str| w[k].as_i64().unwrap_or(0) as i32;
+        let (width, height) = (n("right") - n("left"), n("bottom") - n("top"));
+        if w.is_object() && width >= 400 && height >= 300 {
+            let win = app.window();
+            win.set_size(slint::PhysicalSize::new(width as u32, height as u32));
+            win.set_position(slint::PhysicalPosition::new(n("left"), n("top")));
+            if w["maximized"] == json!(true) {
+                win.set_maximized(true);
+            }
+        }
+    }
 }
 
 /// the mouse's back / forward buttons and Alt+← / → anywhere in the window (Python `_MouseNavFilter` and the
@@ -1025,6 +1058,7 @@ impl Models {
                 in_labels: strings(&n["in_labels"]),
                 out_labels: strings(&n["out_labels"]),
                 wires: ModelRc::new(VecModel::from(wires)),
+                routed: n["routed"] == json!(true),
                 card: card.into(),
                 state: state.into(),
                 state_text: node_state_text(state, &error),
@@ -1836,6 +1870,60 @@ fn system_accent() -> Option<String> {
             return Some(format!("#{:02x}{:02x}{:02x}", v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff));
         }
     }
+    #[cfg(not(windows))]
+    {
+        let out = |cmd: &[&str]| -> Option<String> {
+            let o = std::process::Command::new(cmd[0]).args(&cmd[1..]).output().ok()?;
+            o.status.success().then(|| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        };
+        // macOS: the accent's number (none = multicolour: blue), in Apple's system colours
+        if cfg!(target_os = "macos") {
+            let n = out(&["defaults", "read", "-g", "AppleAccentColor"]).and_then(|s| s.parse::<i32>().ok());
+            return Some(
+                match n {
+                    Some(-1) => "#8e8e93",
+                    Some(0) => "#ff3b30",
+                    Some(1) => "#ff9500",
+                    Some(2) => "#ffcc00",
+                    Some(3) => "#28cd41",
+                    Some(5) => "#af52de",
+                    Some(6) => "#ff2d55",
+                    _ => "#007aff",
+                }
+                .into(),
+            );
+        }
+        // KDE: kdeglobals' AccentColor "r,g,b"
+        let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().to_uppercase();
+        if desktop.contains("KDE") {
+            for tool in ["kreadconfig6", "kreadconfig5"] {
+                if let Some(rgb) = out(&[tool, "--file", "kdeglobals", "--group", "General", "--key", "AccentColor"]) {
+                    let c: Vec<u8> = rgb.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                    if c.len() >= 3 {
+                        return Some(format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]));
+                    }
+                }
+            }
+        }
+        // GNOME 47+: a named accent, in libadwaita's colours
+        if let Some(name) = out(&["gsettings", "get", "org.gnome.desktop.interface", "accent-color"]) {
+            let hex = match name.trim_matches('\'') {
+                "blue" => "#3584e4",
+                "teal" => "#2190a4",
+                "green" => "#3a944a",
+                "yellow" => "#c88800",
+                "orange" => "#ed5b00",
+                "red" => "#e62d42",
+                "pink" => "#d56199",
+                "purple" => "#9141ac",
+                "slate" => "#6f8396",
+                _ => "",
+            };
+            if !hex.is_empty() {
+                return Some(hex.into());
+            }
+        }
+    }
     None
 }
 
@@ -2343,9 +2431,16 @@ fn labels(app: &App) {
     u.set_t_downloading(tr("Downloading the update").into());
     u.set_t_cancel(tr("Cancel").into());
     u.set_t_install_title(tr("Install the update?").into());
+    // (what installing does here: Windows' installer, macOS' disk image, Linux' AppImage)
     u.set_t_install_text(
-        tr("ProxyDock closes, the installer updates it and then starts it again. Running proxies stop until then.")
-            .into(),
+        tr(if cfg!(target_os = "macos") {
+            "The disk image opens. Quit ProxyDock, then drag ProxyDock into Applications to replace the old version."
+        } else if cfg!(target_os = "linux") {
+            "The AppImage file is replaced with the new version and ProxyDock restarts. Running proxies stop until then."
+        } else {
+            "ProxyDock closes, the installer updates it and then starts it again. Running proxies stop until then."
+        })
+        .into(),
     );
     u.set_t_install(tr("Install").into());
     app.set_t_latency(tr("Test latency").into());
@@ -2388,6 +2483,8 @@ fn labels(app: &App) {
         t.set_redo(tr("Redo").into());
         t.set_cut(tr("Disconnect all links").into());
         t.set_add_lane(tr("Add a lane").into());
+        t.set_add_input(tr("Input").into());
+        t.set_add_output(tr("Output").into());
         let st = app.global::<Settings>();
         st.set_t_theme_color(tr("Theme colour").into());
         st.set_t_system(tr("System").into());
@@ -2767,6 +2864,33 @@ fn main() -> Result<(), slint::PlatformError> {
         app.set_page(p);
     }
     labels(&app);
+    {
+        // the page title bar moves the window (winit: Windows, macOS, Linux alike)
+        // (the press starts the system's move, which takes the release: a second press soon after is the
+        // double click that maximises / restores)
+        let weak = app.as_weak();
+        let last = std::cell::Cell::new(None::<std::time::Instant>);
+        app.on_drag_window(move || {
+            use slint::winit_030::WinitWindowAccessor;
+            let Some(a) = weak.upgrade() else { return };
+            if last.get().is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(500)) {
+                last.set(None);
+                a.invoke_toggle_maximized();
+                return;
+            }
+            last.set(Some(std::time::Instant::now()));
+            a.window().with_winit_window(|w| {
+                let _ = w.drag_window();
+            });
+        });
+        let weak = app.as_weak();
+        app.on_toggle_maximized(move || {
+            if let Some(a) = weak.upgrade() {
+                let w = a.window();
+                w.set_maximized(!w.is_maximized());
+            }
+        });
+    }
     {
         let w = writer.clone();
         app.on_toggle(move |id| {
@@ -4885,6 +5009,13 @@ mod caption {
                         } else {
                             HTTOP
                         } as LRESULT;
+                    }
+                    // the page title bar's empty part is a caption too (moving, double click, snapping)
+                    let mut band = (0.0f32, 0.0f32, 0.0f32);
+                    with_app(|a| band = (a.get_bar_h(), a.get_drag_left(), a.get_drag_right()));
+                    let (x, y) = (pt.x as f32 / scale, pt.y as f32 / scale);
+                    if y >= HEIGHT && y < HEIGHT + band.0 && x >= band.1 && x < band.2 {
+                        return HTCAPTION as LRESULT;
                     }
                     if (pt.y as f32) < HEIGHT * scale {
                         let bw = BUTTON_W * scale;

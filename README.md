@@ -39,14 +39,17 @@ Proxies run on [sing-box](https://github.com/SagerNet/sing-box), bundled in the 
 
 ## Running
 
-Windows 10 / 11: `ProxyDock-<version>-windows-x64-setup.exe` installs it for your user (no administrator needed);
-the `.zip` is the same app as a folder. Download it from [Releases](https://github.com/NenkaLab/proxy-dock/releases).
+From [Releases](https://github.com/NenkaLab/proxy-dock/releases):
 
-Settings are saved in `%APPDATA%\ProxyDock`; version 3 reads and keeps the settings of 2.x. The **How to use** page in
-the app explains the rest.
+- **Windows 10 / 11**: `ProxyDock-<version>-windows-x64-setup.exe` installs it for your user (no administrator
+  needed); the `.zip` is the same app as a folder.
+- **macOS** (Apple Silicon): open the `.dmg` and drag ProxyDock into Applications. It is not signed by Apple: the
+  first time, right-click it and choose Open.
+- **Linux** (x64): the `.AppImage` runs as it is (`chmod +x` it first); the `.tar.gz` is the same app as a folder.
 
-ProxyDock 3 is a rewrite in Rust and runs on Windows only for now. For macOS and Linux, use 2.x (the Python app, on
-the [`old`](https://github.com/NenkaLab/proxy-dock/tree/old) branch and in the 2.x releases).
+Settings are saved in `%APPDATA%\ProxyDock` (Windows), `~/Library/Application Support/ProxyDock` (macOS) or
+`~/.config/ProxyDock` (Linux); version 3 reads and keeps the settings of 2.x. The **How to use** page in the app
+explains the rest. ProxyDock 3 is a rewrite in Rust; 2.x (the Python app) is on the [`old`](https://github.com/NenkaLab/proxy-dock/tree/old) branch.
 
 ## Building
 
@@ -55,7 +58,11 @@ release: [TESTING.md](TESTING.md).
 
 ## Limitations
 
-- Windows only (macOS / Linux: 2.x).
+- macOS and Linux are built and tested automatically but not tried on real machines yet.
+- macOS / Linux: no rule that blocks other PCs (use the system's firewall), no "Run as administrator" at start (a
+  TUN card asks for the password when it starts), the monitor's colour profile is not read (sRGB is assumed),
+  passwords in the settings are not encrypted (as in 2.x), and the mouse's back / forward buttons do not go back.
+- Linux: the system proxy (PC block) is set for GNOME and KDE only; notifications need `notify-send`.
 - TUN has not been tried on real setups yet.
 - SOCKS4 has no password: use it only on this PC.
 

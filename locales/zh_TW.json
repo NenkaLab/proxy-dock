@@ -1087,5 +1087,11 @@
  "Beyond sRGB: saved as an OKLCH colour (Display P3)": "超出 sRGB：將以 OKLCH 顏色（Display P3）儲存",
  "This monitor cannot show this colour exactly; it is drawn as the nearest one": "此螢幕無法準確顯示該顏色，將以最接近的顏色繪製",
  "Theme colour": "主題顏色",
- "Custom": "自訂"
+ "Custom": "自訂",
+ "The system proxy needs an HTTP or SOCKS inbound - add one for the PC": "系統代理需要 HTTP 或 SOCKS 入站 - 請為本機新增一個",
+ "This desktop has no system proxy setting ProxyDock can change": "此桌面沒有 ProxyDock 可以變更的系統代理設定",
+ "No network service found": "找不到網路服務",
+ "Administrator permission was not given (the prompt was cancelled)": "未取得系統管理員權限 (要求已取消)",
+ "A TUN card needs ProxyDock to run as root (pkexec was not found)": "TUN 卡片需要以 root 身分執行 ProxyDock (找不到 pkexec)",
+ "Output": "輸出"
 }

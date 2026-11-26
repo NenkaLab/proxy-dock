@@ -319,10 +319,14 @@ pub fn migrate_autostart(exe: &Path) -> bool {
 /// (ProxyServer value, error) for using this inbound as the system proxy (Python `system_proxy_server`)
 pub fn system_proxy_server(inbound: &Value) -> Result<String, String> {
     let t = inbound["type"].as_str().unwrap_or("");
-    if !PC_INBOUND_TYPES.contains(&t) {
+    if cfg!(windows) && !PC_INBOUND_TYPES.contains(&t) {
         return Err(tr(
             "Windows can only use an HTTP (or SOCKS4) inbound as the system proxy - add an HTTP inbound for the PC",
         ));
+    }
+    // (macOS and Linux desktops also take a SOCKS5 proxy)
+    if !cfg!(windows) && !["http", "socks4", "socks5"].contains(&t) {
+        return Err(tr("The system proxy needs an HTTP or SOCKS inbound - add one for the PC"));
     }
     let host = match inbound["host"].as_str().unwrap_or("") {
         "0.0.0.0" => "127.0.0.1",
@@ -342,7 +346,7 @@ pub fn get_system_proxy() -> Result<Map<String, Value>, String> {
         Ok(INET_VALUES.iter().map(|n| (n.to_string(), reg::get(&k, n).unwrap_or(Value::Null))).collect())
     }
     #[cfg(not(windows))]
-    Err(tr("Windows only for now"))
+    get_system_proxy_unix()
 }
 
 /// Write WinINet values (null = delete; only the names given) and tell running apps (Python `set_system_proxy`)
@@ -367,10 +371,7 @@ pub fn set_system_proxy(values: &Map<String, Value>) -> Result<(), String> {
         Ok(())
     }
     #[cfg(not(windows))]
-    {
-        let _ = values;
-        Err(tr("Windows only for now"))
-    }
+    set_system_proxy_unix(values)
 }
 
 #[cfg(windows)]
@@ -402,6 +403,374 @@ pub fn proxy_values_for(server: &str, backup: &Value) -> Map<String, Value> {
     m.insert("ProxyOverride".into(), json!(bypass.join(";")));
     m.insert("AutoConfigURL".into(), Value::Null);
     m
+}
+
+// --- the system proxy on macOS (networksetup) and Linux (GNOME gsettings, KDE kioslaverc) ---
+//
+// The same four values as WinINet's, so the PC block keeps one backup format: ProxyEnable (0/1), ProxyServer
+// ("host:port" for an HTTP proxy, "socks=host:port" for SOCKS), ProxyOverride (bypass entries joined by ";") and
+// AutoConfigURL (a PAC address or null). The command lines are made and the answers read by plain functions
+// (tested on every system); only `run` touches the system.
+
+/// "host:port" / "socks=host:port" / "[v6]:port" -> (socks, host, port)
+pub fn parse_server(s: &str) -> Option<(bool, String, u16)> {
+    let (socks, hp) = match s.strip_prefix("socks=") {
+        Some(r) => (true, r),
+        None => (false, s),
+    };
+    let (host, port) = hp.rsplit_once(':')?;
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    Some((socks, host.to_string(), port.parse().ok()?))
+}
+
+/// WinINet bypass entries in a system's own words: "<local>" (plain host names) and "127.*"
+fn bypass_items(values: &Map<String, Value>, mac: bool) -> Vec<String> {
+    let mut out = vec![];
+    for item in values.get("ProxyOverride").and_then(Value::as_str).unwrap_or("").split(';') {
+        let item = item.trim();
+        let mapped = match item {
+            "" => continue,
+            "<local>" if mac => "*.local".to_string(),
+            "<local>" => continue,
+            "127.*" => "127.0.0.0/8".to_string(),
+            other => other.to_string(),
+        };
+        if !out.contains(&mapped) {
+            out.push(mapped);
+        }
+    }
+    out
+}
+
+fn arg(s: &str) -> String {
+    s.to_string()
+}
+
+/// macOS: the networksetup commands that put `values` on each network service
+pub fn mac_set_commands(services: &[String], values: &Map<String, Value>) -> Vec<Vec<String>> {
+    let on = values.get("ProxyEnable").and_then(Value::as_u64) == Some(1);
+    let server = values.get("ProxyServer").and_then(Value::as_str).and_then(parse_server);
+    let pac = values.get("AutoConfigURL").and_then(Value::as_str).filter(|u| !u.is_empty());
+    let bypass = bypass_items(values, true);
+    let mut cmds = vec![];
+    for svc in services {
+        let ns = |a: &[&str]| -> Vec<String> {
+            std::iter::once("networksetup".to_string()).chain(a.iter().map(|x| arg(x))).collect()
+        };
+        match (on, &server) {
+            (true, Some((false, host, port))) => {
+                let p = port.to_string();
+                cmds.push(ns(&["-setwebproxy", svc, host, &p]));
+                cmds.push(ns(&["-setsecurewebproxy", svc, host, &p]));
+                cmds.push(ns(&["-setsocksfirewallproxystate", svc, "off"]));
+            }
+            (true, Some((true, host, port))) => {
+                cmds.push(ns(&["-setsocksfirewallproxy", svc, host, &port.to_string()]));
+                cmds.push(ns(&["-setwebproxystate", svc, "off"]));
+                cmds.push(ns(&["-setsecurewebproxystate", svc, "off"]));
+            }
+            _ => {
+                cmds.push(ns(&["-setwebproxystate", svc, "off"]));
+                cmds.push(ns(&["-setsecurewebproxystate", svc, "off"]));
+                cmds.push(ns(&["-setsocksfirewallproxystate", svc, "off"]));
+            }
+        }
+        if values.contains_key("ProxyOverride") {
+            let mut c = ns(&["-setproxybypassdomains", svc]);
+            if bypass.is_empty() {
+                c.push("Empty".into());
+            } else {
+                c.extend(bypass.iter().cloned());
+            }
+            cmds.push(c);
+        }
+        if values.contains_key("AutoConfigURL") {
+            match pac {
+                Some(u) => cmds.push(ns(&["-setautoproxyurl", svc, u])),
+                None => cmds.push(ns(&["-setautoproxystate", svc, "off"])),
+            }
+        }
+    }
+    cmds
+}
+
+/// networksetup's "Enabled: Yes / Server: x / Port: n" answer -> (enabled, host, port)
+fn mac_field(out: &str, key: &str) -> String {
+    out.lines()
+        .find_map(|l| l.strip_prefix(key).and_then(|r| r.strip_prefix(':')).map(|r| r.trim().to_string()))
+        .unwrap_or_default()
+}
+
+/// macOS: the four values from networksetup's answers for one service (-getwebproxy, -getsocksfirewallproxy,
+/// -getproxybypassdomains, -getautoproxyurl)
+pub fn mac_values(web: &str, socks: &str, bypass: &str, auto: &str) -> Map<String, Value> {
+    let mut m = Map::new();
+    let hp = |out: &str| format!("{}:{}", mac_field(out, "Server"), mac_field(out, "Port"));
+    let (server, enabled) = if mac_field(web, "Enabled") == "Yes" {
+        (json!(hp(web)), 1)
+    } else if mac_field(socks, "Enabled") == "Yes" {
+        (json!(format!("socks={}", hp(socks))), 1)
+    } else {
+        (Value::Null, 0)
+    };
+    m.insert("ProxyEnable".into(), json!(enabled));
+    m.insert("ProxyServer".into(), server);
+    let items: Vec<&str> =
+        bypass.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("There aren't")).collect();
+    m.insert("ProxyOverride".into(), if items.is_empty() { Value::Null } else { json!(items.join(";")) });
+    let url = mac_field(auto, "URL");
+    let pac_on = mac_field(auto, "Enabled") == "Yes" && !url.is_empty() && url != "(null)";
+    m.insert("AutoConfigURL".into(), if pac_on { json!(url) } else { Value::Null });
+    m
+}
+
+/// GNOME: the gsettings commands for `values`
+pub fn gnome_set_commands(values: &Map<String, Value>) -> Vec<Vec<String>> {
+    let on = values.get("ProxyEnable").and_then(Value::as_u64) == Some(1);
+    let server = values.get("ProxyServer").and_then(Value::as_str).and_then(parse_server);
+    let pac = values.get("AutoConfigURL").and_then(Value::as_str).filter(|u| !u.is_empty());
+    let set = |schema: &str, key: &str, v: String| vec![arg("gsettings"), arg("set"), arg(schema), arg(key), v];
+    let mut cmds = vec![];
+    let mode = match (pac, on, &server) {
+        (Some(_), _, _) => "auto",
+        (None, true, Some(_)) => "manual",
+        _ => "none",
+    };
+    if let (true, Some((socks, host, port))) = (on, &server) {
+        let (used, unused) =
+            if *socks { (vec!["socks"], vec!["http", "https"]) } else { (vec!["http", "https"], vec!["socks"]) };
+        for kind in used {
+            let schema = format!("org.gnome.system.proxy.{kind}");
+            cmds.push(set(&schema, "host", host.clone()));
+            cmds.push(set(&schema, "port", port.to_string()));
+        }
+        for kind in unused {
+            cmds.push(set(&format!("org.gnome.system.proxy.{kind}"), "host", String::new()));
+        }
+    }
+    if values.contains_key("ProxyOverride") {
+        let items: Vec<String> =
+            bypass_items(values, false).iter().map(|i| format!("'{}'", i.replace('\'', ""))).collect();
+        cmds.push(set("org.gnome.system.proxy", "ignore-hosts", format!("[{}]", items.join(", "))));
+    }
+    if let Some(u) = pac {
+        cmds.push(set("org.gnome.system.proxy", "autoconfig-url", u.to_string()));
+    }
+    cmds.push(set("org.gnome.system.proxy", "mode", mode.to_string()));
+    cmds
+}
+
+/// a gsettings value as text ("'x'" -> x, "['a', 'b']" -> [a, b])
+fn gvariant_str(s: &str) -> String {
+    s.trim().trim_matches('\'').to_string()
+}
+
+/// GNOME: the four values from `gsettings get` answers (mode, http host / port, socks host / port, ignore-hosts,
+/// autoconfig-url)
+pub fn gnome_values(
+    mode: &str,
+    http: (&str, &str),
+    socks: (&str, &str),
+    ignore: &str,
+    pac: &str,
+) -> Map<String, Value> {
+    let mut m = Map::new();
+    let mode = gvariant_str(mode);
+    let (hh, hp, sh, sp) = (gvariant_str(http.0), http.1.trim(), gvariant_str(socks.0), socks.1.trim());
+    let server = if mode == "manual" && !hh.is_empty() {
+        json!(format!("{hh}:{hp}"))
+    } else if mode == "manual" && !sh.is_empty() {
+        json!(format!("socks={sh}:{sp}"))
+    } else {
+        Value::Null
+    };
+    m.insert("ProxyEnable".into(), json!(if server.is_null() { 0 } else { 1 }));
+    m.insert("ProxyServer".into(), server);
+    let items: Vec<String> = ignore
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .split(',')
+        .map(gvariant_str)
+        .filter(|x| !x.is_empty() && !x.starts_with('@'))
+        .collect();
+    m.insert("ProxyOverride".into(), if items.is_empty() { Value::Null } else { json!(items.join(";")) });
+    let pac = gvariant_str(pac);
+    m.insert("AutoConfigURL".into(), if mode == "auto" && !pac.is_empty() { json!(pac) } else { Value::Null });
+    m
+}
+
+/// KDE: the kwriteconfig commands for `values` (kioslaverc, group "Proxy Settings")
+pub fn kde_set_commands(tool: &str, values: &Map<String, Value>) -> Vec<Vec<String>> {
+    let on = values.get("ProxyEnable").and_then(Value::as_u64) == Some(1);
+    let server = values.get("ProxyServer").and_then(Value::as_str).and_then(parse_server);
+    let pac = values.get("AutoConfigURL").and_then(Value::as_str).filter(|u| !u.is_empty());
+    let set = |key: &str, v: String| {
+        vec![
+            arg(tool),
+            arg("--file"),
+            arg("kioslaverc"),
+            arg("--group"),
+            arg("Proxy Settings"),
+            arg("--key"),
+            arg(key),
+            v,
+        ]
+    };
+    let mut cmds = vec![];
+    let kind = match (pac, on, &server) {
+        (Some(_), _, _) => "2",
+        (None, true, Some(_)) => "1",
+        _ => "0",
+    };
+    if let (true, Some((socks, host, port))) = (on, &server) {
+        if *socks {
+            cmds.push(set("socksProxy", format!("socks://{host} {port}")));
+            cmds.push(set("httpProxy", String::new()));
+            cmds.push(set("httpsProxy", String::new()));
+        } else {
+            cmds.push(set("httpProxy", format!("http://{host} {port}")));
+            cmds.push(set("httpsProxy", format!("http://{host} {port}")));
+            cmds.push(set("socksProxy", String::new()));
+        }
+    }
+    if values.contains_key("ProxyOverride") {
+        cmds.push(set("NoProxyFor", bypass_items(values, false).join(",")));
+    }
+    if let Some(u) = pac {
+        cmds.push(set("Proxy Config Script", u.to_string()));
+    }
+    cmds.push(set("ProxyType", kind.to_string()));
+    cmds
+}
+
+/// KDE: the four values from kioslaverc (ProxyType, httpProxy, socksProxy, NoProxyFor, Proxy Config Script)
+pub fn kde_values(kind: &str, http: &str, socks: &str, no_proxy: &str, pac: &str) -> Map<String, Value> {
+    let hp = |s: &str| -> Option<String> {
+        let rest = s.trim().split_once("://").map_or(s.trim(), |(_, r)| r);
+        let (h, p) = rest.split_once(' ').or_else(|| rest.rsplit_once(':'))?;
+        (!h.is_empty()).then(|| format!("{}:{}", h, p.trim()))
+    };
+    let mut m = Map::new();
+    let server = match kind.trim() {
+        "1" => hp(http).map(|s| json!(s)).or_else(|| hp(socks).map(|s| json!(format!("socks={s}")))),
+        _ => None,
+    };
+    m.insert("ProxyEnable".into(), json!(if server.is_some() { 1 } else { 0 }));
+    m.insert("ProxyServer".into(), server.unwrap_or(Value::Null));
+    let items: Vec<&str> = no_proxy.split(',').map(str::trim).filter(|x| !x.is_empty()).collect();
+    m.insert("ProxyOverride".into(), if items.is_empty() { Value::Null } else { json!(items.join(";")) });
+    let pac = pac.trim();
+    m.insert("AutoConfigURL".into(), if kind.trim() == "2" && !pac.is_empty() { json!(pac) } else { Value::Null });
+    m
+}
+
+#[cfg(not(windows))]
+mod sys {
+    pub fn output(cmd: &[&str]) -> Option<String> {
+        let out = std::process::Command::new(cmd[0]).args(&cmd[1..]).output().ok()?;
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    pub fn run(cmds: &[Vec<String>]) -> Result<(), String> {
+        for c in cmds {
+            let st = std::process::Command::new(&c[0]).args(&c[1..]).output().map_err(|e| format!("{}: {e}", c[0]))?;
+            if !st.status.success() {
+                return Err(format!("{}: {}", c.join(" "), String::from_utf8_lossy(&st.stderr).trim()));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn on_path(tool: &str) -> bool {
+        std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(tool).is_file()))
+    }
+
+    /// macOS: the enabled network services (Wi-Fi, Ethernet, ...)
+    pub fn mac_services() -> Vec<String> {
+        output(&["networksetup", "-listallnetworkservices"])
+            .map(|o| {
+                o.lines().skip(1).filter(|l| !l.trim().is_empty() && !l.starts_with('*')).map(String::from).collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn kde() -> Option<&'static str> {
+        let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().to_uppercase();
+        if !desktop.contains("KDE") {
+            return None;
+        }
+        ["kwriteconfig6", "kwriteconfig5"].into_iter().find(|t| on_path(t))
+    }
+}
+
+/// whether ProxyDock can set this computer's system proxy (Windows; macOS; Linux with GNOME or KDE)
+pub fn system_proxy_supported() -> bool {
+    #[cfg(windows)]
+    return true;
+    // (never in tests: they set a test folder, and the system proxy has no test stand-in here)
+    #[cfg(target_os = "macos")]
+    return TEST_DIR.read().unwrap().is_none();
+    #[cfg(target_os = "linux")]
+    return TEST_DIR.read().unwrap().is_none() && (sys::on_path("gsettings") || sys::kde().is_some());
+    #[allow(unreachable_code)]
+    false
+}
+
+#[cfg(not(windows))]
+fn get_system_proxy_unix() -> Result<Map<String, Value>, String> {
+    if cfg!(target_os = "macos") {
+        let svc = sys::mac_services().into_iter().next().ok_or_else(|| tr("No network service found"))?;
+        let get = |flag: &str| sys::output(&["networksetup", flag, &svc]).unwrap_or_default();
+        return Ok(mac_values(
+            &get("-getwebproxy"),
+            &get("-getsocksfirewallproxy"),
+            &get("-getproxybypassdomains"),
+            &get("-getautoproxyurl"),
+        ));
+    }
+    if let Some(tool) = sys::kde() {
+        let read = tool.replace("kwrite", "kread");
+        let get = |key: &str| {
+            sys::output(&[&read, "--file", "kioslaverc", "--group", "Proxy Settings", "--key", key]).unwrap_or_default()
+        };
+        return Ok(kde_values(
+            &get("ProxyType"),
+            &get("httpProxy"),
+            &get("socksProxy"),
+            &get("NoProxyFor"),
+            &get("Proxy Config Script"),
+        ));
+    }
+    let get = |schema: &str, key: &str| sys::output(&["gsettings", "get", schema, key]).unwrap_or_default();
+    Ok(gnome_values(
+        &get("org.gnome.system.proxy", "mode"),
+        (&get("org.gnome.system.proxy.http", "host"), &get("org.gnome.system.proxy.http", "port")),
+        (&get("org.gnome.system.proxy.socks", "host"), &get("org.gnome.system.proxy.socks", "port")),
+        &get("org.gnome.system.proxy", "ignore-hosts"),
+        &get("org.gnome.system.proxy", "autoconfig-url"),
+    ))
+}
+
+#[cfg(not(windows))]
+fn set_system_proxy_unix(values: &Map<String, Value>) -> Result<(), String> {
+    if cfg!(target_os = "macos") {
+        return sys::run(&mac_set_commands(&sys::mac_services(), values));
+    }
+    let mut done = false;
+    if let Some(tool) = sys::kde() {
+        sys::run(&kde_set_commands(tool, values))?;
+        // (KDE programs read the settings again)
+        let _ = std::process::Command::new("dbus-send")
+            .args(["--type=signal", "/KIO/Scheduler", "org.kde.KIO.Scheduler.reparseSlaveConfiguration", "string:"])
+            .status();
+        done = true;
+    }
+    if sys::on_path("gsettings") {
+        sys::run(&gnome_set_commands(values))?;
+        done = true;
+    }
+    if done { Ok(()) } else { Err(tr("This desktop has no system proxy setting ProxyDock can change")) }
 }
 
 // --- Windows Firewall: block connections from other PCs to ProxyDock's programs ---
@@ -594,5 +963,83 @@ mod login_text_tests {
         let desktop = super::login_item_text(std::path::Path::new("/opt/it's here/proxydock"), false, false);
         assert!(desktop.contains("Exec='/opt/it'\"'\"'s here/proxydock'\n"), "{desktop}");
         assert!(desktop.starts_with("[Desktop Entry]\nType=Application\nName=ProxyDock\n"));
+    }
+}
+
+#[cfg(test)]
+mod sysproxy_tests {
+    use super::*;
+
+    fn values(server: &str, bypass: &str) -> Map<String, Value> {
+        proxy_values_for(server, &json!({"ProxyOverride": bypass}))
+    }
+
+    #[test]
+    fn macos_networksetup() {
+        let cmds = mac_set_commands(&["Wi-Fi".into()], &values("127.0.0.1:8080", "*.corp"));
+        let lines: Vec<String> = cmds.iter().map(|c| c.join(" ")).collect();
+        assert!(lines.contains(&"networksetup -setwebproxy Wi-Fi 127.0.0.1 8080".to_string()), "{lines:?}");
+        assert!(lines.contains(&"networksetup -setsecurewebproxy Wi-Fi 127.0.0.1 8080".to_string()));
+        assert!(
+            lines.contains(
+                &"networksetup -setproxybypassdomains Wi-Fi localhost 127.0.0.0/8 *.corp *.local".to_string()
+            )
+        );
+        assert!(lines.contains(&"networksetup -setautoproxystate Wi-Fi off".to_string()));
+        let socks = mac_set_commands(&["Wi-Fi".into()], &values("socks=127.0.0.1:1080", ""));
+        assert_eq!(socks[0].join(" "), "networksetup -setsocksfirewallproxy Wi-Fi 127.0.0.1 1080");
+        // read back
+        let v = mac_values(
+            "Enabled: Yes\nServer: 10.0.0.1\nPort: 3128\nAuthenticated Proxy Enabled: 0\n",
+            "Enabled: No\nServer: \nPort: 0\n",
+            "*.local\n169.254/16\n",
+            "URL: (null)\nEnabled: No\n",
+        );
+        assert_eq!(v["ProxyServer"], json!("10.0.0.1:3128"));
+        assert_eq!(v["ProxyOverride"], json!("*.local;169.254/16"));
+        assert_eq!(v["AutoConfigURL"], Value::Null);
+        // off: every proxy off
+        let off = mac_set_commands(&["Wi-Fi".into()], &v_off());
+        assert!(off.iter().all(|c| c[1].ends_with("state") || c[1] == "-setproxybypassdomains"));
+    }
+
+    fn v_off() -> Map<String, Value> {
+        let mut m = Map::new();
+        m.insert("ProxyEnable".into(), json!(0));
+        m
+    }
+
+    #[test]
+    fn gnome_and_kde() {
+        let lines: Vec<String> =
+            gnome_set_commands(&values("127.0.0.1:8080", "")).iter().map(|c| c.join(" ")).collect();
+        assert!(lines.contains(&"gsettings set org.gnome.system.proxy.http host 127.0.0.1".to_string()), "{lines:?}");
+        assert!(
+            lines.contains(
+                &"gsettings set org.gnome.system.proxy ignore-hosts ['localhost', '127.0.0.0/8']".to_string()
+            )
+        );
+        assert_eq!(lines.last().unwrap(), "gsettings set org.gnome.system.proxy mode manual");
+        let v = gnome_values("'manual'", ("'127.0.0.1'", "8080"), ("''", "0"), "['localhost', '127.0.0.0/8']", "''");
+        assert_eq!(v["ProxyServer"], json!("127.0.0.1:8080"));
+        assert_eq!(v["ProxyOverride"], json!("localhost;127.0.0.0/8"));
+        let none = gnome_values("'none'", ("''", "0"), ("''", "0"), "@as []", "''");
+        assert_eq!((none["ProxyEnable"].clone(), none["ProxyOverride"].clone()), (json!(0), Value::Null));
+        let kde: Vec<String> = kde_set_commands("kwriteconfig6", &values("socks=127.0.0.1:1080", ""))
+            .iter()
+            .map(|c| c.join(" "))
+            .collect();
+        assert!(
+            kde.contains(
+                &"kwriteconfig6 --file kioslaverc --group Proxy Settings --key socksProxy socks://127.0.0.1 1080"
+                    .to_string()
+            ),
+            "{kde:?}"
+        );
+        assert_eq!(kde.last().unwrap(), "kwriteconfig6 --file kioslaverc --group Proxy Settings --key ProxyType 1");
+        let v = kde_values("1", "http://127.0.0.1 8080", "", "localhost,127.0.0.1", "");
+        assert_eq!(v["ProxyServer"], json!("127.0.0.1:8080"));
+        assert_eq!(v["ProxyOverride"], json!("localhost;127.0.0.1"));
+        assert_eq!(parse_server("socks=[::1]:1080"), Some((true, "::1".into(), 1080)));
     }
 }

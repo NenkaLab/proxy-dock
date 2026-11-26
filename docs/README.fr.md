@@ -40,14 +40,18 @@ Les proxys tournent sur [sing-box](https://github.com/SagerNet/sing-box), fourni
 
 ## Lancer
 
-Windows 10 / 11 : `ProxyDock-<version>-windows-x64-setup.exe` l'installe pour votre compte (sans droits administrateur) ;
-le `.zip` contient la même application sous forme de dossier. Téléchargez-la sur [Releases](https://github.com/NenkaLab/proxy-dock/releases).
+Téléchargez-la sur [Releases](https://github.com/NenkaLab/proxy-dock/releases) :
 
-Les réglages sont dans `%APPDATA%\ProxyDock` ; la version 3 reprend les réglages de la 2.x. La page **Mode d'emploi** de
-l'application explique le reste.
+- **Windows 10 / 11** : `ProxyDock-<version>-windows-x64-setup.exe` l'installe pour votre compte (sans droits
+  administrateur) ; le `.zip` contient la même application sous forme de dossier.
+- **macOS** (Apple Silicon) : ouvrez le `.dmg` et faites glisser ProxyDock dans Applications. Elle n'est pas signée par
+  Apple : la première fois, clic droit → Ouvrir.
+- **Linux** (x64) : l'`.AppImage` se lance telle quelle (d'abord `chmod +x`) ; le `.tar.gz` contient la même
+  application sous forme de dossier.
 
-ProxyDock 3 est une réécriture en Rust et ne fonctionne pour l'instant que sous Windows. Sous macOS et Linux, utilisez la
-2.x (l'application Python, sur la branche [`old`](https://github.com/NenkaLab/proxy-dock/tree/old) et dans les versions 2.x).
+Les réglages sont dans `%APPDATA%\ProxyDock` (Windows), `~/Library/Application Support/ProxyDock` (macOS) ou
+`~/.config/ProxyDock` (Linux) ; la version 3 reprend les réglages de la 2.x. La page **Mode d'emploi** de l'application
+explique le reste. ProxyDock 3 est une réécriture en Rust ; la 2.x (l'application Python) est sur la branche [`old`](https://github.com/NenkaLab/proxy-dock/tree/old).
 
 ## Compiler
 
@@ -56,7 +60,12 @@ Vérifications avant une version : [TESTING.md](../TESTING.md) (en coréen).
 
 ## Limites
 
-- Windows uniquement (macOS / Linux : 2.x).
+- macOS et Linux sont compilés et testés automatiquement, mais pas encore essayés sur de vraies machines.
+- macOS / Linux : pas de règle qui bloque les autres PC (utilisez le pare-feu du système), pas d'« Exécuter en tant
+  qu'administrateur » au démarrage (une carte TUN demande le mot de passe en démarrant), le profil colorimétrique de
+  l'écran n'est pas lu (sRGB supposé), les mots de passe des réglages ne sont pas chiffrés (comme en 2.x) et les
+  boutons précédent / suivant de la souris ne reviennent pas en arrière.
+- Linux : le proxy système (bloc PC) n'est réglé que sous GNOME et KDE ; les notifications ont besoin de `notify-send`.
 - TUN n'a pas encore été essayé en conditions réelles.
 - SOCKS4 n'a pas de mot de passe : ne l'utilisez que sur ce PC.
 

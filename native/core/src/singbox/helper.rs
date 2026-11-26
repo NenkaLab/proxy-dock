@@ -191,9 +191,40 @@ pub fn runas(program: &Path, args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// macOS / Linux: the helper started as root, asking for the password the system's way (macOS: AppleScript's
+/// administrator prompt; Linux: pkexec through polkit). Err when the user said no or there is no way to ask.
 #[cfg(not(windows))]
-pub fn runas(_program: &Path, _args: &[String]) -> Result<(), String> {
-    Err(tr("A TUN card needs ProxyDock to run as root"))
+pub fn runas(program: &Path, args: &[String]) -> Result<(), String> {
+    // (POSIX shell quoting: each argument in single quotes)
+    let sh = |a: &str| format!("'{}'", a.replace('\'', "'\\''"));
+    let cmd: Vec<String> =
+        std::iter::once(program.display().to_string()).chain(args.iter().cloned()).map(|a| sh(&a)).collect();
+    if cfg!(target_os = "macos") {
+        // (in the background: the prompt's answer comes back at once, the helper keeps running)
+        let line = format!("{} > /dev/null 2>&1 &", cmd.join(" "));
+        let script = format!(
+            "do shell script \"{}\" with administrator privileges",
+            line.replace('\\', "\\\\").replace('"', "\\\"")
+        );
+        let out = Command::new("osascript").args(["-e", &script]).output().map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            return Err(tr("Administrator permission was not given (the prompt was cancelled)"));
+        }
+        return Ok(());
+    }
+    let mut child = Command::new("pkexec")
+        .arg(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| tr("A TUN card needs ProxyDock to run as root (pkexec was not found)"))?;
+    // (reaped when it ends; a refusal shows as the helper never connecting)
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 /// The helper side (runs elevated): `args` = port, token, config, dir. Returns sing-box's exit code.

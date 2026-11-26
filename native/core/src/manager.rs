@@ -372,7 +372,11 @@ pub fn is_admin() -> bool {
     }
     #[cfg(not(windows))]
     {
-        std::env::var("USER").is_ok_and(|u| u == "root")
+        // (the effective user: 0 is root)
+        std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
     }
 }
 

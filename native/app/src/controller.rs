@@ -829,8 +829,8 @@ impl Controller {
     /// The PC block's state (Python `pc_status`): (off | waiting | applied | error | unsupported, text)
     fn pc_status(&self) -> (&'static str, String) {
         let pc = &self.graph["pc"];
-        if !proxydock_core::platform::supported() {
-            return ("unsupported", tr("Windows only for now"));
+        if !proxydock_core::platform::system_proxy_supported() {
+            return ("unsupported", tr("This desktop has no system proxy setting ProxyDock can change"));
         }
         let Some(p) = pc["inbound"].as_str().and_then(|id| self.proxy(id)) else {
             return ("off", tr("Not connected - the PC uses its own settings"));
@@ -851,7 +851,7 @@ impl Controller {
     /// True when it changed (the caller saves).
     fn sync_pc(&mut self) -> bool {
         use proxydock_core::platform;
-        if !platform::supported() {
+        if !platform::system_proxy_supported() {
             return false;
         }
         let card = self.graph["pc"]["inbound"].as_str().and_then(|id| self.proxy(id)).cloned();
@@ -1247,15 +1247,37 @@ impl Controller {
         }
     }
 
-    /// Run the installer and quit; it closes this program, updates it and starts it again (Python `install`)
+    /// Install the downloaded update (Python `install`): Windows runs the installer and quits (it closes this
+    /// program, updates it and starts it again); macOS opens the disk image (the user drags the app over the old
+    /// one); Linux puts the new AppImage in place of this one and restarts
     fn install_update(&mut self, path: &str) {
         let setup = std::path::Path::new(path);
         let app_dir =
             std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.to_path_buf())).unwrap_or_default();
-        if !setup.is_file()
-            || proxydock_core::update::install_kind(&std::env::current_exe().unwrap_or_default()).is_none()
-        {
+        let kind = proxydock_core::update::install_kind(&std::env::current_exe().unwrap_or_default());
+        if !setup.is_file() || kind.is_none() {
             return;
+        }
+        let fail = |c: &mut Self, e: String| {
+            c.app_log(Level::Error, &tr("Update failed: {e}").replace("{e}", &e));
+            c.broadcast(&json!({"ev": "error", "message": format!("{}: {e}", tr("Update failed"))}));
+        };
+        match kind {
+            Some("dmg") => {
+                if let Err(e) = std::process::Command::new("open").arg(setup).spawn() {
+                    fail(self, e.to_string());
+                }
+                return;
+            }
+            Some("appimage") => {
+                let target = std::env::var_os("APPIMAGE").map(std::path::PathBuf::from).unwrap_or_default();
+                match proxydock_core::update::replace_appimage(setup, &target) {
+                    Ok(()) => (self.hooks.restart)(true),
+                    Err(e) => fail(self, e.to_string()),
+                }
+                return;
+            }
+            _ => {}
         }
         let cmd = proxydock_core::update::installer_command(setup, &app_dir, &proxydock_core::i18n::current());
         self.app_log(Level::Info, &tr("Starting the installer: {path}").replace("{path}", path));
@@ -1268,10 +1290,7 @@ impl Controller {
         }
         match c.spawn() {
             Ok(_) => (self.hooks.quit)(),
-            Err(e) => {
-                self.app_log(Level::Error, &tr("Update failed: {e}").replace("{e}", &e.to_string()));
-                self.broadcast(&json!({"ev": "error", "message": format!("{}: {e}", tr("Update failed"))}));
-            }
+            Err(e) => fail(self, e.to_string()),
         }
     }
 
@@ -2110,6 +2129,8 @@ impl Controller {
             "cut" => edit::cut_links(&mut self.graph, &key),
             "wireless.repair" => edit::repair_wireless(&mut self.graph, &bid),
             a if a.starts_with("lane.add.") => edit::add_lane(&mut self.graph, &bid, &a["lane.add.".len()..]),
+            "lane.mode.straight" => edit::set_relay_routed(&mut self.graph, &bid, false),
+            "lane.mode.routed" => edit::set_relay_routed(&mut self.graph, &bid, true),
             a if a.starts_with("lane.del.") => edit::remove_lane(&mut self.graph, &bid, &a["lane.del.".len()..]),
             a if a.starts_with("member.") => {
                 self.platform_command(&json!({"cmd": "select_member", "group": bid, "member": &a["member.".len()..]}));

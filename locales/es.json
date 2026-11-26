@@ -1087,5 +1087,11 @@
  "Beyond sRGB: saved as an OKLCH colour (Display P3)": "Fuera de sRGB: se guarda como color OKLCH (Display P3)",
  "This monitor cannot show this colour exactly; it is drawn as the nearest one": "Este monitor no puede mostrar este color con exactitud; se dibuja el más cercano",
  "Theme colour": "Color del tema",
- "Custom": "Personalizado"
+ "Custom": "Personalizado",
+ "The system proxy needs an HTTP or SOCKS inbound - add one for the PC": "El proxy del sistema necesita una entrada HTTP o SOCKS: añade una para el PC",
+ "This desktop has no system proxy setting ProxyDock can change": "Este escritorio no tiene un ajuste de proxy del sistema que ProxyDock pueda cambiar",
+ "No network service found": "No se encontró ningún servicio de red",
+ "Administrator permission was not given (the prompt was cancelled)": "No se concedieron permisos de administrador (se canceló la solicitud)",
+ "A TUN card needs ProxyDock to run as root (pkexec was not found)": "Una tarjeta TUN necesita ProxyDock como root (no se encontró pkexec)",
+ "Output": "Salida"
 }

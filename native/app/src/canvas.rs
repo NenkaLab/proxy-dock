@@ -34,6 +34,8 @@ pub struct Node {
     pub out_labels: Vec<String>,
     /// pass-through: input lane -> output lane
     pub wires: Vec<(usize, usize)>,
+    /// pass-through: wired freely (its two sides added to apart)
+    pub routed: bool,
     /// "#rrggbb" or "" (automatic)
     pub color: String,
     /// the card this block is (inbound blocks)
@@ -93,6 +95,7 @@ fn node(key: &str, kind: i32, title: &str, detail: String, p: (f64, f64)) -> Nod
         in_labels: vec![],
         out_labels: vec![],
         wires: vec![],
+        routed: false,
         color: String::new(),
         card: String::new(),
         lines: vec![],
@@ -432,6 +435,7 @@ pub fn build(g: &Obj, summary: &dyn Fn(&str) -> String, unlinked: &dyn Fn(&str) 
         let mut n = node(id, 3, s(b, "name"), String::new(), pos(b.get("pos")));
         n.ins = ins.len();
         n.outs = outs.len();
+        n.routed = b["routed"] == json!(true);
         n.in_labels = (1..=ins.len()).map(|k| k.to_string()).collect();
         n.out_labels = (1..=outs.len()).map(|k| k.to_string()).collect();
         let out_index: HashMap<&str, usize> = outs.iter().enumerate().map(|(k, o)| (s(o, "id"), k)).collect();
@@ -617,7 +621,7 @@ pub fn to_json(v: &View, states: &dyn Fn(&str) -> &'static str) -> Value {
             json!({
                 "key": n.key, "kind": n.kind, "title": n.title, "detail": n.detail, "x": n.x, "y": n.y,
                 "ins": n.ins, "outs": n.outs, "in_labels": n.in_labels, "out_labels": n.out_labels,
-                "wires": n.wires.iter().map(|(i, o)| json!([i, o])).collect::<Vec<_>>(), "color": n.color,
+                "wires": n.wires.iter().map(|(i, o)| json!([i, o])).collect::<Vec<_>>(), "routed": n.routed, "color": n.color,
                 "card": n.card, "state": if n.card.is_empty() { "" } else { states(&n.card) },
                 "lines": n.lines.iter().map(|(t, tone)| json!([t, tone])).collect::<Vec<_>>(),
                 "swatch": n.swatch,

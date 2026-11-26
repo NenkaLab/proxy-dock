@@ -134,9 +134,33 @@ pub fn platform_key() -> (&'static str, &'static str) {
 }
 
 /// How this copy updates itself (Python `current_install`): "installer" for a Windows install made by the setup
-/// program (its uninstaller sits next to the program), else None (open the release page)
+/// program (its uninstaller sits next to the program), "dmg" for the macOS app bundle, "appimage" for a Linux
+/// AppImage; else None (a zip / tar.gz copy: open the release page)
 pub fn install_kind(exe: &Path) -> Option<&'static str> {
-    (cfg!(windows) && exe.parent().is_some_and(|d| d.join("unins000.exe").is_file())).then_some("installer")
+    kind_for(std::env::consts::OS, exe, std::env::var_os("APPIMAGE").is_some_and(|a| !a.is_empty()))
+}
+
+fn kind_for(os: &str, exe: &Path, appimage: bool) -> Option<&'static str> {
+    match os {
+        "windows" => exe.parent().is_some_and(|d| d.join("unins000.exe").is_file()).then_some("installer"),
+        "macos" => exe.to_string_lossy().contains(".app/Contents/").then_some("dmg"),
+        "linux" => appimage.then_some("appimage"),
+        _ => None,
+    }
+}
+
+/// Put the downloaded AppImage in place of the running one (Python `replace_appimage`): the running copy keeps
+/// working (it is mounted from the old file, which stays until this process ends)
+pub fn replace_appimage(new_file: &Path, target: &Path) -> std::io::Result<()> {
+    let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let tmp = target.with_file_name(format!(".{name}.new"));
+    std::fs::copy(new_file, &tmp)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
+    }
+    std::fs::rename(&tmp, target)
 }
 
 /// the release file to install (Python `pick_asset`)
@@ -298,6 +322,32 @@ pub fn installer_command(setup: &Path, app_dir: &Path, language: &str) -> Vec<St
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn install_kinds() {
+        use std::path::Path;
+        assert_eq!(
+            super::kind_for("macos", Path::new("/Applications/ProxyDock.app/Contents/MacOS/proxydock"), false),
+            Some("dmg")
+        );
+        assert_eq!(super::kind_for("macos", Path::new("/Users/u/ProxyDock/proxydock"), false), None);
+        assert_eq!(
+            super::kind_for("linux", Path::new("/tmp/.mount_x/usr/lib/proxydock/proxydock"), true),
+            Some("appimage")
+        );
+        assert_eq!(super::kind_for("linux", Path::new("/opt/proxydock/proxydock"), false), None);
+        assert_eq!(super::kind_for("windows", Path::new(r"C:\nowhere\ProxyDock.exe"), false), None);
+        // the AppImage swap: the new file in place, executable
+        let dir = std::env::temp_dir().join(format!("proxydock-appimage-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (old, new) = (dir.join("ProxyDock.AppImage"), dir.join("new.AppImage"));
+        std::fs::write(&old, "old").unwrap();
+        std::fs::write(&new, "new").unwrap();
+        super::replace_appimage(&new, &old).unwrap();
+        assert_eq!(std::fs::read_to_string(&old).unwrap(), "new");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
     use serde_json::json;
 

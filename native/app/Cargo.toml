@@ -20,7 +20,7 @@ proxydock-core = { path = "../core" }
 serde_json = { version = "1", features = ["preserve_order"] }
 # the window only (proxydock.exe does not use it, so it is not linked there)
 slint = { version = "1.19", default-features = false, features = [
-    "std", "compat-1-18", "backend-winit", "renderer-software", "renderer-skia", "accessibility", "raw-window-handle-06",
+    "std", "compat-1-18", "backend-winit", "unstable-winit-030", "renderer-software", "renderer-skia", "accessibility", "raw-window-handle-06",
 ] }
 raw-window-handle = "0.6"
 slint-node-editor = "2.0.0"

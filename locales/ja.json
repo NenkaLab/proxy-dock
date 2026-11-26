@@ -1087,5 +1087,11 @@
  "Beyond sRGB: saved as an OKLCH colour (Display P3)": "sRGB の範囲外: OKLCH の色 (Display P3) として保存されます",
  "This monitor cannot show this colour exactly; it is drawn as the nearest one": "このモニターではこの色を正確に表示できないため、最も近い色で表示します",
  "Theme colour": "テーマの色",
- "Custom": "カスタム"
+ "Custom": "カスタム",
+ "The system proxy needs an HTTP or SOCKS inbound - add one for the PC": "システムプロキシには HTTP または SOCKS の受信側が必要です - PC 用に追加してください",
+ "This desktop has no system proxy setting ProxyDock can change": "このデスクトップには ProxyDock が変更できるシステムプロキシ設定がありません",
+ "No network service found": "ネットワークサービスが見つかりません",
+ "Administrator permission was not given (the prompt was cancelled)": "管理者権限が得られませんでした (要求がキャンセルされました)",
+ "A TUN card needs ProxyDock to run as root (pkexec was not found)": "TUN カードには ProxyDock を root で実行する必要があります (pkexec が見つかりません)",
+ "Output": "出力"
 }

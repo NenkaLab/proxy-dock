@@ -37,13 +37,16 @@
 
 ## 运行
 
-Windows 10 / 11：`ProxyDock-<版本>-windows-x64-setup.exe` 为当前用户安装 (不需要管理员权限)；`.zip` 是同一个应用的文件夹版本。
 从 [Releases](https://github.com/NenkaLab/proxy-dock/releases) 下载。
 
-设置保存在 `%APPDATA%\ProxyDock`，版本 3 直接读取 2.x 的设置。其余内容见应用内的**使用方法**页面。
+- **Windows 10 / 11**：`ProxyDock-<版本>-windows-x64-setup.exe` 为当前用户安装 (不需要管理员权限)；`.zip` 是同一个应用的
+  文件夹版本。
+- **macOS** (Apple Silicon)：打开 `.dmg`，把 ProxyDock 拖到"应用程序"文件夹。没有 Apple 签名，第一次请右键 → 打开。
+- **Linux** (x64)：`.AppImage` 可直接运行 (先 `chmod +x`)；`.tar.gz` 是同一个应用的文件夹版本。
 
-ProxyDock 3 是用 Rust 重写的版本，目前只支持 Windows。macOS 和 Linux 请使用 2.x (Python 版，
-[`old`](https://github.com/NenkaLab/proxy-dock/tree/old) 分支和 2.x 发布)。
+设置保存在 `%APPDATA%\ProxyDock` (Windows)、`~/Library/Application Support/ProxyDock` (macOS) 或 `~/.config/ProxyDock`
+(Linux)，版本 3 直接读取 2.x 的设置。其余内容见应用内的**使用方法**页面。ProxyDock 3 是用 Rust 重写的版本，2.x
+(Python 版) 在 [`old`](https://github.com/NenkaLab/proxy-dock/tree/old) 分支。
 
 ## 构建
 
@@ -51,7 +54,10 @@ ProxyDock 3 是用 Rust 重写的版本，目前只支持 Windows。macOS 和 Li
 
 ## 限制
 
-- 仅支持 Windows (macOS / Linux：2.x)。
+- macOS 和 Linux 已自动构建和测试，但还没有在真机上试过。
+- macOS / Linux：没有阻止其他电脑的防火墙规则 (请用系统防火墙)，启动时没有"以管理员身份运行" (TUN 卡片启动时会询问
+  密码)，不读取显示器色彩配置文件 (按 sRGB 处理)，设置中的密码不加密 (与 2.x 相同)，鼠标的后退/前进键不会返回。
+- Linux：系统代理 (PC 块) 只在 GNOME 和 KDE 上设置；通知需要 `notify-send`。
 - TUN 还没有在真实环境中试过。
 - SOCKS4 没有密码，只在本机使用。
 
