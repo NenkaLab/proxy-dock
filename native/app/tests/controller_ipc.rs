@@ -918,6 +918,11 @@ fn settings_v2_become_a_graph() {
 
 #[test]
 fn update_check_finds_a_newer_release() {
+    // (only debug builds read the release from PROXYDOCK_UPDATE_URL; a release build asks GitHub itself)
+    if !cfg!(debug_assertions) {
+        eprintln!("release build: skipped");
+        return;
+    }
     let _serial = serial();
     let home = std::env::temp_dir().join(format!("proxydock-upd-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
