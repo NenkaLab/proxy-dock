@@ -8,7 +8,7 @@ bin/ - fetch them with tools/fetch_singbox.py first) and licenses/, then ProxyDo
 and -setup.exe in dist/release-rust (Inno Setup 6, the same tools/ProxyDock.iss as the Python app: same AppId, so it installs over a
 Python install, and the same settings folder %APPDATA%\\ProxyDock), each with a .sha256.
 
-Without --version the Python app's version (proxydock/__init__.py) is used.
+Without --version the version in native/Cargo.toml ([workspace.package]) is used.
 """
 import argparse
 import hashlib
@@ -34,9 +34,9 @@ def say(step, msg):
     print(f"[rust {step}] {msg}", flush=True)
 
 
-def python_version():
-    with open(os.path.join(ROOT, "proxydock", "__init__.py"), encoding="utf-8") as f:
-        return re.search(r'__version__ = "([^"]+)"', f.read()).group(1)
+def cargo_version():
+    with open(os.path.join(NATIVE, "Cargo.toml"), encoding="utf-8") as f:
+        return re.search(r'^version = "([^"]+)"', f.read(), re.M).group(1)
 
 
 def cargo(version):
@@ -119,10 +119,10 @@ def main():
     if sys.platform != "win32":
         raise SystemExit("the Rust app is Windows-only for now")
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--version", default=None, help="the version to build in (default: the Python app's)")
+    ap.add_argument("--version", default=None, help="the version to build in (default: native/Cargo.toml's)")
     ap.add_argument("--no-installer", action="store_true")
     args = ap.parse_args()
-    version = args.version or python_version()
+    version = args.version or cargo_version()
     if not re.fullmatch(r"\d+\.\d+\.\d+", version):
         raise SystemExit(f"not a version: {version}")
     cargo(version)
