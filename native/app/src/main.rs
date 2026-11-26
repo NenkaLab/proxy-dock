@@ -8,8 +8,42 @@
 //   PROXYDOCK_HOME=<folder>             settings folder instead of %APPDATA%\ProxyDock (tests, portable)
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(windows)]
 mod menu;
+#[cfg(not(windows))]
+mod tray_unix;
 
+/// a tray menu entry (drawn by menu.rs on Windows, the system's menu elsewhere)
+#[derive(Clone, PartialEq)]
+pub enum Entry {
+    Item {
+        label: String,
+        id: u32,
+    },
+    /// a small caption over the choices that follow (not clickable)
+    Header {
+        label: String,
+    },
+    /// one of several choices; `on` gets a check mark
+    Choice {
+        label: String,
+        id: u32,
+        on: bool,
+    },
+    Divider,
+}
+
+impl Entry {
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn id(&self) -> Option<u32> {
+        match self {
+            Entry::Item { id, .. } | Entry::Choice { id, .. } => Some(*id),
+            _ => None,
+        }
+    }
+}
+
+#[cfg_attr(not(windows), allow(unused_imports))]
 use proxydock::controller::{self, Handle};
 use proxydock_core::i18n::tr;
 use proxydock_core::manager::State;
@@ -18,9 +52,11 @@ use std::time::Duration;
 
 static CORE: OnceLock<Handle> = OnceLock::new();
 static UI_CHILD: Mutex<Option<std::process::Child>> = Mutex::new(None);
+#[cfg(windows)]
 /// the tray icon's window (its notifications go through it)
 static TRAY_HWND: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+#[cfg(windows)]
 /// A notification from the tray icon (Python `tray.showMessage(APP_NAME, text, Information)`).
 fn tray_message(text: &str) {
     use windows_sys::Win32::UI::Shell::{NIF_INFO, NIIF_INFO, NIM_MODIFY, NOTIFYICONDATAW, Shell_NotifyIconW};
@@ -44,6 +80,7 @@ fn tray_message(text: &str) {
     unsafe { Shell_NotifyIconW(NIM_MODIFY, &nid) };
 }
 
+#[cfg(windows)]
 /// Bring the first visible top-level window of process `pid` to the front. True if one was found.
 fn focus_process_window(pid: u32) -> bool {
     use windows_sys::Win32::{Foundation::*, UI::WindowsAndMessaging::*};
@@ -86,23 +123,31 @@ fn open_ui(page: u32) {
     if let Some(c) = child.as_mut()
         && matches!(c.try_wait(), Ok(None))
     {
+        #[cfg(windows)]
         focus_process_window(c.id());
         return;
     }
-    let exe = std::env::current_exe().unwrap().with_file_name("proxydock-ui.exe");
+    let exe = std::env::current_exe().unwrap().with_file_name(format!("proxydock-ui{}", std::env::consts::EXE_SUFFIX));
     let mut cmd = std::process::Command::new(exe);
     cmd.env(proxydock::ipc::ENV, core.ipc_env()).env("PROXYDOCK_PAGE", page.to_string());
     // "App scale": on top of the display's own scale (Python QT_SCALE_FACTOR)
     // (100% is drawn a little smaller than the display's scale: the M3 sizes read large next to other apps)
     let scale = core.setting("ui_scale").as_f64().unwrap_or(100.0) / 100.0 * BASE_SCALE;
-    let dpi = unsafe { windows_sys::Win32::UI::HiDpi::GetDpiForSystem() } as f64 / 96.0;
     // (a SLINT_SCALE_FACTOR already set, as for the README pictures, is kept)
+    #[cfg(windows)]
     if std::env::var_os("SLINT_SCALE_FACTOR").is_none() {
+        let dpi = unsafe { windows_sys::Win32::UI::HiDpi::GetDpiForSystem() } as f64 / 96.0;
         cmd.env("SLINT_SCALE_FACTOR", format!("{:.3}", dpi * scale));
+    }
+    // (elsewhere the window takes the display's scale itself; only a changed "App scale" is passed on)
+    #[cfg(not(windows))]
+    if std::env::var_os("SLINT_SCALE_FACTOR").is_none() && (scale / BASE_SCALE - 1.0).abs() > 1e-6 {
+        cmd.env("SLINT_SCALE_FACTOR", format!("{:.3}", scale / BASE_SCALE));
     }
     *child = cmd.spawn().ok();
 }
 
+#[cfg(windows)]
 /// the window process's top-level window, if it is open
 fn ui_window() -> Option<usize> {
     use windows_sys::Win32::{Foundation::*, UI::WindowsAndMessaging::*};
@@ -132,6 +177,14 @@ fn ui_window() -> Option<usize> {
     let mut find = Find { pid, hwnd: std::ptr::null_mut() };
     unsafe { EnumWindows(Some(each), &mut find as *mut Find as LPARAM) };
     (!find.hwnd.is_null()).then_some(find.hwnd as usize)
+}
+
+/// whether the window is open (Linux / macOS: its process runs)
+#[cfg(not(windows))]
+fn ui_window() -> Option<usize> {
+    let mut child = UI_CHILD.lock().unwrap();
+    let c = child.as_mut()?;
+    matches!(c.try_wait(), Ok(None)).then_some(0)
 }
 
 /// close the window (it saves its place and ends; the tray and the cards go on, whatever "Quit with the X button")
@@ -164,6 +217,7 @@ fn restart(ui_only: bool) {
     args.push("--restart".into());
     let mut cmd = std::process::Command::new(exe);
     cmd.args(&args);
+    #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0000_0008 | 0x0000_0200); // detached, its own group
@@ -185,21 +239,33 @@ fn quit() {
     if let Some(core) = CORE.get() {
         core.quit(Duration::from_secs(10));
     }
-    unsafe { windows_sys::Win32::UI::WindowsAndMessaging::PostQuitMessage(0) };
+    #[cfg(windows)]
+    unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::PostQuitMessage(0)
+    };
+    #[cfg(not(windows))]
+    tray_unix::ask(tray_unix::Ask::Exit);
 }
 
+#[cfg(windows)]
 /// a thread message: quit the app (sent by the controller)
 const WM_QUIT_APP: u32 = 0x8000 + 1;
+#[cfg(windows)]
 /// a thread message: open the window (wparam: the page), from a second start
 const WM_SHOW_UI: u32 = 0x8000 + 2;
+#[cfg(windows)]
 /// a thread message: restart (wparam 1: the whole app, 0: the window)
 const WM_RESTART: u32 = 0x8000 + 3;
+#[cfg(windows)]
 /// a thread message: the tray tooltip changed (in TOOLTIP)
 const WM_TOOLTIP: u32 = 0x8000 + 4;
+#[cfg(windows)]
 static TOOLTIP: Mutex<String> = Mutex::new(String::new());
+#[cfg(windows)]
 /// named events a second start sets (the window / the log page)
 const SHOW_EVENTS: [&str; 2] = ["Local\\ProxyDockRustShow", "Local\\ProxyDockRustShowLogs"];
 
+#[cfg(windows)]
 /// A single-instance object's name: with PROXYDOCK_HOME (another settings folder, as for trying things out) one
 /// of its own per folder, so such a copy neither wakes nor blocks the ProxyDock in use.
 fn instance_name(base: &str) -> Vec<u16> {
@@ -217,6 +283,7 @@ fn instance_name(base: &str) -> Vec<u16> {
     name.encode_utf16().chain(Some(0)).collect()
 }
 
+#[cfg(windows)]
 /// A second start: ask the running ProxyDock to show its window (the log page with --logs), then end
 fn wake_first_instance(logs: bool) {
     use windows_sys::Win32::Foundation::CloseHandle;
@@ -231,6 +298,7 @@ fn wake_first_instance(logs: bool) {
     }
 }
 
+#[cfg(windows)]
 /// The first start: a thread waits for a second start's request and passes it to the tray's thread
 fn listen_for_second_start(main_thread: u32) {
     use windows_sys::Win32::System::Threading::{CreateEventW, INFINITE, WaitForMultipleObjects};
@@ -285,6 +353,7 @@ fn state_text(s: &State) -> String {
     }
 }
 
+#[cfg(windows)]
 fn show_menu(x: i32, y: i32) {
     if CORE.get().is_none() {
         return;
@@ -293,8 +362,7 @@ fn show_menu(x: i32, y: i32) {
 }
 
 /// the tray menu as things are now, and what each entry does
-fn menu_entries() -> (Vec<menu::Entry>, Box<dyn Fn(u32)>) {
-    use menu::Entry;
+fn menu_entries() -> (Vec<Entry>, Box<dyn Fn(u32)>) {
     let core = CORE.get().unwrap();
     let cards = core.cards();
     // (Python: the first item opens or closes the window)
@@ -389,6 +457,7 @@ fn menu_entries() -> (Vec<menu::Entry>, Box<dyn Fn(u32)>) {
     (entries, Box::new(pick))
 }
 
+#[cfg(windows)]
 /// Only one core process per user (a second one would start the autostart cards again): the mutex that says so,
 /// or None when another one has it.
 fn first_instance() -> Option<windows_sys::Win32::Foundation::HANDLE> {
@@ -406,6 +475,7 @@ fn first_instance() -> Option<windows_sys::Win32::Foundation::HANDLE> {
     Some(h)
 }
 
+#[cfg(windows)]
 /// "Run as administrator" (Python `relaunch_elevated`): an elevated copy through UAC takes over. Ok(true): it
 /// started, this one ends; Err: the prompt was cancelled (this one goes on without the rights).
 fn relaunch_elevated(args: &[String], mutex: windows_sys::Win32::Foundation::HANDLE) -> Result<bool, String> {
@@ -423,6 +493,7 @@ fn relaunch_elevated(args: &[String], mutex: windows_sys::Win32::Foundation::HAN
     proxydock_core::singbox::helper::runas(&exe, &extra).map(|()| true)
 }
 
+#[cfg(windows)]
 fn run_tray(show_at_start: Option<u32>, note: Option<String>) {
     use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
     use windows_sys::Win32::UI::{HiDpi::*, WindowsAndMessaging::*};
@@ -512,10 +583,15 @@ fn main() {
     }
     if args.iter().any(|a| a == "--version") {
         // (a GUI program: the console it was started from, if any)
-        unsafe { windows_sys::Win32::System::Console::AttachConsole(u32::MAX) };
+        #[cfg(windows)]
+        unsafe {
+            windows_sys::Win32::System::Console::AttachConsole(u32::MAX)
+        };
         println!("ProxyDock {}", proxydock_core::update::current_version());
         return;
     }
+    #[cfg(not(windows))]
+    use tray_unix::{first_instance, run_tray, wake_first_instance};
     // a restart: the old copy is still quitting (Python `become_primary(wait=True)`): wait up to 15 s
     let mut mutex = first_instance();
     if mutex.is_none() && args.iter().any(|a| a == "--restart") {
@@ -536,6 +612,7 @@ fn main() {
     // another settings folder (PROXYDOCK_HOME: tests, portable), which must leave the user's login items alone
     let migrated = std::env::var_os("PROXYDOCK_HOME").is_none()
         && std::env::current_exe().is_ok_and(|exe| proxydock_core::platform::migrate_autostart(&exe));
+    #[cfg(windows)]
     let note = match relaunch_elevated(&args, mutex) {
         Ok(true) => return,
         Ok(false) => None,
@@ -547,6 +624,9 @@ fn main() {
             Some(tr("Not running as administrator: {e}").replace("{e}", &e))
         }
     };
+    // (Linux / macOS: the lock is held for as long as this runs)
+    #[cfg(not(windows))]
+    let (note, _lock): (Option<String>, _) = (None, mutex);
     let has = |f: &str| args.iter().any(|a| a == f);
     let note = match (note, migrated) {
         (Some(n), _) => Some(n),

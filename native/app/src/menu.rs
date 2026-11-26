@@ -15,33 +15,7 @@ use windows_sys::Win32::{
     UI::WindowsAndMessaging::*,
 };
 
-#[derive(Clone, PartialEq)]
-pub enum Entry {
-    Item {
-        label: String,
-        id: u32,
-    },
-    /// a small caption over the choices that follow (not clickable)
-    Header {
-        label: String,
-    },
-    /// one of several choices; `on` gets a check mark
-    Choice {
-        label: String,
-        id: u32,
-        on: bool,
-    },
-    Divider,
-}
-
-impl Entry {
-    fn id(&self) -> Option<u32> {
-        match self {
-            Entry::Item { id, .. } | Entry::Choice { id, .. } => Some(*id),
-            _ => None,
-        }
-    }
-}
+pub use crate::Entry;
 
 // sizes in logical px (scaled by the monitor DPI)
 const WIDTH: f32 = 240.0;

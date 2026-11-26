@@ -630,7 +630,7 @@ fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     {
         use std::os::unix::fs::OpenOptionsExt;
         let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
-        return f.write_all(text.as_bytes());
+        f.write_all(text.as_bytes())
     }
     #[cfg(not(unix))]
     std::fs::write(path, text) // contains passwords; the settings folder is the user's own

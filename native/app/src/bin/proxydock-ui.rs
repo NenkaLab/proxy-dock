@@ -687,6 +687,7 @@ fn go_forward(app: &App) {
 
 // --- the window's size and place (Python `restore_state / save_state`, window.json) ---
 
+#[cfg(windows)]
 fn window_state_path() -> std::path::PathBuf {
     proxydock_core::paths::app_dir().join("window.json")
 }
@@ -937,6 +938,8 @@ fn has_native_window(w: &App) -> bool {
 
 /// Windows 11: caption, border and caption text in the app's colours (ignored before Windows 11)
 fn apply_title_bar(w: &App) {
+    #[cfg(not(windows))]
+    let _ = w;
     #[cfg(windows)]
     {
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};

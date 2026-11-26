@@ -4,7 +4,7 @@
 
 ## 자동 테스트
 
-모두 `native/` 폴더에서 실행합니다. GitHub Actions의 CI(`.github/workflows/ci.yml`)가 main push·PR마다 같은 것을 Windows·Linux·macOS에서 돌리고, 각 OS의 릴리스 빌드(`proxydock`, `proxydock-ui`)를 아티팩트로 올립니다. 설치기와 릴리스는 아직 Windows만 만듭니다.
+모두 `native/` 폴더에서 실행합니다. GitHub Actions의 CI(`.github/workflows/ci.yml`)가 main push·PR마다 같은 것을 Windows·Linux·macOS에서 돌리고, 각 OS의 릴리스 빌드(`proxydock`, `proxydock-ui`)를 아티팩트로 올립니다. 릴리스(`release.yml`)는 세 OS의 설치본(Windows 설치기·zip, Linux AppImage·tar.gz, macOS dmg·zip)을 만들며, Linux·macOS는 실제 기기에서 아직 확인하지 않아 실패해도 Windows만으로 릴리스됩니다.
 
 ```powershell
 python ..\tools\fetch_singbox.py      # sing-box·Hysteria 엔진 (처음 한 번, bin\windows-amd64)

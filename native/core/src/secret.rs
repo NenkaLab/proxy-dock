@@ -102,6 +102,7 @@ pub fn unseal(d: &Value) -> (Value, bool, Vec<Undecryptable>) {
 
 /// Plain dict -> dict to save (Windows: secret fields become `<field>_dpapi`).
 pub fn seal(d: &Map<String, Value>) -> Result<Map<String, Value>, DpapiError> {
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut out = d.clone();
     if !cfg!(windows) {
         return Ok(out);

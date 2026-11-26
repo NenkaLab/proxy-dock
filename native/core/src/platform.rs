@@ -33,10 +33,12 @@ pub fn set_test_keys(run: &str, inet: &str) {
     *KEYS.write().unwrap() = Some((run.into(), inet.into()));
 }
 
+#[cfg(windows)]
 fn run_key() -> String {
     KEYS.read().unwrap().as_ref().map_or(RUN_KEY.into(), |k| k.0.clone())
 }
 
+#[cfg(windows)]
 fn inet_key() -> String {
     KEYS.read().unwrap().as_ref().map_or(INET_KEY.into(), |k| k.1.clone())
 }
@@ -308,6 +310,7 @@ pub fn proxy_values_for(server: &str, backup: &Value) -> Map<String, Value> {
 
 // --- Windows Firewall: block connections from other PCs to ProxyDock's programs ---
 
+#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// whether our block rule exists (Python `firewall_rule_exists`)
