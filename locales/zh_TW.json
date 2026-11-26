@@ -1081,5 +1081,9 @@
  "Colour": "顏色",
  "Group {n}": "群組 {n}",
  "{count} blocks": "{count} 個區塊",
- "Select two blocks or more": "請選擇兩個以上的區塊"
+ "Select two blocks or more": "請選擇兩個以上的區塊",
+ "Monitor colour profile unknown: sRGB assumed": "無法取得螢幕色彩設定檔，以 sRGB 處理",
+ "Monitor colour profile: {name}": "螢幕色彩設定檔：{name}",
+ "Beyond sRGB: saved as an OKLCH colour (Display P3)": "超出 sRGB：將以 OKLCH 顏色（Display P3）儲存",
+ "This monitor cannot show this colour exactly; it is drawn as the nearest one": "此螢幕無法準確顯示該顏色，將以最接近的顏色繪製"
 }

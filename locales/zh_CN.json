@@ -1081,5 +1081,9 @@
  "Colour": "颜色",
  "Group {n}": "编组 {n}",
  "{count} blocks": "{count} 个方块",
- "Select two blocks or more": "请选择两个或更多方块"
+ "Select two blocks or more": "请选择两个或更多方块",
+ "Monitor colour profile unknown: sRGB assumed": "无法获取显示器色彩配置文件，按 sRGB 处理",
+ "Monitor colour profile: {name}": "显示器色彩配置文件：{name}",
+ "Beyond sRGB: saved as an OKLCH colour (Display P3)": "超出 sRGB：将以 OKLCH 颜色（Display P3）保存",
+ "This monitor cannot show this colour exactly; it is drawn as the nearest one": "此显示器无法准确显示该颜色，将以最接近的颜色绘制"
 }

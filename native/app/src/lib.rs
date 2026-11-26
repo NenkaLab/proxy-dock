@@ -2,7 +2,9 @@
 //! and the controller that runs in the core process.
 
 pub mod canvas;
+pub mod colorpick;
 pub mod controller;
 pub mod filedlg;
+pub mod gamut;
 pub mod icon;
 pub mod ipc;

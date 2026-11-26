@@ -3241,6 +3241,247 @@ component Dialog inherits Rectangle {
     }
 }
 
+// the colour picker (ColorPickerDialog): a hue ring around a square for the other two values of the chosen space
+// (RGB: saturation x value, HSL: saturation x lightness, OKLCH: chroma x lightness), three sliders, and the
+// colour as text in every form. The window process keeps the colour (colorpick.rs) and fills this in.
+export global Pick {
+    in-out property <bool> open;
+    in property <string> title;
+    in property <image> ring;
+    in property <image> square;
+    in property <float> hue;
+    in property <float> square-x;
+    in property <float> square-y;
+    in property <int> space;
+    in property <[string]> spaces: ["RGB", "HSL", "OKLCH"];
+    in property <[float]> sliders: [0, 0, 0];
+    in property <[string]> slider-labels: ["R", "G", "B"];
+    in property <[string]> slider-values: ["", "", ""];
+    in property <[image]> slider-images;
+    in property <[string]> field-labels: ["HEX", "RGB", "HSL", "OKLCH", "Display P3"];
+    in property <[string]> fields: ["", "", "", "", ""];
+    in property <color> new-color;
+    in property <color> old-color;
+    in property <bool> wide;
+    in property <bool> unseen;
+    in property <string> t-wide: "Beyond sRGB: saved as an OKLCH colour (Display P3)";
+    in property <string> t-unseen: "This monitor cannot show this colour exactly; it is drawn as the nearest one";
+    in property <string> t-monitor;
+    in property <string> t-cancel: "Cancel";
+    in property <string> t-ok: "OK";
+    callback ring-drag(float);
+    callback square-drag(float, float);
+    callback slider-drag(int, float);
+    callback text(int, string);
+    callback space-picked(int);
+    callback ok();
+    callback cancel();
+}
+
+component PickThumb inherits Rectangle {
+    in property <color> fill: transparent;
+    width: 20px;
+    height: 20px;
+    border-radius: self.width / 2;
+    background: root.fill;
+    border-width: 3px;
+    border-color: white;
+    drop-shadow-blur: 3px;
+    drop-shadow-color: #00000080;
+}
+
+component ColorPickerDialog inherits Rectangle {
+    // the wheel: the ring 22 wide, the square inside it
+    property <length> wheel: 264px;
+    property <length> thick: 22px;
+    property <length> sq: (root.wheel / 2 - root.thick - 6px) * 1.414;
+    if Pick.open: Dialog {
+        card-width: 760px;
+        Text { text: Pick.title; font-size: 22px * Type.scale; font-weight: 400; color: M3.on-surface; }
+        HorizontalLayout {
+            spacing: 28px;
+            // left: the wheel, the space, its sliders
+            VerticalLayout {
+                width: root.wheel + 48px;
+                spacing: 16px;
+                HorizontalLayout {
+                    alignment: center;
+                    wheel-box := Rectangle {
+                        width: root.wheel;
+                        height: root.wheel;
+                        // 1 = dragging on the ring, 2 = in the square
+                        property <int> mode;
+                        function drag(x: length, y: length) {
+                            if self.mode == 1 {
+                                Pick.ring-drag(atan2((y - self.height / 2) / 1px, (x - self.width / 2) / 1px) / 1deg);
+                            } else if self.mode == 2 {
+                                Pick.square-drag(
+                                    (x - (self.width - root.sq) / 2) / root.sq, (y - (self.height - root.sq) / 2) / root.sq);
+                            }
+                        }
+                        Image { width: 100%; height: 100%; source: Pick.ring; image-fit: fill; }
+                        Rectangle {
+                            x: (parent.width - root.sq) / 2;
+                            y: (parent.height - root.sq) / 2;
+                            width: root.sq;
+                            height: root.sq;
+                            border-radius: 8px;
+                            clip: true;
+                            Image { width: 100%; height: 100%; source: Pick.square; image-fit: fill; }
+                        }
+                        // the hue on the ring
+                        PickThumb {
+                            x: parent.width / 2 + (root.wheel / 2 - root.thick / 2) * cos(Pick.hue * 1deg) - self.width / 2;
+                            y: parent.height / 2 + (root.wheel / 2 - root.thick / 2) * sin(Pick.hue * 1deg) - self.height / 2;
+                        }
+                        // the colour in the square
+                        PickThumb {
+                            width: 16px;
+                            height: 16px;
+                            fill: Pick.new-color;
+                            x: (parent.width - root.sq) / 2 + Pick.square-x * root.sq - self.width / 2;
+                            y: (parent.height - root.sq) / 2 + Pick.square-y * root.sq - self.height / 2;
+                        }
+                        TouchArea {
+                            mouse-cursor: crosshair;
+                            pointer-event(e) => {
+                                if e.button == PointerEventButton.left && e.kind == PointerEventKind.down {
+                                    let dx = (self.mouse-x - parent.width / 2) / 1px;
+                                    let dy = (self.mouse-y - parent.height / 2) / 1px;
+                                    let r = sqrt(dx * dx + dy * dy) * 1px;
+                                    parent.mode = r >= root.wheel / 2 - root.thick - 4px && r <= root.wheel / 2 + 2px ? 1
+                                        : abs(dx * 1px) <= root.sq / 2 + 4px && abs(dy * 1px) <= root.sq / 2 + 4px ? 2 : 0;
+                                    parent.drag(self.mouse-x, self.mouse-y);
+                                } else if e.kind == PointerEventKind.up {
+                                    parent.mode = 0;
+                                }
+                            }
+                            moved => { parent.drag(self.mouse-x, self.mouse-y); }
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    alignment: center;
+                    Segmented {
+                        items: Pick.spaces;
+                        current: Pick.space;
+                        picked => { Pick.space-picked(self.current); }
+                    }
+                }
+                for value[i] in Pick.sliders: HorizontalLayout {
+                    spacing: 12px;
+                    height: 28px;
+                    Text {
+                        width: 16px;
+                        text: Pick.slider-labels[i];
+                        font-size: 13px * Type.scale;
+                        font-weight: 700;
+                        color: M3.on-surface-variant;
+                        vertical-alignment: center;
+                    }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        Rectangle {
+                            y: (parent.height - self.height) / 2;
+                            height: 14px;
+                            border-radius: 7px;
+                            clip: true;
+                            border-width: 1px;
+                            border-color: M3.outline-variant;
+                            Image { width: 100%; height: 100%; source: Pick.slider-images[i]; image-fit: fill; }
+                        }
+                        PickThumb {
+                            x: value * parent.width - self.width / 2;
+                            y: (parent.height - self.height) / 2;
+                        }
+                        TouchArea {
+                            pointer-event(e) => {
+                                if e.button == PointerEventButton.left && e.kind == PointerEventKind.down {
+                                    Pick.slider-drag(i, self.mouse-x / self.width);
+                                }
+                            }
+                            moved => { Pick.slider-drag(i, self.mouse-x / self.width); }
+                        }
+                    }
+                    Text {
+                        width: 56px;
+                        text: Pick.slider-values[i];
+                        font-size: 13px * Type.scale;
+                        font-family: Type.mono;
+                        color: M3.on-surface;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+            // right: before / after, the colour as text, notes
+            VerticalLayout {
+                spacing: 12px;
+                alignment: start;
+                Rectangle {
+                    height: 72px;
+                    border-radius: 16px;
+                    clip: true;
+                    border-width: 1px;
+                    border-color: M3.outline-variant;
+                    HorizontalLayout {
+                        Rectangle { background: Pick.old-color; }
+                        Rectangle { background: Pick.new-color; }
+                    }
+                }
+                for label[i] in Pick.field-labels: HorizontalLayout {
+                    spacing: 12px;
+                    Text {
+                        width: 84px;
+                        text: label;
+                        font-size: 13px * Type.scale;
+                        font-weight: 500;
+                        color: M3.on-surface-variant;
+                        vertical-alignment: center;
+                    }
+                    AppLineEdit {
+                        horizontal-stretch: 1;
+                        text: Pick.fields[i];
+                        font-family: Type.mono;
+                        accepted(t) => { Pick.text(i, t); }
+                    }
+                }
+                if Pick.wide: Text {
+                    text: Pick.t-wide;
+                    font-size: 12px * Type.scale;
+                    color: M3.on-surface-variant;
+                    wrap: word-wrap;
+                }
+                if Pick.unseen: Rectangle {
+                    border-radius: 12px;
+                    background: M3.amber-container;
+                    height: unseen-text.preferred-height + 20px;
+                    unseen-text := Text {
+                        x: 12px;
+                        width: parent.width - 24px;
+                        text: Pick.t-unseen;
+                        font-size: 12px * Type.scale;
+                        color: M3.on-amber-container;
+                        wrap: word-wrap;
+                    }
+                }
+                Text {
+                    text: Pick.t-monitor;
+                    font-size: 12px * Type.scale;
+                    color: M3.on-surface-variant;
+                    wrap: word-wrap;
+                }
+            }
+        }
+        HorizontalLayout {
+            alignment: end;
+            spacing: 8px;
+            AppButton { text: Pick.t-cancel; clicked => { Pick.cancel(); } }
+            AppButton { text: Pick.t-ok; primary: true; clicked => { Pick.ok(); } }
+        }
+    }
+}
+
 component UpdateDialogs inherits Rectangle {
     if Upd.dialog: Dialog {
         card-width: 620px;
@@ -4480,6 +4721,7 @@ export component App inherits Window {
         }
     }
     UpdateDialogs { }
+    ColorPickerDialog { }
     if root.toast != "": Rectangle {
         // above the canvas toolbar on the canvas, at the bottom elsewhere
         x: root.rail-w + (root.width - root.rail-w - self.width) / 2;

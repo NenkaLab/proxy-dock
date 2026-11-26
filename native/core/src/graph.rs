@@ -85,11 +85,15 @@ fn name(v: Option<&Value>, default: impl FnOnce() -> String) -> String {
     }
 }
 
-/// '#rrggbb' (lower case) or '' (no colour: the default)
+/// '#rrggbb' (lower case), 'oklch(L C H)' for a colour beyond sRGB (normalised, kept within Display P3; the Python
+/// app reads it as no colour) or '' (no colour: the default)
 pub fn valid_color(v: Option<&Value>) -> String {
     match v {
         Some(Value::String(s)) if s.chars().count() == 7 && s.starts_with('#') && py::int16_ok(&s[1..]) => {
             s.to_lowercase()
+        }
+        Some(Value::String(s)) if s.starts_with("oklch(") => {
+            crate::colors::parse_color(s).map(crate::colors::store_color).unwrap_or_default()
         }
         _ => String::new(),
     }

@@ -85,8 +85,12 @@ fn strings(v: &Value) -> ModelRc<SharedString> {
     ModelRc::new(VecModel::from(items))
 }
 
-/// "#rrggbb" -> colour; links without one take the app's default wire colour
+/// "#rrggbb" (or a wider "oklch(...)", drawn as its nearest sRGB colour) -> colour; links without one take the
+/// app's default wire colour
 fn hex_color(text: &str) -> Option<Color> {
+    if text.starts_with("oklch(") {
+        return proxydock_core::colors::display_hex(text).and_then(|h| hex_color(&h));
+    }
     let h = text.strip_prefix('#')?;
     let n = u32::from_str_radix(h, 16).ok().filter(|_| h.len() == 6)?;
     Some(Color::from_rgb_u8((n >> 16) as u8, (n >> 8) as u8, n as u8))
@@ -100,6 +104,9 @@ type NavCallback = Rc<dyn Fn(bool)>;
 type MixedLinks = (Vec<(usize, Color)>, Vec<(i32, i32, i32)>);
 /// the log as shown: the lines the filters let through
 type LogView = Rc<slint::FilterModel<ModelRc<LogRow>, Box<dyn Fn(&LogRow) -> bool>>>;
+
+/// the open colour picker and what its OK does with the chosen colour
+type OpenPicker = (proxydock::colorpick::Picker, Rc<dyn Fn(String)>);
 
 /// the block colours the palette offers (Python `PALETTE`)
 const PALETTE: [(&str, &str); 10] = [
@@ -118,6 +125,10 @@ const PALETTE: [(&str, &str); 10] = [
 thread_local! {
     /// what the open palette colours: the block key, the router output ("" = the block), its colour now
     static PALETTE_FOR: std::cell::RefCell<(String, String, String)> = const { std::cell::RefCell::new((String::new(), String::new(), String::new())) };
+    /// each block's stored own colour by (node id, router output key or ""): what the picker starts from
+    static RAW_COLORS: std::cell::RefCell<HashMap<(i32, String), String>> = std::cell::RefCell::new(HashMap::new());
+    /// the open colour picker and what its OK does
+    static COLOR_PICKER: std::cell::RefCell<Option<OpenPicker>> = const { std::cell::RefCell::new(None) };
     /// links carrying a mix of colours: their index and colour (drawn dotted), and the geometry they were drawn for
     static MIXED: std::cell::RefCell<MixedLinks> = const { std::cell::RefCell::new((Vec::new(), Vec::new())) };
 }
@@ -959,8 +970,16 @@ impl Models {
     fn set_canvas(&self, c: &Value) {
         let mut ids: HashMap<String, i32> = HashMap::new();
         let mut nodes: Vec<NodeData> = vec![];
+        RAW_COLORS.with(|r| r.borrow_mut().clear());
         for (i, n) in c["nodes"].as_array().into_iter().flatten().enumerate() {
             let id = i as i32 + 1;
+            RAW_COLORS.with(|r| {
+                let mut r = r.borrow_mut();
+                r.insert((id, String::new()), n["color"].as_str().unwrap_or("").to_string());
+                for c in n["out_colors"].as_array().into_iter().flatten() {
+                    r.insert((id, c[0].as_str().unwrap_or("").to_string()), c[1].as_str().unwrap_or("").to_string());
+                }
+            });
             ids.insert(n["key"].as_str().unwrap_or("").to_string(), id);
             let card = n["card"].as_str().unwrap_or("");
             let state = n["state"].as_str().unwrap_or("");
@@ -1725,6 +1744,61 @@ fn show_toast_action(app: &App, text: &str, button: &str, action: &str, secs: f3
     app.set_toast_action(button.into());
 }
 
+/// an RGBA picture from the picker as a Slint image
+fn pick_image(img: proxydock::colorpick::Rgba) -> slint::Image {
+    let mut buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(img.w, img.h);
+    buf.make_mut_bytes().copy_from_slice(&img.px);
+    slint::Image::from_rgba8(buf)
+}
+
+/// Open the colour picker at `initial` ("#rrggbb" / "oklch(...)"); OK hands the stored colour to `apply`
+fn open_color_picker(app: &App, initial: &str, title: &str, apply: Rc<dyn Fn(String)>) {
+    let monitor = proxydock::gamut::monitor_of(owner_hwnd(app) as isize);
+    let picker = proxydock::colorpick::Picker::new(initial, monitor);
+    let p = app.global::<Pick>();
+    p.set_title(if title.is_empty() { tr("Colour") } else { format!("{} · {title}", tr("Colour")) }.into());
+    p.set_t_monitor(
+        match picker.monitor_name() {
+            n if n.is_empty() => tr("Monitor colour profile unknown: sRGB assumed"),
+            n => tr("Monitor colour profile: {name}").replace("{name}", &n),
+        }
+        .into(),
+    );
+    COLOR_PICKER.with(|k| *k.borrow_mut() = Some((picker, apply)));
+    picker_show(app, true);
+    p.set_open(true);
+}
+
+/// Put the picker's colour on the dialog (`ring`: the hue ring too, which only changes with the space)
+fn picker_show(app: &App, ring: bool) {
+    COLOR_PICKER.with(|k| {
+        let k = k.borrow();
+        let Some((picker, _)) = k.as_ref() else { return };
+        let p = app.global::<Pick>();
+        // pictures at the screen's own pixels
+        let scale = app.window().scale_factor();
+        if ring {
+            p.set_ring(pick_image(picker.ring_image((264.0 * scale) as u32, (22.0 * scale) as f64)));
+        }
+        let sq = ((264.0 / 2.0 - 22.0 - 6.0) * 1.414 * scale) as u32;
+        p.set_square(pick_image(picker.square_image(sq.max(16))));
+        let v = picker.view();
+        p.set_space(picker.space as i32);
+        p.set_hue(v.hue as f32);
+        p.set_square_x(v.square_x as f32);
+        p.set_square_y(v.square_y as f32);
+        p.set_sliders(ModelRc::new(VecModel::from(v.sliders.map(|x| x as f32).to_vec())));
+        p.set_slider_labels(ModelRc::new(VecModel::from(v.slider_labels.map(SharedString::from).to_vec())));
+        p.set_slider_values(ModelRc::new(VecModel::from(v.slider_values.map(SharedString::from).to_vec())));
+        p.set_slider_images(ModelRc::new(VecModel::from(v.slider_images.map(pick_image).to_vec())));
+        p.set_fields(ModelRc::new(VecModel::from(v.fields.map(SharedString::from).to_vec())));
+        p.set_new_color(hex(&v.new_hex));
+        p.set_old_color(hex(&v.old_hex));
+        p.set_wide(v.wide);
+        p.set_unseen(v.unseen);
+    });
+}
+
 /// a message at the bottom of the canvas for `secs` (a newer one replaces it and its timer)
 fn show_toast(app: &App, text: &str, info: bool, secs: f32) {
     app.set_toast_action(SharedString::new());
@@ -2179,6 +2253,11 @@ fn labels(app: &App) {
         t.set_redo(tr("Redo").into());
         t.set_cut(tr("Disconnect all links").into());
         t.set_add_lane(tr("Add a lane").into());
+        let pick = app.global::<Pick>();
+        pick.set_t_cancel(tr("Cancel").into());
+        pick.set_t_ok(tr("Apply").into());
+        pick.set_t_wide(tr("Beyond sRGB: saved as an OKLCH colour (Display P3)").into());
+        pick.set_t_unseen(tr("This monitor cannot show this colour exactly; it is drawn as the nearest one").into());
         t.set_duplicate(tr("Duplicate").into());
         t.set_delete(tr("Delete").into());
     }
@@ -2663,7 +2742,11 @@ fn main() -> Result<(), slint::PlatformError> {
             };
             let cur_hex = format!("#{:02x}{:02x}{:02x}", cur.red(), cur.green(), cur.blue());
             let index = if own { PALETTE.iter().position(|(h, _)| *h == cur_hex).map_or(-1, |i| i as i32) } else { -1 };
-            PALETTE_FOR.with(|p| *p.borrow_mut() = (key, out.to_string(), cur_hex));
+            let raw = RAW_COLORS
+                .with(|r| r.borrow().get(&(id, out.to_string())).cloned())
+                .filter(|r| !r.is_empty())
+                .unwrap_or(cur_hex);
+            PALETTE_FOR.with(|p| *p.borrow_mut() = (key, out.to_string(), raw));
             a.set_palette_title(title.into());
             a.set_palette_current(index);
             a.set_palette_auto_current(!own);
@@ -2698,14 +2781,10 @@ fn main() -> Result<(), slint::PlatformError> {
             match i {
                 -1 => apply(String::new()),
                 -2 => {
-                    // any colour: Windows' colour dialog, on its own thread
+                    // any colour: the colour picker
                     let Some(a) = weak13.upgrade() else { return };
-                    let (owner, weak) = (owner_hwnd(&a), weak13.clone());
-                    std::thread::spawn(move || {
-                        if let Some(c) = proxydock::filedlg::choose_color(owner, &cur) {
-                            let _ = weak.upgrade_in_event_loop(move |_| apply(c));
-                        }
-                    });
+                    let title = a.get_palette_title().to_string();
+                    open_color_picker(&a, &cur, &title, Rc::new(apply));
                 }
                 i => apply(PALETTE.get(i as usize).map(|p| p.0.to_string()).unwrap_or_default()),
             }
@@ -2713,6 +2792,84 @@ fn main() -> Result<(), slint::PlatformError> {
         // the list page's PC bar: "Restore previous" / "Off (default)"
         let send_pc = send.clone();
         app.on_pc_action(move |what| send_pc(json!({"cmd": if what == "off" { "pc_off" } else { "pc_restore" }})));
+        // the colour picker: every change goes through its model, then the dialog is filled in again
+        {
+            let pick = app.global::<Pick>();
+            let with = |weak: slint::Weak<App>, f: Box<dyn Fn(&mut proxydock::colorpick::Picker) -> bool>| {
+                move || {
+                    let Some(a) = weak.upgrade() else { return };
+                    let ring = COLOR_PICKER.with(|k| k.borrow_mut().as_mut().map(|(p, _)| f(p)).unwrap_or(false));
+                    picker_show(&a, ring);
+                }
+            };
+            let w = app.as_weak();
+            pick.on_ring_drag(move |deg| {
+                with(
+                    w.clone(),
+                    Box::new(move |p| {
+                        p.ring(deg as f64);
+                        false
+                    }),
+                )()
+            });
+            let w = app.as_weak();
+            pick.on_square_drag(move |fx, fy| {
+                with(
+                    w.clone(),
+                    Box::new(move |p| {
+                        p.square(fx as f64, fy as f64);
+                        false
+                    }),
+                )()
+            });
+            let w = app.as_weak();
+            pick.on_slider_drag(move |i, f| {
+                with(
+                    w.clone(),
+                    Box::new(move |p| {
+                        p.slider(i.max(0) as usize, f as f64);
+                        false
+                    }),
+                )()
+            });
+            let w = app.as_weak();
+            pick.on_text(move |i, t| {
+                let t = t.to_string();
+                with(
+                    w.clone(),
+                    Box::new(move |p| {
+                        p.text(i.max(0) as usize, &t);
+                        false
+                    }),
+                )()
+            });
+            let w = app.as_weak();
+            pick.on_space_picked(move |i| {
+                with(
+                    w.clone(),
+                    Box::new(move |p| {
+                        p.set_space(i.max(0) as usize);
+                        true
+                    }),
+                )()
+            });
+            let w = app.as_weak();
+            pick.on_ok(move || {
+                if let Some(a) = w.upgrade() {
+                    a.global::<Pick>().set_open(false);
+                }
+                if let Some((p, apply)) = COLOR_PICKER.with(|k| k.borrow_mut().take()) {
+                    apply(p.stored());
+                }
+            });
+            let w = app.as_weak();
+            pick.on_cancel(move || {
+                if let Some(a) = w.upgrade() {
+                    a.global::<Pick>().set_open(false);
+                }
+                COLOR_PICKER.with(|k| k.borrow_mut().take());
+            });
+        }
         let send11 = send.clone();
         app.on_set_flag(move |card, key, on| {
             send11(json!({"cmd": "set_flag", "id": card.as_str(), "key": key.as_str(), "on": on}))
