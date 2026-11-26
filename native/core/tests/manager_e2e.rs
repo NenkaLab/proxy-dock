@@ -4,7 +4,7 @@
 use proxydock_core::log::{Entry, Level};
 use proxydock_core::manager::{Events, Folders, Manager, State};
 use proxydock_core::{config, graph, singbox};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -57,7 +57,10 @@ fn helper_exe() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_tun_helper"))
 }
 
-fn manager_with(force_hysteria: bool, force_helper: Option<proxydock_core::singbox::helper::Launch>) -> (Manager, Seen) {
+fn manager_with(
+    force_hysteria: bool,
+    force_helper: Option<proxydock_core::singbox::helper::Launch>,
+) -> (Manager, Seen) {
     let dir = std::env::temp_dir().join(format!("proxydock-mgr-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let (states, logs) = (Arc::new(Mutex::new(vec![])), Arc::new(Mutex::new(vec![])));
@@ -173,7 +176,10 @@ fn pinned_card_on_old_sing_box_cannot_run() {
     }));
     let p = Value::Object(graph::compile(&g).remove(0));
     assert!(!m.start(&p, &glob(json!({}))).recv().unwrap());
-    assert_eq!(m.state("m4"), State::Error(proxydock_core::i18n::tr("certificate pinning needs sing-box 1.15 or later")));
+    assert_eq!(
+        m.state("m4"),
+        State::Error(proxydock_core::i18n::tr("certificate pinning needs sing-box 1.15 or later"))
+    );
 }
 
 fn echo_server() -> u16 {
@@ -234,13 +240,18 @@ fn card_through_the_administrator_helper() {
         eprintln!("sing-box or the tun_helper example missing: skipped");
         return;
     }
-    let launch = proxydock_core::singbox::helper::Launch { program: helper_exe(), args: vec!["--tun-helper".into()], elevate: false };
+    let launch = proxydock_core::singbox::helper::Launch {
+        program: helper_exe(),
+        args: vec!["--tun-helper".into()],
+        elevate: false,
+    };
     let (m, seen) = manager_with(false, Some(launch));
     let port = free_port();
     let p = card("h1", port);
     assert!(m.start(&p, &glob(json!({}))).recv().unwrap(), "{:?}", m.state("h1"));
     assert!(listening(port));
-    assert!(seen.logged(|e| e.proxy_id == "h1" && e.message == proxydock_core::i18n::tr("Asking for administrator permission to start the TUN…")));
+    assert!(seen.logged(|e| e.proxy_id == "h1"
+        && e.message == proxydock_core::i18n::tr("Asking for administrator permission to start the TUN…")));
     m.stop("h1").recv().unwrap();
     assert!(wait(|| !listening(port), 5), "sing-box still listening after stop");
 
@@ -255,18 +266,39 @@ fn card_through_the_administrator_helper() {
     assert!(wait(|| matches!(m.state("h1"), State::Error(_)), 8), "{:?}", m.state("h1"));
     // no helper left behind
     let left = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-Command", "(Get-Process tun_helper -ErrorAction SilentlyContinue | Measure-Object).Count"])
+        .args([
+            "-NoProfile",
+            "-Command",
+            "(Get-Process tun_helper -ErrorAction SilentlyContinue | Measure-Object).Count",
+        ])
         .output()
         .unwrap();
-    assert!(wait(|| String::from_utf8_lossy(&std::process::Command::new("powershell")
-        .args(["-NoProfile", "-Command", "(Get-Process tun_helper -ErrorAction SilentlyContinue | Measure-Object).Count"])
-        .output().unwrap().stdout).trim() == "0", 5), "{}", String::from_utf8_lossy(&left.stdout));
+    assert!(
+        wait(
+            || String::from_utf8_lossy(
+                &std::process::Command::new("powershell")
+                    .args([
+                        "-NoProfile",
+                        "-Command",
+                        "(Get-Process tun_helper -ErrorAction SilentlyContinue | Measure-Object).Count"
+                    ])
+                    .output()
+                    .unwrap()
+                    .stdout
+            )
+            .trim()
+                == "0",
+            5
+        ),
+        "{}",
+        String::from_utf8_lossy(&left.stdout)
+    );
 }
 
 #[test]
 fn hysteria2_server_card_on_the_official_core() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
-    if exe().is_none() || singbox::find(singbox::HY_EXE, "", &[root.clone()]).is_none() {
+    if exe().is_none() || singbox::find(singbox::HY_EXE, "", std::slice::from_ref(&root)).is_none() {
         eprintln!("sing-box or hysteria missing: skipped");
         return;
     }
@@ -296,7 +328,10 @@ fn hysteria2_server_card_on_the_official_core() {
     let (bad, bport) = client("hc2", "wrong");
     assert!(m.start(&bad, &g).recv().unwrap());
     assert!(through_socks(bport, echo).is_err());
-    assert!(wait(|| seen.logged(|e| e.proxy_id == "hs" && e.level == Level::Auth && e.message.contains("127.0.0.1")), 5));
+    assert!(wait(
+        || seen.logged(|e| e.proxy_id == "hs" && e.level == Level::Auth && e.message.contains("127.0.0.1")),
+        5
+    ));
     assert!(m.stats("hs").blocked >= 1);
     assert!(m.last_error("hs").contains("127.0.0.1"));
     m.stop_all(Duration::from_secs(10));
@@ -337,7 +372,10 @@ fn connection_check_uses_the_chain() {
     let out = proxydock_core::probe::check_outbound(&m.remote(), &card, &glob, "__check_t__");
     assert_eq!(out["ok"], false, "{out:?}");
     let asked = asked.lock().unwrap().clone();
-    assert!(asked.iter().any(|l| l.starts_with(&format!("CONNECT 127.0.0.1:{dead}"))), "the chain's first hop was not used: {asked:?} {out:?}");
+    assert!(
+        asked.iter().any(|l| l.starts_with(&format!("CONNECT 127.0.0.1:{dead}"))),
+        "the chain's first hop was not used: {asked:?} {out:?}"
+    );
     assert!(!out["detail"].as_str().unwrap_or("").is_empty(), "{out:?}");
     assert_eq!(m.state("__check_t__"), State::Stopped);
     let (ok, text) = proxydock_core::probe::result_text("socks5", &out, None);

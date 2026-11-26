@@ -155,7 +155,9 @@ pub fn quote_arg(a: &str) -> String {
 #[cfg(windows)]
 pub fn runas(program: &Path, args: &[String]) -> Result<(), String> {
     use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
-    use windows_sys::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
+    use windows_sys::Win32::UI::Shell::{
+        SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW,
+    };
     let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
     let verb = wide("runas");
     let file = wide(&program.display().to_string());
@@ -190,7 +192,9 @@ pub fn runas(_program: &Path, _args: &[String]) -> Result<(), String> {
 pub fn main(args: &[String]) -> i32 {
     let [port, token, config_path, workdir, ..] = args else { return 2 };
     let Ok(port) = port.parse::<u16>() else { return 2 };
-    let Ok(mut sock) = TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), Duration::from_secs(10)) else { return 1 };
+    let Ok(mut sock) = TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), Duration::from_secs(10)) else {
+        return 1;
+    };
     let _ = sock.write_all(format!("{token}\n").as_bytes());
     let Some(exe) = super::find_bundled(super::EXE) else {
         let mut msg = b"FATAL[0000] sing-box was not found\n".to_vec();
@@ -221,9 +225,12 @@ pub fn main(args: &[String]) -> i32 {
     super::process::attach_to_job(&child); // sing-box also ends if this helper is killed
     let out = Arc::new(Mutex::new(sock.try_clone().expect("socket")));
     let mut forwarders = vec![];
-    for pipe in [child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>), child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>)]
-        .into_iter()
-        .flatten()
+    for pipe in [
+        child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>),
+        child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>),
+    ]
+    .into_iter()
+    .flatten()
     {
         let out = out.clone();
         forwarders.push(std::thread::spawn(move || {

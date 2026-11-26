@@ -8,7 +8,7 @@
 //! --seq: new ids are id000001, id000002, ... (the Python dump does the same) so they can be compared.
 
 use proxydock_core::{graph, i18n, ids, paths, secret};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 /// every secret field anywhere in v (nested via chains, group members, routes)

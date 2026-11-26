@@ -4,7 +4,7 @@
 //!     cargo run -p proxydock-core --example dump_config [config.json]
 
 use proxydock_core::{config, paths, secret::SECRET_FIELDS};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 fn mask(m: &Map<String, Value>) -> Value {

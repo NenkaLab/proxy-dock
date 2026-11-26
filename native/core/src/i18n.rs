@@ -21,13 +21,13 @@ pub const LANGUAGES: [(&str, &str); 8] = [
 
 fn source(code: &str) -> Option<&'static str> {
     Some(match code {
-        "ko" => include_str!("../../../proxydock/locales/ko.json"),
-        "ja" => include_str!("../../../proxydock/locales/ja.json"),
-        "zh_CN" => include_str!("../../../proxydock/locales/zh_CN.json"),
-        "zh_TW" => include_str!("../../../proxydock/locales/zh_TW.json"),
-        "de" => include_str!("../../../proxydock/locales/de.json"),
-        "fr" => include_str!("../../../proxydock/locales/fr.json"),
-        "es" => include_str!("../../../proxydock/locales/es.json"),
+        "ko" => include_str!("../../../locales/ko.json"),
+        "ja" => include_str!("../../../locales/ja.json"),
+        "zh_CN" => include_str!("../../../locales/zh_CN.json"),
+        "zh_TW" => include_str!("../../../locales/zh_TW.json"),
+        "de" => include_str!("../../../locales/de.json"),
+        "fr" => include_str!("../../../locales/fr.json"),
+        "es" => include_str!("../../../locales/es.json"),
         _ => return None,
     })
 }

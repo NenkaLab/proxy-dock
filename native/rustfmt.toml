@@ -1,0 +1,4 @@
+# Lines up to 120 characters: room for the long expressions this code has, still readable side by side.
+max_width = 120
+# short blocks, calls and struct literals stay on one line when they fit
+use_small_heuristics = "Max"

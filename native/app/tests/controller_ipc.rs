@@ -1,10 +1,10 @@
 //! The controller with a settings file of two cards, talked to like the window does (needs bin/<platform>/sing-box).
 
 use proxydock::{controller, ipc};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::mpsc::{channel, Receiver};
+use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
 /// the run folder is process-wide: the tests of this file take turns
@@ -106,16 +106,27 @@ fn window_protocol() {
 
     // toggle the manual one on and off
     ipc::send(&mut w, &json!({"cmd": "toggle", "id": "b2"})).unwrap();
-    assert!(expect(&rx, 10, |v| v["ev"] == "card" && v["card"]["id"] == "b2" && v["card"]["state"] == "running").is_some());
+    assert!(
+        expect(&rx, 10, |v| v["ev"] == "card" && v["card"]["id"] == "b2" && v["card"]["state"] == "running").is_some()
+    );
     assert!(TcpStream::connect(("127.0.0.1", p2)).is_ok());
-    assert!(expect(&rx, 5, |v| v["ev"] == "log" && v["entries"][0]["name"] == "manual" && v["entries"][0]["message"].as_str().unwrap().starts_with("시작: ")).is_some());
+    assert!(
+        expect(&rx, 5, |v| v["ev"] == "log"
+            && v["entries"][0]["name"] == "manual"
+            && v["entries"][0]["message"].as_str().unwrap().starts_with("시작: "))
+        .is_some()
+    );
     assert!(expect(&rx, 3, |v| v["ev"] == "stats" && v["stats"]["b2"].is_object()).is_some());
     ipc::send(&mut w, &json!({"cmd": "toggle", "id": "b2"})).unwrap();
-    assert!(expect(&rx, 10, |v| v["ev"] == "card" && v["card"]["id"] == "b2" && v["card"]["state"] == "stopped").is_some());
+    assert!(
+        expect(&rx, 10, |v| v["ev"] == "card" && v["card"]["id"] == "b2" && v["card"]["state"] == "stopped").is_some()
+    );
 
     // stop all, then quit: nothing listening
     ipc::send(&mut w, &json!({"cmd": "stop_all"})).unwrap();
-    assert!(expect(&rx, 10, |v| v["ev"] == "card" && v["card"]["id"] == "a1" && v["card"]["state"] == "stopped").is_some());
+    assert!(
+        expect(&rx, 10, |v| v["ev"] == "card" && v["card"]["id"] == "a1" && v["card"]["state"] == "stopped").is_some()
+    );
     h.quit(Duration::from_secs(10));
     assert!(TcpStream::connect(("127.0.0.1", p1)).is_err() && TcpStream::connect(("127.0.0.1", p2)).is_err());
     let _ = std::fs::remove_dir_all(&home);
@@ -186,8 +197,13 @@ fn editing_saves_and_applies() {
     let g = expect(&rx, 5, |v| v["ev"] == "graph").expect("graph");
     assert!(g["canvas"]["links"].as_array().unwrap().iter().any(|l| l["from"] == "a1" && l["to"] == "s"));
     assert_eq!(saved(&path)["graph"]["inbounds"][0]["target"], "s");
-    assert!(expect(&rx, 10, |v| v["ev"] == "card" && v["card"]["id"] == "a1" && v["card"]["state"] == "running"
-        && v["card"]["summary"].as_str().unwrap().contains(&format!("127.0.0.1:{up}"))).is_some());
+    assert!(
+        expect(&rx, 10, |v| v["ev"] == "card"
+            && v["card"]["id"] == "a1"
+            && v["card"]["state"] == "running"
+            && v["card"]["summary"].as_str().unwrap().contains(&format!("127.0.0.1:{up}")))
+        .is_some()
+    );
 
     // group members, adding and deleting blocks
     ipc::send(&mut w, &json!({"cmd": "connect", "from": "g", "out": 0, "to": "d", "in": 0})).unwrap();
@@ -202,7 +218,9 @@ fn editing_saves_and_applies() {
     assert!(f["graph"]["outbounds"].as_array().unwrap().iter().all(|o| o["id"] != "s"));
     assert!(f["graph"]["inbounds"][0]["target"].is_null());
     // left with nothing to send to: the card stops
-    assert!(expect(&rx, 10, |v| v["ev"] == "card" && v["card"]["id"] == "a1" && v["card"]["state"] == "stopped").is_some());
+    assert!(
+        expect(&rx, 10, |v| v["ev"] == "card" && v["card"]["id"] == "a1" && v["card"]["state"] == "stopped").is_some()
+    );
 
     // the saved file reads back with the same password
     let l = proxydock_core::config::load_from(&path).unwrap();
@@ -237,7 +255,8 @@ fn block_editor() {
     let h = controller::spawn(path.clone()).unwrap();
     let (mut w, rx) = connect(&h, &h.token);
     expect(&rx, 5, |v| v["ev"] == "hello").expect("hello");
-    let field = |form: &Value, key: &str| form["fields"].as_array().unwrap().iter().find(|f| f["key"] == key).cloned().unwrap();
+    let field =
+        |form: &Value, key: &str| form["fields"].as_array().unwrap().iter().find(|f| f["key"] == key).cloned().unwrap();
 
     // a card: account fields appear with authentication on
     ipc::send(&mut w, &json!({"cmd": "edit_open", "id": "a1"})).unwrap();
@@ -276,8 +295,12 @@ fn block_editor() {
     let e = expect(&rx, 5, |v| v["ev"] == "form_errors").expect("errors");
     assert!(e["errors"].to_string().contains("99999"), "{e}");
     // (the bad port is still in the draft: corrected with the new values)
-    ipc::send(&mut w, &json!({"cmd": "edit_action", "id": "r", "action": "rule.add",
-        "values": {"rules.0.match.port": "", "rules.0.match.geoip": "kr, jp", "rules.0.match.domain_suffix": ""}})).unwrap();
+    ipc::send(
+        &mut w,
+        &json!({"cmd": "edit_action", "id": "r", "action": "rule.add",
+        "values": {"rules.0.match.port": "", "rules.0.match.geoip": "kr, jp", "rules.0.match.domain_suffix": ""}}),
+    )
+    .unwrap();
     let f = expect(&rx, 5, |v| v["ev"] == "form").expect("form");
     assert!(f["fields"].as_array().unwrap().iter().any(|x| x["key"] == "rules.1.target"));
     ipc::send(&mut w, &json!({"cmd": "edit_save", "id": "r", "values": {"rules.1.match.domain_keyword": "ads", "rules.1.target": "d"}})).unwrap();
@@ -293,9 +316,14 @@ fn block_editor() {
     expect(&rx, 5, |v| v["ev"] == "form").expect("form");
     ipc::send(&mut w, &json!({"cmd": "edit_preview", "id": "a1", "values": {"inbound.type": "wireguard"}})).unwrap();
     expect(&rx, 5, |v| v["ev"] == "form").expect("form");
-    ipc::send(&mut w, &json!({"cmd": "edit_action", "id": "a1", "action": "gen.inbound.wg_private_key", "values": {}})).unwrap();
+    ipc::send(&mut w, &json!({"cmd": "edit_action", "id": "a1", "action": "gen.inbound.wg_private_key", "values": {}}))
+        .unwrap();
     expect(&rx, 5, |v| v["ev"] == "form").expect("form");
-    ipc::send(&mut w, &json!({"cmd": "edit_action", "id": "a1", "action": "wgdev.add", "values": {"wg_new_name": "phone"}})).unwrap();
+    ipc::send(
+        &mut w,
+        &json!({"cmd": "edit_action", "id": "a1", "action": "wgdev.add", "values": {"wg_new_name": "phone"}}),
+    )
+    .unwrap();
     let f = expect(&rx, 5, |v| v["ev"] == "form").expect("form");
     assert_eq!(field(&f, "wgdev.0")["value"], "10.66.0.2/32");
     ipc::send(&mut w, &json!({"cmd": "edit_action", "id": "a1", "action": "wgdev.conf.0", "values": {}})).unwrap();
@@ -375,16 +403,22 @@ fn share_links_and_subscriptions() {
     let h = controller::spawn(path.clone()).unwrap();
     let (mut w, rx) = connect(&h, &h.token);
     expect(&rx, 5, |v| v["ev"] == "hello").expect("hello");
-    let field = |form: &Value, key: &str| form["fields"].as_array().unwrap().iter().find(|f| f["key"] == key).cloned().unwrap();
+    let field =
+        |form: &Value, key: &str| form["fields"].as_array().unwrap().iter().find(|f| f["key"] == key).cloned().unwrap();
 
     // a share link fills the outbound and, over a type name, the block's name
     ipc::send(&mut w, &json!({"cmd": "edit_open", "id": "o"})).unwrap();
     expect(&rx, 5, |v| v["ev"] == "form").expect("form");
-    ipc::send(&mut w, &json!({"cmd": "edit_action", "id": "o", "action": "link.paste", "values": {"clipboard": "not a link"}})).unwrap();
+    ipc::send(
+        &mut w,
+        &json!({"cmd": "edit_action", "id": "o", "action": "link.paste", "values": {"clipboard": "not a link"}}),
+    )
+    .unwrap();
     let n = expect(&rx, 5, |v| v["ev"] == "notice").expect("notice");
     assert_eq!(n["ok"], false);
     let link = "trojan://secret@example.com:8443?sni=a.example.com&type=ws&path=%2Fws#My%20Trojan";
-    ipc::send(&mut w, &json!({"cmd": "edit_action", "id": "o", "action": "link.paste", "values": {"clipboard": link}})).unwrap();
+    ipc::send(&mut w, &json!({"cmd": "edit_action", "id": "o", "action": "link.paste", "values": {"clipboard": link}}))
+        .unwrap();
     let n = expect(&rx, 5, |v| v["ev"] == "notice").expect("notice");
     assert_eq!((n["ok"].as_bool(), n["text"].as_str()), (Some(true), Some("My Trojan")));
     let f = expect(&rx, 5, |v| v["ev"] == "form").expect("form");
@@ -414,7 +448,11 @@ fn share_links_and_subscriptions() {
     let url = serve_once(base64::engine::general_purpose::STANDARD.encode(list));
     ipc::send(&mut w, &json!({"cmd": "edit_open", "id": "s"})).unwrap();
     expect(&rx, 5, |v| v["ev"] == "form").expect("form");
-    ipc::send(&mut w, &json!({"cmd": "edit_action", "id": "s", "action": "sub.update", "values": {"outbound.sub_url": url}})).unwrap();
+    ipc::send(
+        &mut w,
+        &json!({"cmd": "edit_action", "id": "s", "action": "sub.update", "values": {"outbound.sub_url": url}}),
+    )
+    .unwrap();
     let f = expect(&rx, 5, |v| v["ev"] == "form").expect("busy form");
     assert_eq!(field(&f, "sub.update")["busy"], true);
     let n = expect(&rx, 25, |v| v["ev"] == "notice").expect("notice");
@@ -461,7 +499,8 @@ fn connection_check_and_port_check() {
     let h = controller::spawn(path.clone()).unwrap();
     let (mut w, rx) = connect(&h, &h.token);
     expect(&rx, 5, |v| v["ev"] == "hello").expect("hello");
-    let field = |form: &Value, key: &str| form["fields"].as_array().unwrap().iter().find(|f| f["key"] == key).cloned().unwrap();
+    let field =
+        |form: &Value, key: &str| form["fields"].as_array().unwrap().iter().find(|f| f["key"] == key).cloned().unwrap();
 
     // the card's port is taken by another program
     ipc::send(&mut w, &json!({"cmd": "edit_open", "id": "a1"})).unwrap();
@@ -523,14 +562,22 @@ fn undo_rename_duplicate_and_notices() {
     while !tray.lock().unwrap().iter().any(|m| m.starts_with("'card' failed to start: ")) && Instant::now() < until {
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(tray.lock().unwrap().iter().any(|m| m.starts_with("'card' failed to start: ")), "{:?}", tray.lock().unwrap());
+    assert!(
+        tray.lock().unwrap().iter().any(|m| m.starts_with("'card' failed to start: ")),
+        "{:?}",
+        tray.lock().unwrap()
+    );
 
     let (mut w, rx) = connect(&h, &h.token);
     let hello = expect(&rx, 5, |v| v["ev"] == "hello").expect("hello");
     assert_eq!((hello["undo"].clone(), hello["redo"].clone()), (json!(false), json!(false)));
     let names = |p: &std::path::Path| -> Vec<String> {
         let g = saved(p)["graph"].clone();
-        ["inbounds", "outbounds"].iter().flat_map(|k| g[*k].as_array().cloned().unwrap_or_default()).map(|n| n["name"].as_str().unwrap().to_string()).collect()
+        ["inbounds", "outbounds"]
+            .iter()
+            .flat_map(|k| g[*k].as_array().cloned().unwrap_or_default())
+            .map(|n| n["name"].as_str().unwrap().to_string())
+            .collect()
     };
 
     // rename: a settings change, shown in the open window (not the tray) and saved; one undo step
@@ -549,7 +596,10 @@ fn undo_rename_duplicate_and_notices() {
     assert!(expect(&rx, 5, |v| v["ev"] == "graph" && v["cards"].as_array().unwrap().len() == 2).is_some());
     assert_eq!(names(&path), ["card", "card copy", "Exit", "Exit copy"]);
     let copy = saved(&path)["graph"]["inbounds"][1].clone();
-    assert_eq!((copy["inbound"]["port"].clone(), copy["autostart"].clone(), copy["target"].clone()), (json!(port + 1), json!(false), Value::Null));
+    assert_eq!(
+        (copy["inbound"]["port"].clone(), copy["autostart"].clone(), copy["target"].clone()),
+        (json!(port + 1), json!(false), Value::Null)
+    );
 
     // undo twice, redo once
     ipc::send(&mut w, &json!({"cmd": "undo"})).unwrap();
@@ -564,7 +614,8 @@ fn undo_rename_duplicate_and_notices() {
     assert!(expect(&rx, 5, |v| v["ev"] == "undo" && v["undo"] == true && v["redo"] == true).is_some());
     assert_eq!(names(&path), ["card", "Exit"]);
     // a new change drops what could be redone
-    ipc::send(&mut w, &json!({"cmd": "delete", "keys": [], "links": [{"from": "c1", "out": 0, "to": "d", "in": 0}]})).unwrap();
+    ipc::send(&mut w, &json!({"cmd": "delete", "keys": [], "links": [{"from": "c1", "out": 0, "to": "d", "in": 0}]}))
+        .unwrap();
     assert!(expect(&rx, 5, |v| v["ev"] == "undo" && v["undo"] == true && v["redo"] == false).is_some());
     assert_eq!(saved(&path)["graph"]["inbounds"][0]["target"], Value::Null);
 
@@ -611,12 +662,16 @@ fn settings_page_and_latency() {
 
     // latency: every outbound block but Block, "…" while measuring, then a time or ✕
     ipc::send(&mut w, &json!({"cmd": "latency", "keys": []})).unwrap();
-    let busy = expect(&rx, 5, |v| v["ev"] == "latency" && !v["latency"]["progress"].as_str().unwrap().is_empty()).expect("busy");
+    let busy = expect(&rx, 5, |v| v["ev"] == "latency" && !v["latency"]["progress"].as_str().unwrap().is_empty())
+        .expect("busy");
     assert_eq!(busy["latency"]["badges"]["d"][0], "…");
     assert_eq!(busy["latency"]["badges"]["s"][0], "…");
     assert!(busy["latency"]["badges"].get("x").is_none());
     // (a warning when some did not respond, as Python's bar)
-    let done = expect(&rx, 60, |v| (v["ev"] == "info" || v["ev"] == "warn") && v["message"].as_str().unwrap().contains("not responding")).expect("finished");
+    let done = expect(&rx, 60, |v| {
+        (v["ev"] == "info" || v["ev"] == "warn") && v["message"].as_str().unwrap().contains("not responding")
+    })
+    .expect("finished");
     assert_eq!(done["ev"], "warn", "the SOCKS5 block has no server: one did not respond");
     eprintln!("{}", done["message"]);
     let last = expect(&rx, 5, |v| v["ev"] == "latency").expect("badges");
@@ -635,11 +690,16 @@ fn settings_page_and_latency() {
     let mut vals = st["values"].clone();
     vals["allowed_domains"] = json!(" ; ");
     ipc::send(&mut w, &json!({"cmd": "settings_save", "values": vals})).unwrap();
-    assert!(expect(&rx, 5, |v| v["ev"] == "error" && v["message"].as_str().unwrap().starts_with("Allowed domains: ")).is_some());
+    assert!(
+        expect(&rx, 5, |v| v["ev"] == "error" && v["message"].as_str().unwrap().starts_with("Allowed domains: "))
+            .is_some()
+    );
     vals["allowed_domains"] = json!("a.com; *.b.com ,");
     vals["dns_server"] = json!("ftp://x");
     ipc::send(&mut w, &json!({"cmd": "settings_save", "values": vals})).unwrap();
-    assert!(expect(&rx, 5, |v| v["ev"] == "error" && v["message"].as_str().unwrap().starts_with("DNS server: ")).is_some());
+    assert!(
+        expect(&rx, 5, |v| v["ev"] == "error" && v["message"].as_str().unwrap().starts_with("DNS server: ")).is_some()
+    );
 
     // saved: Korean, a bigger window, quit with X
     vals["dns_server"] = json!(" 1.1.1.1 ,tls://dns.google");
@@ -648,15 +708,26 @@ fn settings_page_and_latency() {
     vals["close_exits"] = json!(true);
     vals["timeout"] = json!(300);
     ipc::send(&mut w, &json!({"cmd": "settings_save", "values": vals})).unwrap();
-    assert!(expect(&rx, 5, |v| v["ev"] == "info" && v["message"] == "Settings saved (applies after restart: App scale)").is_some());
+    assert!(
+        expect(&rx, 5, |v| v["ev"] == "info" && v["message"] == "Settings saved (applies after restart: App scale)")
+            .is_some()
+    );
     assert!(expect(&rx, 5, |v| v["ev"] == "language" && v["language"] == "ko").is_some());
     let s2 = expect(&rx, 5, |v| v["ev"] == "settings").expect("settings");
     assert_eq!(s2["settings"]["values"]["allowed_domains"], "a.com, *.b.com");
     assert_eq!(s2["settings"]["values"]["dns_server"], "1.1.1.1, tls://dns.google");
     assert_eq!(s2["settings"]["themes"][0], "기기 설정");
     let g = saved(&path)["global"].clone();
-    assert_eq!((g["language"].clone(), g["ui_scale"].clone(), g["close_exits"].clone(), g["timeout"].clone(), g["dns_server"].clone()),
-               (json!("ko"), json!(125), json!(true), json!(300), json!("1.1.1.1")));
+    assert_eq!(
+        (
+            g["language"].clone(),
+            g["ui_scale"].clone(),
+            g["close_exits"].clone(),
+            g["timeout"].clone(),
+            g["dns_server"].clone()
+        ),
+        (json!("ko"), json!(125), json!(true), json!(300), json!("1.1.1.1"))
+    );
     assert_eq!(saved(&path)["global"]["dns_extra"], json!(["tls://dns.google"]));
     assert_eq!(h.setting("ui_scale"), json!(125));
 
@@ -695,7 +766,9 @@ fn statistics_and_connection_test() {
 
     // sites: refused, added, already there, removed
     ipc::send(&mut w, &json!({"cmd": "test_site_add", "text": "localhost"})).unwrap();
-    assert!(expect(&rx, 5, |v| v["ev"] == "error" && v["message"].as_str().unwrap().starts_with("Cannot add: ")).is_some());
+    assert!(
+        expect(&rx, 5, |v| v["ev"] == "error" && v["message"].as_str().unwrap().starts_with("Cannot add: ")).is_some()
+    );
     ipc::send(&mut w, &json!({"cmd": "test_site_add", "text": "https://Example.COM/x"})).unwrap();
     let sites = expect(&rx, 5, |v| v["ev"] == "conn_sites").expect("sites");
     assert_eq!(sites["conn"]["sites"][21], json!(["Added", "example.com", "example.com", true]));
@@ -814,7 +887,8 @@ fn pc_block_and_start_at_login() {
 
     // start at login: on, hidden, off (the test Run key)
     ipc::send(&mut w, &json!({"cmd": "startup", "on": true})).unwrap();
-    let st = expect(&rx, 5, |v| v["ev"] == "settings" && v["settings"]["startup"]["registered"] == true).expect("registered");
+    let st = expect(&rx, 5, |v| v["ev"] == "settings" && v["settings"]["startup"]["registered"] == true)
+        .expect("registered");
     assert_eq!(st["settings"]["startup"]["hidden"], false);
     let me = std::env::current_exe().unwrap();
     assert_eq!(platform::startup_command(), Some(format!("\"{}\"", me.display())));
@@ -829,7 +903,10 @@ fn pc_block_and_start_at_login() {
     let _ = std::fs::remove_dir_all(&home);
     unsafe {
         let w: Vec<u16> = r"Software\ProxyDockTest".encode_utf16().chain(Some(0)).collect();
-        windows_sys::Win32::System::Registry::RegDeleteTreeW(windows_sys::Win32::System::Registry::HKEY_CURRENT_USER, w.as_ptr());
+        windows_sys::Win32::System::Registry::RegDeleteTreeW(
+            windows_sys::Win32::System::Registry::HKEY_CURRENT_USER,
+            w.as_ptr(),
+        );
     }
 }
 
@@ -867,7 +944,9 @@ fn tray_switches_and_group_members() {
     h.tray(json!({"cmd": "set_switch", "id": "k", "on": true}));
     h.tray(json!({"cmd": "select_member", "group": "g", "member": "d2"}));
     let until = Instant::now() + Duration::from_secs(5);
-    while (h.quick().switches.first().map(|s| s.2) != Some(true) || h.quick().groups[0].3 != "d2") && Instant::now() < until {
+    while (h.quick().switches.first().map(|s| s.2) != Some(true) || h.quick().groups[0].3 != "d2")
+        && Instant::now() < until
+    {
         std::thread::sleep(Duration::from_millis(50));
     }
     let g = saved(&path)["graph"].clone();
@@ -906,7 +985,10 @@ fn settings_v2_become_a_graph() {
     assert_eq!(g["inbounds"].as_array().unwrap().len(), 2);
     assert_eq!(g["outbounds"].as_array().unwrap().len(), 1);
     let shared = g["outbounds"][0]["id"].clone();
-    assert_eq!((g["inbounds"][0]["id"].clone(), g["inbounds"][0]["target"].clone()), (json!("aaaaaaaa"), shared.clone()));
+    assert_eq!(
+        (g["inbounds"][0]["id"].clone(), g["inbounds"][0]["target"].clone()),
+        (json!("aaaaaaaa"), shared.clone())
+    );
     assert_eq!(g["inbounds"][1]["target"], shared);
     // the v2 file kept for an older ProxyDock
     let kept: Value = serde_json::from_str(&std::fs::read_to_string(home.join("config.v2.json")).unwrap()).unwrap();
@@ -964,7 +1046,11 @@ fn unreadable_settings_are_kept_aside() {
     let h = controller::spawn(path.clone()).unwrap();
     let (mut w, rx) = connect(&h, &h.token);
     let hello = expect(&rx, 5, |v| v["ev"] == "hello").expect("hello");
-    assert!(hello["logs"].as_array().unwrap().iter().any(|l| l["message"].as_str().unwrap_or("").contains(".broken")), "{}", hello["logs"]);
+    assert!(
+        hello["logs"].as_array().unwrap().iter().any(|l| l["message"].as_str().unwrap_or("").contains(".broken")),
+        "{}",
+        hello["logs"]
+    );
     assert_eq!(std::fs::read_to_string(home.join("config.json.broken")).unwrap(), "{ this is not json");
     // it can save again: a new block is written over the broken file (its copy stays)
     ipc::send(&mut w, &json!({"cmd": "add", "what": "outbound", "type": "direct", "x": 0, "y": 0})).unwrap();

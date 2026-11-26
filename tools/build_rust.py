@@ -27,8 +27,8 @@ APP = os.path.join(ROOT, "dist", "rust", "ProxyDock")
 RELEASE = os.path.join(ROOT, "dist", "release-rust")
 ENGINES = os.path.join(ROOT, "bin", "windows-amd64")
 # the licences that apply to what this folder ships (the Python packages' are left out)
-LICENSES = ["README.txt", "rust-crates.txt", "sing-box-GPL-3.0.txt", "Hysteria-MIT.txt", "LGPL-3.0.txt",
-            "JetBrainsMono-OFL-1.1.txt", "Pretendard-OFL-1.1.txt", "NotoSans-OFL-1.1.txt", "MaterialSymbols-Apache-2.0.txt"]
+LICENSES = ["README.txt", "rust-crates.txt", "sing-box-GPL-3.0.txt", "Hysteria-MIT.txt",
+            "JetBrainsMono-OFL-1.1.txt", "Pretendard-OFL-1.1.txt", "MaterialSymbols-Apache-2.0.txt"]
 
 
 def say(step, msg):

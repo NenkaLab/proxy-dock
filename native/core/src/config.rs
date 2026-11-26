@@ -6,7 +6,7 @@
 
 use crate::net::{is_ip_literal, split_host_port, valid_domain};
 use crate::secret::{self, Undecryptable};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 pub const LANGUAGE_CODES: [&str; 8] = ["en", "ko", "ja", "zh_CN", "zh_TW", "de", "fr", "es"];
 pub const THEMES: [&str; 3] = ["auto", "light", "dark"];
@@ -15,7 +15,13 @@ pub const TEXT_SIZES: [i64; 4] = [100, 115, 130, 150];
 pub const ENGINES: [&str; 2] = ["sing-box", "python"];
 pub const MAX_TEST_SITES: usize = 30;
 pub const OVERRIDABLE: [&str; 8] = [
-    "allowed_domains", "block_private", "timeout", "log_connections", "log_close", "dns_server", "dns_via_outbound",
+    "allowed_domains",
+    "block_private",
+    "timeout",
+    "log_connections",
+    "log_close",
+    "dns_server",
+    "dns_via_outbound",
     "dns_extra",
 ];
 /// more DNS servers asked at the same time as dns_server (the first answer wins)
@@ -24,13 +30,30 @@ pub const VMESS_CIPHERS: [&str; 5] = ["auto", "aes-128-gcm", "chacha20-poly1305"
 pub const INBOUND_TYPES: [&str; 9] =
     ["socks5", "socks4", "http", "https", "shadowsocks", "hysteria2", "wireguard", "forward", "tun"];
 pub const OUTBOUND_TYPES: [&str; 15] = [
-    "direct", "http", "https", "socks4", "socks5", "shadowsocks", "hysteria2", "wireguard", "vless", "vmess", "trojan",
-    "tuic", "subscription", "group", "block",
+    "direct",
+    "http",
+    "https",
+    "socks4",
+    "socks5",
+    "shadowsocks",
+    "hysteria2",
+    "wireguard",
+    "vless",
+    "vmess",
+    "trojan",
+    "tuic",
+    "subscription",
+    "group",
+    "block",
 ];
 pub const TUN_STACKS: [&str; 3] = ["mixed", "system", "gvisor"];
 pub const SS_METHODS: [&str; 6] = [
-    "2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm", "2022-blake3-chacha20-poly1305", "chacha20-ietf-poly1305",
-    "aes-256-gcm", "aes-128-gcm",
+    "2022-blake3-aes-128-gcm",
+    "2022-blake3-aes-256-gcm",
+    "2022-blake3-chacha20-poly1305",
+    "chacha20-ietf-poly1305",
+    "aes-256-gcm",
+    "aes-128-gcm",
 ];
 
 fn obj(v: Value) -> Map<String, Value> {
@@ -214,10 +237,10 @@ pub fn validate_global(raw: &Value) -> Map<String, Value> {
     clamp_int(&mut g, "log_font_size", 8, 20);
     let mut hosts: Vec<String> = vec![];
     for x in g["test_sites"].as_array().unwrap().iter().filter_map(Value::as_str) {
-        if let Some(h) = test_site_host(x) {
-            if !hosts.contains(&h) {
-                hosts.push(h);
-            }
+        if let Some(h) = test_site_host(x)
+            && !hosts.contains(&h)
+        {
+            hosts.push(h);
         }
     }
     hosts.truncate(MAX_TEST_SITES);
@@ -466,10 +489,13 @@ pub fn parse(text: &str) -> Result<Loaded, LoadError> {
     Ok(Loaded { global, graph, notes })
 }
 
+/// the previous version's settings: (global settings, graph, how many cards)
+pub type Migrated = (Map<String, Value>, Map<String, Value>, usize);
+
 /// The previous version's (SOCKS5 Proxy / ProxyLocal) settings in `old_dir` as global settings and a graph: a SOCKS5
 /// card for its proxy, and a Shadowsocks card if it had one turned on (Python `migrate_from_old`). None when there is
 /// nothing to move. The original is kept.
-pub fn migrate_from_old(old_dir: &std::path::Path) -> Option<(Map<String, Value>, Map<String, Value>, usize)> {
+pub fn migrate_from_old(old_dir: &std::path::Path) -> Option<Migrated> {
     let text = std::fs::read_to_string(old_dir.join("config.json")).ok()?;
     let old: Value = serde_json::from_str(&text).ok()?;
     if !old.is_object() {
@@ -485,7 +511,9 @@ pub fn migrate_from_old(old_dir: &std::path::Path) -> Option<(Map<String, Value>
                     "username": get("username", json!("")), "password": get("password", json!(""))},
         "outbound": {"type": "direct"},
     })))];
-    if old.get("ss_enabled").is_some_and(crate::secret::truthy) && old.get("ss_password").is_some_and(crate::secret::truthy) {
+    if old.get("ss_enabled").is_some_and(crate::secret::truthy)
+        && old.get("ss_password").is_some_and(crate::secret::truthy)
+    {
         proxies.push(Value::Object(validate_proxy(&json!({
             "id": crate::ids::new_id(), "name": "Shadowsocks", "autostart": true,
             "inbound": {"type": "shadowsocks", "host": host, "port": get("ss_port", json!(8388)),
@@ -533,7 +561,6 @@ mod tests {
         assert_eq!(p["overrides"]["dns_extra"], json!(["9.9.9.9"]));
         assert_eq!(validate_proxy(&json!({}))["overrides"]["dns_extra"], Value::Null);
     }
-
 
     #[test]
     fn typed_keeps_only_values_of_the_right_type() {
@@ -633,7 +660,10 @@ impl serde_json::ser::Formatter for PyFormatter {
 pub fn py_json(v: &Value) -> String {
     use serde::Serialize;
     let mut out = Vec::new();
-    let mut ser = serde_json::Serializer::with_formatter(&mut out, PyFormatter(serde_json::ser::PrettyFormatter::with_indent(b"  ")));
+    let mut ser = serde_json::Serializer::with_formatter(
+        &mut out,
+        PyFormatter(serde_json::ser::PrettyFormatter::with_indent(b"  ")),
+    );
     v.serialize(&mut ser).expect("JSON values always serialize");
     String::from_utf8(out).expect("serde_json writes UTF-8")
 }
@@ -676,11 +706,11 @@ pub fn save_text(glob: &Map<String, Value>, graph: &Map<String, Value>) -> Resul
         let Some(items) = g.get(key).and_then(Value::as_array).cloned() else { continue };
         let mut sealed = vec![];
         for mut item in items {
-            if let Some(node) = item.as_object_mut() {
-                if let Some(Value::Object(settings)) = node.get(field) {
-                    let s = secret::seal(settings).map_err(|e| SaveError::Seal(format!("{e:?}")))?;
-                    node.insert(field.into(), Value::Object(s));
-                }
+            if let Some(node) = item.as_object_mut()
+                && let Some(Value::Object(settings)) = node.get(field)
+            {
+                let s = secret::seal(settings).map_err(|e| SaveError::Seal(format!("{e:?}")))?;
+                node.insert(field.into(), Value::Object(s));
             }
             sealed.push(item);
         }
@@ -697,7 +727,8 @@ pub fn save_to(path: &std::path::Path, glob: &Map<String, Value>, graph: &Map<St
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(w)?;
     }
-    let tmp = path.with_file_name(format!("{}.tmp", path.file_name().and_then(|n| n.to_str()).unwrap_or("config.json")));
+    let tmp =
+        path.with_file_name(format!("{}.tmp", path.file_name().and_then(|n| n.to_str()).unwrap_or("config.json")));
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;

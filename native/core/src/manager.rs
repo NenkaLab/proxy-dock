@@ -3,16 +3,16 @@
 //! sing-box. A sing-box that exits on its own comes back through the same queue.
 
 use crate::i18n::tr;
-use crate::log::{clean, now_text, Entry, Level};
+use crate::log::{Entry, Level, clean, now_text};
 use crate::net::host_port;
 use crate::singbox::helper::Launch;
 use crate::singbox::hysteria::HyEngine;
 use crate::singbox::process::{Engine, EngineEnv, Hooks, StartError, Stats};
-use crate::singbox::{self, guard, rulesets, Kind};
+use crate::singbox::{self, Kind, guard, rulesets};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -29,10 +29,15 @@ pub enum State {
 
 /// What the owner of the manager hears. Both are called on the worker thread (log also on sing-box reader
 /// threads): keep them short, hand the work to the UI's own thread.
+/// a card's state changed (its id, the state)
+pub type OnStatus = Arc<dyn Fn(&str, &State) + Send + Sync>;
+/// a log entry
+pub type OnLog = Arc<dyn Fn(Entry) + Send + Sync>;
+
 #[derive(Clone)]
 pub struct Events {
-    pub status: Arc<dyn Fn(&str, &State) + Send + Sync>,
-    pub log: Arc<dyn Fn(Entry) + Send + Sync>,
+    pub status: OnStatus,
+    pub log: OnLog,
 }
 
 enum Cmd {
@@ -48,8 +53,9 @@ enum Cmd {
 
 /// the engine of a running card
 enum Card {
-    SingBox(Engine),
-    Hysteria(HyEngine),
+    // (boxed: the engines are big and differ in size)
+    SingBox(Box<Engine>),
+    Hysteria(Box<HyEngine>),
 }
 
 impl Card {
@@ -339,13 +345,18 @@ fn summary_of(proxy: &Value, kind_: Kind) -> String {
     while let Some(o) = ob.filter(|o| o.is_object()) {
         let ot = o["type"].as_str().unwrap_or("");
         if ot == "group" {
-            let names: Vec<&str> = o["members"].as_array().into_iter().flatten().filter_map(|m| m["name"].as_str()).collect();
+            let names: Vec<&str> =
+                o["members"].as_array().into_iter().flatten().filter_map(|m| m["name"].as_str()).collect();
             parts.push(format!("{} ({})", crate::graph::outbound_label("group"), names.join(", ")));
             break;
         }
         parts.push(match ot {
             "direct" | "block" => crate::graph::outbound_label(ot),
-            _ => format!("{} {}", crate::graph::outbound_label(ot), host_port(o["host"].as_str().unwrap_or(""), o["port"].as_i64().unwrap_or(0))),
+            _ => format!(
+                "{} {}",
+                crate::graph::outbound_label(ot),
+                host_port(o["host"].as_str().unwrap_or(""), o["port"].as_i64().unwrap_or(0))
+            ),
         });
         ob = o.get("via").filter(|v| !v.is_null());
     }
@@ -433,8 +444,15 @@ impl Worker {
     }
 
     fn log(&self, level: Level, message: &str, proxy: Option<&Value>) {
-        let (pid, name) = proxy.map_or(("", ""), |p| (p["id"].as_str().unwrap_or(""), p["name"].as_str().unwrap_or("")));
-        (self.events.log)(Entry { time: now_text(), level, message: clean(message), proxy_id: pid.into(), proxy_name: name.into() });
+        let (pid, name) =
+            proxy.map_or(("", ""), |p| (p["id"].as_str().unwrap_or(""), p["name"].as_str().unwrap_or("")));
+        (self.events.log)(Entry {
+            time: now_text(),
+            level,
+            message: clean(message),
+            proxy_id: pid.into(),
+            proxy_name: name.into(),
+        });
     }
 
     /// everything a card's sing-box needs besides its settings: the engine, rule-sets, certificate, TUN exclusions
@@ -451,7 +469,9 @@ impl Worker {
             // the bundled sing-box (never a configured or downloaded one), so that is the one checked here
             helper = Some(Launch::this_program().ok_or_else(|| tr("sing-box was not found"))?);
             let bundled = singbox::find_bundled(singbox::EXE).ok_or_else(|| tr("sing-box was not found"))?;
-            if singbox::uses_certificate_pin(proxy) && !singbox::version::of(&bundled).is_some_and(|v| v.has_certificate_pin()) {
+            if singbox::uses_certificate_pin(proxy)
+                && !singbox::version::of(&bundled).is_some_and(|v| v.has_certificate_pin())
+            {
                 return Err(tr("certificate pinning needs sing-box 1.15 or later"));
             }
             choice.1 = bundled;
@@ -460,7 +480,9 @@ impl Worker {
         let rulesets = if need.is_empty() {
             vec![]
         } else {
-            rulesets::ensure_in(&self.folders.ruleset_dir, &need, &rulesets::http_get, &|m| self.log(Level::Warn, m, Some(proxy)))?
+            rulesets::ensure_in(&self.folders.ruleset_dir, &need, &rulesets::http_get, &|m| {
+                self.log(Level::Warn, m, Some(proxy))
+            })?
         };
         let cert = if matches!(ib_type, "https" | "hysteria2") {
             Some(crate::tls::server_cert_paths(proxy, &self.folders.cert_dir).map_err(|e| e.to_string())?)
@@ -469,11 +491,12 @@ impl Worker {
         };
         let mut exclude_paths = vec![];
         if ib_type == "tun" {
-            let mut v: Vec<String> = [Some(choice.1.clone()), singbox::find_hysteria(glob), std::env::current_exe().ok()]
-                .into_iter()
-                .flatten()
-                .map(|p| std::path::absolute(&p).unwrap_or(p).display().to_string())
-                .collect();
+            let mut v: Vec<String> =
+                [Some(choice.1.clone()), singbox::find_hysteria(glob), std::env::current_exe().ok()]
+                    .into_iter()
+                    .flatten()
+                    .map(|p| std::path::absolute(&p).unwrap_or(p).display().to_string())
+                    .collect();
             v.sort();
             v.dedup();
             exclude_paths = v;
@@ -530,25 +553,35 @@ impl Worker {
             };
             let engine = if choice.0 == Kind::Hysteria {
                 let hy = singbox::find_hysteria(glob).ok_or_else(|| tr("The Hysteria2 core was not found"))?;
-                HyEngine::start(proxy, glob, &env, hooks, &hy).map(Card::Hysteria)
+                HyEngine::start(proxy, glob, &env, hooks, &hy).map(|e| Card::Hysteria(Box::new(e)))
             } else {
-                Engine::start(proxy, glob, &env, hooks).map(Card::SingBox)
+                Engine::start(proxy, glob, &env, hooks).map(|e| Card::SingBox(Box::new(e)))
             };
-            engine.map(|engine| Running { engine, proxy: proxy.clone(), engine_choice: choice, generation }).map_err(|e| start_message(&e, proxy))
+            engine
+                .map(|engine| Running { engine, proxy: proxy.clone(), engine_choice: choice, generation })
+                .map_err(|e| start_message(&e, proxy))
         });
         match started {
             Ok(r) => {
                 let kind = r.engine_choice.0;
                 self.shared.lock().unwrap().running.insert(id.clone(), r);
                 self.set(&id, State::Running);
-                self.log(Level::Info, &tr("Started: {summary}").replace("{summary}", &summary_of(proxy, kind)), Some(proxy));
+                self.log(
+                    Level::Info,
+                    &tr("Started: {summary}").replace("{summary}", &summary_of(proxy, kind)),
+                    Some(proxy),
+                );
                 self.open_proxy_warnings(proxy);
                 true
             }
             Err(msg) => {
                 self.set(&id, State::Error(msg.clone()));
                 let name = proxy["name"].as_str().unwrap_or("");
-                self.log(Level::Error, &tr("[{name}] failed to start: {msg}").replace("{name}", name).replace("{msg}", &msg), None);
+                self.log(
+                    Level::Error,
+                    &tr("[{name}] failed to start: {msg}").replace("{name}", name).replace("{msg}", &msg),
+                    None,
+                );
                 false
             }
         }
@@ -562,10 +595,18 @@ impl Worker {
             return;
         }
         if t == "socks4" {
-            self.log(Level::Warn, &tr("SOCKS4 has no password authentication; anyone can use it if it is exposed"), Some(proxy));
+            self.log(
+                Level::Warn,
+                &tr("SOCKS4 has no password authentication; anyone can use it if it is exposed"),
+                Some(proxy),
+            );
         } else if matches!(t, "socks5" | "http" | "https") && ib["auth_enabled"] != Value::Bool(true) {
             let hp = host_port(host, ib["port"].as_i64().unwrap_or(0));
-            self.log(Level::Warn, &tr("Listening on {host_port} without authentication (open proxy)").replace("{host_port}", &hp), Some(proxy));
+            self.log(
+                Level::Warn,
+                &tr("Listening on {host_port} without authentication (open proxy)").replace("{host_port}", &hp),
+                Some(proxy),
+            );
         }
     }
 
@@ -622,8 +663,12 @@ fn start_message(e: &StartError, proxy: &Value) -> String {
     let port = ib["port"].as_i64().unwrap_or(0).to_string();
     match e {
         StartError::PortInUse(_) => tr("Port {port} is already in use by another program").replace("{port}", &port),
-        StartError::AccessDenied(_) => tr("Port {port} cannot be used (reserved by Windows, or no permission)").replace("{port}", &port),
-        StartError::AddressNotAvailable(_) => tr("This PC does not have the address {host}").replace("{host}", ib["host"].as_str().unwrap_or("")),
+        StartError::AccessDenied(_) => {
+            tr("Port {port} cannot be used (reserved by Windows, or no permission)").replace("{port}", &port)
+        }
+        StartError::AddressNotAvailable(_) => {
+            tr("This PC does not have the address {host}").replace("{host}", ib["host"].as_str().unwrap_or(""))
+        }
         StartError::Other(t) => t.clone(),
     }
 }

@@ -37,26 +37,28 @@
 
 ## 実行
 
-Windows では `ProxyDock-<バージョン>-windows-x64-setup.exe` が現在のユーザーにインストールします (管理者権限は不要)。`.zip` は同じアプリをフォルダーにしたものです。macOS では `.dmg` を開いて ProxyDock をアプリケーションにドラッグします。Linux では `.AppImage` に実行権限を付けて実行します。
+Windows 10 / 11: `ProxyDock-<バージョン>-windows-x64-setup.exe` が現在のユーザーにインストールします (管理者権限は不要)。
+`.zip` は同じアプリをフォルダーにしたものです。[Releases](https://github.com/NenkaLab/proxy-dock/releases) から入手します。
 
-[Releases](https://github.com/NenkaLab/proxy-dock/releases) からビルドを入手します。
+設定は `%APPDATA%\ProxyDock` に保存されます。バージョン 3 は 2.x の設定をそのまま読み込みます。詳しくはアプリの**使い方**ページを見てください。
 
-設定は `%APPDATA%\ProxyDock` (macOS: `~/Library/Application Support/ProxyDock`、Linux: `~/.config/ProxyDock`) に
-保存されます。詳しくはアプリの**使い方**ページを見てください。
+ProxyDock 3 は Rust で作り直した版で、今は Windows でのみ動きます。macOS と Linux では 2.x (Python 版、
+[`old`](https://github.com/NenkaLab/proxy-dock/tree/old) ブランチと 2.x のリリース) を使ってください。
 
 ## ビルド
 
-ソースからの実行、テスト、ビルド、インストーラー、リリース: [Build.md](Build.md) (英語)。
+ソースからの実行、テスト、ビルド、インストーラー、リリース: [Build.md](Build.md) (英語)。リリース前の確認方法:
+[TESTING.md](../TESTING.md) (韓国語)。
 
 ## 制限
 
-- ルーター、グループ、WireGuard、VLESS / VMess / Trojan / TUIC、TUN には sing-box エンジン (同梱) が必要です。
-- TUN と macOS はまだ実環境で試していません。
+- Windows 専用です (macOS / Linux: 2.x)。
+- TUN はまだ実環境で試していません。
 - SOCKS4 にはパスワードがないので、この PC の中だけで使ってください。
 
 ## ライセンス
 
-[GPL-3.0](../LICENSE)。同梱のコンポーネント (sing-box GPL-3.0、Hysteria MIT、Qt / PySide6 LGPL-3.0、フォント OFL-1.1 など) と
+[GPL-3.0](../LICENSE)。同梱のコンポーネント (sing-box GPL-3.0、Hysteria MIT、Slint GPL-3.0、Rust クレート、フォント OFL-1.1 など) と
 ライセンスは [`licenses/`](../licenses/) にあります。
 
 Copyright (C) 2026 NenkaLab

@@ -26,7 +26,8 @@ pub fn public_of(private_key: &str) -> String {
 /// the next free device address (/32 or /128) in the server's network, or None
 pub fn next_peer_address(server_address: &str, used: &[String]) -> Option<String> {
     let (ip, prefix) = crate::py::ip_interface(crate::py::strip(server_address))?;
-    let taken: Vec<IpAddr> = used.iter().filter_map(|x| crate::py::ip_interface(x).map(|(a, _)| a)).chain([ip]).collect();
+    let taken: Vec<IpAddr> =
+        used.iter().filter_map(|x| crate::py::ip_interface(x).map(|(a, _)| a)).chain([ip]).collect();
     match ip {
         IpAddr::V4(v4) => {
             let host_bits = 32 - prefix;
@@ -93,7 +94,10 @@ mod tests {
     fn keys_and_addresses() {
         // RFC 7748 test vector (Alice)
         let alice = B64.encode(hex("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a"));
-        assert_eq!(public_of(&alice), B64.encode(hex("8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a")));
+        assert_eq!(
+            public_of(&alice),
+            B64.encode(hex("8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a"))
+        );
         let (k, p) = keypair();
         assert!(crate::checks::valid_wg_key(&k) && public_of(&k) == p);
         assert_eq!(next_peer_address("10.66.0.1/24", &["10.66.0.2/32".into()]).as_deref(), Some("10.66.0.3/32"));
@@ -139,15 +143,18 @@ pub fn parse_conf(text: &str) -> Result<(serde_json::Map<String, Value>, Vec<Str
         let (k, v) = (strip(k).to_lowercase(), strip(v));
         if section == "interface" {
             add(&mut iface, k, v);
-        } else if section == "peer" {
-            if let Some(p) = peers.last_mut() {
-                add(p, k, v);
-            }
+        } else if section == "peer"
+            && let Some(p) = peers.last_mut()
+        {
+            add(p, k, v);
         }
     }
-    let usable = iface.contains_key("privatekey") && peers.first().is_some_and(|p| p.contains_key("publickey") && p.contains_key("endpoint"));
+    let usable = iface.contains_key("privatekey")
+        && peers.first().is_some_and(|p| p.contains_key("publickey") && p.contains_key("endpoint"));
     if !usable {
-        return Err(tr("Not a WireGuard client config (needs [Interface] PrivateKey and a [Peer] with PublicKey and Endpoint)"));
+        return Err(tr(
+            "Not a WireGuard client config (needs [Interface] PrivateKey and a [Peer] with PublicKey and Endpoint)",
+        ));
     }
     let peer = &peers[0];
     let ep = peer["endpoint"].as_str();
@@ -169,12 +176,17 @@ pub fn parse_conf(text: &str) -> Result<(serde_json::Map<String, Value>, Vec<Str
     out.insert("wg_address".into(), json!(get(&iface, "address")));
     out.insert("wg_peer_public_key".into(), json!(peer["publickey"]));
     out.insert("wg_preshared_key".into(), json!(get(peer, "presharedkey")));
-    out.insert("wg_allowed_ips".into(), json!(peer.get("allowedips").cloned().unwrap_or_else(|| "0.0.0.0/0, ::/0".into())));
+    out.insert(
+        "wg_allowed_ips".into(),
+        json!(peer.get("allowedips").cloned().unwrap_or_else(|| "0.0.0.0/0, ::/0".into())),
+    );
     out.insert("wg_mtu".into(), json!(num(get(&iface, "mtu"), 1408)));
     out.insert("wg_keepalive".into(), json!(num(get(peer, "persistentkeepalive"), 0)));
     let mut notes = vec![];
     if peers.len() > 1 {
-        notes.push(tr("The file has {count} peers; only the first is used").replace("{count}", &peers.len().to_string()));
+        notes.push(
+            tr("The file has {count} peers; only the first is used").replace("{count}", &peers.len().to_string()),
+        );
     }
     if !get(&iface, "dns").is_empty() {
         notes.push(tr("DNS from the file is not used (domains are resolved by ProxyDock)"));

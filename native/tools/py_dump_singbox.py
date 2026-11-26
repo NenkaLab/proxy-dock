@@ -10,7 +10,8 @@ import os
 import sys
 import types
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pyapp  # noqa: E402,F401  (the Python app: see pyapp.py)
 from proxydock import config, graph, i18n  # noqa: E402
 from proxydock.singbox import compile as sb, rulesets  # noqa: E402
 

@@ -37,7 +37,12 @@ fn agent(timeout: Option<Duration>) -> ureq::Agent {
 fn http_get(url: &str, limit: u64, accept: &str) -> Result<Vec<u8>, String> {
     let r = agent(Some(TIMEOUT)).get(url).header("Accept", accept).call();
     let mut r = r.map_err(|e| tr("Could not reach GitHub: {e}").replace("{e}", &e.to_string()))?;
-    let data = r.body_mut().with_config().limit(limit + 1).read_to_vec().map_err(|e| tr("Could not reach GitHub: {e}").replace("{e}", &e.to_string()))?;
+    let data = r
+        .body_mut()
+        .with_config()
+        .limit(limit + 1)
+        .read_to_vec()
+        .map_err(|e| tr("Could not reach GitHub: {e}").replace("{e}", &e.to_string()))?;
     if data.len() as u64 > limit {
         return Err(tr("The response from GitHub is too large"));
     }
@@ -99,7 +104,11 @@ pub fn parse_release(data: &Value) -> Result<Option<Release>, String> {
 /// the latest release if it is newer than this version, else None (Python `check`)
 pub fn check() -> Result<Option<Release>, String> {
     // (debug builds: tests point it at a local server)
-    let url = if cfg!(debug_assertions) { std::env::var("PROXYDOCK_UPDATE_URL").unwrap_or_else(|_| API_URL.into()) } else { API_URL.into() };
+    let url = if cfg!(debug_assertions) {
+        std::env::var("PROXYDOCK_UPDATE_URL").unwrap_or_else(|_| API_URL.into())
+    } else {
+        API_URL.into()
+    };
     let data = http_get(&url, MAX_JSON, "application/vnd.github+json")?;
     let v: Value = serde_json::from_slice(&data).map_err(|_| tr("GitHub returned an unexpected answer"))?;
     Ok(parse_release(&v)?.filter(|r| is_newer(&r.tag, current_version())))
@@ -113,7 +122,13 @@ pub fn due(glob: &serde_json::Map<String, Value>, now: i64) -> bool {
 
 /// (os name, arch) as in the release file names
 pub fn platform_key() -> (&'static str, &'static str) {
-    let os = if cfg!(windows) { "windows" } else if cfg!(target_os = "macos") { "macos" } else { "linux" };
+    let os = if cfg!(windows) {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "linux"
+    };
     let arch = if cfg!(target_arch = "aarch64") { "arm64" } else { "x64" };
     (os, arch)
 }
@@ -190,17 +205,30 @@ pub fn fetch_verified(
 ) -> Result<PathBuf, FetchError> {
     let fail = FetchError::Failed;
     let Some((sums_url, _)) = rel.assets.get(SUMS_NAME) else {
-        return Err(fail(tr("This release has no {sums}, so its files cannot be verified").replace("{sums}", SUMS_NAME)));
+        return Err(fail(
+            tr("This release has no {sums}, so its files cannot be verified").replace("{sums}", SUMS_NAME),
+        ));
     };
-    let sums = parse_sums(&String::from_utf8_lossy(&http_get(sums_url, MAX_SUMS, "application/octet-stream").map_err(fail)?));
-    let not_listed = || fail(tr("{name} is not listed in {sums}, so it cannot be verified").replace("{name}", name).replace("{sums}", SUMS_NAME));
+    let sums =
+        parse_sums(&String::from_utf8_lossy(&http_get(sums_url, MAX_SUMS, "application/octet-stream").map_err(fail)?));
+    let not_listed = || {
+        fail(
+            tr("{name} is not listed in {sums}, so it cannot be verified")
+                .replace("{name}", name)
+                .replace("{sums}", SUMS_NAME),
+        )
+    };
     let Some(want) = sums.get(name).cloned() else { return Err(not_listed()) };
     let (url, size) = rel.assets.get(name).cloned().ok_or_else(not_listed)?;
     let base = Path::new(name).file_name().map(|b| b.to_os_string()).unwrap_or_default();
     let path = folder.join(base);
     let result = (|| {
         let failed = |e: String| fail(tr("Download failed: {e}").replace("{e}", &e));
-        let mut r = agent(None).get(&url).header("Accept", "application/octet-stream").call().map_err(|e| failed(e.to_string()))?;
+        let mut r = agent(None)
+            .get(&url)
+            .header("Accept", "application/octet-stream")
+            .call()
+            .map_err(|e| failed(e.to_string()))?;
         let total = if size > 0 { size } else { r.body().content_length().unwrap_or(0) };
         let mut body = r.body_mut().with_config().limit(u64::MAX).reader();
         let mut f = std::fs::File::create(&path).map_err(|e| failed(e.to_string()))?;
@@ -244,7 +272,9 @@ pub fn fetch_verified(
 pub fn under_program_files(path: &Path) -> bool {
     let p = path.display().to_string().to_lowercase().trim_end_matches('\\').to_string() + "\\";
     ["ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"].iter().any(|k| {
-        std::env::var(k).ok().is_some_and(|b| !b.is_empty() && p.starts_with(&(b.to_lowercase().trim_end_matches('\\').to_string() + "\\")))
+        std::env::var(k).ok().is_some_and(|b| {
+            !b.is_empty() && p.starts_with(&(b.to_lowercase().trim_end_matches('\\').to_string() + "\\"))
+        })
     })
 }
 
@@ -283,19 +313,26 @@ mod tests {
                 {"name": "SHA256SUMS.txt", "browser_download_url": "https://dl/s", "size": 1},
                 {"name": "evil.exe", "browser_download_url": "http://dl/e"},
             ],
-        })).unwrap().unwrap();
+        }))
+        .unwrap()
+        .unwrap();
         assert_eq!((rel.version.as_str(), rel.notes.as_str(), rel.assets.len()), ("3.1.0", "notes", 2));
-        assert_eq!(pick_asset(&rel, "windows", "x64", "installer").as_deref(), Some("ProxyDock-3.1.0-windows-x64-setup.exe"));
+        assert_eq!(
+            pick_asset(&rel, "windows", "x64", "installer").as_deref(),
+            Some("ProxyDock-3.1.0-windows-x64-setup.exe")
+        );
         assert_eq!(pick_asset(&rel, "windows", "arm64", "installer"), None);
         assert_eq!(parse_release(&json!({"tag_name": "v3.1.0", "prerelease": true})).unwrap(), None);
         let h = "a".repeat(64);
         let sums = parse_sums(&format!("{h}  ProxyDock-3.1.0-windows-x64-setup.exe\n{h} *other.zip\nbad line\n"));
         assert_eq!(sums.len(), 2);
-        let glob: serde_json::Map<String, Value> = json!({"check_updates": true, "update_checked": 1000}).as_object().unwrap().clone();
+        let glob: serde_json::Map<String, Value> =
+            json!({"check_updates": true, "update_checked": 1000}).as_object().unwrap().clone();
         assert!(due(&glob, 1000 + CHECK_INTERVAL) && !due(&glob, 1001));
         let off: serde_json::Map<String, Value> = json!({"check_updates": false}).as_object().unwrap().clone();
         assert!(!due(&off, 1 << 40));
-        let cmd = installer_command(Path::new(r"C:\t\setup.exe"), Path::new(r"C:\Users\u\AppData\Local\ProxyDock"), "ko");
+        let cmd =
+            installer_command(Path::new(r"C:\t\setup.exe"), Path::new(r"C:\Users\u\AppData\Local\ProxyDock"), "ko");
         assert_eq!(cmd.last().map(String::as_str), Some("/RELAUNCH=1"));
         assert!(cmd.contains(&"/LANG=ko".to_string()));
     }
@@ -322,33 +359,63 @@ mod tests {
         let hash: String = Sha256::digest(&file).iter().map(|b| format!("{b:02x}")).collect();
         let name = "ProxyDock-9.0.0-windows-x64-setup.exe";
         let release = |port: u16| Release {
-            version: "9.0.0".into(), tag: "v9.0.0".into(), name: String::new(), notes: String::new(), url: String::new(),
+            version: "9.0.0".into(),
+            tag: "v9.0.0".into(),
+            name: String::new(),
+            notes: String::new(),
+            url: String::new(),
             assets: [
                 (SUMS_NAME.to_string(), (format!("http://127.0.0.1:{port}/sums"), 0)),
                 (name.to_string(), (format!("http://127.0.0.1:{port}/file"), 0)),
-            ].into_iter().collect(),
+            ]
+            .into_iter()
+            .collect(),
         };
         let dir = std::env::temp_dir().join(format!("pd-upd-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         // good: saved, progress up to the whole size
-        let port = serve(vec![format!("{hash}  {name}
-").into_bytes(), file.clone()]);
+        let port = serve(vec![
+            format!(
+                "{hash}  {name}
+"
+            )
+            .into_bytes(),
+            file.clone(),
+        ]);
         let last = std::sync::Mutex::new((0, 0));
         let got = fetch_verified(&release(port), name, &dir, &|d, t| *last.lock().unwrap() = (d, t), &|| false);
         let path = got.ok().expect("downloaded");
         assert_eq!(std::fs::read(&path).unwrap(), file);
         assert_eq!(*last.lock().unwrap(), (300_000, 300_000));
         // changed on the way: refused and deleted
-        let port = serve(vec![format!("{hash}  {name}
-").into_bytes(), vec![8u8; 300_000]]);
-        assert!(matches!(fetch_verified(&release(port), name, &dir, &|_, _| {}, &|| false), Err(FetchError::Failed(_))));
+        let port = serve(vec![
+            format!(
+                "{hash}  {name}
+"
+            )
+            .into_bytes(),
+            vec![8u8; 300_000],
+        ]);
+        assert!(matches!(
+            fetch_verified(&release(port), name, &dir, &|_, _| {}, &|| false),
+            Err(FetchError::Failed(_))
+        ));
         assert!(!path.exists());
         // not in the sums: refused before downloading
         let port = serve(vec![b"nothing".to_vec()]);
-        assert!(matches!(fetch_verified(&release(port), name, &dir, &|_, _| {}, &|| false), Err(FetchError::Failed(_))));
+        assert!(matches!(
+            fetch_verified(&release(port), name, &dir, &|_, _| {}, &|| false),
+            Err(FetchError::Failed(_))
+        ));
         // cancelled
-        let port = serve(vec![format!("{hash}  {name}
-").into_bytes(), file]);
+        let port = serve(vec![
+            format!(
+                "{hash}  {name}
+"
+            )
+            .into_bytes(),
+            file,
+        ]);
         assert!(matches!(fetch_verified(&release(port), name, &dir, &|_, _| {}, &|| true), Err(FetchError::Cancelled)));
         let _ = std::fs::remove_dir_all(&dir);
     }

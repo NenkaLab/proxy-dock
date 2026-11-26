@@ -1,7 +1,7 @@
 // Tray menu in the app's Material 3 look: a layered popup window drawn with tiny-skia (shapes) and ab_glyph
 // (text). No GUI toolkit, so the tray process stays a few MB; the font file is read only while the menu is open.
 
-use ab_glyph::{point, Font, FontVec, PxScale, ScaleFont};
+use ab_glyph::{Font, FontVec, PxScale, ScaleFont, point};
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tiny_skia::{Color, FillRule, Paint, Path, PathBuilder, Pixmap, Transform};
@@ -9,7 +9,7 @@ use windows_sys::Win32::{
     Foundation::*,
     Graphics::Gdi::*,
     System::LibraryLoader::GetModuleHandleW,
-    System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD},
+    System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW},
     UI::HiDpi::GetDpiForWindow,
     UI::Input::KeyboardAndMouse::*,
     UI::WindowsAndMessaging::*,
@@ -17,11 +17,20 @@ use windows_sys::Win32::{
 
 #[derive(Clone, PartialEq)]
 pub enum Entry {
-    Item { label: String, id: u32 },
+    Item {
+        label: String,
+        id: u32,
+    },
     /// a small caption over the choices that follow (not clickable)
-    Header { label: String },
+    Header {
+        label: String,
+    },
     /// one of several choices; `on` gets a check mark
-    Choice { label: String, id: u32, on: bool },
+    Choice {
+        label: String,
+        id: u32,
+        on: bool,
+    },
     Divider,
 }
 
@@ -106,10 +115,10 @@ fn apps_dark() -> bool {
 fn load_font() -> Option<FontVec> {
     let dir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into());
     for name in ["malgun.ttf", "segoeui.ttf"] {
-        if let Ok(data) = std::fs::read(format!(r"{dir}\Fonts\{name}")) {
-            if let Ok(font) = FontVec::try_from_vec(data) {
-                return Some(font);
-            }
+        if let Ok(data) = std::fs::read(format!(r"{dir}\Fonts\{name}"))
+            && let Ok(font) = FontVec::try_from_vec(data)
+        {
+            return Some(font);
         }
     }
     None
@@ -274,7 +283,15 @@ fn render(st: &State) {
             }
             Entry::Header { label } => {
                 let muted = if st.dark { (0xc3, 0xc7, 0xcf) } else { (0x43, 0x47, 0x4e) };
-                draw_text(&mut pm, &st.font, label, ox + TEXT_X * s, oy + top + eh / 2.0 + 3.0 * s, HEADER_PX * s, muted);
+                draw_text(
+                    &mut pm,
+                    &st.font,
+                    label,
+                    ox + TEXT_X * s,
+                    oy + top + eh / 2.0 + 3.0 * s,
+                    HEADER_PX * s,
+                    muted,
+                );
             }
             Entry::Choice { label, on, .. } => {
                 if st.hover == Some(idx) {
@@ -295,7 +312,12 @@ fn render(st: &State) {
                         let mut paint = Paint::default();
                         paint.set_color(Color::from_rgba8(on_surface.0, on_surface.1, on_surface.2, 255));
                         paint.anti_alias = true;
-                        let stroke = tiny_skia::Stroke { width: 2.0 * s, line_cap: tiny_skia::LineCap::Round, line_join: tiny_skia::LineJoin::Round, ..Default::default() };
+                        let stroke = tiny_skia::Stroke {
+                            width: 2.0 * s,
+                            line_cap: tiny_skia::LineCap::Round,
+                            line_join: tiny_skia::LineJoin::Round,
+                            ..Default::default()
+                        };
                         pm.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
                     }
                 }
@@ -318,12 +340,12 @@ fn upload(hwnd: HWND, pm: &Pixmap) {
         bmi.bmiHeader.biHeight = -h; // top-down
         bmi.bmiHeader.biPlanes = 1;
         bmi.bmiHeader.biBitCount = 32;
-        bmi.bmiHeader.biCompression = BI_RGB as u32;
+        bmi.bmiHeader.biCompression = BI_RGB;
         let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
         let dib = CreateDIBSection(mem, &bmi, DIB_RGB_COLORS, &mut bits, std::ptr::null_mut(), 0);
         if !dib.is_null() && !bits.is_null() {
             let dst = std::slice::from_raw_parts_mut(bits as *mut u8, (w * h * 4) as usize);
-            for (d, s) in dst.chunks_exact_mut(4).zip(pm.data().chunks_exact(4)) {
+            for (d, s) in dst.as_chunks_mut::<4>().0.iter_mut().zip(pm.data().as_chunks::<4>().0) {
                 d[0] = s[2];
                 d[1] = s[1];
                 d[2] = s[0];
@@ -335,7 +357,12 @@ fn upload(hwnd: HWND, pm: &Pixmap) {
             let pos = POINT { x: rc.left, y: rc.top };
             let size = SIZE { cx: w, cy: h };
             let src = POINT { x: 0, y: 0 };
-            let blend = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8 };
+            let blend = BLENDFUNCTION {
+                BlendOp: AC_SRC_OVER as u8,
+                BlendFlags: 0,
+                SourceConstantAlpha: 255,
+                AlphaFormat: AC_SRC_ALPHA as u8,
+            };
             UpdateLayeredWindow(hwnd, screen, &pos, &size, mem, &src, 0, &blend, ULW_ALPHA);
             SelectObject(mem, old);
             DeleteObject(dib);
@@ -372,10 +399,10 @@ fn pick(index: usize) {
 
 fn with_state(f: impl FnOnce(&mut State)) {
     MENU.with(|m| {
-        if let Ok(mut m) = m.try_borrow_mut() {
-            if let Some(st) = m.as_mut() {
-                f(st);
-            }
+        if let Ok(mut m) = m.try_borrow_mut()
+            && let Some(st) = m.as_mut()
+        {
+            f(st);
         }
     });
 }

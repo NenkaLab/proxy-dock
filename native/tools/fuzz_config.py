@@ -8,7 +8,8 @@ import os
 import random
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pyapp  # noqa: E402,F401  (the Python app: see pyapp.py)
 from proxydock import config  # noqa: E402
 
 ODD = [None, True, False, 0, 1, -5, 70000, 3.5, "", " x ", "127.0.0.1", "한국어", [], ["a", " b ", ""], ["a", 1], {}, "tls://dns.google",

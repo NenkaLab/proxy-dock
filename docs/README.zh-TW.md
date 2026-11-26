@@ -37,26 +37,27 @@
 
 ## 執行
 
-在 Windows 上，`ProxyDock-<版本>-windows-x64-setup.exe` 會為目前使用者安裝 (不需要系統管理員權限)；`.zip` 是同一個應用程式的資料夾版本。macOS 上開啟 `.dmg`，把 ProxyDock 拖到「應用程式」。Linux 上給 `.AppImage` 加上執行權限後執行。
+Windows 10 / 11：`ProxyDock-<版本>-windows-x64-setup.exe` 會為目前使用者安裝 (不需要系統管理員權限)；`.zip` 是同一個應用程式的資料夾版本。
+從 [Releases](https://github.com/NenkaLab/proxy-dock/releases) 下載。
 
-從 [Releases](https://github.com/NenkaLab/proxy-dock/releases) 下載建置。
+設定儲存在 `%APPDATA%\ProxyDock`，版本 3 直接讀取 2.x 的設定。其餘內容見程式內的**使用方法**頁面。
 
-設定儲存在 `%APPDATA%\ProxyDock` (macOS: `~/Library/Application Support/ProxyDock`，Linux: `~/.config/ProxyDock`)。
-其餘內容見程式內的**使用方法**頁面。
+ProxyDock 3 是以 Rust 重寫的版本，目前只支援 Windows。macOS 和 Linux 請使用 2.x (Python 版，
+[`old`](https://github.com/NenkaLab/proxy-dock/tree/old) 分支與 2.x 發行版)。
 
 ## 建置
 
-從原始碼執行、測試、建置、安裝程式與發行：[Build.md](Build.md)（英文）。
+從原始碼執行、測試、建置、安裝程式與發行：[Build.md](Build.md)（英文）。發行前的檢查方法：[TESTING.md](../TESTING.md)（韓文）。
 
 ## 限制
 
-- 路由、群組、WireGuard、VLESS / VMess / Trojan / TUIC 和 TUN 需要 sing-box 引擎（已附帶）。
-- TUN 和 macOS 還沒有在真實環境中試過。
+- 僅支援 Windows (macOS / Linux：2.x)。
+- TUN 還沒有在真實環境中試過。
 - SOCKS4 沒有密碼，只在本機使用。
 
 ## 授權
 
-[GPL-3.0](../LICENSE)。內建元件 (sing-box GPL-3.0、Hysteria MIT、Qt / PySide6 LGPL-3.0、字型 OFL-1.1 等) 與授權
+[GPL-3.0](../LICENSE)。內建元件 (sing-box GPL-3.0、Hysteria MIT、Slint GPL-3.0、Rust crate、字型 OFL-1.1 等) 與授權
 見 [`licenses/`](../licenses/)。
 
 Copyright (C) 2026 NenkaLab

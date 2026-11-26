@@ -162,7 +162,7 @@ fn a2b_base64_count(s: &[u8]) -> Result<Vec<u8>, (u32, usize)> {
 /// whole quads (no missing or excess padding)
 pub fn b64decode_strict(s: &str) -> Option<Vec<u8>> {
     let body = s.trim_end_matches('=');
-    if s.len() - body.len() > 2 || s.len() % 4 != 0 || !body.bytes().all(|c| b64_value(c).is_some()) {
+    if s.len() - body.len() > 2 || !s.len().is_multiple_of(4) || !body.bytes().all(|c| b64_value(c).is_some()) {
         return None;
     }
     a2b_base64(s.as_bytes())
@@ -170,11 +170,14 @@ pub fn b64decode_strict(s: &str) -> Option<Vec<u8>> {
 
 /// `base64.urlsafe_b64decode(s)` (not validated)
 pub fn urlsafe_b64decode(s: &str) -> Option<Vec<u8>> {
-    let t: Vec<u8> = s.bytes().map(|c| match c {
-        b'-' => b'+',
-        b'_' => b'/',
-        c => c,
-    }).collect();
+    let t: Vec<u8> = s
+        .bytes()
+        .map(|c| match c {
+            b'-' => b'+',
+            b'_' => b'/',
+            c => c,
+        })
+        .collect();
     a2b_base64(&t)
 }
 
@@ -183,11 +186,14 @@ pub fn urlsafe_b64decode_msg(s: &str) -> Result<Vec<u8>, String> {
     if !s.is_ascii() {
         return Err("string argument should contain only ASCII characters".into());
     }
-    let t: Vec<u8> = s.bytes().map(|c| match c {
-        b'-' => b'+',
-        b'_' => b'/',
-        c => c,
-    }).collect();
+    let t: Vec<u8> = s
+        .bytes()
+        .map(|c| match c {
+            b'-' => b'+',
+            b'_' => b'/',
+            c => c,
+        })
+        .collect();
     a2b_base64_count(&t).map_err(|(quad, count)| {
         if quad == 1 {
             format!("Invalid base64-encoded string: number of data characters ({count}) cannot be 1 more than a multiple of 4")
@@ -316,12 +322,19 @@ pub struct Split {
 /// `urllib.parse.urlsplit` (Python 3.14): leading controls and spaces dropped, tabs and line breaks removed, the
 /// bracket checks of the address. Not done: the NFKC check of an address with other than ASCII characters.
 pub fn urlsplit(url: &str) -> Result<Split, String> {
-    let url: String = url.trim_start_matches(|c: char| (c as u32) <= 0x20).chars().filter(|c| !matches!(c, '\t' | '\r' | '\n')).collect();
+    let url: String = url
+        .trim_start_matches(|c: char| (c as u32) <= 0x20)
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\r' | '\n'))
+        .collect();
     let mut sp = Split::default();
     let mut rest: &str = &url;
     if let Some(i) = rest.find(':') {
         let first = rest.chars().next().unwrap();
-        if i > 0 && first.is_ascii_alphabetic() && rest[..i].chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.')) {
+        if i > 0
+            && first.is_ascii_alphabetic()
+            && rest[..i].chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+        {
             sp.scheme = rest[..i].to_lowercase();
             rest = &rest[i + 1..];
         }
@@ -413,8 +426,18 @@ mod tests {
     #[test]
     fn base64_like_python_314() {
         // (input, result) as binascii.a2b_base64 gives them in Python 3.14
-        for (t, want) in [("QUI=", Some(&b"AB"[..])), ("QUI=R", Some(b"AB")), ("QQ==QQ==", Some(b"A")), ("QQ=a", None), ("QQ=", None),
-                          ("QUI==QUI=", None), ("QUI=REVG===", Some(b"ABQ")), ("QUJD=QQ==", Some(b"ABCA")), ("QQ=!=", Some(b"A")), ("QQ", None)] {
+        for (t, want) in [
+            ("QUI=", Some(&b"AB"[..])),
+            ("QUI=R", Some(b"AB")),
+            ("QQ==QQ==", Some(b"A")),
+            ("QQ=a", None),
+            ("QQ=", None),
+            ("QUI==QUI=", None),
+            ("QUI=REVG===", Some(b"ABQ")),
+            ("QUJD=QQ==", Some(b"ABCA")),
+            ("QQ=!=", Some(b"A")),
+            ("QQ", None),
+        ] {
             assert_eq!(a2b_base64(t.as_bytes()).as_deref(), want, "{t}");
         }
     }
@@ -422,7 +445,9 @@ mod tests {
     #[test]
     fn python_like() {
         assert_eq!(strip("\u{1c} a \u{3000}"), "a");
-        assert!(int16_ok("ff00aa") && int16_ok("0xffff") && int16_ok("ff_f00") && int16_ok(" fff00") && int16_ok("+fff00"));
+        assert!(
+            int16_ok("ff00aa") && int16_ok("0xffff") && int16_ok("ff_f00") && int16_ok(" fff00") && int16_ok("+fff00")
+        );
         assert!(!int16_ok("ff__00") && !int16_ok("_fff00") && !int16_ok("gg0000") && !int16_ok(""));
     }
 }

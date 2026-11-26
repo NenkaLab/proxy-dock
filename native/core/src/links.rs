@@ -3,7 +3,7 @@
 
 use crate::i18n::tr;
 use crate::py;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 
 pub const SCHEMES: [&str; 7] = ["vless", "vmess", "trojan", "tuic", "ss", "hysteria2", "hy2"];
@@ -148,14 +148,22 @@ pub fn parse(link: &str) -> Result<(Fields, String), String> {
         if !crate::checks::SS_METHODS.iter().any(|m| m.0 == method) {
             return Err(tr("Shadowsocks cipher '{value}' is not supported").replace("{value}", method));
         }
-        return Ok((obj(json!({"type": "shadowsocks", "host": host, "port": port, "ss_method": method, "ss_password": password})), named("Shadowsocks")));
+        return Ok((
+            obj(
+                json!({"type": "shadowsocks", "host": host, "port": port, "ss_method": method, "ss_password": password}),
+            ),
+            named("Shadowsocks"),
+        ));
     }
 
     if scheme == "hysteria2" || scheme == "hy2" {
         // the official format allows port hopping in the address: host:443,5000-6000
         let hp = rsplit_last(&u.netloc, '@');
         let (hosts, mut ports) = match hp.strip_prefix('[') {
-            Some(rest) => (rest.split_once(']').map_or(rest, |(a, _)| a).to_string(), hp.split_once(']').map_or("", |(_, b)| b).trim_start_matches(':').to_string()),
+            Some(rest) => (
+                rest.split_once(']').map_or(rest, |(a, _)| a).to_string(),
+                hp.split_once(']').map_or("", |(_, b)| b).trim_start_matches(':').to_string(),
+            ),
             None => match hp.rsplit_once(':') {
                 Some((a, b)) => (a.to_string(), b.to_string()),
                 None => (String::new(), hp.to_string()),
@@ -166,7 +174,8 @@ pub fn parse(link: &str) -> Result<(Fields, String), String> {
             hop = ports.clone();
             ports = ports.replace('-', ",").split(',').next().unwrap_or("").to_string();
         }
-        let (host, port) = host_port(&if hosts.contains(':') { format!("[{hosts}]:{ports}") } else { format!("{hosts}:{ports}") })?;
+        let (host, port) =
+            host_port(&if hosts.contains(':') { format!("[{hosts}]:{ports}") } else { format!("{hosts}:{ports}") })?;
         let mut ob = obj(json!({"type": "hysteria2", "host": host, "port": port, "hy2_password": user}));
         merge(&mut ob, tls_fields(&q));
         ob.shift_remove("fingerprint");
@@ -242,7 +251,10 @@ fn vmess(link: &str) -> Result<(Fields, String), String> {
     };
     let (host, port) = (get("add"), get("port"));
     let Some(port) = port_of(&port).filter(|_| !host.is_empty()) else { return Err(bad_address()) };
-    let net = { let n = get("net"); if n.is_empty() { "tcp".to_string() } else { n.to_lowercase() } };
+    let net = {
+        let n = get("net");
+        if n.is_empty() { "tcp".to_string() } else { n.to_lowercase() }
+    };
     let ty = get("type");
     if net == "tcp" && !matches!(ty.to_lowercase().as_str(), "" | "none") {
         return Err(unsupported_transport(&format!("tcp/{ty}")));
@@ -250,7 +262,10 @@ fn vmess(link: &str) -> Result<(Fields, String), String> {
     let path = get("path");
     let mut q = HashMap::new();
     q.insert("type".to_string(), net.clone());
-    q.insert("path".to_string(), if path.is_empty() { if net == "ws" { "/".into() } else { String::new() } } else { path.clone() });
+    q.insert(
+        "path".to_string(),
+        if path.is_empty() { if net == "ws" { "/".into() } else { String::new() } } else { path.clone() },
+    );
     q.insert("host".to_string(), get("host"));
     q.insert("serviceName".to_string(), path);
     let scy = get("scy").to_lowercase();
@@ -287,9 +302,15 @@ mod tests {
         assert_eq!(ob["fingerprint"], "chrome");
         assert_eq!(ob["transport_path"], "svc");
         let (ob, _) = parse("hy2://pw@[2001:db8::1]:443,5000-6000/?sni=a.com&obfs=salamander&obfs-password=x").unwrap();
-        assert_eq!((ob["host"].as_str(), ob["port"].as_i64(), ob["hy2_ports"].as_str()), (Some("2001:db8::1"), Some(443), Some("443,5000-6000")));
+        assert_eq!(
+            (ob["host"].as_str(), ob["port"].as_i64(), ob["hy2_ports"].as_str()),
+            (Some("2001:db8::1"), Some(443), Some("443,5000-6000"))
+        );
         let (ob, name) = parse("ss://YWVzLTI1Ni1nY206cGFzcw@1.2.3.4:8388").unwrap();
-        assert_eq!((ob["ss_method"].as_str(), ob["ss_password"].as_str(), name.as_str()), (Some("aes-256-gcm"), Some("pass"), "Shadowsocks"));
+        assert_eq!(
+            (ob["ss_method"].as_str(), ob["ss_password"].as_str(), name.as_str()),
+            (Some("aes-256-gcm"), Some("pass"), "Shadowsocks")
+        );
         assert!(parse("http://x").is_err());
         assert!(parse("trojan://p@host").is_err());
     }
@@ -347,12 +368,18 @@ pub fn client_url(p: &Value, lan_ip: &str) -> String {
         "wireguard" => {
             let peers = crate::singbox::compile::wg_peers(ib);
             match peers.first() {
-                Some(peer) => crate::wg::client_conf(ib, peer, if s("wg_endpoint").is_empty() { lan_ip } else { s("wg_endpoint") }),
+                Some(peer) => crate::wg::client_conf(
+                    ib,
+                    peer,
+                    if s("wg_endpoint").is_empty() { lan_ip } else { s("wg_endpoint") },
+                ),
                 None => String::new(),
             }
         }
         "shadowsocks" => ss_link(host, port, s("ss_method"), s("ss_password"), name),
-        "hysteria2" => hy2_link(host, port, s("hy2_password"), "", s("tls_cert").is_empty(), name, s("hy2_obfs_password")),
+        "hysteria2" => {
+            hy2_link(host, port, s("hy2_password"), "", s("tls_cert").is_empty(), name, s("hy2_obfs_password"))
+        }
         t => {
             let scheme = match t {
                 "socks4" => "socks4a",
@@ -360,7 +387,8 @@ pub fn client_url(p: &Value, lan_ip: &str) -> String {
                 _ => return String::new(),
             };
             let auth = ib.get("auth_enabled").is_some_and(|v| v.as_bool().unwrap_or(false));
-            let cred = if t != "socks4" && auth { format!("{}:{}@", s("username"), s("password")) } else { String::new() };
+            let cred =
+                if t != "socks4" && auth { format!("{}:{}@", s("username"), s("password")) } else { String::new() };
             format!("{scheme}://{cred}{}", crate::net::host_port(host, port))
         }
     }
@@ -377,14 +405,39 @@ mod client_tests {
     #[test]
     fn addresses_and_links() {
         let lan = "192.168.0.5";
-        assert_eq!(client_url(&card(json!({"type": "socks5", "host": "0.0.0.0", "port": 1080, "auth_enabled": true, "username": "u", "password": "p"})), lan), "socks5://u:p@192.168.0.5:1080");
-        assert_eq!(client_url(&card(json!({"type": "socks4", "host": "127.0.0.1", "port": 1080, "auth_enabled": true})), lan), "socks4a://127.0.0.1:1080");
-        assert_eq!(client_url(&card(json!({"type": "http", "host": "::", "port": 8080, "auth_enabled": false})), lan), "http://192.168.0.5:8080");
-        assert_eq!(client_url(&card(json!({"type": "https", "host": "::1", "port": 8443, "auth_enabled": false})), lan), "https://[::1]:8443");
-        assert_eq!(client_url(&card(json!({"type": "forward", "host": "0.0.0.0", "port": 2222})), lan), "192.168.0.5:2222");
+        assert_eq!(
+            client_url(
+                &card(
+                    json!({"type": "socks5", "host": "0.0.0.0", "port": 1080, "auth_enabled": true, "username": "u", "password": "p"})
+                ),
+                lan
+            ),
+            "socks5://u:p@192.168.0.5:1080"
+        );
+        assert_eq!(
+            client_url(&card(json!({"type": "socks4", "host": "127.0.0.1", "port": 1080, "auth_enabled": true})), lan),
+            "socks4a://127.0.0.1:1080"
+        );
+        assert_eq!(
+            client_url(&card(json!({"type": "http", "host": "::", "port": 8080, "auth_enabled": false})), lan),
+            "http://192.168.0.5:8080"
+        );
+        assert_eq!(
+            client_url(&card(json!({"type": "https", "host": "::1", "port": 8443, "auth_enabled": false})), lan),
+            "https://[::1]:8443"
+        );
+        assert_eq!(
+            client_url(&card(json!({"type": "forward", "host": "0.0.0.0", "port": 2222})), lan),
+            "192.168.0.5:2222"
+        );
         assert_eq!(client_url(&card(json!({"type": "tun"})), lan), "");
         assert_eq!(client_url(&card(json!({"type": "wireguard", "wg_peers": "[]"})), lan), "");
-        let hy = client_url(&card(json!({"type": "hysteria2", "host": "0.0.0.0", "port": 443, "hy2_password": "p w", "tls_cert": "", "hy2_obfs_password": "o"})), lan);
+        let hy = client_url(
+            &card(
+                json!({"type": "hysteria2", "host": "0.0.0.0", "port": 443, "hy2_password": "p w", "tls_cert": "", "hy2_obfs_password": "o"}),
+            ),
+            lan,
+        );
         assert_eq!(hy, "hysteria2://p%20w@192.168.0.5:443/?obfs=salamander&obfs-password=o&insecure=1#My%20card");
     }
 
@@ -393,10 +446,16 @@ mod client_tests {
         // what this side writes, the link reader takes
         let ss = ss_link("1.2.3.4", 8388, "aes-256-gcm", "pa:ss", "n");
         let (f, name) = parse(&ss).unwrap();
-        assert_eq!((f["host"].as_str(), f["ss_password"].as_str(), name.as_str()), (Some("1.2.3.4"), Some("pa:ss"), "n"));
+        assert_eq!(
+            (f["host"].as_str(), f["ss_password"].as_str(), name.as_str()),
+            (Some("1.2.3.4"), Some("pa:ss"), "n")
+        );
         let ss22 = ss_link("a.com", 443, "2022-blake3-aes-128-gcm", "k/+=", "x y");
         let (f, name) = parse(&ss22).unwrap();
-        assert_eq!((f["ss_method"].as_str(), f["ss_password"].as_str(), name.as_str()), (Some("2022-blake3-aes-128-gcm"), Some("k/+="), "x y"));
+        assert_eq!(
+            (f["ss_method"].as_str(), f["ss_password"].as_str(), name.as_str()),
+            (Some("2022-blake3-aes-128-gcm"), Some("k/+="), "x y")
+        );
         let hy = hy2_link("::1", 443, "pw", "", true, "h", "");
         let (f, _) = parse(&hy).unwrap();
         assert_eq!((f["host"].as_str(), f["hy2_password"].as_str()), (Some("::1"), Some("pw")));

@@ -15,7 +15,8 @@ import time
 import types
 
 ROOT = os.path.join(os.path.dirname(__file__), "..", "..")
-sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pyapp  # noqa: E402,F401  (the Python app: see pyapp.py)
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from proxydock import graph as graph_mod, i18n  # noqa: E402
 from proxydock.ui import window  # noqa: E402

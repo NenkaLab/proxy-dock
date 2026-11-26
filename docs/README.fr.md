@@ -40,26 +40,29 @@ Les proxys tournent sur [sing-box](https://github.com/SagerNet/sing-box), fourni
 
 ## Lancer
 
-Sous Windows, `ProxyDock-<version>-windows-x64-setup.exe` l'installe pour votre compte (sans droits administrateur) ; le `.zip` contient la même application sous forme de dossier. Sous macOS, ouvrez le `.dmg` et glissez ProxyDock dans Applications. Sous Linux, rendez le `.AppImage` exécutable puis lancez-le.
+Windows 10 / 11 : `ProxyDock-<version>-windows-x64-setup.exe` l'installe pour votre compte (sans droits administrateur) ;
+le `.zip` contient la même application sous forme de dossier. Téléchargez-la sur [Releases](https://github.com/NenkaLab/proxy-dock/releases).
 
-Téléchargez une version sur [Releases](https://github.com/NenkaLab/proxy-dock/releases).
+Les réglages sont dans `%APPDATA%\ProxyDock` ; la version 3 reprend les réglages de la 2.x. La page **Mode d'emploi** de
+l'application explique le reste.
 
-Les réglages sont dans `%APPDATA%\ProxyDock` (macOS : `~/Library/Application Support/ProxyDock`,
-Linux : `~/.config/ProxyDock`). La page **Mode d'emploi** de l'application explique le reste.
+ProxyDock 3 est une réécriture en Rust et ne fonctionne pour l'instant que sous Windows. Sous macOS et Linux, utilisez la
+2.x (l'application Python, sur la branche [`old`](https://github.com/NenkaLab/proxy-dock/tree/old) et dans les versions 2.x).
 
 ## Compiler
 
 Lancer depuis les sources, tests, compilation, installateurs et versions : [Build.md](Build.md) (en anglais).
+Vérifications avant une version : [TESTING.md](../TESTING.md) (en coréen).
 
 ## Limites
 
-- Les routeurs, groupes, WireGuard, VLESS / VMess / Trojan / TUIC et TUN demandent le moteur sing-box (fourni).
-- TUN et macOS n'ont pas encore été essayés en conditions réelles.
+- Windows uniquement (macOS / Linux : 2.x).
+- TUN n'a pas encore été essayé en conditions réelles.
 - SOCKS4 n'a pas de mot de passe : ne l'utilisez que sur ce PC.
 
 ## Licence
 
-[GPL-3.0](../LICENSE). Les composants inclus (sing-box GPL-3.0, Hysteria MIT, Qt / PySide6 LGPL-3.0, polices OFL-1.1, ...)
+[GPL-3.0](../LICENSE). Les composants inclus (sing-box GPL-3.0, Hysteria MIT, Slint GPL-3.0, crates Rust, polices OFL-1.1, ...)
 et leurs licences sont dans [`licenses/`](../licenses/).
 
 Copyright (C) 2026 NenkaLab

@@ -30,10 +30,23 @@ pub fn interfaces() -> Vec<Iface> {
 /// Sorted names of the programs running now (e.g. chrome.exe), Windows' own processes left out.
 pub fn running_programs() -> Vec<String> {
     const SKIP: [&str; 14] = [
-        "system idle process", "system", "registry", "smss.exe", "csrss.exe", "wininit.exe", "services.exe",
-        "lsass.exe", "svchost.exe", "fontdrvhost.exe", "dwm.exe", "memory compression", "conhost.exe", "tasklist.exe",
+        "system idle process",
+        "system",
+        "registry",
+        "smss.exe",
+        "csrss.exe",
+        "wininit.exe",
+        "services.exe",
+        "lsass.exe",
+        "svchost.exe",
+        "fontdrvhost.exe",
+        "dwm.exe",
+        "memory compression",
+        "conhost.exe",
+        "tasklist.exe",
     ];
-    let mut names: Vec<String> = imp::process_names().into_iter().filter(|n| !SKIP.contains(&n.to_lowercase().as_str())).collect();
+    let mut names: Vec<String> =
+        imp::process_names().into_iter().filter(|n| !SKIP.contains(&n.to_lowercase().as_str())).collect();
     names.sort_by_key(|n| n.to_lowercase());
     names.dedup();
     names
@@ -43,13 +56,17 @@ pub fn running_programs() -> Vec<String> {
 mod imp {
     use super::Iface;
     use std::collections::HashSet;
-    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_BUFFER_OVERFLOW, ERROR_INSUFFICIENT_BUFFER, INVALID_HANDLE_VALUE, NO_ERROR};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_BUFFER_OVERFLOW, ERROR_INSUFFICIENT_BUFFER, INVALID_HANDLE_VALUE, NO_ERROR,
+    };
     use windows_sys::Win32::NetworkManagement::IpHelper::{
-        GetAdaptersAddresses, GetIpForwardTable, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER, GAA_FLAG_SKIP_MULTICAST,
-        IP_ADAPTER_ADDRESSES_LH, MIB_IPFORWARDTABLE,
+        GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER, GAA_FLAG_SKIP_MULTICAST, GetAdaptersAddresses,
+        GetIpForwardTable, IP_ADAPTER_ADDRESSES_LH, MIB_IPFORWARDTABLE,
     };
     use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_UNSPEC, SOCKADDR_IN};
-    use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+    };
 
     /// the indexes of the interfaces with a default route (None = could not tell)
     fn default_route_ifaces() -> Option<HashSet<u32>> {
@@ -63,7 +80,12 @@ mod imp {
                 NO_ERROR => {
                     let n = unsafe { (*table).dwNumEntries } as usize;
                     let rows = unsafe { std::slice::from_raw_parts((*table).table.as_ptr(), n) };
-                    return Some(rows.iter().filter(|r| super::is_default_route(r.dwForwardDest, r.dwForwardMask)).map(|r| r.dwForwardIfIndex).collect());
+                    return Some(
+                        rows.iter()
+                            .filter(|r| super::is_default_route(r.dwForwardDest, r.dwForwardMask))
+                            .map(|r| r.dwForwardIfIndex)
+                            .collect(),
+                    );
                 }
                 ERROR_INSUFFICIENT_BUFFER => continue,
                 _ => return None,
@@ -88,7 +110,9 @@ mod imp {
         let mut tries = 0;
         loop {
             buf = vec![0u64; (size as usize).div_ceil(8)];
-            let rc = unsafe { GetAdaptersAddresses(AF_UNSPEC as u32, flags, std::ptr::null(), buf.as_mut_ptr().cast(), &mut size) };
+            let rc = unsafe {
+                GetAdaptersAddresses(AF_UNSPEC as u32, flags, std::ptr::null(), buf.as_mut_ptr().cast(), &mut size)
+            };
             if rc == NO_ERROR {
                 break;
             }
@@ -161,8 +185,16 @@ mod imp {
     }
 
     pub fn process_names() -> Vec<String> {
-        let out = std::process::Command::new("ps").args(["-A", "-o", "comm="]).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
-        out.lines().map(str::trim).filter(|x| !x.is_empty()).map(|x| x.rsplit('/').next().unwrap_or(x).to_string()).collect()
+        let out = std::process::Command::new("ps")
+            .args(["-A", "-o", "comm="])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default();
+        out.lines()
+            .map(str::trim)
+            .filter(|x| !x.is_empty())
+            .map(|x| x.rsplit('/').next().unwrap_or(x).to_string())
+            .collect()
     }
 }
 

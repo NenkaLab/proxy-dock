@@ -4,7 +4,7 @@
 //! Tests point the registry keys somewhere else (`set_test_keys`), so they never change the real settings.
 
 use crate::i18n::tr;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
@@ -18,8 +18,11 @@ pub const PC_INBOUND_TYPES: [&str; 2] = ["http", "socks4"];
 pub const FW_RULE: &str = "ProxyDock - Block External";
 /// rule names of earlier versions (removed with ours)
 pub const FW_OLD_RULES: [&str; 5] = [
-    "SOCKS5 Proxy - Block External", "Block SOCKS5 Proxy External", "Allow SOCKS5 Proxy Local",
-    "Block SOCKS5 Proxy External UDP", "Allow SOCKS5 Proxy Local UDP",
+    "SOCKS5 Proxy - Block External",
+    "Block SOCKS5 Proxy External",
+    "Allow SOCKS5 Proxy Local",
+    "Block SOCKS5 Proxy External UDP",
+    "Allow SOCKS5 Proxy Local UDP",
 ];
 
 /// (Run key, Internet Settings key) in HKCU; tests replace them
@@ -65,7 +68,17 @@ mod reg {
         let mut h: HKEY = std::ptr::null_mut();
         let rc = unsafe {
             if write {
-                RegCreateKeyExW(HKEY_CURRENT_USER, wide(path).as_ptr(), 0, std::ptr::null(), 0, KEY_READ | KEY_SET_VALUE, std::ptr::null(), &mut h, std::ptr::null_mut())
+                RegCreateKeyExW(
+                    HKEY_CURRENT_USER,
+                    wide(path).as_ptr(),
+                    0,
+                    std::ptr::null(),
+                    0,
+                    KEY_READ | KEY_SET_VALUE,
+                    std::ptr::null(),
+                    &mut h,
+                    std::ptr::null_mut(),
+                )
             } else {
                 RegOpenKeyExW(HKEY_CURRENT_USER, wide(path).as_ptr(), 0, KEY_READ, &mut h)
             }
@@ -80,18 +93,30 @@ mod reg {
     pub fn get(k: &Key, name: &str) -> Option<serde_json::Value> {
         let name = wide(name);
         let (mut ty, mut len) = (0u32, 0u32);
-        if unsafe { RegQueryValueExW(k.0, name.as_ptr(), std::ptr::null(), &mut ty, std::ptr::null_mut(), &mut len) } != ERROR_SUCCESS {
+        if unsafe { RegQueryValueExW(k.0, name.as_ptr(), std::ptr::null(), &mut ty, std::ptr::null_mut(), &mut len) }
+            != ERROR_SUCCESS
+        {
             return None;
         }
         let mut buf = vec![0u8; len as usize + 2];
-        if unsafe { RegQueryValueExW(k.0, name.as_ptr(), std::ptr::null(), &mut ty, buf.as_mut_ptr(), &mut len) } != ERROR_SUCCESS {
+        if unsafe { RegQueryValueExW(k.0, name.as_ptr(), std::ptr::null(), &mut ty, buf.as_mut_ptr(), &mut len) }
+            != ERROR_SUCCESS
+        {
             return None;
         }
         buf.truncate(len as usize);
         match ty {
-            REG_DWORD if buf.len() >= 4 => Some(serde_json::json!(u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]))),
+            REG_DWORD if buf.len() >= 4 => {
+                Some(serde_json::json!(u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]])))
+            }
             REG_SZ | REG_EXPAND_SZ => {
-                let w: Vec<u16> = buf.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).take_while(|c| *c != 0).collect();
+                let w: Vec<u16> = buf
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                    .take_while(|c| *c != 0)
+                    .collect();
                 Some(serde_json::json!(String::from_utf16_lossy(&w)))
             }
             _ => None,
@@ -197,7 +222,9 @@ pub fn migrate_autostart(exe: &Path) -> bool {
 pub fn system_proxy_server(inbound: &Value) -> Result<String, String> {
     let t = inbound["type"].as_str().unwrap_or("");
     if !PC_INBOUND_TYPES.contains(&t) {
-        return Err(tr("Windows can only use an HTTP (or SOCKS4) inbound as the system proxy - add an HTTP inbound for the PC"));
+        return Err(tr(
+            "Windows can only use an HTTP (or SOCKS4) inbound as the system proxy - add an HTTP inbound for the PC",
+        ));
     }
     let host = match inbound["host"].as_str().unwrap_or("") {
         "0.0.0.0" => "127.0.0.1",
@@ -229,7 +256,9 @@ pub fn set_system_proxy(values: &Map<String, Value>) -> Result<(), String> {
             let Some(v) = values.get(name) else { continue };
             match v {
                 Value::Null => reg::delete(&k, name),
-                _ if name == "ProxyEnable" => reg::set_dword(&k, name, v.as_u64().unwrap_or(0) as u32).map_err(|e| e.to_string())?,
+                _ if name == "ProxyEnable" => {
+                    reg::set_dword(&k, name, v.as_u64().unwrap_or(0) as u32).map_err(|e| e.to_string())?
+                }
                 Value::String(s) => reg::set_str(&k, name, s).map_err(|e| e.to_string())?,
                 other => reg::set_str(&k, name, &other.to_string()).map_err(|e| e.to_string())?,
             }
@@ -248,7 +277,9 @@ pub fn set_system_proxy(values: &Map<String, Value>) -> Result<(), String> {
 
 #[cfg(windows)]
 fn notify_inet_change() {
-    use windows_sys::Win32::Networking::WinInet::{InternetSetOptionW, INTERNET_OPTION_REFRESH, INTERNET_OPTION_SETTINGS_CHANGED};
+    use windows_sys::Win32::Networking::WinInet::{
+        INTERNET_OPTION_REFRESH, INTERNET_OPTION_SETTINGS_CHANGED, InternetSetOptionW,
+    };
     unsafe {
         InternetSetOptionW(std::ptr::null(), INTERNET_OPTION_SETTINGS_CHANGED, std::ptr::null(), 0);
         InternetSetOptionW(std::ptr::null(), INTERNET_OPTION_REFRESH, std::ptr::null(), 0);
@@ -305,9 +336,13 @@ pub fn firewall_commands(block: bool, programs: &[PathBuf]) -> Result<String, St
         for p in programs {
             let s = p.display().to_string();
             if s.chars().any(|c| "\"%^&|<>".contains(c)) {
-                return Err(tr("The program path contains special characters (\" % ^ & | < >), so the rule cannot be created. Move it to another folder"));
+                return Err(tr(
+                    "The program path contains special characters (\" % ^ & | < >), so the rule cannot be created. Move it to another folder",
+                ));
             }
-            cmds.push(format!("netsh advfirewall firewall add rule name=\"{FW_RULE}\" dir=in action=block program=\"{s}\" enable=yes"));
+            cmds.push(format!(
+                "netsh advfirewall firewall add rule name=\"{FW_RULE}\" dir=in action=block program=\"{s}\" enable=yes"
+            ));
         }
     }
     Ok(cmds.join(" & "))
@@ -321,7 +356,7 @@ pub fn firewall_apply(block: bool, programs: &[PathBuf]) -> Result<String, Strin
     {
         use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
         use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
-        use windows_sys::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
+        use windows_sys::Win32::UI::Shell::{SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW};
         let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
         let (verb, file, params) = (wide("runas"), wide("cmd.exe"), wide(&format!("/s /c \"{cmds}\"")));
         let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
@@ -406,13 +441,18 @@ mod tests {
 
         assert_eq!(system_proxy_server(&json!({"type": "socks4", "host": "::", "port": 1})).unwrap(), "socks=[::1]:1");
         assert!(system_proxy_server(&json!({"type": "socks5", "host": "127.0.0.1", "port": 1})).is_err());
-        let cmds = firewall_commands(true, &[PathBuf::from(r"C:\a\proxydock.exe"), PathBuf::from(r"C:\b\sing-box.exe")]).unwrap();
+        let cmds =
+            firewall_commands(true, &[PathBuf::from(r"C:\a\proxydock.exe"), PathBuf::from(r"C:\b\sing-box.exe")])
+                .unwrap();
         assert!(cmds.ends_with(r#"add rule name="ProxyDock - Block External" dir=in action=block program="C:\b\sing-box.exe" enable=yes"#), "{cmds}");
         assert!(firewall_commands(true, &[PathBuf::from(r"C:\a&b\x.exe")]).is_err());
         // (the test keys go again)
         unsafe {
             let w: Vec<u16> = r"Software\ProxyDockTest".encode_utf16().chain(Some(0)).collect();
-            windows_sys::Win32::System::Registry::RegDeleteTreeW(windows_sys::Win32::System::Registry::HKEY_CURRENT_USER, w.as_ptr());
+            windows_sys::Win32::System::Registry::RegDeleteTreeW(
+                windows_sys::Win32::System::Registry::HKEY_CURRENT_USER,
+                w.as_ptr(),
+            );
         }
     }
 }

@@ -5,7 +5,7 @@
 
 use proxydock_core::singbox::compile::{self as sb, BuildEnv, BuildError, Reason};
 use proxydock_core::{config, graph, i18n, ids, paths, secret};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 const MASK: [&str; 5] = ["password", "private_key", "pre_shared_key", "uuid", "secret"];
@@ -17,7 +17,10 @@ fn mask_all(v: &mut Value) {
                 if let (true, Value::String(s)) = (MASK.contains(&k.as_str()), &*x) {
                     if !s.is_empty() {
                         let h = Sha256::digest(s.as_bytes());
-                        *x = json!(format!("sha256:{}", h.iter().take(6).map(|b| format!("{b:02x}")).collect::<String>()));
+                        *x = json!(format!(
+                            "sha256:{}",
+                            h.iter().take(6).map(|b| format!("{b:02x}")).collect::<String>()
+                        ));
                     }
                 } else {
                     mask_all(x);

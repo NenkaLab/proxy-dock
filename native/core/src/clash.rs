@@ -5,7 +5,7 @@
 //! the values go through Python's `str()` in the Python app.
 
 use crate::i18n::tr;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::sync::LazyLock;
 use yaml_rust2::parser::{Event, MarkedEventReceiver, Parser, Tag};
@@ -56,7 +56,10 @@ impl Y {
             Y::Float(f) => crate::py::float_repr(*f),
             Y::Str(s) => s.clone(),
             Y::Seq(v) => format!("[{}]", v.iter().map(Y::py_repr).collect::<Vec<_>>().join(", ")),
-            Y::Map(m) => format!("{{{}}}", m.iter().map(|(k, v)| format!("{}: {}", k.py_repr(), v.py_repr())).collect::<Vec<_>>().join(", ")),
+            Y::Map(m) => format!(
+                "{{{}}}",
+                m.iter().map(|(k, v)| format!("{}: {}", k.py_repr(), v.py_repr())).collect::<Vec<_>>().join(", ")
+            ),
         }
     }
 
@@ -103,8 +106,9 @@ fn or<'a>(a: Option<&'a Y>, b: Option<&'a Y>) -> Option<&'a Y> {
 
 // --- reading the YAML like PyYAML ---
 
-static BOOL: LazyLock<regex_lite::Regex> =
-    LazyLock::new(|| regex_lite::Regex::new(r"^(?:yes|Yes|YES|no|No|NO|true|True|TRUE|false|False|FALSE|on|On|ON|off|Off|OFF)$").unwrap());
+static BOOL: LazyLock<regex_lite::Regex> = LazyLock::new(|| {
+    regex_lite::Regex::new(r"^(?:yes|Yes|YES|no|No|NO|true|True|TRUE|false|False|FALSE|on|On|ON|off|Off|OFF)$").unwrap()
+});
 static FLOAT: LazyLock<regex_lite::Regex> = LazyLock::new(|| {
     regex_lite::Regex::new(r"^(?:[-+]?(?:[0-9][0-9_]*)\.[0-9_]*(?:[eE][-+][0-9]+)?|\.[0-9][0-9_]*(?:[eE][-+][0-9]+)?|[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*|[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN))$").unwrap()
 });
@@ -255,7 +259,10 @@ impl MarkedEventReceiver for Builder {
         }
         match ev {
             Event::Scalar(text, style, anchor, tag) => {
-                let merge_key = style == TScalarStyle::Plain && tag.is_none() && text == "<<" && matches!(self.stack.last(), Some(Frame::Map(_, _, None, _)));
+                let merge_key = style == TScalarStyle::Plain
+                    && tag.is_none()
+                    && text == "<<"
+                    && matches!(self.stack.last(), Some(Frame::Map(_, _, None, _)));
                 let v = match (&tag, style) {
                     (Some(t), _) => match tagged(text, t) {
                         Ok(v) => v,
@@ -287,7 +294,8 @@ impl MarkedEventReceiver for Builder {
                     // strings of one character below U+0100 (and ""), so for those the first merged one wins.
                     let mut all: Vec<(Y, Y)> = vec![];
                     for (k, v) in merges.into_iter().flatten() {
-                        let shared = matches!(&k, Y::Str(t) if t.chars().count() <= 1 && t.chars().all(|c| (c as u32) < 0x100));
+                        let shared =
+                            matches!(&k, Y::Str(t) if t.chars().count() <= 1 && t.chars().all(|c| (c as u32) < 0x100));
                         if shared && all.iter().any(|(a, _)| matches!((a, &k), (Y::Str(x), Y::Str(y)) if x == y)) {
                             continue;
                         }
@@ -320,7 +328,9 @@ pub fn looks_like_clash(text: &str) -> bool {
 }
 
 fn load(text: &str) -> Result<Vec<Y>, String> {
-    let doc = safe_load(text).map_err(|e| tr("The Clash subscription is not valid YAML: {e}").replace("{e}", e.lines().next().unwrap_or("")))?;
+    let doc = safe_load(text).map_err(|e| {
+        tr("The Clash subscription is not valid YAML: {e}").replace("{e}", e.lines().next().unwrap_or(""))
+    })?;
     match doc.get("proxies") {
         Some(Y::Seq(list)) if matches!(doc, Y::Map(_)) => Ok(list.clone()),
         _ => Err(tr("The Clash subscription has no 'proxies' list")),
@@ -329,7 +339,8 @@ fn load(text: &str) -> Result<Vec<Y>, String> {
 
 /// `_mbps`: '100 Mbps', '1 Gbps', 100 -> Mbps (0 if unknown); None where Python raises
 fn mbps(v: Option<&Y>) -> Option<i64> {
-    static RE: LazyLock<regex_lite::Regex> = LazyLock::new(|| regex_lite::Regex::new(r"^\s*([\d.]+)\s*([kmg]?)(?:bps|b)?\s*$").unwrap());
+    static RE: LazyLock<regex_lite::Regex> =
+        LazyLock::new(|| regex_lite::Regex::new(r"^\s*([\d.]+)\s*([kmg]?)(?:bps|b)?\s*$").unwrap());
     let text = s(v).to_lowercase();
     let Some(m) = RE.captures(&text) else { return Some(0) };
     let n: f64 = m[1].parse().ok()?;
@@ -355,10 +366,13 @@ fn tls(p: &Y, sni_key: &str) -> Fields {
     if b(p.get("skip-cert-verify")) {
         out.insert("tls_verify".into(), json!(false));
     }
-    if let Some(Y::Seq(alpn)) = p.get("alpn") {
-        if !alpn.is_empty() {
-            out.insert("alpn".into(), json!(alpn.iter().map(|x| s(Some(x))).filter(|x| !x.is_empty()).collect::<Vec<_>>().join(",")));
-        }
+    if let Some(Y::Seq(alpn)) = p.get("alpn")
+        && !alpn.is_empty()
+    {
+        out.insert(
+            "alpn".into(),
+            json!(alpn.iter().map(|x| s(Some(x))).filter(|x| !x.is_empty()).collect::<Vec<_>>().join(",")),
+        );
     }
     let fp = s(p.get("client-fingerprint"));
     if !fp.is_empty() {
@@ -367,12 +381,15 @@ fn tls(p: &Y, sni_key: &str) -> Fields {
     out
 }
 
-fn dict<'a>(v: Option<&'a Y>) -> Option<&'a Y> {
+fn dict(v: Option<&Y>) -> Option<&Y> {
     v.filter(|v| matches!(v, Y::Map(_)))
 }
 
 fn transport(p: &Y) -> Option<Fields> {
-    let net = { let n = s(p.get("network")); if n.is_empty() { "tcp".into() } else { n.to_lowercase() } };
+    let net = {
+        let n = s(p.get("network"));
+        if n.is_empty() { "tcp".into() } else { n.to_lowercase() }
+    };
     let v = match net.as_str() {
         "ws" => {
             let o = dict(p.get("ws-opts"));
@@ -381,7 +398,9 @@ fn transport(p: &Y) -> Option<Fields> {
             let host = s(headers.and_then(|h| or(h.get("Host"), h.get("host"))));
             json!({"transport": "ws", "transport_path": if path.is_empty() { "/".into() } else { path }, "transport_host": host})
         }
-        "grpc" => json!({"transport": "grpc", "transport_path": s(dict(p.get("grpc-opts")).and_then(|o| o.get("grpc-service-name")))}),
+        "grpc" => {
+            json!({"transport": "grpc", "transport_path": s(dict(p.get("grpc-opts")).and_then(|o| o.get("grpc-service-name")))})
+        }
         "tcp" => json!({"transport": "tcp"}),
         _ => return None,
     };
@@ -425,11 +444,17 @@ fn one(p: &Y) -> Option<Fields> {
             with(json!({"type": "shadowsocks", "ss_method": method, "ss_password": s(p.get("password"))}))
         }
         "vmess" => {
-            let cipher = { let c = s(p.get("cipher")); if c.is_empty() { "auto".into() } else { c.to_lowercase() } };
+            let cipher = {
+                let c = s(p.get("cipher"));
+                if c.is_empty() { "auto".into() } else { c.to_lowercase() }
+            };
             let aid = int_or0("alterId")?;
             let tls_on = b(p.get("tls"));
-            let mut ob = merged(with(json!({"type": "vmess", "uuid": s(p.get("uuid")), "vmess_cipher": cipher, "vmess_alter_id": aid,
-                                             "security": if tls_on { "tls" } else { "none" }})), transport(p)?);
+            let mut ob = merged(
+                with(json!({"type": "vmess", "uuid": s(p.get("uuid")), "vmess_cipher": cipher, "vmess_alter_id": aid,
+                                             "security": if tls_on { "tls" } else { "none" }})),
+                transport(p)?,
+            );
             if tls_on {
                 ob = merged(ob, tls(p, "servername"));
             }
@@ -437,8 +462,19 @@ fn one(p: &Y) -> Option<Fields> {
         }
         "vless" => {
             let reality = dict(p.get("reality-opts")).filter(|r| r.truthy());
-            let sec = if reality.is_some() { "reality" } else if b(p.get("tls")) { "tls" } else { "none" };
-            let mut ob = merged(with(json!({"type": "vless", "uuid": s(p.get("uuid")), "vless_flow": s(p.get("flow")), "security": sec})), transport(p)?);
+            let sec = if reality.is_some() {
+                "reality"
+            } else if b(p.get("tls")) {
+                "tls"
+            } else {
+                "none"
+            };
+            let mut ob = merged(
+                with(
+                    json!({"type": "vless", "uuid": s(p.get("uuid")), "vless_flow": s(p.get("flow")), "security": sec}),
+                ),
+                transport(p)?,
+            );
             if sec != "none" {
                 ob = merged(ob, tls(p, "servername"));
             }
@@ -449,9 +485,15 @@ fn one(p: &Y) -> Option<Fields> {
             }
             ob
         }
-        "trojan" => merged(merged(with(json!({"type": "trojan", "password": s(p.get("password"))})), tls(p, "sni")), transport(p)?),
+        "trojan" => merged(
+            merged(with(json!({"type": "trojan", "password": s(p.get("password"))})), tls(p, "sni")),
+            transport(p)?,
+        ),
         "hysteria2" => {
-            let mut ob = merged(with(json!({"type": "hysteria2", "hy2_password": s(or(p.get("password"), p.get("auth")))})), tls(p, "sni"));
+            let mut ob = merged(
+                with(json!({"type": "hysteria2", "hy2_password": s(or(p.get("password"), p.get("auth")))})),
+                tls(p, "sni"),
+            );
             ob.shift_remove("fingerprint");
             ob.shift_remove("alpn");
             let obfs = s(p.get("obfs")).to_lowercase();
@@ -473,7 +515,10 @@ fn one(p: &Y) -> Option<Fields> {
             ob
         }
         "tuic" => {
-            let mut ob = merged(with(json!({"type": "tuic", "uuid": s(p.get("uuid")), "password": s(p.get("password"))})), tls(p, "sni"));
+            let mut ob = merged(
+                with(json!({"type": "tuic", "uuid": s(p.get("uuid")), "password": s(p.get("password"))})),
+                tls(p, "sni"),
+            );
             ob.shift_remove("fingerprint");
             let cc = s(p.get("congestion-controller"));
             if !cc.is_empty() {
@@ -493,7 +538,9 @@ fn one(p: &Y) -> Option<Fields> {
         }
         "http" => {
             let https = b(p.get("tls"));
-            let mut ob = with(json!({"type": if https { "https" } else { "http" }, "username": s(p.get("username")), "password": s(p.get("password"))}));
+            let mut ob = with(
+                json!({"type": if https { "https" } else { "http" }, "username": s(p.get("username")), "password": s(p.get("password"))}),
+            );
             if https {
                 ob = merged(ob, tls(p, "sni"));
                 ob.shift_remove("fingerprint");
@@ -505,14 +552,27 @@ fn one(p: &Y) -> Option<Fields> {
             let addrs: Vec<String> = [s(p.get("ip")), s(p.get("ipv6"))]
                 .into_iter()
                 .filter(|x| !x.is_empty())
-                .map(|a| if a.contains('/') { a } else if a.contains(':') { format!("{a}/128") } else { format!("{a}/32") })
+                .map(|a| {
+                    if a.contains('/') {
+                        a
+                    } else if a.contains(':') {
+                        format!("{a}/128")
+                    } else {
+                        format!("{a}/32")
+                    }
+                })
                 .collect();
-            let mut ob = with(json!({"type": "wireguard", "wg_private_key": s(p.get("private-key")), "wg_address": addrs.join(", "),
-                                     "wg_peer_public_key": s(p.get("public-key")), "wg_preshared_key": s(p.get("pre-shared-key"))}));
-            if let Some(Y::Seq(allowed)) = p.get("allowed-ips") {
-                if !allowed.is_empty() {
-                    ob.insert("wg_allowed_ips".into(), json!(allowed.iter().map(|x| s(Some(x))).collect::<Vec<_>>().join(", ")));
-                }
+            let mut ob = with(
+                json!({"type": "wireguard", "wg_private_key": s(p.get("private-key")), "wg_address": addrs.join(", "),
+                                     "wg_peer_public_key": s(p.get("public-key")), "wg_preshared_key": s(p.get("pre-shared-key"))}),
+            );
+            if let Some(Y::Seq(allowed)) = p.get("allowed-ips")
+                && !allowed.is_empty()
+            {
+                ob.insert(
+                    "wg_allowed_ips".into(),
+                    json!(allowed.iter().map(|x| s(Some(x))).collect::<Vec<_>>().join(", ")),
+                );
             }
             if truthy(p.get("mtu")) {
                 ob.insert("wg_mtu".into(), json!(int_or0("mtu")?));
@@ -550,7 +610,10 @@ mod tests {
 
     #[test]
     fn pyyaml_scalars() {
-        let y = safe_load("a: yes\nb: 0o7\nc: 010\nd: 1:30\ne: 1.5\nf: '1'\ng: ~\nh: 1e5\nbase: &b {x: 1}\nm:\n  <<: *b\n  y: 2\n").unwrap();
+        let y = safe_load(
+            "a: yes\nb: 0o7\nc: 010\nd: 1:30\ne: 1.5\nf: '1'\ng: ~\nh: 1e5\nbase: &b {x: 1}\nm:\n  <<: *b\n  y: 2\n",
+        )
+        .unwrap();
         assert!(matches!(y.get("a"), Some(Y::Bool(true))));
         assert!(matches!(y.get("b"), Some(Y::Str(_))));
         assert!(matches!(y.get("c"), Some(Y::Int(8))));

@@ -3,7 +3,7 @@
 //! OKLCh where different ones come in), pass-through lanes hand on what comes into them.
 
 use crate::graph::{self, Obj};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// the canvas's default link colour in mixes (Python `DEFAULT_LINK`, NodeGraphQt's pipe colour)
@@ -53,7 +53,8 @@ pub fn mix_colors(colors: &[String]) -> String {
 
 /// `mix_colors` with "" standing for `default` (the window's own default link colour)
 pub fn mix_with(colors: &[String], default: &str) -> String {
-    let labs: Vec<(f64, f64, f64)> = colors.iter().map(|c| srgb_to_oklab(if c.is_empty() { default } else { c })).collect();
+    let labs: Vec<(f64, f64, f64)> =
+        colors.iter().map(|c| srgb_to_oklab(if c.is_empty() { default } else { c })).collect();
     if labs.is_empty() {
         return String::new();
     }
@@ -251,7 +252,14 @@ pub fn wire_colors(g: &Obj) -> HashMap<String, Wire> {
 pub fn output_color(g: &Obj, bid: &str, key: &str) -> String {
     match graph::find(g, bid) {
         Some(("router", n)) if key == "default" => n["default_color"].as_str().unwrap_or("").into(),
-        Some(("router", n)) => n["rules"].as_array().into_iter().flatten().find(|x| x["id"] == json!(key)).and_then(|x| x["color"].as_str()).unwrap_or("").into(),
+        Some(("router", n)) => n["rules"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|x| x["id"] == json!(key))
+            .and_then(|x| x["color"].as_str())
+            .unwrap_or("")
+            .into(),
         _ => String::new(),
     }
 }
@@ -259,7 +267,11 @@ pub fn output_color(g: &Obj, bid: &str, key: &str) -> String {
 /// Give output `key` of router `bid` its own colour ("" = none); false when there is no such output
 pub fn set_output_color(g: &mut Obj, bid: &str, key: &str, color: &str) -> bool {
     let color = graph::valid_color(Some(&json!(color)));
-    let Some(r) = g.get_mut("routers").and_then(Value::as_array_mut).and_then(|a| a.iter_mut().find(|r| r["id"] == json!(bid))) else { return false };
+    let Some(r) =
+        g.get_mut("routers").and_then(Value::as_array_mut).and_then(|a| a.iter_mut().find(|r| r["id"] == json!(bid)))
+    else {
+        return false;
+    };
     if key == "default" {
         r["default_color"] = json!(color);
         return true;
@@ -277,7 +289,9 @@ pub fn set_output_color(g: &mut Obj, bid: &str, key: &str, color: &str) -> bool 
 pub fn set_color(g: &mut Obj, bid: &str, color: &str) -> bool {
     let color = graph::valid_color(Some(&json!(color)));
     for kind in ["inbounds", "outbounds", "routers"] {
-        if let Some(n) = g.get_mut(kind).and_then(Value::as_array_mut).and_then(|a| a.iter_mut().find(|n| n["id"] == json!(bid))) {
+        if let Some(n) =
+            g.get_mut(kind).and_then(Value::as_array_mut).and_then(|a| a.iter_mut().find(|n| n["id"] == json!(bid)))
+        {
             if n["color"] == json!(color) {
                 return false;
             }

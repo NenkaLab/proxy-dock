@@ -5,8 +5,15 @@ use serde_json::{Map, Value};
 
 /// Fields saved encrypted (subscription URLs carry tokens, the server list has passwords).
 pub const SECRET_FIELDS: [&str; 9] = [
-    "password", "ss_password", "hy2_password", "hy2_obfs_password", "wg_private_key", "wg_preshared_key", "wg_peers",
-    "sub_url", "sub_servers",
+    "password",
+    "ss_password",
+    "hy2_password",
+    "hy2_obfs_password",
+    "wg_private_key",
+    "wg_preshared_key",
+    "wg_peers",
+    "sub_url",
+    "sub_servers",
 ];
 
 #[derive(Debug)]
@@ -16,7 +23,7 @@ pub struct DpapiError(pub u32);
 fn dpapi(data: &[u8], protect: bool) -> Result<Vec<u8>, DpapiError> {
     use windows_sys::Win32::Foundation::{GetLastError, LocalFree};
     use windows_sys::Win32::Security::Cryptography::{
-        CryptProtectData, CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
+        CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData,
     };
     let input = CRYPT_INTEGER_BLOB { cbData: data.len() as u32, pbData: data.as_ptr() as *mut u8 };
     let mut output = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };

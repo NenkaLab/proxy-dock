@@ -6,7 +6,7 @@
 
 use crate::i18n::tr;
 use crate::manager::{Remote, State};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
@@ -57,7 +57,10 @@ pub fn describe_error(e: &std::io::Error) -> String {
         return tr("Connection refused");
     }
     let suffix = code.map(|c| format!(" (WinError {c})")).unwrap_or_default();
-    if matches!(code, Some(10051 | 10050)) || e.kind() == std::io::ErrorKind::NetworkUnreachable || e.kind() == std::io::ErrorKind::NetworkDown {
+    if matches!(code, Some(10051 | 10050))
+        || e.kind() == std::io::ErrorKind::NetworkUnreachable
+        || e.kind() == std::io::ErrorKind::NetworkDown
+    {
         return tr("Network unreachable") + &suffix;
     }
     if code == Some(10065) || e.kind() == std::io::ErrorKind::HostUnreachable {
@@ -72,7 +75,9 @@ pub fn check_port(host: &str, port: u16, udp: bool) -> (bool, String) {
     let bind_host = if host == "localhost" { "127.0.0.1" } else { host };
     let addr = match (crate::net::strip_scope(bind_host), port).to_socket_addrs().map(|mut a| a.next()) {
         Ok(Some(a)) => a,
-        Ok(None) => return (false, tr("This PC does not have the address {bind_host}.").replace("{bind_host}", bind_host)),
+        Ok(None) => {
+            return (false, tr("This PC does not have the address {bind_host}.").replace("{bind_host}", bind_host));
+        }
         Err(e) => return (false, e.to_string()),
     };
     let domain = if addr.is_ipv6() { socket2::Domain::IPV6 } else { socket2::Domain::IPV4 };
@@ -84,12 +89,17 @@ pub fn check_port(host: &str, port: u16, udp: bool) -> (bool, String) {
     #[cfg(windows)]
     unsafe {
         use std::os::windows::io::AsRawSocket;
-        use windows_sys::Win32::Networking::WinSock::{setsockopt, SOCKET, SOL_SOCKET, SO_EXCLUSIVEADDRUSE};
+        use windows_sys::Win32::Networking::WinSock::{SO_EXCLUSIVEADDRUSE, SOCKET, SOL_SOCKET, setsockopt};
         let one: i32 = 1;
         setsockopt(s.as_raw_socket() as SOCKET, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, &one as *const i32 as *const u8, 4);
     }
     match s.bind(&addr.into()) {
-        Ok(()) => (true, tr("{bind_host}:{port} is available.").replace("{bind_host}", bind_host).replace("{port}", &port.to_string())),
+        Ok(()) => (
+            true,
+            tr("{bind_host}:{port} is available.")
+                .replace("{bind_host}", bind_host)
+                .replace("{port}", &port.to_string()),
+        ),
         Err(e) => {
             let code = e.raw_os_error();
             let msg = if code == Some(10048) || e.kind() == std::io::ErrorKind::AddrInUse {
@@ -181,7 +191,10 @@ pub fn probe_site(host: &str, port: u16) -> Map<String, Value> {
     let mut s = match TcpStream::connect_timeout(&local, PROBE_TIMEOUT) {
         Ok(s) => s,
         Err(e) => {
-            res.insert("error".into(), json!(tr("Test connection failed: {describe_error}").replace("{describe_error}", &describe_error(&e))));
+            res.insert(
+                "error".into(),
+                json!(tr("Test connection failed: {describe_error}").replace("{describe_error}", &describe_error(&e))),
+            );
             return res;
         }
     };
@@ -202,7 +215,8 @@ pub fn probe_site(host: &str, port: u16) -> Map<String, Value> {
         }
         recvn(&mut s, if rep[3] == 4 { 18 } else { 6 })?;
         res.insert("connect_ms".into(), json!(ms(t0)));
-        let name = rustls::pki_types::ServerName::try_from(host.to_string()).map_err(|e| Fail::Io(std::io::Error::other(e.to_string())))?;
+        let name = rustls::pki_types::ServerName::try_from(host.to_string())
+            .map_err(|e| Fail::Io(std::io::Error::other(e.to_string())))?;
         let conn = rustls::ClientConnection::new(roots(), name).map_err(|e| Fail::Io(std::io::Error::other(e)))?;
         let mut tls = rustls::StreamOwned::new(conn, s.try_clone().map_err(Fail::Io)?);
         // the handshake on its own (its time is a phase of the waterfall)
@@ -210,7 +224,9 @@ pub fn probe_site(host: &str, port: u16) -> Map<String, Value> {
             tls.conn.complete_io(&mut tls.sock).map_err(Fail::Io)?;
         }
         res.insert("tls_ms".into(), json!(ms(t0)));
-        let head = format!("HEAD / HTTP/1.1\r\nHost: {host}\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\nConnection: close\r\n\r\n");
+        let head = format!(
+            "HEAD / HTTP/1.1\r\nHost: {host}\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\nConnection: close\r\n\r\n"
+        );
         tls.write_all(head.as_bytes()).map_err(Fail::Io)?;
         let mut buf = [0u8; 512];
         let n = match tls.read(&mut buf) {
@@ -219,13 +235,14 @@ pub fn probe_site(host: &str, port: u16) -> Map<String, Value> {
                 n
             }
             // a server that closes without close_notify: what arrived before counts
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof && tls.conn.is_handshaking() == false => 0,
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof && !tls.conn.is_handshaking() => 0,
             Err(e) => return Err(Fail::Io(e)),
         };
         let text: String = buf[..n].iter().map(|&b| b as char).collect();
         let line = text.split("\r\n").next().unwrap_or("");
         let parts: Vec<&str> = line.split_whitespace().collect();
-        let status = if parts.len() > 1 && line.starts_with("HTTP/") { parts[1].to_string() } else { tr("No response") };
+        let status =
+            if parts.len() > 1 && line.starts_with("HTTP/") { parts[1].to_string() } else { tr("No response") };
         let ok = !status.is_empty() && status.chars().all(|c| c.is_ascii_digit());
         res.insert("status".into(), json!(status));
         res.insert("ok".into(), json!(ok));
@@ -254,10 +271,16 @@ pub fn probe_site(host: &str, port: u16) -> Map<String, Value> {
                 res.insert("error".into(), json!(tr("Timed out")));
                 res.insert("kind".into(), json!("timeout"));
             } else if e.kind() == std::io::ErrorKind::UnexpectedEof {
-                res.insert("error".into(), json!(tr("TLS error ({value})").replace("{value}", "EOF occurred in violation of protocol")));
+                res.insert(
+                    "error".into(),
+                    json!(tr("TLS error ({value})").replace("{value}", "EOF occurred in violation of protocol")),
+                );
                 res.insert("kind".into(), json!("tls"));
             } else if e.to_string() == CLOSED {
-                res.insert("error".into(), json!(format!("ConnectionError: {}", tr("The proxy closed the connection"))));
+                res.insert(
+                    "error".into(),
+                    json!(format!("ConnectionError: {}", tr("The proxy closed the connection"))),
+                );
                 res.insert("kind".into(), json!("closed"));
             } else {
                 use std::io::ErrorKind::*;
@@ -355,19 +378,27 @@ pub fn check_inbound(p: &Value, running: bool) -> (bool, String) {
         return (false, tr("Port {port}: {msg}").replace("{port}", &port.to_string()).replace("{msg}", &msg));
     }
     let cert = ib["tls_cert"].as_str().unwrap_or("");
-    if matches!(it, "https" | "hysteria2") && !cert.is_empty() {
-        if let Err(e) = load_cert_key(cert, ib["tls_key"].as_str().unwrap_or("")) {
-            return (false, tr("Could not read the certificate/key: {e}").replace("{e}", &e));
-        }
+    if matches!(it, "https" | "hysteria2")
+        && !cert.is_empty()
+        && let Err(e) = load_cert_key(cert, ib["tls_key"].as_str().unwrap_or(""))
+    {
+        return (false, tr("Could not read the certificate/key: {e}").replace("{e}", &e));
     }
-    (true, tr("Port {port} available").replace("{port}", &port.to_string()) + &if cert.is_empty() { String::new() } else { tr(" · certificate OK") })
+    (
+        true,
+        tr("Port {port} available").replace("{port}", &port.to_string())
+            + &if cert.is_empty() { String::new() } else { tr(" · certificate OK") },
+    )
 }
 
 /// whether a PEM certificate and key load and belong together (Python `tls.server_context`)
 fn load_cert_key(cert: &str, key: &str) -> Result<(), String> {
     use rustls::pki_types::pem::PemObject;
     use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-    let certs: Vec<CertificateDer> = CertificateDer::pem_file_iter(cert).map_err(|e| e.to_string())?.collect::<Result<_, _>>().map_err(|e| e.to_string())?;
+    let certs: Vec<CertificateDer> = CertificateDer::pem_file_iter(cert)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string())?;
     if certs.is_empty() {
         return Err("no certificate".into());
     }
@@ -386,7 +417,9 @@ pub fn probe_hint(ot: &str, out: &Map<String, Value>) -> String {
     let g = |k: &str| out.get(k).and_then(Value::as_str).unwrap_or("").to_string();
     let (kind, reason, detail) = (g("kind"), g("reason"), g("detail").to_lowercase());
     if ot == "shadowsocks" && matches!(kind.as_str(), "timeout" | "tls" | "closed") {
-        return tr("Check that the cipher and password match the server (the server does not answer if they are wrong)");
+        return tr(
+            "Check that the cipher and password match the server (the server does not answer if they are wrong)",
+        );
     }
     if ot == "hysteria2" && reason == "auth" {
         return tr("Check the Hysteria2 password");
@@ -395,7 +428,9 @@ pub fn probe_hint(ot: &str, out: &Map<String, Value>) -> String {
         return tr("Check the upstream proxy username/password");
     }
     if matches!(ot, "https" | "hysteria2") && detail.contains("certificate") {
-        return tr("If the server uses a self-signed certificate, turn off 'Verify server certificate' or pin its fingerprint");
+        return tr(
+            "If the server uses a self-signed certificate, turn off 'Verify server certificate' or pin its fingerprint",
+        );
     }
     String::new()
 }
@@ -418,7 +453,8 @@ pub fn result_text(ot: &str, out: &Map<String, Value>, inbound: Option<(bool, St
         l
     } else {
         let err = g("error");
-        let mut l = tr("Outbound failed · {value}").replace("{value}", &if err.is_empty() { tr("unknown error") } else { err });
+        let mut l =
+            tr("Outbound failed · {value}").replace("{value}", &if err.is_empty() { tr("unknown error") } else { err });
         if !g("detail").is_empty() {
             l += &format!("\n  \u{21b3} {}", g("detail"));
         }
@@ -431,52 +467,11 @@ pub fn result_text(ot: &str, out: &Map<String, Value>, inbound: Option<(bool, St
     let mut in_ok = true;
     if let Some((ok, msg)) = inbound {
         in_ok = ok;
-        line += &tr("\nInbound {value} · {in_msg}").replace("{value}", &if ok { tr("OK") } else { tr("problem") }).replace("{in_msg}", &msg);
+        line += &tr("\nInbound {value} · {in_msg}")
+            .replace("{value}", &if ok { tr("OK") } else { tr("problem") })
+            .replace("{in_msg}", &msg);
     }
     (out_ok && in_ok, line)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn port_check() {
-        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = l.local_addr().unwrap().port();
-        let (ok, msg) = check_port("127.0.0.1", port, false);
-        assert!(!ok, "{msg}");
-        drop(l);
-        assert!(check_port("localhost", port, false).0);
-        assert!(!check_port("192.0.2.77", port, false).0, "an address this PC does not have");
-    }
-
-    #[test]
-    fn nothing_listening() {
-        let r = probe_site("www.example.com", free_port());
-        assert_eq!(r["ok"], false);
-        assert!(r["error"].as_str().unwrap().contains("refused"), "{r:?}");
-        let (ok, text) = result_text("shadowsocks", &r, Some((true, "x".into())));
-        assert!(!ok && text.contains('\n'));
-    }
-
-    #[test]
-    fn socks_refusal() {
-        // a SOCKS5 server that refuses every destination (rep 2: blocked)
-        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = l.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            if let Ok((mut s, _)) = l.accept() {
-                let mut b = [0u8; 300];
-                let _ = s.read(&mut b);
-                let _ = s.write_all(b"\x05\x00");
-                let _ = s.read(&mut b);
-                let _ = s.write_all(b"\x05\x02\x00\x01\x00\x00\x00\x00\x00\x00");
-            }
-        });
-        let r = probe_site("www.example.com", port);
-        assert_eq!((r["kind"].as_str(), r["error"].as_str()), (Some("socks"), Some("Blocked (allow list / private network)")));
-    }
 }
 
 /// Outbound blocks a latency test can measure (every one but Block; Python `latency_targets`)
@@ -589,4 +584,50 @@ pub fn site_result(res: &Map<String, Value>) -> (String, String, String, bool) {
         tr("Failed · {error}").replace("{error}", &g("error"))
     };
     (text, ms("connect_ms"), ms("total_ms"), ok)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn port_check() {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let (ok, msg) = check_port("127.0.0.1", port, false);
+        assert!(!ok, "{msg}");
+        drop(l);
+        assert!(check_port("localhost", port, false).0);
+        assert!(!check_port("192.0.2.77", port, false).0, "an address this PC does not have");
+    }
+
+    #[test]
+    fn nothing_listening() {
+        let r = probe_site("www.example.com", free_port());
+        assert_eq!(r["ok"], false);
+        assert!(r["error"].as_str().unwrap().contains("refused"), "{r:?}");
+        let (ok, text) = result_text("shadowsocks", &r, Some((true, "x".into())));
+        assert!(!ok && text.contains('\n'));
+    }
+
+    #[test]
+    fn socks_refusal() {
+        // a SOCKS5 server that refuses every destination (rep 2: blocked)
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut s, _)) = l.accept() {
+                let mut b = [0u8; 300];
+                let _ = s.read(&mut b);
+                let _ = s.write_all(b"\x05\x00");
+                let _ = s.read(&mut b);
+                let _ = s.write_all(b"\x05\x02\x00\x01\x00\x00\x00\x00\x00\x00");
+            }
+        });
+        let r = probe_site("www.example.com", port);
+        assert_eq!(
+            (r["kind"].as_str(), r["error"].as_str()),
+            (Some("socks"), Some("Blocked (allow list / private network)"))
+        );
+    }
 }

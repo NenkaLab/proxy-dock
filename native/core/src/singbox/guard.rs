@@ -6,7 +6,7 @@
 //!   each process's Clash API
 
 use crate::net::strip_scope;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
 use std::net::IpAddr;
 use std::path::PathBuf;
@@ -230,7 +230,10 @@ mod tests {
     #[test]
     fn ruleset_shape() {
         assert_eq!(bans_ruleset(&[]), json!({"version": 3, "rules": [{"source_ip_cidr": ["255.255.255.255/32"]}]}));
-        assert_eq!(bans_ruleset(&["10.0.0.2".into(), "::1".into()])["rules"][0]["source_ip_cidr"], json!(["10.0.0.2/32", "::1/128"]));
+        assert_eq!(
+            bans_ruleset(&["10.0.0.2".into(), "::1".into()])["rules"][0]["source_ip_cidr"],
+            json!(["10.0.0.2/32", "::1/128"])
+        );
     }
 
     #[test]
@@ -241,7 +244,8 @@ mod tests {
         let b: Vec<Value> = (200..260).map(conn).collect();
         assert!(report_connections("a", false, &a).is_empty());
         assert_eq!(report_connections("b", false, &b).len(), 4);
-        let lo: Vec<Value> = (0..300).map(|i| json!({"id": format!("l{i}"), "metadata": {"sourceIP": "127.0.0.1"}})).collect();
+        let lo: Vec<Value> =
+            (0..300).map(|i| json!({"id": format!("l{i}"), "metadata": {"sourceIP": "127.0.0.1"}})).collect();
         assert!(report_connections("c", false, &lo).is_empty());
     }
 }

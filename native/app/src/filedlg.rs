@@ -6,7 +6,8 @@
 pub fn win_filter(qt: &str) -> Vec<u16> {
     let mut out = String::new();
     for part in qt.split(";;").map(str::trim).filter(|p| !p.is_empty()) {
-        let patterns = part.rfind('(').and_then(|a| part[a + 1..].find(')').map(|b| &part[a + 1..a + 1 + b])).unwrap_or("*");
+        let patterns =
+            part.rfind('(').and_then(|a| part[a + 1..].find(')').map(|b| &part[a + 1..a + 1 + b])).unwrap_or("*");
         let patterns: Vec<&str> = patterns.split_whitespace().map(|p| if p == "*" { "*.*" } else { p }).collect();
         out.push_str(part);
         out.push('\0');
@@ -20,7 +21,8 @@ pub fn win_filter(qt: &str) -> Vec<u16> {
 #[cfg(windows)]
 fn run(owner: usize, title: &str, filter: &str, name: &str, save: bool) -> Option<std::path::PathBuf> {
     use windows_sys::Win32::UI::Controls::Dialogs::{
-        GetOpenFileNameW, GetSaveFileNameW, OFN_EXPLORER, OFN_FILEMUSTEXIST, OFN_NOCHANGEDIR, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
+        GetOpenFileNameW, GetSaveFileNameW, OFN_EXPLORER, OFN_FILEMUSTEXIST, OFN_NOCHANGEDIR, OFN_OVERWRITEPROMPT,
+        OFN_PATHMUSTEXIST, OPENFILENAMEW,
     };
     let wide = |t: &str| t.encode_utf16().chain([0]).collect::<Vec<u16>>();
     let filter = win_filter(filter);
@@ -38,7 +40,8 @@ fn run(owner: usize, title: &str, filter: &str, name: &str, save: bool) -> Optio
     o.lpstrFile = file.as_mut_ptr();
     o.nMaxFile = file.len() as u32;
     o.lpstrTitle = title.as_ptr();
-    o.Flags = OFN_EXPLORER | OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST | if save { OFN_OVERWRITEPROMPT } else { OFN_FILEMUSTEXIST };
+    o.Flags =
+        OFN_EXPLORER | OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST | if save { OFN_OVERWRITEPROMPT } else { OFN_FILEMUSTEXIST };
     if save && ext.len() > 1 {
         o.lpstrDefExt = ext.as_ptr();
     }
@@ -58,7 +61,7 @@ fn run(_owner: usize, _title: &str, _filter: &str, _name: &str, _save: bool) -> 
 /// Windows' colour dialog (Python `ColorPicker`), starting at `initial` ("#rrggbb"); the chosen "#rrggbb"
 #[cfg(windows)]
 pub fn choose_color(owner: usize, initial: &str) -> Option<String> {
-    use windows_sys::Win32::UI::Controls::Dialogs::{ChooseColorW, CC_FULLOPEN, CC_RGBINIT, CHOOSECOLORW};
+    use windows_sys::Win32::UI::Controls::Dialogs::{CC_FULLOPEN, CC_RGBINIT, CHOOSECOLORW, ChooseColorW};
     let h = initial.strip_prefix('#').and_then(|h| u32::from_str_radix(h, 16).ok()).unwrap_or(0x5aa0f0);
     // COLORREF is 0x00bbggrr
     let rgb = ((h >> 16) & 0xff) | (h & 0xff00) | ((h & 0xff) << 16);

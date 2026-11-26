@@ -39,26 +39,29 @@ Proxies run on [sing-box](https://github.com/SagerNet/sing-box), bundled in the 
 
 ## Running
 
-On Windows, `ProxyDock-<version>-windows-x64-setup.exe` installs it for your user (no administrator needed); the `.zip` is the same app as a folder. On macOS, open the `.dmg` and drag ProxyDock to Applications. On Linux, make the `.AppImage` executable and run it.
+Windows 10 / 11: `ProxyDock-<version>-windows-x64-setup.exe` installs it for your user (no administrator needed);
+the `.zip` is the same app as a folder. Download it from [Releases](https://github.com/NenkaLab/proxy-dock/releases).
 
-Download a build from [Releases](https://github.com/NenkaLab/proxy-dock/releases).
+Settings are saved in `%APPDATA%\ProxyDock`; version 3 reads and keeps the settings of 2.x. The **How to use** page in
+the app explains the rest.
 
-Settings are saved in `%APPDATA%\ProxyDock` (macOS: `~/Library/Application Support/ProxyDock`,
-Linux: `~/.config/ProxyDock`). The **How to use** page in the app explains the rest.
+ProxyDock 3 is a rewrite in Rust and runs on Windows only for now. For macOS and Linux, use 2.x (the Python app, on
+the [`old`](https://github.com/NenkaLab/proxy-dock/tree/old) branch and in the 2.x releases).
 
 ## Building
 
-Running from source, tests, builds, installers and releases: [docs/Build.md](docs/Build.md).
+Running from source, tests, builds, installers and releases: [docs/Build.md](docs/Build.md). What to check before a
+release: [TESTING.md](TESTING.md).
 
 ## Limitations
 
-- Routers, groups, WireGuard, VLESS / VMess / Trojan / TUIC and TUN need the sing-box engine (bundled).
-- TUN and macOS have not been tried on real setups yet.
+- Windows only (macOS / Linux: 2.x).
+- TUN has not been tried on real setups yet.
 - SOCKS4 has no password: use it only on this PC.
 
 ## License
 
-[GPL-3.0](LICENSE). Bundled components (sing-box GPL-3.0, Hysteria MIT, Qt / PySide6 LGPL-3.0, fonts OFL-1.1, ...)
+[GPL-3.0](LICENSE). Bundled components (sing-box GPL-3.0, Hysteria MIT, Slint GPL-3.0, Rust crates, fonts OFL-1.1, ...)
 and their licenses are listed in [`licenses/`](licenses/).
 
 Copyright (C) 2026 NenkaLab

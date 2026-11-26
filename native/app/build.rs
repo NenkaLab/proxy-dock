@@ -3,7 +3,9 @@ fn main() {
     // (skipped until examples/make_ico.rs has made the .ico: that example builds this crate first)
     println!("cargo:rerun-if-changed=app.rc");
     println!("cargo:rerun-if-changed=icons/proxydock.ico");
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") && std::path::Path::new("icons/proxydock.ico").exists() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && std::path::Path::new("icons/proxydock.ico").exists()
+    {
         embed_resource::compile("app.rc", embed_resource::NONE).manifest_optional().unwrap();
     }
     let config = slint_build::CompilerConfiguration::new().with_style("material".into());

@@ -34,14 +34,31 @@ struct Capture {
 }
 
 impl ServerCertVerifier for Capture {
-    fn verify_server_cert(&self, end_entity: &CertificateDer<'_>, _: &[CertificateDer<'_>], _: &ServerName<'_>, _: &[u8], _: UnixTime) -> Result<ServerCertVerified, rustls::Error> {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        _: &[CertificateDer<'_>],
+        _: &ServerName<'_>,
+        _: &[u8],
+        _: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
         *self.cert.lock().unwrap() = Some(end_entity.to_vec());
         Ok(ServerCertVerified::assertion())
     }
-    fn verify_tls12_signature(&self, _: &[u8], _: &CertificateDer<'_>, _: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, rustls::Error> {
+    fn verify_tls12_signature(
+        &self,
+        _: &[u8],
+        _: &CertificateDer<'_>,
+        _: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
         Ok(HandshakeSignatureValid::assertion())
     }
-    fn verify_tls13_signature(&self, _: &[u8], _: &CertificateDer<'_>, _: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, rustls::Error> {
+    fn verify_tls13_signature(
+        &self,
+        _: &[u8],
+        _: &CertificateDer<'_>,
+        _: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
         Ok(HandshakeSignatureValid::assertion())
     }
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
@@ -54,7 +71,11 @@ fn capture() -> Arc<Capture> {
     Arc::new(Capture { cert: Mutex::new(None), schemes })
 }
 
-fn client_config(cap: &Arc<Capture>, versions: &[&'static rustls::SupportedProtocolVersion], alpn: &[&[u8]]) -> Result<rustls::ClientConfig, String> {
+fn client_config(
+    cap: &Arc<Capture>,
+    versions: &[&'static rustls::SupportedProtocolVersion],
+    alpn: &[&[u8]],
+) -> Result<rustls::ClientConfig, String> {
     let mut c = rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
         .with_protocol_versions(versions)
         .map_err(|e| e.to_string())?
@@ -69,12 +90,21 @@ fn client_config(cap: &Arc<Capture>, versions: &[&'static rustls::SupportedProto
 fn server_name(sni: Option<&str>, host: &str) -> Result<ServerName<'static>, String> {
     match sni {
         Some(n) => ServerName::try_from(n.to_string()).map_err(|e| e.to_string()),
-        None => Ok(ServerName::IpAddress(crate::net::strip_scope(host).parse::<std::net::IpAddr>().unwrap_or(std::net::IpAddr::from([0, 0, 0, 0])).into())),
+        None => Ok(ServerName::IpAddress(
+            crate::net::strip_scope(host)
+                .parse::<std::net::IpAddr>()
+                .unwrap_or(std::net::IpAddr::from([0, 0, 0, 0]))
+                .into(),
+        )),
     }
 }
 
 fn resolve(host: &str, port: u16) -> Result<SocketAddr, String> {
-    (crate::net::strip_scope(host), port).to_socket_addrs().map_err(|e| e.to_string())?.next().ok_or_else(|| "no address".to_string())
+    (crate::net::strip_scope(host), port)
+        .to_socket_addrs()
+        .map_err(|e| e.to_string())?
+        .next()
+        .ok_or_else(|| "no address".to_string())
 }
 
 /// the server's certificate (DER) over TLS on TCP
@@ -110,7 +140,9 @@ pub fn quic_certificate(host: &str, port: u16, sni: Option<&str>) -> Result<Vec<
         Some(n) => n.to_string(),
         None => crate::net::strip_scope(host).to_string(),
     };
-    let (ch, mut conn) = endpoint.connect(Instant::now(), ClientConfig::new(Arc::new(quic)), remote, &name).map_err(|e| e.to_string())?;
+    let (ch, mut conn) = endpoint
+        .connect(Instant::now(), ClientConfig::new(Arc::new(quic)), remote, &name)
+        .map_err(|e| e.to_string())?;
     let until = Instant::now() + TIMEOUT;
     let (mut out, mut resp) = (Vec::with_capacity(1500), vec![]);
     let mut buf = vec![0u8; 65536];
@@ -131,15 +163,23 @@ pub fn quic_certificate(host: &str, port: u16, sni: Option<&str>) -> Result<Vec<
         if now >= until {
             return Err(tr("Timed out"));
         }
-        let wait = conn.poll_timeout().map_or(until, |t| t.min(until)).saturating_duration_since(now).max(Duration::from_millis(1));
+        let wait = conn
+            .poll_timeout()
+            .map_or(until, |t| t.min(until))
+            .saturating_duration_since(now)
+            .max(Duration::from_millis(1));
         let _ = sock.set_read_timeout(Some(wait));
         match sock.recv_from(&mut buf) {
             Ok((n, from)) => {
-                if let Some(DatagramEvent::ConnectionEvent(_, ev)) = endpoint.handle(Instant::now(), from, None, None, bytes::BytesMut::from(&buf[..n]), &mut resp) {
+                if let Some(DatagramEvent::ConnectionEvent(_, ev)) =
+                    endpoint.handle(Instant::now(), from, None, None, bytes::BytesMut::from(&buf[..n]), &mut resp)
+                {
                     conn.handle_event(ev);
                 }
             }
-            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => conn.handle_timeout(Instant::now()),
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
+                conn.handle_timeout(Instant::now())
+            }
             // (Windows reports an ICMP "port unreachable" this way: keep waiting, like a lost packet)
             Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {}
             Err(e) => return Err(e.to_string()),
@@ -165,10 +205,12 @@ pub fn names_of(der: &[u8]) -> Result<Vec<String>, String> {
         }
     }
     for cn in cert.subject().iter_common_name() {
-        if let Ok(v) = cn.as_str() {
-            if !names.iter().any(|n| n == v) && !crate::net::is_ip_literal(v) && v.contains('.') {
-                names.push(v.to_string());
-            }
+        if let Ok(v) = cn.as_str()
+            && !names.iter().any(|n| n == v)
+            && !crate::net::is_ip_literal(v)
+            && v.contains('.')
+        {
+            names.push(v.to_string());
         }
     }
     Ok(names)
@@ -200,7 +242,10 @@ pub fn detect(ob: &Value) -> Result<Detected, String> {
 
 /// the editor's message: (found a name, title, text) (Python `_on_detect_done`)
 pub fn message(d: &Detected) -> (bool, String, String) {
-    let fp = format!("{}\u{2026}", (0..8).map(|i| d.sha256.get(i * 2..i * 2 + 2).unwrap_or("")).collect::<Vec<_>>().join(":").to_uppercase());
+    let fp = format!(
+        "{}\u{2026}",
+        (0..8).map(|i| d.sha256.get(i * 2..i * 2 + 2).unwrap_or("")).collect::<Vec<_>>().join(":").to_uppercase()
+    );
     let fp_line = tr("Fingerprint (SHA-256): {fp}").replace("{fp}", &fp);
     let names_line = tr("Names in the certificate: {names}").replace("{names}", &d.names.join(", "));
     if !d.sni.is_empty() {
@@ -217,7 +262,8 @@ mod tests {
     /// a TLS server on a local port with a certificate for the given names (rcgen + rustls)
     fn tls_server(names: &[&str]) -> (u16, Vec<u8>) {
         let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
-        let mut params = rcgen::CertificateParams::new(names.iter().map(|n| n.to_string()).collect::<Vec<_>>()).unwrap();
+        let mut params =
+            rcgen::CertificateParams::new(names.iter().map(|n| n.to_string()).collect::<Vec<_>>()).unwrap();
         params.distinguished_name.push(rcgen::DnType::CommonName, "cn.example.org");
         let cert = params.self_signed(&key).unwrap();
         let der = cert.der().to_vec();
@@ -225,7 +271,10 @@ mod tests {
             .with_safe_default_protocol_versions()
             .unwrap()
             .with_no_client_auth()
-            .with_single_cert(vec![cert.der().clone()], rustls::pki_types::PrivateKeyDer::Pkcs8(key.serialize_der().into()))
+            .with_single_cert(
+                vec![cert.der().clone()],
+                rustls::pki_types::PrivateKeyDer::Pkcs8(key.serialize_der().into()),
+            )
             .unwrap();
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = l.local_addr().unwrap().port();

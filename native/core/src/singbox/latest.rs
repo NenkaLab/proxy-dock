@@ -7,7 +7,7 @@
 //! program must answer `sing-box version` with the release's version before it is used.
 
 use super::version::{self, Version};
-use super::{platform_dir, EXE};
+use super::{EXE, platform_dir};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -54,13 +54,16 @@ pub fn pick(releases: &Value, platform: &str) -> Option<Release> {
             continue;
         }
         let name = asset_name(&v, platform);
-        let Some(a) = r["assets"].as_array().into_iter().flatten().find(|a| a["name"].as_str() == Some(&name)) else { continue };
+        let Some(a) = r["assets"].as_array().into_iter().flatten().find(|a| a["name"].as_str() == Some(&name)) else {
+            continue;
+        };
         let digest = a["digest"].as_str().unwrap_or("").strip_prefix("sha256:").unwrap_or("").to_ascii_lowercase();
         let url = a["browser_download_url"].as_str().unwrap_or("");
         if digest.len() != 64 || !url.starts_with("https://") {
             continue;
         }
-        best = Some(Release { version: v, asset: name, url: url.into(), digest, size: a["size"].as_u64().unwrap_or(0) });
+        best =
+            Some(Release { version: v, asset: name, url: url.into(), digest, size: a["size"].as_u64().unwrap_or(0) });
     }
     best
 }
@@ -114,7 +117,8 @@ pub fn update_in(dir: &Path, fetch: Fetch, force: bool) -> Result<Outcome, Strin
     if !force && have.is_some() && now_secs().saturating_sub(checked_at(dir)) < CHECK_EVERY.as_secs() {
         return Ok(Outcome::NotDue);
     }
-    let list: Value = serde_json::from_slice(&fetch(RELEASES_URL, "application/vnd.github+json")?).map_err(|e| e.to_string())?;
+    let list: Value =
+        serde_json::from_slice(&fetch(RELEASES_URL, "application/vnd.github+json")?).map_err(|e| e.to_string())?;
     let rel = pick(&list, &platform_dir()).ok_or_else(|| format!("no sing-box release for {}", platform_dir()))?;
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let mark = |d: &Path| std::fs::write(d.join("checked"), now_secs().to_string());
@@ -240,7 +244,11 @@ mod tests {
         let list = json!([
             rel("v1.14.5", false, &["windows-amd64.zip"]),
             rel("v1.16.0-alpha.1", true, &["windows-amd64.zip"]),
-            rel("v1.15.0-alpha.13", false, &["windows-amd64.zip", "windows-amd64-legacy-windows-7.zip", "linux-amd64.tar.gz"]),
+            rel(
+                "v1.15.0-alpha.13",
+                false,
+                &["windows-amd64.zip", "windows-amd64-legacy-windows-7.zip", "linux-amd64.tar.gz"]
+            ),
             rel("v1.15.0-alpha.12", false, &["windows-amd64.zip"]),
             rel("v1.15.0-beta.1", false, &["linux-amd64.tar.gz"]),
         ]);
@@ -256,8 +264,14 @@ mod tests {
     fn bad_digest_is_refused_and_nothing_installed() {
         let dir = std::env::temp_dir().join(format!("proxydock-latest-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let list = json!([rel("v1.15.0-alpha.13", false, &[&format!("{}.{}", platform_dir(), if cfg!(windows) { "zip" } else { "tar.gz" })])]);
-        let fetch = |url: &str, _: &str| if url == RELEASES_URL { Ok(list.to_string().into_bytes()) } else { Ok(b"not it".to_vec()) };
+        let list = json!([rel(
+            "v1.15.0-alpha.13",
+            false,
+            &[&format!("{}.{}", platform_dir(), if cfg!(windows) { "zip" } else { "tar.gz" })]
+        )]);
+        let fetch = |url: &str, _: &str| {
+            if url == RELEASES_URL { Ok(list.to_string().into_bytes()) } else { Ok(b"not it".to_vec()) }
+        };
         let e = update_in(&dir, &fetch, false).unwrap_err();
         assert!(e.contains("SHA-256 mismatch"), "{e}");
         assert!(installed_in(&dir).is_none());

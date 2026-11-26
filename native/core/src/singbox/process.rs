@@ -8,10 +8,10 @@ use super::compile::{self as sbc, BuildEnv, Reason};
 use super::guard;
 use crate::config;
 use crate::i18n::tr;
-use crate::log::{fmt_size, Level};
+use crate::log::{Level, fmt_size};
 use crate::net::host_port;
 use regex_lite::Regex;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -26,19 +26,23 @@ pub const START_TIMEOUT: Duration = Duration::from_secs(10);
 pub const POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 // "LEVEL[0001] [1234567 5ms] message" (the bracket with the connection id is only on connection lines)
-static LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^([A-Z]+)\[\d+\]\s+(?:\[(\d+)\s[^\]]*\]\s+)?(.*)$").unwrap());
+static LINE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^([A-Z]+)\[\d+\]\s+(?:\[(\d+)\s[^\]]*\]\s+)?(.*)$").unwrap());
 static FROM: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(?:inbound|endpoint)/[\w-]+\[[^\]]*\]: (?:inbound )?(?:packet )?connection from (\S+)$").unwrap()
 });
 static TO: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(?:inbound|endpoint)/[\w-]+\[[^\]]*\]: (?:\[[^\]]*\] )?inbound (packet )?connection to (\S+)$").unwrap()
+    Regex::new(r"^(?:inbound|endpoint)/[\w-]+\[[^\]]*\]: (?:\[[^\]]*\] )?inbound (packet )?connection to (\S+)$")
+        .unwrap()
 });
 // the outbound sing-box chose for a connection (logged right after the inbound "connection to")
-static OUT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^outbound/[\w-]+\[([^\]]+)\]: outbound (?:packet )?connection to (\S+)$").unwrap());
+static OUT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^outbound/[\w-]+\[([^\]]+)\]: outbound (?:packet )?connection to (\S+)$").unwrap());
 static PROC_ERR: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(?:inbound|endpoint)/[\w-]+\[[^\]]*\]: process connection from (\S+): (.*)$").unwrap()
 });
-static AUTH_USER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"authentication failed, username=(.*?), password=").unwrap());
+static AUTH_USER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"authentication failed, username=(.*?), password=").unwrap());
 static OPEN_FAIL: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^connection: open (?:packet )?connection to (\S+) using outbound/[\w-]+\[[^\]]*\]: (.*)$").unwrap()
 });
@@ -46,8 +50,17 @@ static REJECT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^router: match\[(
 static ANSI: LazyLock<Regex> = LazyLock::new(|| Regex::new("\x1b\\[[0-9;]*m").unwrap());
 static SECRET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(password|secret)=\S+").unwrap());
 const BENIGN: [&str; 11] = [
-    "use of closed network connection", "wsasend", "wsarecv", "EOF", "connection reset", "broken pipe",
-    "forcibly closed", "aborted", "i/o timeout", "context canceled", "no Proxy-Authorization header",
+    "use of closed network connection",
+    "wsasend",
+    "wsarecv",
+    "EOF",
+    "connection reset",
+    "broken pipe",
+    "forcibly closed",
+    "aborted",
+    "i/o timeout",
+    "context canceled",
+    "no Proxy-Authorization header",
 ];
 
 fn hide_secrets(text: &str) -> String {
@@ -104,9 +117,10 @@ pub enum StartError {
 impl std::fmt::Display for StartError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            StartError::PortInUse(t) | StartError::AccessDenied(t) | StartError::AddressNotAvailable(t) | StartError::Other(t) => {
-                f.write_str(t)
-            }
+            StartError::PortInUse(t)
+            | StartError::AccessDenied(t)
+            | StartError::AddressNotAvailable(t)
+            | StartError::Other(t) => f.write_str(t),
         }
     }
 }
@@ -124,11 +138,14 @@ pub(crate) fn start_error(text: &str) -> StartError {
     }
 }
 
+/// a log entry of a card (level, message)
+pub type OnCardLog = Arc<dyn Fn(Level, &str) + Send + Sync>;
+
 /// What the owner of a running card hears from it.
 #[derive(Clone)]
 pub struct Hooks {
     /// a log entry of this card (level, message)
-    pub log: Arc<dyn Fn(Level, &str) + Send + Sync>,
+    pub log: OnCardLog,
     /// sing-box exited on its own (the message says how)
     pub died: Arc<dyn Fn(String) + Send + Sync>,
 }
@@ -264,7 +281,7 @@ pub fn random_bytes(bytes: usize) -> Vec<u8> {
     let mut buf = vec![0u8; bytes];
     #[cfg(windows)]
     unsafe {
-        use windows_sys::Win32::Security::Cryptography::{BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG};
+        use windows_sys::Win32::Security::Cryptography::{BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom};
         BCryptGenRandom(std::ptr::null_mut(), buf.as_mut_ptr(), buf.len() as u32, BCRYPT_USE_SYSTEM_PREFERRED_RNG);
     }
     #[cfg(not(windows))]
@@ -352,13 +369,20 @@ pub fn started_at(text: &str) -> f64 {
 
 impl Engine {
     /// Start sing-box for this card and wait until it reports "sing-box started".
-    pub fn start(proxy: &Value, glob: &serde_json::Map<String, Value>, env: &EngineEnv, hooks: Hooks) -> Result<Engine, StartError> {
+    pub fn start(
+        proxy: &Value,
+        glob: &serde_json::Map<String, Value>,
+        env: &EngineEnv,
+        hooks: Hooks,
+    ) -> Result<Engine, StartError> {
         let id = proxy["id"].as_str().unwrap_or("").to_string();
         if !env.exe.is_file() {
             return Err(StartError::Other(tr("sing-box was not found")));
         }
         if !guard::write_bans(true) && !env.bans_path.exists() {
-            return Err(StartError::Other(tr("Could not write {path}").replace("{path}", &env.bans_path.display().to_string())));
+            return Err(StartError::Other(
+                tr("Could not write {path}").replace("{path}", &env.bans_path.display().to_string()),
+            ));
         }
         let tun = proxy["inbound"]["type"] == json!("tun");
         if tun {
@@ -440,9 +464,12 @@ impl Engine {
             #[cfg(windows)]
             attach_to_job(&child);
             let mut n = 0;
-            for pipe in [child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>), child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>)]
-                .into_iter()
-                .flatten()
+            for pipe in [
+                child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>),
+                child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>),
+            ]
+            .into_iter()
+            .flatten()
             {
                 let tx = line_tx.clone();
                 n += 1;
@@ -485,7 +512,9 @@ impl Engine {
             let child = child.clone();
             threads.push(std::thread::spawn(move || read_output(&shared, &child, line_rx, pipes, started_tx)));
         }
-        let result = started_rx.recv_timeout(START_TIMEOUT).unwrap_or_else(|_| Err(StartError::Other(tr("sing-box did not start in time"))));
+        let result = started_rx
+            .recv_timeout(START_TIMEOUT)
+            .unwrap_or_else(|_| Err(StartError::Other(tr("sing-box did not start in time"))));
         let mut engine = Engine { shared, child, config_path, api: (port, secret), threads };
         if let Err(e) = result {
             engine.stop();
@@ -607,7 +636,13 @@ fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     std::fs::write(path, text) // contains passwords; the settings folder is the user's own
 }
 
-fn read_output(shared: &Shared, child: &Mutex<Option<Proc>>, lines: mpsc::Receiver<Option<String>>, pipes: usize, started: mpsc::Sender<Result<(), StartError>>) {
+fn read_output(
+    shared: &Shared,
+    child: &Mutex<Option<Proc>>,
+    lines: mpsc::Receiver<Option<String>>,
+    pipes: usize,
+    started: mpsc::Sender<Result<(), StartError>>,
+) {
     let mut errors: Vec<String> = vec![];
     let mut is_started = false;
     let mut open_pipes = pipes;
@@ -645,12 +680,20 @@ fn read_output(shared: &Shared, child: &Mutex<Option<Proc>>, lines: mpsc::Receiv
     let code = child.lock().unwrap().as_mut().and_then(|c| c.exit_code());
     let code_text = code.map(|c| c.to_string()).unwrap_or_else(|| "?".into());
     if !is_started {
-        let text = errors.last().cloned().unwrap_or_else(|| tr("sing-box exited (code {code})").replace("{code}", &code_text));
+        let text =
+            errors.last().cloned().unwrap_or_else(|| tr("sing-box exited (code {code})").replace("{code}", &code_text));
         let text = text.strip_prefix("start service: ").unwrap_or(&text).to_string();
         let _ = started.send(Err(start_error(&text)));
     } else if !shared.stopping.load(Ordering::SeqCst) {
         let mut text = tr("sing-box exited (code {code})").replace("{code}", &code_text);
-        let panic = shared.state.lock().unwrap().raw_tail.iter().find(|x| x.starts_with("panic:") || x.starts_with("fatal error:")).cloned();
+        let panic = shared
+            .state
+            .lock()
+            .unwrap()
+            .raw_tail
+            .iter()
+            .find(|x| x.starts_with("panic:") || x.starts_with("fatal error:"))
+            .cloned();
         if let Some(p) = panic {
             text = format!("{text}: {p}");
         }
@@ -724,8 +767,12 @@ fn handle(shared: &Shared, level: &str, cid: Option<String>, msg: &str) {
             st.reasons.get(idx).cloned().flatten()
         };
         let text = match reason {
-            Some(Reason::Allow) => Some(tr("{who} -> {target} not in the allow list").replace("{who}", &who).replace("{target}", &target)),
-            Some(Reason::Private) => Some(format!("{who} -> {target} {}", tr("private address {host}").replace("{host}", &target))),
+            Some(Reason::Allow) => {
+                Some(tr("{who} -> {target} not in the allow list").replace("{who}", &who).replace("{target}", &target))
+            }
+            Some(Reason::Private) => {
+                Some(format!("{who} -> {target} {}", tr("private address {host}").replace("{host}", &target)))
+            }
             Some(Reason::Banned) => Some(format!("{who} -> {target} {}", tr("blocked (temporarily banned IP)"))),
             Some(Reason::SelfPort) => Some(format!("{who} -> {target} {}", tr("blocked (this proxy's own port)"))),
             Some(Reason::Rule(name)) => {
@@ -746,9 +793,14 @@ fn handle(shared: &Shared, level: &str, cid: Option<String>, msg: &str) {
             match AUTH_USER.captures(&err) {
                 Some(u) => shared.log(
                     Level::Auth,
-                    &tr("{client} authentication failed (user {user!r})").replace("{client}", &client).replace("{user!r}", &py_repr(&u[1])),
+                    &tr("{client} authentication failed (user {user!r})")
+                        .replace("{client}", &client)
+                        .replace("{user!r}", &py_repr(&u[1])),
                 ),
-                None => shared.log(Level::Auth, &format!("{client} {}", tr("authentication failed (wrong key or not Shadowsocks)"))),
+                None => shared.log(
+                    Level::Auth,
+                    &format!("{client} {}", tr("authentication failed (wrong key or not Shadowsocks)")),
+                ),
             }
             if let Some(m) = guard::auth_failure(&ip_of(&client)) {
                 shared.log(Level::Blocked, &m);
@@ -841,8 +893,16 @@ fn track(st: &mut State, conns: &[Value], shared: &Shared) -> Vec<String> {
         got.1 += down.saturating_sub(pd) as f64;
         let e = st.live.entry(cid.to_string()).or_insert_with(|| {
             let md = &c["metadata"];
-            let port = md["destinationPort"].as_str().and_then(|p| p.parse::<i64>().ok()).or_else(|| md["destinationPort"].as_i64()).unwrap_or(0);
-            let src_port = md["sourcePort"].as_str().map(String::from).or_else(|| md["sourcePort"].as_i64().map(|p| p.to_string())).unwrap_or("?".into());
+            let port = md["destinationPort"]
+                .as_str()
+                .and_then(|p| p.parse::<i64>().ok())
+                .or_else(|| md["destinationPort"].as_i64())
+                .unwrap_or(0);
+            let src_port = md["sourcePort"]
+                .as_str()
+                .map(String::from)
+                .or_else(|| md["sourcePort"].as_i64().map(|p| p.to_string()))
+                .unwrap_or("?".into());
             let src = md["sourceIP"].as_str().unwrap_or("?");
             let host = md["host"].as_str().filter(|h| !h.is_empty()).or(md["destinationIP"].as_str()).unwrap_or("?");
             Live {
@@ -881,22 +941,28 @@ fn closed(st: &State, e: &Live, shared: &Shared) {
     let log_conn = st.cfg["log_connections"].as_bool().unwrap_or(true);
     let text = if e.udp {
         (log_close || log_conn).then(|| {
-            (Level::Udp, tr("{who} UDP session ended · ↑ {fmt_size} ↓ {fmt_size2} · {value:.1f}s{extra}")
-                .replace("{who}", &e.who)
-                .replace("{fmt_size}", &fmt_size(e.up as f64))
-                .replace("{fmt_size2}", &fmt_size(e.down as f64))
-                .replace("{value:.1f}", &format!("{secs:.1}"))
-                .replace("{extra}", ""))
+            (
+                Level::Udp,
+                tr("{who} UDP session ended · ↑ {fmt_size} ↓ {fmt_size2} · {value:.1f}s{extra}")
+                    .replace("{who}", &e.who)
+                    .replace("{fmt_size}", &fmt_size(e.up as f64))
+                    .replace("{fmt_size2}", &fmt_size(e.down as f64))
+                    .replace("{value:.1f}", &format!("{secs:.1}"))
+                    .replace("{extra}", ""),
+            )
         })
     } else {
         log_close.then(|| {
-            (Level::Tcp, tr("{who} -> {target} closed · {reason} · ↑ {fmt_size} ↓ {fmt_size2} · {value:.1f}s")
-                .replace("{who}", &e.who)
-                .replace("{target}", &e.target)
-                .replace("{reason}", &e.reason.clone().unwrap_or_else(|| tr("normal close")))
-                .replace("{fmt_size}", &fmt_size(e.up as f64))
-                .replace("{fmt_size2}", &fmt_size(e.down as f64))
-                .replace("{value:.1f}", &format!("{secs:.1}")))
+            (
+                Level::Tcp,
+                tr("{who} -> {target} closed · {reason} · ↑ {fmt_size} ↓ {fmt_size2} · {value:.1f}s")
+                    .replace("{who}", &e.who)
+                    .replace("{target}", &e.target)
+                    .replace("{reason}", &e.reason.clone().unwrap_or_else(|| tr("normal close")))
+                    .replace("{fmt_size}", &fmt_size(e.up as f64))
+                    .replace("{fmt_size2}", &fmt_size(e.down as f64))
+                    .replace("{value:.1f}", &format!("{secs:.1}")),
+            )
         })
     };
     if let Some((level, t)) = text {
@@ -918,7 +984,8 @@ fn attribute(st: &mut State, du: f64, dd: f64) {
         let sd: f64 = tick.values().map(|v| v.1).sum();
         let (ru, rd) = ((du - su).max(0.0), (dd - sd).max(0.0));
         if ru > 0.0 || rd > 0.0 {
-            let mut weights: Vec<(String, f64)> = tick.iter().filter(|(_, v)| v.0 + v.1 > 0.0).map(|(t, v)| (t.clone(), v.0 + v.1)).collect();
+            let mut weights: Vec<(String, f64)> =
+                tick.iter().filter(|(_, v)| v.0 + v.1 > 0.0).map(|(t, v)| (t.clone(), v.0 + v.1)).collect();
             let mut total: f64 = weights.iter().map(|w| w.1).sum();
             if total == 0.0 {
                 weights = vec![("out0".into(), 1.0)];
@@ -944,7 +1011,9 @@ mod tests {
 
     #[test]
     fn line_patterns() {
-        let c = LINE.captures("INFO[0001] [3245104543 0ms] inbound/socks[in]: inbound connection from 127.0.0.1:51000").unwrap();
+        let c = LINE
+            .captures("INFO[0001] [3245104543 0ms] inbound/socks[in]: inbound connection from 127.0.0.1:51000")
+            .unwrap();
         assert_eq!(&c[1], "INFO");
         assert_eq!(&c[2], "3245104543");
         assert_eq!(FROM.captures(&c[3]).unwrap()[1].to_string(), "127.0.0.1:51000");
@@ -960,8 +1029,13 @@ mod tests {
 
     #[test]
     fn start_errors() {
-        assert!(matches!(start_error("listen tcp 127.0.0.1:1080: bind: Only one usage of each socket address"), StartError::PortInUse(_)));
-        assert!(matches!(start_error("decode config: password=abc bad"), StartError::Other(t) if t == "sing-box: decode config: password=*** bad"));
+        assert!(matches!(
+            start_error("listen tcp 127.0.0.1:1080: bind: Only one usage of each socket address"),
+            StartError::PortInUse(_)
+        ));
+        assert!(
+            matches!(start_error("decode config: password=abc bad"), StartError::Other(t) if t == "sing-box: decode config: password=*** bad")
+        );
     }
 
     #[test]

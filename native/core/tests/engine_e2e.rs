@@ -5,7 +5,7 @@ use proxydock_core::log::Level;
 use proxydock_core::singbox::process::{Engine, EngineEnv, Hooks, StartError};
 use proxydock_core::singbox::{self, guard};
 use proxydock_core::{config, graph};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -157,10 +157,21 @@ fn socks5_card_relays_counts_and_logs() {
     let mut got = vec![0u8; 50_006];
     s.read_exact(&mut got).unwrap();
     assert!(got.starts_with(b"echo: "));
-    assert!(log.wait_for(|(lv, m)| *lv == Level::Tcp && m.contains(&format!("-> 127.0.0.1:{echo}")), 5), "{:?}", log.0.lock().unwrap());
+    assert!(
+        log.wait_for(|(lv, m)| *lv == Level::Tcp && m.contains(&format!("-> 127.0.0.1:{echo}")), 5),
+        "{:?}",
+        log.0.lock().unwrap()
+    );
 
     // the way it took: the outbound sing-box chose, mapped to the exit block (a log line -> the canvas)
-    let who = log.0.lock().unwrap().iter().find(|(lv, m)| *lv == Level::Tcp && m.contains(&format!("-> 127.0.0.1:{echo}"))).map(|(_, m)| m.split(" -> ").next().unwrap().to_string()).unwrap();
+    let who = log
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(lv, m)| *lv == Level::Tcp && m.contains(&format!("-> 127.0.0.1:{echo}")))
+        .map(|(_, m)| m.split(" -> ").next().unwrap().to_string())
+        .unwrap();
     let target = format!("127.0.0.1:{echo}");
     let until = Instant::now() + Duration::from_secs(5);
     while engine.route_of(&who, Some(&target)).is_none() && Instant::now() < until {
@@ -259,7 +270,8 @@ fn https_card_with_self_signed_cert() {
     let mut e = env(&dir);
     e.cert = Some(cert);
     let (hooks, log, _) = Log::hooks();
-    let mut engine = Engine::start(&p, &glob, &e, hooks).unwrap_or_else(|err| panic!("{err:?} {:?}", log.0.lock().unwrap()));
+    let mut engine =
+        Engine::start(&p, &glob, &e, hooks).unwrap_or_else(|err| panic!("{err:?} {:?}", log.0.lock().unwrap()));
     assert!(TcpStream::connect(("127.0.0.1", port)).is_ok());
     engine.stop();
 }
@@ -281,7 +293,12 @@ fn router_geoip_rule_downloads_its_rule_set() {
     let need = proxydock_core::singbox::rulesets::needed(&p);
     assert_eq!(need, vec![("geoip".to_string(), "cn".to_string())]);
     let rs_dir = dir.join("rulesets");
-    let rs = match proxydock_core::singbox::rulesets::ensure_in(&rs_dir, &need, &proxydock_core::singbox::rulesets::http_get, &|_| {}) {
+    let rs = match proxydock_core::singbox::rulesets::ensure_in(
+        &rs_dir,
+        &need,
+        &proxydock_core::singbox::rulesets::http_get,
+        &|_| {},
+    ) {
         Ok(r) => r,
         Err(err) => {
             eprintln!("no network ({err}): skipped");
@@ -294,7 +311,8 @@ fn router_geoip_rule_downloads_its_rule_set() {
     let mut e = env(&dir);
     e.rulesets = rs;
     let (hooks, log, _) = Log::hooks();
-    let mut engine = Engine::start(&p, &glob, &e, hooks).unwrap_or_else(|err| panic!("{err:?} {:?}", log.0.lock().unwrap()));
+    let mut engine =
+        Engine::start(&p, &glob, &e, hooks).unwrap_or_else(|err| panic!("{err:?} {:?}", log.0.lock().unwrap()));
     let conf = std::fs::read_to_string(dir.join("card1.json")).unwrap();
     assert!(conf.contains("geoip-cn"), "{conf}");
     engine.stop();
@@ -318,7 +336,7 @@ fn der_sha256_hex(pem_path: &str) -> String {
 
 /// Hysteria2 server card with a self-signed certificate; a SOCKS5 client card whose Hysteria2 outbound pins it.
 /// Ok when a relayed connection through the client card worked.
-fn pinned_hy2(exe: &PathBuf, pin: &str, verify: bool) -> Result<(), String> {
+fn pinned_hy2(exe: &std::path::Path, pin: &str, verify: bool) -> Result<(), String> {
     let dir = temp_dir(&format!("pin-{}-{verify}", &pin[..4]));
     let (sport, cport, echo) = (free_udp_port(), free_port(), echo_server());
     let server = card(
@@ -329,17 +347,18 @@ fn pinned_hy2(exe: &PathBuf, pin: &str, verify: bool) -> Result<(), String> {
     let pin = if pin == "RIGHT" { der_sha256_hex(&cert.0) } else { pin.to_string() };
     let glob = config::validate_global(&json!({}));
     let mut e = env(&dir);
-    e.exe = exe.clone();
+    e.exe = exe.to_path_buf();
     e.cert = Some(cert);
     let (h1, l1, _) = Log::hooks();
-    let mut s = Engine::start(&server, &glob, &e, h1).map_err(|x| format!("server {x:?} {:?}", l1.0.lock().unwrap()))?;
+    let mut s =
+        Engine::start(&server, &glob, &e, h1).map_err(|x| format!("server {x:?} {:?}", l1.0.lock().unwrap()))?;
     let client = card_graph(json!({
         "inbounds": [{"id": "card2", "name": "c", "inbound": {"type": "socks5", "host": "127.0.0.1", "port": cport}, "target": "o"}],
         "outbounds": [{"id": "o", "outbound": {"type": "hysteria2", "host": "127.0.0.1", "port": sport, "hy2_password": "hpw",
             "sni": "localhost", "pin_sha256": pin, "tls_verify": verify}}],
     }));
     let mut e2 = env(&dir);
-    e2.exe = exe.clone();
+    e2.exe = exe.to_path_buf();
     let (h2, l2, _) = Log::hooks();
     let mut c = Engine::start(&client, &glob, &e2, h2).map_err(|x| format!("client {x:?}"))?;
     let conf = std::fs::read_to_string(dir.join("card2.json")).unwrap();
@@ -413,7 +432,10 @@ fn pinned_cards_need_sing_box_115() {
     assert!(!singbox::uses_certificate_pin(&plain));
     assert!(singbox::engine_for(&plain, &glob(&old)).is_ok());
     if let Some(new) = exe_115() {
-        assert_eq!(singbox::engine_for(&routed, &glob(&new)).map(|(k, e)| (k, e == new)), Ok((singbox::Kind::SingBox, true)));
+        assert_eq!(
+            singbox::engine_for(&routed, &glob(&new)).map(|(k, e)| (k, e == new)),
+            Ok((singbox::Kind::SingBox, true))
+        );
     }
 }
 
@@ -427,7 +449,10 @@ fn detect_sni_over_quic() {
     };
     let dir = temp_dir("detect");
     let sport = free_udp_port();
-    let server = card(json!({"type": "hysteria2", "host": "127.0.0.1", "port": sport, "hy2_password": "hpw"}), json!({"type": "direct"}));
+    let server = card(
+        json!({"type": "hysteria2", "host": "127.0.0.1", "port": sport, "hy2_password": "hpw"}),
+        json!({"type": "direct"}),
+    );
     let cert = proxydock_core::tls::server_cert_paths(&server, &dir.join("certs")).unwrap();
     let want = der_sha256_hex(&cert.0);
     let mut e = env(&dir);
@@ -435,7 +460,8 @@ fn detect_sni_over_quic() {
     e.cert = Some(cert);
     let (h, _, _) = Log::hooks();
     let mut s = Engine::start(&server, &config::validate_global(&json!({})), &e, h).expect("server");
-    let d = proxydock_core::certinfo::detect(&json!({"type": "hysteria2", "host": "127.0.0.1", "port": sport, "sni": ""}));
+    let d =
+        proxydock_core::certinfo::detect(&json!({"type": "hysteria2", "host": "127.0.0.1", "port": sport, "sni": ""}));
     s.stop();
     let d = d.expect("certificate");
     assert_eq!(d.names, ["localhost"]);
@@ -447,7 +473,8 @@ fn detect_sni_over_quic() {
 fn fake_dns(name: &str) -> u16 {
     let s = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     let port = s.local_addr().unwrap().port();
-    let want: Vec<u8> = name.split('.').flat_map(|p| std::iter::once(p.len() as u8).chain(p.bytes())).chain([0]).collect();
+    let want: Vec<u8> =
+        name.split('.').flat_map(|p| std::iter::once(p.len() as u8).chain(p.bytes())).chain([0]).collect();
     std::thread::spawn(move || {
         let mut buf = [0u8; 1500];
         while let Ok((n, from)) = s.recv_from(&mut buf) {
@@ -501,7 +528,9 @@ fn several_dns_servers_race() {
     let dead = silent.local_addr().unwrap().port();
     let good = fake_dns("race.test");
     let p = card(json!({"type": "socks5", "host": "127.0.0.1", "port": port}), json!({"type": "direct"}));
-    let glob = config::validate_global(&json!({"dns_server": format!("127.0.0.1:{dead}"), "dns_extra": [format!("127.0.0.1:{good}")]}));
+    let glob = config::validate_global(
+        &json!({"dns_server": format!("127.0.0.1:{dead}"), "dns_extra": [format!("127.0.0.1:{good}")]}),
+    );
     assert_eq!(glob["dns_extra"], json!([format!("127.0.0.1:{good}")]));
     let (hooks, log, _) = Log::hooks();
     let mut engine = Engine::start(&p, &glob, &env(&dir), hooks).expect("start");

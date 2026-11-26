@@ -23,7 +23,7 @@ static TRAY_HWND: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsiz
 
 /// A notification from the tray icon (Python `tray.showMessage(APP_NAME, text, Information)`).
 fn tray_message(text: &str) {
-    use windows_sys::Win32::UI::Shell::{Shell_NotifyIconW, NIF_INFO, NIIF_INFO, NIM_MODIFY, NOTIFYICONDATAW};
+    use windows_sys::Win32::UI::Shell::{NIF_INFO, NIIF_INFO, NIM_MODIFY, NOTIFYICONDATAW, Shell_NotifyIconW};
     let hwnd = TRAY_HWND.load(std::sync::atomic::Ordering::Relaxed);
     if hwnd == 0 {
         return;
@@ -55,7 +55,8 @@ fn focus_process_window(pid: u32) -> bool {
         let find = unsafe { &mut *(lparam as *mut Find) };
         let mut owner = 0u32;
         unsafe { GetWindowThreadProcessId(hwnd, &mut owner) };
-        if owner == find.pid && unsafe { IsWindowVisible(hwnd) } != 0 && unsafe { GetWindow(hwnd, GW_OWNER) }.is_null() {
+        if owner == find.pid && unsafe { IsWindowVisible(hwnd) } != 0 && unsafe { GetWindow(hwnd, GW_OWNER) }.is_null()
+        {
             find.hwnd = hwnd;
             return 0;
         }
@@ -79,11 +80,11 @@ fn focus_process_window(pid: u32) -> bool {
 fn open_ui(page: u32) {
     let Some(core) = CORE.get() else { return };
     let mut child = UI_CHILD.lock().unwrap();
-    if let Some(c) = child.as_mut() {
-        if matches!(c.try_wait(), Ok(None)) {
-            focus_process_window(c.id());
-            return;
-        }
+    if let Some(c) = child.as_mut()
+        && matches!(c.try_wait(), Ok(None))
+    {
+        focus_process_window(c.id());
+        return;
     }
     let exe = std::env::current_exe().unwrap().with_file_name("proxydock-ui.exe");
     let mut cmd = std::process::Command::new(exe);
@@ -116,7 +117,8 @@ fn ui_window() -> Option<usize> {
         let find = unsafe { &mut *(lparam as *mut Find) };
         let mut owner = 0u32;
         unsafe { GetWindowThreadProcessId(hwnd, &mut owner) };
-        if owner == find.pid && unsafe { IsWindowVisible(hwnd) } != 0 && unsafe { GetWindow(hwnd, GW_OWNER) }.is_null() {
+        if owner == find.pid && unsafe { IsWindowVisible(hwnd) } != 0 && unsafe { GetWindow(hwnd, GW_OWNER) }.is_null()
+        {
             find.hwnd = hwnd;
             return 0;
         }
@@ -196,7 +198,7 @@ const SHOW_EVENTS: [&str; 2] = ["Local\\ProxyDockRustShow", "Local\\ProxyDockRus
 /// A second start: ask the running ProxyDock to show its window (the log page with --logs), then end
 fn wake_first_instance(logs: bool) {
     use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{OpenEventW, SetEvent, EVENT_MODIFY_STATE};
+    use windows_sys::Win32::System::Threading::{EVENT_MODIFY_STATE, OpenEventW, SetEvent};
     let name: Vec<u16> = SHOW_EVENTS[logs as usize].encode_utf16().chain(Some(0)).collect();
     unsafe {
         let h = OpenEventW(EVENT_MODIFY_STATE, 0, name.as_ptr());
@@ -209,7 +211,7 @@ fn wake_first_instance(logs: bool) {
 
 /// The first start: a thread waits for a second start's request and passes it to the tray's thread
 fn listen_for_second_start(main_thread: u32) {
-    use windows_sys::Win32::System::Threading::{CreateEventW, WaitForMultipleObjects, INFINITE};
+    use windows_sys::Win32::System::Threading::{CreateEventW, INFINITE, WaitForMultipleObjects};
     let handles: Vec<_> = SHOW_EVENTS
         .iter()
         .map(|n| {
@@ -230,7 +232,9 @@ fn listen_for_second_start(main_thread: u32) {
             }
             // the window, or the log page (page 2)
             let page = if r == 1 { 2 } else { 0 };
-            unsafe { windows_sys::Win32::UI::WindowsAndMessaging::PostThreadMessageW(main_thread, WM_SHOW_UI, page, 0) };
+            unsafe {
+                windows_sys::Win32::UI::WindowsAndMessaging::PostThreadMessageW(main_thread, WM_SHOW_UI, page, 0)
+            };
         }
     });
 }
@@ -274,13 +278,20 @@ fn menu_entries() -> (Vec<menu::Entry>, Box<dyn Fn(u32)>) {
     // (Python: the first item opens or closes the window)
     let open = ui_window().is_some();
     let mut entries = vec![
-        if open { Entry::Item { label: tr("Close window"), id: ID_CLOSE } } else { Entry::Item { label: tr("Open window"), id: ID_OPEN } },
+        if open {
+            Entry::Item { label: tr("Close window"), id: ID_CLOSE }
+        } else {
+            Entry::Item { label: tr("Open window"), id: ID_OPEN }
+        },
         Entry::Item { label: tr("Logs"), id: ID_LOG },
     ];
     if !cards.is_empty() {
         entries.push(Entry::Divider);
         for (i, c) in cards.iter().take(MENU_CARDS).enumerate() {
-            entries.push(Entry::Item { label: format!("{}  ·  {}", c.name, state_text(&c.state)), id: ID_CARD + i as u32 });
+            entries.push(Entry::Item {
+                label: format!("{}  ·  {}", c.name, state_text(&c.state)),
+                id: ID_CARD + i as u32,
+            });
         }
         entries.push(Entry::Item { label: tr("Stop all proxies"), id: ID_STOP_ALL });
     }
@@ -289,9 +300,17 @@ fn menu_entries() -> (Vec<menu::Entry>, Box<dyn Fn(u32)>) {
     let mut actions: Vec<serde_json::Value> = vec![];
     for (id, name, on) in &quick.switches {
         entries.push(Entry::Divider);
-        entries.push(Entry::Header { label: tr("{name}: switch {state}").replace("{name}", name).replace("{state}", &tr(if *on { "Switched on" } else { "Switched off" })) });
+        entries.push(Entry::Header {
+            label: tr("{name}: switch {state}")
+                .replace("{name}", name)
+                .replace("{state}", &tr(if *on { "Switched on" } else { "Switched off" })),
+        });
         for state in [true, false] {
-            entries.push(Entry::Choice { label: tr(if state { "On" } else { "Off" }), id: ID_QUICK + actions.len() as u32, on: *on == state });
+            entries.push(Entry::Choice {
+                label: tr(if state { "On" } else { "Off" }),
+                id: ID_QUICK + actions.len() as u32,
+                on: *on == state,
+            });
             actions.push(serde_json::json!({"cmd": "set_switch", "id": id, "on": state}));
         }
     }
@@ -310,9 +329,15 @@ fn menu_entries() -> (Vec<menu::Entry>, Box<dyn Fn(u32)>) {
     let (registered, hidden) = proxydock_core::platform::startup_state();
     let on_off = |b: bool| tr(if b { "On" } else { "Off" });
     entries.push(Entry::Divider);
-    entries.push(Entry::Item { label: tr("Start at login  ·  {value}").replace("{value}", &on_off(registered)), id: ID_STARTUP });
+    entries.push(Entry::Item {
+        label: tr("Start at login  ·  {value}").replace("{value}", &on_off(registered)),
+        id: ID_STARTUP,
+    });
     if registered {
-        entries.push(Entry::Item { label: tr("Hide startup notification  ·  {value}").replace("{value}", &on_off(hidden)), id: ID_STARTUP_HIDDEN });
+        entries.push(Entry::Item {
+            label: tr("Hide startup notification  ·  {value}").replace("{value}", &on_off(hidden)),
+            id: ID_STARTUP_HIDDEN,
+        });
     }
     entries.push(Entry::Divider);
     entries.push(Entry::Item { label: tr("Restart"), id: ID_RESTART });
@@ -345,7 +370,7 @@ fn menu_entries() -> (Vec<menu::Entry>, Box<dyn Fn(u32)>) {
 /// Only one core process per user (a second one would start the autostart cards again): the mutex that says so,
 /// or None when another one has it.
 fn first_instance() -> Option<windows_sys::Win32::Foundation::HANDLE> {
-    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS};
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError};
     use windows_sys::Win32::System::Threading::CreateMutexW;
     let name: Vec<u16> = "Local\\ProxyDockRustCore".encode_utf16().chain(Some(0)).collect();
     let h = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
@@ -362,7 +387,8 @@ fn first_instance() -> Option<windows_sys::Win32::Foundation::HANDLE> {
 /// "Run as administrator" (Python `relaunch_elevated`): an elevated copy through UAC takes over. Ok(true): it
 /// started, this one ends; Err: the prompt was cancelled (this one goes on without the rights).
 fn relaunch_elevated(args: &[String], mutex: windows_sys::Win32::Foundation::HANDLE) -> Result<bool, String> {
-    let glob = proxydock_core::config::load_from(&proxydock_core::paths::config_path()).map(|l| l.global).unwrap_or_default();
+    let glob =
+        proxydock_core::config::load_from(&proxydock_core::paths::config_path()).map(|l| l.global).unwrap_or_default();
     let elevated = args.iter().any(|a| a == "--elevated");
     if glob.get("run_as_admin") != Some(&serde_json::json!(true)) || elevated || proxydock_core::manager::is_admin() {
         return Ok(false);
@@ -506,5 +532,14 @@ fn main() {
         (None, false) => None,
     };
     // (a restart opens the window again unless it was started hidden)
-    run_tray(if has("--hidden") { None } else if has("--logs") { Some(2) } else { Some(0) }, note);
+    run_tray(
+        if has("--hidden") {
+            None
+        } else if has("--logs") {
+            Some(2)
+        } else {
+            Some(0)
+        },
+        note,
+    );
 }

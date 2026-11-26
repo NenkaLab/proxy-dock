@@ -40,26 +40,29 @@ Los proxies funcionan con [sing-box](https://github.com/SagerNet/sing-box), incl
 
 ## Ejecutar
 
-En Windows, `ProxyDock-<versión>-windows-x64-setup.exe` la instala para tu usuario (sin permisos de administrador); el `.zip` es la misma aplicación como carpeta. En macOS, abre el `.dmg` y arrastra ProxyDock a Aplicaciones. En Linux, da permiso de ejecución al `.AppImage` y ejecútalo.
+Windows 10 / 11: `ProxyDock-<versión>-windows-x64-setup.exe` la instala para tu usuario (sin permisos de administrador);
+el `.zip` es la misma aplicación como carpeta. Descárgala de [Releases](https://github.com/NenkaLab/proxy-dock/releases).
 
-Descarga una versión de [Releases](https://github.com/NenkaLab/proxy-dock/releases).
+Los ajustes se guardan en `%APPDATA%\ProxyDock`; la versión 3 sigue usando los ajustes de la 2.x. La página **Cómo usar** de la
+aplicación explica el resto.
 
-Los ajustes se guardan en `%APPDATA%\ProxyDock` (macOS: `~/Library/Application Support/ProxyDock`,
-Linux: `~/.config/ProxyDock`). La página **Cómo usar** de la aplicación explica el resto.
+ProxyDock 3 es una reescritura en Rust y por ahora solo funciona en Windows. En macOS y Linux usa la 2.x (la aplicación
+Python, en la rama [`old`](https://github.com/NenkaLab/proxy-dock/tree/old) y en las versiones 2.x).
 
 ## Compilar
 
 Ejecutar desde el código fuente, pruebas, compilación, instaladores y versiones: [Build.md](Build.md) (en inglés).
+Comprobaciones antes de publicar: [TESTING.md](../TESTING.md) (en coreano).
 
 ## Limitaciones
 
-- Los routers, grupos, WireGuard, VLESS / VMess / Trojan / TUIC y TUN necesitan el motor sing-box (incluido).
-- TUN y macOS todavía no se han probado en equipos reales.
+- Solo Windows (macOS / Linux: 2.x).
+- TUN todavía no se ha probado en equipos reales.
 - SOCKS4 no tiene contraseña: úsalo solo en este PC.
 
 ## Licencia
 
-[GPL-3.0](../LICENSE). Los componentes incluidos (sing-box GPL-3.0, Hysteria MIT, Qt / PySide6 LGPL-3.0, fuentes OFL-1.1, ...)
+[GPL-3.0](../LICENSE). Los componentes incluidos (sing-box GPL-3.0, Hysteria MIT, Slint GPL-3.0, crates de Rust, fuentes OFL-1.1, ...)
 y sus licencias están en [`licenses/`](../licenses/).
 
 Copyright (C) 2026 NenkaLab

@@ -17,7 +17,9 @@ fn url(kind: &str, name: &str) -> Option<String> {
     // valid names only use [a-z0-9!@._-], which need no URL quoting
     match kind {
         "geoip" => Some(format!("https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-{name}.srs")),
-        "geosite" => Some(format!("https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-{name}.srs")),
+        "geosite" => {
+            Some(format!("https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-{name}.srs"))
+        }
         _ => None,
     }
 }
@@ -81,7 +83,12 @@ fn fill(t: &str, kind: &str, name: &str, e: &str) -> String {
 
 /// Make sure every (kind, name) is in `dir` and not older than a day. Returns (tag, path) sorted by kind and name.
 /// Err when one is missing and cannot be downloaded; log(message) hears about a failed refresh of a saved copy.
-pub fn ensure_in(dir: &Path, items: &[(String, String)], fetch: Fetch, log: &dyn Fn(&str)) -> Result<Vec<(String, String)>, String> {
+pub fn ensure_in(
+    dir: &Path,
+    items: &[(String, String)],
+    fetch: Fetch,
+    log: &dyn Fn(&str),
+) -> Result<Vec<(String, String)>, String> {
     let _ = std::fs::create_dir_all(dir);
     let mut out = vec![];
     for (kind, name) in items.iter().collect::<BTreeSet<_>>() {
@@ -89,14 +96,17 @@ pub fn ensure_in(dir: &Path, items: &[(String, String)], fetch: Fetch, log: &dyn
             return Err(tr("Invalid {kind} name: {name}").replace("{kind}", kind).replace("{name}", name));
         }
         let p = path_in(dir, kind, name);
-        let age = std::fs::metadata(&p).and_then(|m| m.modified()).ok().map(|t| SystemTime::now().duration_since(t).unwrap_or_default());
-        if age.is_none_or(|a| a >= MAX_AGE) {
-            if let Err(e) = download(fetch, kind, name, &p) {
-                if !p.exists() {
-                    return Err(fill("Could not download {kind} '{name}' for a router rule: {e}", kind, name, &e));
-                }
-                log(&fill("Could not update {kind} '{name}', using the saved copy: {e}", kind, name, &e));
+        let age = std::fs::metadata(&p)
+            .and_then(|m| m.modified())
+            .ok()
+            .map(|t| SystemTime::now().duration_since(t).unwrap_or_default());
+        if age.is_none_or(|a| a >= MAX_AGE)
+            && let Err(e) = download(fetch, kind, name, &p)
+        {
+            if !p.exists() {
+                return Err(fill("Could not download {kind} '{name}' for a router rule: {e}", kind, name, &e));
             }
+            log(&fill("Could not update {kind} '{name}', using the saved copy: {e}", kind, name, &e));
         }
         out.push((tag(kind, name), p.display().to_string()));
     }
@@ -116,7 +126,13 @@ mod tests {
     #[test]
     fn names() {
         assert!(valid_name("cn") && valid_name("category-ads-all") && valid_name("google@cn") && valid_name("a!b.c_d"));
-        assert!(!valid_name("") && !valid_name("-cn") && !valid_name("CN") && !valid_name("a/b") && !valid_name(&"a".repeat(65)));
+        assert!(
+            !valid_name("")
+                && !valid_name("-cn")
+                && !valid_name("CN")
+                && !valid_name("a/b")
+                && !valid_name(&"a".repeat(65))
+        );
         assert!(valid_name(&"a".repeat(64)));
     }
 
@@ -124,7 +140,11 @@ mod tests {
     fn downloads_refreshes_and_falls_back() {
         let dir = std::env::temp_dir().join(format!("proxydock-rs-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let items = vec![("geosite".to_string(), "cn".to_string()), ("geoip".into(), "cn".into()), ("geoip".into(), "cn".into())];
+        let items = vec![
+            ("geosite".to_string(), "cn".to_string()),
+            ("geoip".into(), "cn".into()),
+            ("geoip".into(), "cn".into()),
+        ];
         let urls = RefCell::new(vec![]);
         let ok = |u: &str| {
             urls.borrow_mut().push(u.to_string());

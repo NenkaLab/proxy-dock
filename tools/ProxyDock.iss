@@ -1,5 +1,5 @@
-﻿; ProxyDock Windows installer (Inno Setup 6). Built by: python tools/build.py installer
-; which passes AppVersion, SourceDir (dist\win\ProxyDock), OutputDir and OutputName.
+﻿; ProxyDock Windows installer (Inno Setup 6). Built by: python tools/build_rust.py
+; which passes AppVersion, SourceDir (dist\rust\ProxyDock), OutputDir and OutputName.
 ; Per-user install (no administrator): %LOCALAPPDATA%\Programs\ProxyDock. Settings stay in %APPDATA%\ProxyDock
 ; and are kept on uninstall.
 
@@ -7,7 +7,7 @@
   #define AppVersion "0.0.0"
 #endif
 #ifndef SourceDir
-  #define SourceDir "..\dist\win\ProxyDock"
+  #define SourceDir "..\dist\rust\ProxyDock"
 #endif
 #ifndef OutputDir
   #define OutputDir "..\dist\release"
@@ -109,7 +109,7 @@ Name: "startmenuicon"; Description: "{cm:StartMenuIcon}"; GroupDescription: "{cm
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [InstallDelete]
-; files of an older version that the new one no longer ships
+; files of an older version that the new one no longer ships (the Python app's runtime)
 Type: filesandordirs; Name: "{app}\_internal"
 
 [Files]

@@ -3,7 +3,7 @@
 //! of the subscription block.
 
 use crate::i18n::tr;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::time::Duration;
 
 pub const MAX_BYTES: u64 = 5 * 1024 * 1024;
@@ -15,7 +15,8 @@ pub fn fetch(url: &str) -> Result<Vec<u8>, String> {
     if !lower.starts_with("https://") && !lower.starts_with("http://") {
         return Err(tr("The subscription address must start with https:// or http://"));
     }
-    let data = crate::http::get(url, "", TIMEOUT, MAX_BYTES + 1).map_err(|e| tr("Could not download the subscription: {e}").replace("{e}", &e))?;
+    let data = crate::http::get(url, "", TIMEOUT, MAX_BYTES + 1)
+        .map_err(|e| tr("Could not download the subscription: {e}").replace("{e}", &e))?;
     if data.len() as u64 > MAX_BYTES {
         return Err(tr("The subscription is too large"));
     }
@@ -37,7 +38,11 @@ fn text_of(data: &[u8]) -> Result<String, String> {
     let compact: String = text.split(crate::py::is_space).collect();
     if compact.is_ascii() {
         let padded = format!("{compact}{}", "=".repeat((4 - compact.len() % 4) % 4));
-        let raw = if compact.contains(['-', '_']) { crate::py::urlsafe_b64decode(&padded) } else { crate::py::a2b_base64(padded.as_bytes()) };
+        let raw = if compact.contains(['-', '_']) {
+            crate::py::urlsafe_b64decode(&padded)
+        } else {
+            crate::py::a2b_base64(padded.as_bytes())
+        };
         if let Some(raw) = raw {
             let d = String::from_utf8_lossy(&raw).to_string();
             if d.contains("://") {
@@ -105,7 +110,8 @@ pub fn parse(data: &[u8]) -> Result<(Vec<Value>, usize), String> {
 pub fn fields_of(servers: &[Value], skipped: usize, now: i64) -> (Map<String, Value>, String) {
     let mut note = tr("{count} servers").replace("{count}", &servers.len().to_string());
     if skipped > 0 {
-        note += &format!(" · {}", tr("{count} skipped (unsupported or invalid)").replace("{count}", &skipped.to_string()));
+        note +=
+            &format!(" · {}", tr("{count} skipped (unsupported or invalid)").replace("{count}", &skipped.to_string()));
     }
     let mut f = Map::new();
     f.insert("sub_servers".into(), json!(crate::config::py_dumps(&Value::Array(servers.to_vec()))));
@@ -134,7 +140,9 @@ mod tests {
         assert_eq!(servers[1]["name"], "A (2)");
         assert_eq!(skipped, 2, "http:// and the kcp transport");
         let (f, _) = fields_of(&servers, skipped, 5);
-        assert!(f["sub_servers"].as_str().unwrap().starts_with("[{\"name\": \"A\", \"outbound\": {\"type\": \"trojan\", "));
+        assert!(
+            f["sub_servers"].as_str().unwrap().starts_with("[{\"name\": \"A\", \"outbound\": {\"type\": \"trojan\", ")
+        );
         assert!(parse(b"nothing here").is_err());
     }
 }

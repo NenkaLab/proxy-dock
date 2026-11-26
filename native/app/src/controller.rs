@@ -7,11 +7,11 @@ use proxydock_core::i18n::tr;
 use proxydock_core::log::{Entry, Level};
 use proxydock_core::manager::{self, Events, Manager, State};
 use proxydock_core::{config, edit, form, graph, log};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::collections::{HashMap, VecDeque};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -103,13 +103,16 @@ fn busy_label(action: &str) -> &'static str {
     }
 }
 
+/// a hand-picked group for the tray: (id, name, [(member id, name)], the member in use)
+pub type QuickGroup = (String, String, Vec<(String, String)>, String);
+
 /// What the tray menu can change without the window (Python `_tray_quick_actions`)
 #[derive(Clone, Debug, Default)]
 pub struct Quick {
     /// IF blocks in switch mode: (id, name, on)
     pub switches: Vec<(String, String, bool)>,
     /// groups that use the member picked by hand: (id, name, [(member id, name)], the member in use)
-    pub groups: Vec<(String, String, Vec<(String, String)>, String)>,
+    pub groups: Vec<QuickGroup>,
 }
 
 /// a card as the tray menu shows it
@@ -400,13 +403,25 @@ pub fn conn_of_line(message: &str) -> Option<(String, Option<String>)> {
 
 impl Controller {
     fn app_log(&mut self, level: Level, message: &str) {
-        let e = Entry { time: log::now_text(), level, message: log::clean(message), proxy_id: String::new(), proxy_name: String::new() };
+        let e = Entry {
+            time: log::now_text(),
+            level,
+            message: log::clean(message),
+            proxy_id: String::new(),
+            proxy_name: String::new(),
+        };
         self.add_log(e);
     }
 
     fn add_log(&mut self, e: Entry) {
         if cfg!(debug_assertions) {
-            eprintln!("[{}] {:<5} {}{}", e.time, e.level.tag(), if e.proxy_name.is_empty() { String::new() } else { format!("[{}] ", e.proxy_name) }, e.message);
+            eprintln!(
+                "[{}] {:<5} {}{}",
+                e.time,
+                e.level.tag(),
+                if e.proxy_name.is_empty() { String::new() } else { format!("[{}] ", e.proxy_name) },
+                e.message
+            );
         }
         self.broadcast(&json!({"ev": "log", "entries": [entry_json(&e)]}));
         if let Some(f) = self.file_log.as_mut() {
@@ -529,7 +544,8 @@ impl Controller {
         let index = |list: &[&str], v: &Value| list.iter().position(|x| Some(*x) == v.as_str()).unwrap_or(0);
         let codes: Vec<&str> = proxydock_core::i18n::LANGUAGES.iter().map(|(c, _)| *c).collect();
         let scale = config::UI_SCALES.iter().position(|x| Some(*x) == g["ui_scale"].as_i64()).unwrap_or(1);
-        let domains: Vec<&str> = g["allowed_domains"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+        let domains: Vec<&str> =
+            g["allowed_domains"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
         json!({
             "values": {
                 "allowed_domains": domains.join(", "), "block_private": g["block_private"], "timeout": g["timeout"],
@@ -583,10 +599,22 @@ impl Controller {
             self.broadcast(&json!({"ev": "error", "message": tr("Save failed")}));
             return;
         }
-        let pick = |list: &[&str], k: &str| list.get(vals[k].as_u64().unwrap_or(0) as usize).copied().unwrap_or(list[0]).to_string();
+        let pick = |list: &[&str], k: &str| {
+            list.get(vals[k].as_u64().unwrap_or(0) as usize).copied().unwrap_or(list[0]).to_string()
+        };
         let codes: Vec<&str> = proxydock_core::i18n::LANGUAGES.iter().map(|(c, _)| *c).collect();
         let mut g = self.glob.clone();
-        for k in ["block_private", "log_connections", "log_close", "dns_via_outbound", "log_to_file", "close_exits", "singbox_latest", "run_as_admin", "check_updates"] {
+        for k in [
+            "block_private",
+            "log_connections",
+            "log_close",
+            "dns_via_outbound",
+            "log_to_file",
+            "close_exits",
+            "singbox_latest",
+            "run_as_admin",
+            "check_updates",
+        ] {
             g.insert(k.into(), json!(vals[k] == json!(true)));
         }
         for k in ["timeout", "log_font_size"] {
@@ -624,7 +652,11 @@ impl Controller {
         self.app_log(Level::Setting, &msg);
         if !pending.is_empty() {
             // (Python: a warning bar with "Restart now")
-            let text = format!("{}\n{}", tr("Restart required"), tr("Applies after a restart: {join}").replace("{join}", &pending.join(", ")));
+            let text = format!(
+                "{}\n{}",
+                tr("Restart required"),
+                tr("Applies after a restart: {join}").replace("{join}", &pending.join(", "))
+            );
             self.broadcast(&json!({"ev": "restart_needed", "message": text}));
         }
         if self.glob["singbox_latest"] == json!(true) && old["singbox_latest"] != json!(true) {
@@ -654,7 +686,8 @@ impl Controller {
             let _ = tx.send(Msg::Work(Box::new(move |c: &mut Controller| {
                 match result {
                     Ok(proxydock_core::singbox::latest::Outcome::Installed(v)) => {
-                        let msg = tr("Downloaded sing-box {version}; each proxy uses it from its next start").replace("{version}", &v.to_string());
+                        let msg = tr("Downloaded sing-box {version}; each proxy uses it from its next start")
+                            .replace("{version}", &v.to_string());
                         c.app_log(Level::Setting, &msg);
                     }
                     Ok(_) => {}
@@ -673,7 +706,11 @@ impl Controller {
     /// Measure outbound blocks (the given ones, else every one but Block), 4 at a time (Python `test_latency`).
     fn test_latency(&mut self, keys: &[String]) {
         let targets = proxydock_core::probe::latency_targets(&self.graph);
-        let mut ids: Vec<String> = keys.iter().map(|k| k.strip_suffix("/out").unwrap_or(k).to_string()).filter(|k| targets.contains(k)).collect();
+        let mut ids: Vec<String> = keys
+            .iter()
+            .map(|k| k.strip_suffix("/out").unwrap_or(k).to_string())
+            .filter(|k| targets.contains(k))
+            .collect();
         if ids.is_empty() {
             ids = targets;
         }
@@ -684,7 +721,13 @@ impl Controller {
         }
         let jobs: Vec<(String, Value, Value)> = ids
             .iter()
-            .map(|id| (id.clone(), proxydock_core::probe::outbound_proxy(&self.graph, id), proxydock_core::probe::latency_key(&self.graph, id)))
+            .map(|id| {
+                (
+                    id.clone(),
+                    proxydock_core::probe::outbound_proxy(&self.graph, id),
+                    proxydock_core::probe::latency_key(&self.graph, id),
+                )
+            })
             .collect();
         self.latency_busy.extend(ids.iter().cloned());
         self.latency_round = Some((ids.len(), 0, 0));
@@ -692,14 +735,18 @@ impl Controller {
         let queue = Arc::new(Mutex::new(jobs));
         for _ in 0..LATENCY_WORKERS.min(ids.len()) {
             let (queue, tx, remote, glob) = (queue.clone(), self.tx.clone(), self.manager.remote(), self.glob.clone());
-            std::thread::spawn(move || loop {
-                let Some((id, p, key)) = queue.lock().unwrap().pop() else { break };
-                let r = proxydock_core::probe::check_outbound(&remote, &p, &glob, &format!("__latency_{id}__"));
-                let ok = r.get("ok") == Some(&json!(true));
-                let ms = if ok { r.get("total_ms").and_then(Value::as_f64).map(|m| m.round() as i64) } else { None };
-                let pick = |k: &str| r.get(k).and_then(Value::as_str).unwrap_or("").to_string();
-                let error = if !pick("detail").is_empty() { pick("detail") } else { pick("error") };
-                let _ = tx.send(Msg::Work(Box::new(move |c: &mut Controller| c.on_latency(id, (ok, ms, error, key)))));
+            std::thread::spawn(move || {
+                loop {
+                    let Some((id, p, key)) = queue.lock().unwrap().pop() else { break };
+                    let r = proxydock_core::probe::check_outbound(&remote, &p, &glob, &format!("__latency_{id}__"));
+                    let ok = r.get("ok") == Some(&json!(true));
+                    let ms =
+                        if ok { r.get("total_ms").and_then(Value::as_f64).map(|m| m.round() as i64) } else { None };
+                    let pick = |k: &str| r.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+                    let error = if !pick("detail").is_empty() { pick("detail") } else { pick("error") };
+                    let _ =
+                        tx.send(Msg::Work(Box::new(move |c: &mut Controller| c.on_latency(id, (ok, ms, error, key)))));
+                }
             });
         }
     }
@@ -718,7 +765,9 @@ impl Controller {
         }
         if let Some((total, oks)) = finished {
             self.latency_round = None;
-            let text = tr("{ok} working, {failed} not responding").replace("{ok}", &oks.to_string()).replace("{failed}", &(total - oks).to_string());
+            let text = tr("{ok} working, {failed} not responding")
+                .replace("{ok}", &oks.to_string())
+                .replace("{failed}", &(total - oks).to_string());
             // (Python: a success bar, a warning one when some did not respond)
             let ev = if oks == total { "info" } else { "warn" };
             let msg = json!({"ev": ev, "message": format!("{}
@@ -738,10 +787,21 @@ impl Controller {
                 Some(("…".to_string(), 0))
             } else {
                 match self.latency.get(id) {
-                    Some((ok, ms, _, key)) if *key == proxydock_core::probe::latency_key(&self.graph, id) => Some(match (ok, ms) {
-                        (true, Some(ms)) => (format!("{ms} ms"), if *ms < 400 { 1 } else if *ms < 1000 { 2 } else { 3 }),
-                        _ => ("✕".to_string(), 3),
-                    }),
+                    Some((ok, ms, _, key)) if *key == proxydock_core::probe::latency_key(&self.graph, id) => {
+                        Some(match (ok, ms) {
+                            (true, Some(ms)) => (
+                                format!("{ms} ms"),
+                                if *ms < 400 {
+                                    1
+                                } else if *ms < 1000 {
+                                    2
+                                } else {
+                                    3
+                                },
+                            ),
+                            _ => ("✕".to_string(), 3),
+                        })
+                    }
                     _ => None,
                 }
             };
@@ -750,7 +810,9 @@ impl Controller {
             }
         }
         let progress = match self.latency_round {
-            Some((total, done, _)) => tr("Testing… {done}/{total}").replace("{done}", &done.to_string()).replace("{total}", &total.to_string()),
+            Some((total, done, _)) => tr("Testing… {done}/{total}")
+                .replace("{done}", &done.to_string())
+                .replace("{total}", &total.to_string()),
             None => String::new(),
         };
         json!({"badges": badges, "progress": progress})
@@ -774,7 +836,9 @@ impl Controller {
             return ("error", e);
         }
         if pc["applied"] == json!(true) {
-            let text = tr("In use: {name} ({server})").replace("{name}", &name_of(p)).replace("{server}", pc["server"].as_str().unwrap_or(""));
+            let text = tr("In use: {name} ({server})")
+                .replace("{name}", &name_of(p))
+                .replace("{server}", pc["server"].as_str().unwrap_or(""));
             return ("applied", text);
         }
         ("waiting", tr("Applied while '{name}' is running").replace("{name}", &name_of(p)))
@@ -832,10 +896,10 @@ impl Controller {
     /// the PC's settings from before ProxyDock changed them (Python `_pc_restore_backup`)
     fn pc_restore_backup(&mut self) {
         let backup = self.graph["pc"]["backup"].clone();
-        if let Value::Object(b) = &backup {
-            if let Err(e) = proxydock_core::platform::set_system_proxy(b) {
-                self.app_log(Level::Error, &tr("Could not change the system proxy: {e}").replace("{e}", &e));
-            }
+        if let Value::Object(b) = &backup
+            && let Err(e) = proxydock_core::platform::set_system_proxy(b)
+        {
+            self.app_log(Level::Error, &tr("Could not change the system proxy: {e}").replace("{e}", &e));
         }
         let pc = self.graph.get_mut("pc").unwrap();
         pc["applied"] = json!(false);
@@ -886,7 +950,9 @@ impl Controller {
                 match r {
                     Ok(msg) if !msg.is_empty() => self.app_log(Level::Setting, &msg),
                     Ok(_) => {}
-                    Err(e) => self.app_log(Level::Error, &tr("Could not change the system proxy: {e}").replace("{e}", &e)),
+                    Err(e) => {
+                        self.app_log(Level::Error, &tr("Could not change the system proxy: {e}").replace("{e}", &e))
+                    }
                 }
                 let pc = self.graph.get_mut("pc").unwrap();
                 pc["inbound"] = Value::Null;
@@ -898,12 +964,21 @@ impl Controller {
             // Python `set_switch`: an IF block in switch mode, everything to "then" (on) or "else" (off)
             "set_switch" => {
                 let id = v["id"].as_str().unwrap_or("").to_string();
-                let Some(r) = self.graph.get_mut("routers").and_then(Value::as_array_mut).and_then(|a| a.iter_mut().find(|r| r["id"] == json!(id))) else { return };
+                let Some(r) = self
+                    .graph
+                    .get_mut("routers")
+                    .and_then(Value::as_array_mut)
+                    .and_then(|a| a.iter_mut().find(|r| r["id"] == json!(id)))
+                else {
+                    return;
+                };
                 if r["switch"] != json!(true) || r["switch_on"] == json!(on) {
                     return;
                 }
                 r["switch_on"] = json!(on);
-                let msg = tr("Switch '{name}' turned {state}").replace("{name}", r["name"].as_str().unwrap_or("")).replace("{state}", &tr(if on { "on" } else { "off" }));
+                let msg = tr("Switch '{name}' turned {state}")
+                    .replace("{name}", r["name"].as_str().unwrap_or(""))
+                    .replace("{state}", &tr(if on { "on" } else { "off" }));
                 self.app_log(Level::Setting, &msg);
                 self.graph_changed();
             }
@@ -914,7 +989,14 @@ impl Controller {
                 if !matches!(key, "autostart" | "auto_restart") {
                     return;
                 }
-                let Some(n) = self.graph.get_mut("inbounds").and_then(Value::as_array_mut).and_then(|a| a.iter_mut().find(|n| n["id"] == json!(id))) else { return };
+                let Some(n) = self
+                    .graph
+                    .get_mut("inbounds")
+                    .and_then(Value::as_array_mut)
+                    .and_then(|a| a.iter_mut().find(|n| n["id"] == json!(id)))
+                else {
+                    return;
+                };
                 if n[key] == json!(on) {
                     return;
                 }
@@ -927,14 +1009,25 @@ impl Controller {
             // Python `select_member`: a hand-picked group uses another member (its cards restart with it)
             "select_member" => {
                 let (gid, mid) = (v["group"].as_str().unwrap_or("").to_string(), v["member"].clone());
-                let member = graph::find(&self.graph, mid.as_str().unwrap_or("")).map(|(_, m)| name_of(m)).unwrap_or_else(|| "?".into());
-                let Some(g) = self.graph.get_mut("outbounds").and_then(Value::as_array_mut).and_then(|a| a.iter_mut().find(|n| n["id"] == json!(gid))) else { return };
+                let member = graph::find(&self.graph, mid.as_str().unwrap_or(""))
+                    .map(|(_, m)| name_of(m))
+                    .unwrap_or_else(|| "?".into());
+                let Some(g) = self
+                    .graph
+                    .get_mut("outbounds")
+                    .and_then(Value::as_array_mut)
+                    .and_then(|a| a.iter_mut().find(|n| n["id"] == json!(gid)))
+                else {
+                    return;
+                };
                 let is_member = g["members"].as_array().is_some_and(|m| m.contains(&mid));
                 if !is_member || g["outbound"]["group_selected"] == mid {
                     return;
                 }
                 g["outbound"]["group_selected"] = mid;
-                let msg = tr("Group '{group}' now uses '{name}'").replace("{group}", g["name"].as_str().unwrap_or("")).replace("{name}", &member);
+                let msg = tr("Group '{group}' now uses '{name}'")
+                    .replace("{group}", g["name"].as_str().unwrap_or(""))
+                    .replace("{name}", &member);
                 self.app_log(Level::Setting, &msg);
                 self.graph_changed();
             }
@@ -959,7 +1052,8 @@ impl Controller {
                         match r {
                             Ok(msg) => c.app_log(Level::Setting, &tr("Firewall: {msg}").replace("{msg}", &msg)),
                             Err(e) => {
-                                let msg = json!({"ev": "error", "message": format!("{}: {e}", tr("Firewall change failed"))});
+                                let msg =
+                                    json!({"ev": "error", "message": format!("{}: {e}", tr("Firewall change failed"))});
                                 c.broadcast(&msg);
                             }
                         }
@@ -993,7 +1087,10 @@ impl Controller {
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let mut out = vec![];
-            for (name, exe) in [("sing-box", proxydock_core::singbox::find_binary(&glob)), ("Hysteria2", proxydock_core::singbox::find_hysteria(&glob))] {
+            for (name, exe) in [
+                ("sing-box", proxydock_core::singbox::find_binary(&glob)),
+                ("Hysteria2", proxydock_core::singbox::find_hysteria(&glob)),
+            ] {
                 let version = exe.as_deref().and_then(proxydock_core::singbox::core_version);
                 out.push(json!([name, exe.map(|e| e.display().to_string()), version]));
             }
@@ -1065,7 +1162,9 @@ impl Controller {
                 self.update.release = None;
                 self.update.status = tr("This is the latest version");
                 if manual {
-                    let text = tr("{APP_NAME} {version} is the latest version").replace("{APP_NAME}", "ProxyDock").replace("{version}", proxydock_core::update::current_version());
+                    let text = tr("{APP_NAME} {version} is the latest version")
+                        .replace("{APP_NAME}", "ProxyDock")
+                        .replace("{version}", proxydock_core::update::current_version());
                     self.broadcast(&json!({"ev": "info", "message": text}));
                 }
             }
@@ -1113,7 +1212,9 @@ impl Controller {
                     c.broadcast(&msg);
                 })));
             };
-            let r = update::fetch_verified(&rel, &name, &folder, &progress, &|| cancel.load(std::sync::atomic::Ordering::SeqCst));
+            let r = update::fetch_verified(&rel, &name, &folder, &progress, &|| {
+                cancel.load(std::sync::atomic::Ordering::SeqCst)
+            });
             let _ = tx.send(Msg::Work(Box::new(move |c: &mut Controller| c.on_update_downloaded(r))));
         });
     }
@@ -1124,7 +1225,10 @@ impl Controller {
         self.send_update();
         match r {
             Ok(path) => {
-                self.app_log(Level::Info, &tr("Downloaded and verified (SHA-256): {path}").replace("{path}", &path.display().to_string()));
+                self.app_log(
+                    Level::Info,
+                    &tr("Downloaded and verified (SHA-256): {path}").replace("{path}", &path.display().to_string()),
+                );
                 let msg = json!({"ev": "update_ready", "path": path.display().to_string()});
                 self.broadcast(&msg);
             }
@@ -1143,8 +1247,11 @@ impl Controller {
     /// Run the installer and quit; it closes this program, updates it and starts it again (Python `install`)
     fn install_update(&mut self, path: &str) {
         let setup = std::path::Path::new(path);
-        let app_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.to_path_buf())).unwrap_or_default();
-        if !setup.is_file() || proxydock_core::update::install_kind(&std::env::current_exe().unwrap_or_default()).is_none() {
+        let app_dir =
+            std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.to_path_buf())).unwrap_or_default();
+        if !setup.is_file()
+            || proxydock_core::update::install_kind(&std::env::current_exe().unwrap_or_default()).is_none()
+        {
             return;
         }
         let cmd = proxydock_core::update::installer_command(setup, &app_dir, &proxydock_core::i18n::current());
@@ -1247,9 +1354,15 @@ impl Controller {
         self.proxies = graph::compile(&self.graph).into_iter().map(Value::Object).collect();
         let summaries: HashMap<String, String> =
             self.proxies.iter().map(|p| (p["id"].as_str().unwrap_or("").to_string(), manager::summary(p))).collect();
-        let unlinked: std::collections::HashSet<String> =
-            self.proxies.iter().filter(|p| p["unlinked"] == json!(true)).map(|p| p["id"].as_str().unwrap_or("").to_string()).collect();
-        self.view = canvas::build(&self.graph, &|id| summaries.get(id).cloned().unwrap_or_default(), &|id| unlinked.contains(id));
+        let unlinked: std::collections::HashSet<String> = self
+            .proxies
+            .iter()
+            .filter(|p| p["unlinked"] == json!(true))
+            .map(|p| p["id"].as_str().unwrap_or("").to_string())
+            .collect();
+        self.view = canvas::build(&self.graph, &|id| summaries.get(id).cloned().unwrap_or_default(), &|id| {
+            unlinked.contains(id)
+        });
         let (_, pc_text) = self.pc_status();
         if let Some(n) = self.view.nodes.iter_mut().find(|n| n.key == "pc") {
             n.detail = pc_text;
@@ -1282,7 +1395,9 @@ impl Controller {
             if !matches!(self.manager.state(&id), State::Running | State::Starting) {
                 continue;
             }
-            let same = old.get(&id).is_some_and(|b| ["name", "inbound", "outbound", "overrides", "routes"].iter().all(|k| b.get(*k) == p.get(*k)));
+            let same = old.get(&id).is_some_and(|b| {
+                ["name", "inbound", "outbound", "overrides", "routes"].iter().all(|k| b.get(*k) == p.get(*k))
+            });
             if same {
                 continue;
             }
@@ -1318,7 +1433,9 @@ impl Controller {
                 n["auto_restart"] = json!(b["auto_restart"] == json!(true));
             }
             // an IF in switch mode: its switch (the list page shows it on the block's card)
-            if let Some((_, r)) = graph::find(&self.graph, &key).filter(|(k, r)| *k == "router" && r["style"] == json!("if") && r["switch"] == json!(true)) {
+            if let Some((_, r)) = graph::find(&self.graph, &key)
+                .filter(|(k, r)| *k == "router" && r["style"] == json!("if") && r["switch"] == json!(true))
+            {
                 n["switch"] = json!(r["switch_on"] == json!(true));
             }
         }
@@ -1327,8 +1444,10 @@ impl Controller {
 
     /// what the canvas's "add" menus offer: the inbound and outbound types with their names
     fn add_menu_json(&self) -> Value {
-        let ib: Vec<Value> = proxydock_core::config::INBOUND_TYPES.iter().map(|t| json!([t, edit::inbound_label(t)])).collect();
-        let ob: Vec<Value> = proxydock_core::config::OUTBOUND_TYPES.iter().map(|t| json!([t, graph::outbound_label(t)])).collect();
+        let ib: Vec<Value> =
+            proxydock_core::config::INBOUND_TYPES.iter().map(|t| json!([t, edit::inbound_label(t)])).collect();
+        let ob: Vec<Value> =
+            proxydock_core::config::OUTBOUND_TYPES.iter().map(|t| json!([t, graph::outbound_label(t)])).collect();
         let templates: Vec<Value> = edit::templates().into_iter().map(|(n, d, _, _)| json!([n, d])).collect();
         json!({"inbounds": ib, "outbounds": ob, "templates": templates})
     }
@@ -1370,7 +1489,11 @@ impl Controller {
         let id = node["id"].as_str().unwrap_or("").to_string();
         // a card picked that has no default route (e.g. a Hyper-V / VMware switch): only its own network is reachable
         let iface = node["outbound"]["interface"].as_str().unwrap_or("").to_string();
-        if kind == "outbound" && !iface.is_empty() && draft["outbound"]["interface"] != json!(iface) && form::iface_unrouted(&iface) {
+        if kind == "outbound"
+            && !iface.is_empty()
+            && draft["outbound"]["interface"] != json!(iface)
+            && form::iface_unrouted(&iface)
+        {
             let text = tr("'{name}' has no gateway, so it only reaches its own network (e.g. VMs or a LAN). Connections to the internet through it will fail.").replace("{name}", &iface);
             reply(self, json!({"ev": "notice", "ok": false, "title": tr("No internet route"), "text": text}));
         }
@@ -1428,9 +1551,16 @@ impl Controller {
             let ib = &node["inbound"];
             let host = ib["host"].as_str().unwrap_or("");
             let local = host.eq_ignore_ascii_case("localhost") || proxydock_core::singbox::guard::is_loopback_ip(host);
-            if !local && matches!(ib["type"].as_str(), Some("socks5" | "http" | "https")) && ib["auth_enabled"] != json!(true) {
+            if !local
+                && matches!(ib["type"].as_str(), Some("socks5" | "http" | "https"))
+                && ib["auth_enabled"] != json!(true)
+            {
                 // (Python: a warning bar over the window as the editor closes; sent after the "saved" message so it stays)
-                let text = format!("{}\n{}", tr("Exposed without authentication"), tr("Anyone on the same network can use this proxy. Turning on user authentication is recommended."));
+                let text = format!(
+                    "{}\n{}",
+                    tr("Exposed without authentication"),
+                    tr("Anyone on the same network can use this proxy. Turning on user authentication is recommended.")
+                );
                 reply(self, json!({"ev": "warn", "message": text}));
             }
         }
@@ -1449,16 +1579,17 @@ impl Controller {
                     j["label"] = json!(tr(busy_label(&f.key)));
                     j["busy"] = json!(true);
                 }
-                if f.key == "probe" {
-                    if let Some((_, text, tone)) = self.probe_text.get(&client).filter(|(b, _, _)| *b == id) {
-                        j["desc"] = json!(text);
-                        j["tone"] = json!(tone);
-                    }
+                if f.key == "probe"
+                    && let Some((_, text, tone)) = self.probe_text.get(&client).filter(|(b, _, _)| *b == id)
+                {
+                    j["desc"] = json!(text);
+                    j["tone"] = json!(tone);
                 }
                 j
             })
             .collect();
-        let title = graph::find(&self.graph, &id).and_then(|(_, n)| n["name"].as_str().map(String::from)).unwrap_or_default();
+        let title =
+            graph::find(&self.graph, &id).and_then(|(_, n)| n["name"].as_str().map(String::from)).unwrap_or_default();
         let msg = json!({"ev": "form", "id": id, "kind": kind, "title": title, "fields": fields});
         self.send_to(client, &msg);
     }
@@ -1500,7 +1631,12 @@ impl Controller {
             "sub.update" => {
                 let url = proxydock_core::py::strip(node["outbound"]["sub_url"].as_str().unwrap_or("")).to_string();
                 if url.is_empty() {
-                    self.notice(client, false, &tr("Subscription"), &tr("Enter the subscription address (https://...)"));
+                    self.notice(
+                        client,
+                        false,
+                        &tr("Subscription"),
+                        &tr("Enter the subscription address (https://...)"),
+                    );
                     return None;
                 }
                 Some(Box::new(move || {
@@ -1523,8 +1659,15 @@ impl Controller {
             }
             "sni.detect" => {
                 let ob = node["outbound"].clone();
-                if proxydock_core::py::strip(ob["host"].as_str().unwrap_or("")).is_empty() || ob["port"].as_i64().unwrap_or(0) == 0 {
-                    self.notice(client, false, &tr("Detect from server"), &tr("Enter the server address and port first"));
+                if proxydock_core::py::strip(ob["host"].as_str().unwrap_or("")).is_empty()
+                    || ob["port"].as_i64().unwrap_or(0) == 0
+                {
+                    self.notice(
+                        client,
+                        false,
+                        &tr("Detect from server"),
+                        &tr("Enter the server address and port first"),
+                    );
                     return None;
                 }
                 Some(Box::new(move || {
@@ -1549,7 +1692,12 @@ impl Controller {
                 }
                 let errs = form::check_errors(&self.graph, kind, node);
                 if !errs.is_empty() {
-                    self.notice(client, false, &tr("Please fix first"), &errs.iter().take(4).cloned().collect::<Vec<_>>().join("\n"));
+                    self.notice(
+                        client,
+                        false,
+                        &tr("Please fix first"),
+                        &errs.iter().take(4).cloned().collect::<Vec<_>>().join("\n"),
+                    );
                     return None;
                 }
                 let p = form::as_proxy(&self.graph, kind, node)?;
@@ -1558,10 +1706,15 @@ impl Controller {
                 let running = inbound
                     && self.manager.state(&id) == State::Running
                     && graph::find(&self.graph, &id).is_some_and(|(_, saved)| {
-                        saved["inbound"]["host"] == node["inbound"]["host"] && saved["inbound"]["port"] == node["inbound"]["port"]
+                        saved["inbound"]["host"] == node["inbound"]["host"]
+                            && saved["inbound"]["port"] == node["inbound"]["port"]
                     });
                 self.probe_text.insert(client, (id.clone(), tr("Connecting through the outbound\u{2026}"), 0));
-                let (remote, glob, ot) = (self.manager.remote(), self.glob.clone(), p["outbound"]["type"].as_str().unwrap_or("direct").to_string());
+                let (remote, glob, ot) = (
+                    self.manager.remote(),
+                    self.glob.clone(),
+                    p["outbound"]["type"].as_str().unwrap_or("direct").to_string(),
+                );
                 let check_id = format!("__check_{client}__");
                 Some(Box::new(move || {
                     let out = proxydock_core::probe::check_outbound(&remote, &p, &glob, &check_id);
@@ -1589,23 +1742,26 @@ impl Controller {
         };
         let port = ib["port"].as_i64().unwrap_or(0).clamp(0, 65535) as u16;
         let id = node["id"].as_str().unwrap_or("");
-        let saved_same = graph::find(&self.graph, id).is_some_and(|(_, saved)| saved["inbound"]["port"] == json!(port) && saved["inbound"]["host"] == json!(host));
+        let saved_same = graph::find(&self.graph, id).is_some_and(|(_, saved)| {
+            saved["inbound"]["port"] == json!(port) && saved["inbound"]["host"] == json!(host)
+        });
         if self.manager.state(id) == State::Running && saved_same {
             let title = tr("Port {port}").replace("{port}", &port.to_string());
             self.notice(client, true, &title, &tr("This proxy is running on this port."));
             return;
         }
         let (ok, msg) = proxydock_core::probe::check_port(&host, port, ib["type"] == json!("hysteria2"));
-        let title = tr("Port {port} ").replace("{port}", &port.to_string()) + &tr(if ok { "available" } else { "unavailable" });
+        let title =
+            tr("Port {port} ").replace("{port}", &port.to_string()) + &tr(if ok { "available" } else { "unavailable" });
         self.notice(client, ok, &title, &msg);
     }
 
     /// change the window's draft if it still edits block `id`
     fn with_draft(&mut self, client: u64, id: &str, f: impl FnOnce(&mut Value)) {
-        if let Some((_, n)) = self.drafts.get_mut(&client) {
-            if n["id"] == json!(id) {
-                f(n);
-            }
+        if let Some((_, n)) = self.drafts.get_mut(&client)
+            && n["id"] == json!(id)
+        {
+            f(n);
         }
     }
 
@@ -1613,14 +1769,24 @@ impl Controller {
     /// `update_due_subscriptions`): changed servers apply to the cards, the same ones only move the update time.
     fn update_due_subscriptions(&mut self) {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
-        let due: Vec<(String, String)> = self.graph.get("outbounds").and_then(Value::as_array).into_iter().flatten()
+        let due: Vec<(String, String)> = self
+            .graph
+            .get("outbounds")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
             .filter(|n| n["outbound"]["type"] == json!("subscription"))
             .filter(|n| {
                 let ob = &n["outbound"];
                 let every = ob["sub_interval"].as_i64().unwrap_or(0);
                 every > 0 && now - ob["sub_updated"].as_i64().unwrap_or(0) >= every * 3600
             })
-            .map(|n| (n["id"].as_str().unwrap_or("").to_string(), n["outbound"]["sub_url"].as_str().unwrap_or("").to_string()))
+            .map(|n| {
+                (
+                    n["id"].as_str().unwrap_or("").to_string(),
+                    n["outbound"]["sub_url"].as_str().unwrap_or("").to_string(),
+                )
+            })
             .filter(|(id, _)| !self.sub_busy.contains(id))
             .collect();
         for (id, url) in due {
@@ -1635,11 +1801,18 @@ impl Controller {
 
     fn on_sub_updated(&mut self, id: &str, result: Result<(Map<String, Value>, String), String>) {
         self.sub_busy.remove(id);
-        let Some(name) = graph::find(&self.graph, id).filter(|(k, _)| *k == "outbound").map(|(_, n)| n["name"].as_str().unwrap_or("").to_string()) else { return };
+        let Some(name) = graph::find(&self.graph, id)
+            .filter(|(k, _)| *k == "outbound")
+            .map(|(_, n)| n["name"].as_str().unwrap_or("").to_string())
+        else {
+            return;
+        };
         let (fields, note) = match result {
             Ok(x) => x,
             Err(e) => {
-                let msg = tr("Subscription '{name}' could not be updated: {note}").replace("{name}", &name).replace("{note}", &e);
+                let msg = tr("Subscription '{name}' could not be updated: {note}")
+                    .replace("{name}", &name)
+                    .replace("{note}", &e);
                 self.app_log(Level::Warn, &msg);
                 return;
             }
@@ -1680,7 +1853,12 @@ impl Controller {
             "move" => {
                 for m in v["blocks"].as_array().into_iter().flatten() {
                     let key = m["key"].as_str().unwrap_or("");
-                    edit::move_block(&mut self.graph, key, m["x"].as_f64().unwrap_or(0.0), m["y"].as_f64().unwrap_or(0.0));
+                    edit::move_block(
+                        &mut self.graph,
+                        key,
+                        m["x"].as_f64().unwrap_or(0.0),
+                        m["y"].as_f64().unwrap_or(0.0),
+                    );
                 }
                 // positions only: saved (the window already shows them)
                 self.rebuild();
@@ -1689,10 +1867,12 @@ impl Controller {
             }
             "connect" => {
                 let r = edit::connect(&mut self.graph, &s("from"), n("out"), &s("to"), n("in"));
-                if r.is_ok() && s("from") == "pc" {
-                    if let Some(Err(e)) = graph::find(&self.graph, &s("to")).map(|(_, b)| proxydock_core::platform::system_proxy_server(&b["inbound"])) {
-                        self.broadcast(&json!({"ev": "error", "message": format!("{}: {e}", tr("PC (system proxy)"))}));
-                    }
+                if r.is_ok()
+                    && s("from") == "pc"
+                    && let Some(Err(e)) = graph::find(&self.graph, &s("to"))
+                        .map(|(_, b)| proxydock_core::platform::system_proxy_server(&b["inbound"]))
+                {
+                    self.broadcast(&json!({"ev": "error", "message": format!("{}: {e}", tr("PC (system proxy)"))}));
                 }
                 r
             }
@@ -1717,11 +1897,13 @@ impl Controller {
                 Ok(())
             }
             // a wireless pair's number (its key is "number:<id>")
-            "rename" if s("key").starts_with("number:") => match edit::set_wireless_number(&mut self.graph, &s("key")["number:".len()..], &s("name")) {
-                Ok(true) => Ok(()),
-                Ok(false) => return,
-                Err(e) => Err(format!("{}\n{e}", tr("Cannot change the number"))),
-            },
+            "rename" if s("key").starts_with("number:") => {
+                match edit::set_wireless_number(&mut self.graph, &s("key")["number:".len()..], &s("name")) {
+                    Ok(true) => Ok(()),
+                    Ok(false) => return,
+                    Err(e) => Err(format!("{}\n{e}", tr("Cannot change the number"))),
+                }
+            }
             // a canvas group's title (its key is "group:<id>")
             "rename" if s("key").starts_with("group:") => {
                 if !edit::rename_group(&mut self.graph, &s("key")["group:".len()..], &s("name")) {
@@ -1732,7 +1914,8 @@ impl Controller {
             }
             // canvas groups: a box around blocks (display only)
             "group" => {
-                let keys: Vec<String> = v["keys"].as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect();
+                let keys: Vec<String> =
+                    v["keys"].as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect();
                 let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
                 if edit::group_blocks(&mut self.graph, &refs).is_none() {
                     self.broadcast(&json!({"ev": "error", "message": tr("Select two blocks or more")}));
@@ -1782,7 +1965,11 @@ impl Controller {
                         proxydock_core::colors::output_color(&self.graph, &key, out) != s("color")
                             && proxydock_core::colors::set_output_color(&mut self.graph, &key, out, &s("color"))
                     }
-                    None => proxydock_core::colors::set_color(&mut self.graph, key.strip_suffix("/out").unwrap_or(&key), &s("color")),
+                    None => proxydock_core::colors::set_color(
+                        &mut self.graph,
+                        key.strip_suffix("/out").unwrap_or(&key),
+                        &s("color"),
+                    ),
                 };
                 if !changed {
                     return;
@@ -1810,7 +1997,9 @@ impl Controller {
         let t = v["type"].as_str().unwrap_or("");
         let mut open = None;
         let id = match what {
-            "inbound" if proxydock_core::config::INBOUND_TYPES.contains(&t) => edit::add_inbound(&mut self.graph, t, x, y),
+            "inbound" if proxydock_core::config::INBOUND_TYPES.contains(&t) => {
+                edit::add_inbound(&mut self.graph, t, x, y)
+            }
             "outbound" if proxydock_core::config::OUTBOUND_TYPES.contains(&t) => {
                 let id = edit::add_outbound(&mut self.graph, t, None, None, x, y);
                 if t != "direct" {
@@ -1826,7 +2015,7 @@ impl Controller {
             "relay" => edit::add_relay(&mut self.graph, x, y),
             // the list page's "New proxy": an inbound (and its outbound); the outbound opens, else the inbound
             "template" => {
-                let Some((id, fresh)) = edit::add_template(&mut self.graph, v["index"].as_u64().unwrap_or(0) as usize) else { return None };
+                let (id, fresh) = edit::add_template(&mut self.graph, v["index"].as_u64().unwrap_or(0) as usize)?;
                 let name = graph::find(&self.graph, &id).map(|(_, n)| name_of(n)).unwrap_or_default();
                 self.app_log(Level::Setting, &tr("Created proxy '{name}'").replace("{name}", &name));
                 self.graph_changed();
@@ -2082,17 +2271,25 @@ impl Controller {
             }
             // the address or link a client app needs for card `id` (Python `proxies.copy_url`)
             "copy_client" => {
-                let url = self.proxy(id).map(|p| proxydock_core::links::client_url(p, &proxydock_core::wg::local_lan_ip())).unwrap_or_default();
+                let url = self
+                    .proxy(id)
+                    .map(|p| proxydock_core::links::client_url(p, &proxydock_core::wg::local_lan_ip()))
+                    .unwrap_or_default();
                 let tun = self.proxy(id).is_some_and(|p| p["inbound"]["type"] == "tun");
                 let msg = if url.is_empty() {
-                    let why = if tun { tr("A TUN card captures apps on this PC directly; there is no address for clients") } else { tr("Nothing to copy") };
+                    let why = if tun {
+                        tr("A TUN card captures apps on this PC directly; there is no address for clients")
+                    } else {
+                        tr("Nothing to copy")
+                    };
                     json!({"ev": "error", "message": why})
                 } else {
                     json!({"ev": "show_text", "title": "", "text": url})
                 };
                 self.send_to(n, &msg);
             }
-            "move" | "connect" | "disconnect" | "delete" | "duplicate" | "rename" | "color" | "group" | "ungroup" | "group_color" | "group_collapse" | "group_add" => self.edit(cmd, v),
+            "move" | "connect" | "disconnect" | "delete" | "duplicate" | "rename" | "color" | "group" | "ungroup"
+            | "group_color" | "group_collapse" | "group_add" => self.edit(cmd, v),
             "add" => {
                 // (Python opens the editor for a new outbound other than Direct, and for a router / IF)
                 if let Some(open) = self.add_block(v) {
@@ -2102,7 +2299,8 @@ impl Controller {
             "node_action" => self.node_action(n, v),
             "settings_save" => self.save_settings(v),
             "latency" => {
-                let keys: Vec<String> = v["keys"].as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect();
+                let keys: Vec<String> =
+                    v["keys"].as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect();
                 self.test_latency(&keys);
             }
             "quit" => (self.hooks.quit)(),
@@ -2113,7 +2311,8 @@ impl Controller {
                 let path = v["path"].as_str().unwrap_or("").to_string();
                 self.install_update(&path);
             }
-            "startup" | "startup_hidden" | "pc_off" | "pc_restore" | "firewall" | "set_switch" | "set_flag" | "select_member" => self.platform_command(v),
+            "startup" | "startup_hidden" | "pc_off" | "pc_restore" | "firewall" | "set_switch" | "set_flag"
+            | "select_member" => self.platform_command(v),
             // "Restart now" (a new app scale: the window opens again) / the whole app
             "restart" => {
                 let app = v["app"] == json!(true);
@@ -2131,7 +2330,13 @@ impl Controller {
             "test_site_remove" => {
                 if !self.conn_running {
                     let host = v["host"].clone();
-                    let list: Vec<Value> = self.glob["test_sites"].as_array().cloned().unwrap_or_default().into_iter().filter(|h| *h != host).collect();
+                    let list: Vec<Value> = self.glob["test_sites"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|h| *h != host)
+                        .collect();
                     self.set_test_sites(list);
                 }
             }
@@ -2219,7 +2424,7 @@ impl Controller {
             sum[0] += s.up as f64;
             sum[1] += s.down as f64;
             for (c, v) in counts.iter_mut().zip([s.tcp_active, s.udp_active, s.total, s.failed, s.blocked]) {
-                *c += v as u64;
+                *c += v;
             }
             out.insert(id.into(), json!({"up": s.up, "down": s.down, "tcp": s.tcp_active, "udp": s.udp_active, "total": s.total, "failed": s.failed, "blocked": s.blocked}));
         }
@@ -2280,19 +2485,34 @@ impl Controller {
 
     /// the last minute for a newly opened window, and the names and colours the graph needs
     fn stat_history_json(&self) -> Value {
-        let cards: Map<String, Value> = self.stat_hist.iter().map(|(k, h)| (k.clone(), json!(h.iter().map(|(u, d)| [*u, *d]).collect::<Vec<_>>()))).collect();
+        let cards: Map<String, Value> = self
+            .stat_hist
+            .iter()
+            .map(|(k, h)| (k.clone(), json!(h.iter().map(|(u, d)| [*u, *d]).collect::<Vec<_>>())))
+            .collect();
         let exits: Map<String, Value> = self.exit_hist.iter().map(|(k, h)| (k.clone(), json!(h))).collect();
         json!({"cards": cards, "exits": exits, "meta": self.stat_meta()})
     }
 
     /// cards and outbound blocks for the graph: [id, name, colour]
     fn stat_meta(&self) -> Value {
-        let colour = |id: &str| graph::find(&self.graph, id).and_then(|(_, n)| n["color"].as_str().map(String::from)).unwrap_or_default();
-        let cards: Vec<Value> = self.proxies.iter().map(|p| {
-            let id = p["id"].as_str().unwrap_or("");
-            json!([id, p["name"], colour(id)])
-        }).collect();
-        let exits: Vec<Value> = self.graph.get("outbounds").and_then(Value::as_array).into_iter().flatten()
+        let colour = |id: &str| {
+            graph::find(&self.graph, id).and_then(|(_, n)| n["color"].as_str().map(String::from)).unwrap_or_default()
+        };
+        let cards: Vec<Value> = self
+            .proxies
+            .iter()
+            .map(|p| {
+                let id = p["id"].as_str().unwrap_or("");
+                json!([id, p["name"], colour(id)])
+            })
+            .collect();
+        let exits: Vec<Value> = self
+            .graph
+            .get("outbounds")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
             .filter(|n| n["outbound"]["type"] != "block")
             .map(|n| json!([n["id"], n["name"], n["color"].as_str().unwrap_or("")]))
             .collect();
@@ -2301,7 +2521,8 @@ impl Controller {
 
     /// The connection test's sites and whether it runs (Python `ConnTestInterface.sites`)
     fn conn_sites_json(&self) -> Value {
-        let sites: Vec<Value> = proxydock_core::probe::test_sites(&self.glob).into_iter().map(|(g, n, h, a)| json!([g, n, h, a])).collect();
+        let sites: Vec<Value> =
+            proxydock_core::probe::test_sites(&self.glob).into_iter().map(|(g, n, h, a)| json!([g, n, h, a])).collect();
         json!({"sites": sites, "running": self.conn_running, "workers": proxydock_core::probe::PROBE_WORKERS,
                "cooldown": proxydock_core::probe::PROBE_COOLDOWN, "timeout": 8})
     }
@@ -2358,12 +2579,15 @@ impl Controller {
         if self.manager.state(id) != State::Running {
             return;
         }
-        let hosts: Vec<String> = proxydock_core::probe::test_sites(&self.glob).into_iter().map(|(_, _, h, _)| h).collect();
+        let hosts: Vec<String> =
+            proxydock_core::probe::test_sites(&self.glob).into_iter().map(|(_, _, h, _)| h).collect();
         self.conn_running = true;
         self.conn_ok.clear();
         self.conn_total = hosts.len();
         let name = name_of(&proxy);
-        let msg = tr("Connection test started: {name} ({len} sites)").replace("{name}", &name).replace("{len}", &hosts.len().to_string());
+        let msg = tr("Connection test started: {name} ({len} sites)")
+            .replace("{name}", &name)
+            .replace("{len}", &hosts.len().to_string());
         self.app_log(Level::Info, &msg);
         let start = json!({"ev": "conn_start", "name": name, "total": hosts.len()});
         self.broadcast(&start);
@@ -2371,7 +2595,10 @@ impl Controller {
         std::thread::spawn(move || {
             use proxydock_core::probe;
             let port = probe::free_local_port();
-            let started = remote.start(&probe::bridge_for(&proxy, port), &glob).recv_timeout(Duration::from_secs(15)).unwrap_or(false);
+            let started = remote
+                .start(&probe::bridge_for(&proxy, port), &glob)
+                .recv_timeout(Duration::from_secs(15))
+                .unwrap_or(false);
             let mut err = String::new();
             if started {
                 // the waterfall's zero: every site's start is measured from here
@@ -2381,13 +2608,16 @@ impl Controller {
                 let workers: Vec<_> = (0..probe::PROBE_WORKERS.min(hosts.len()))
                     .map(|_| {
                         let (queue, tx) = (queue.clone(), tx.clone());
-                        std::thread::spawn(move || loop {
-                            let next = queue.lock().unwrap().pop();
-                            let Some((row, host)) = next else { break };
-                            let begin = t_test.elapsed().as_secs_f64() * 1000.0;
-                            let mut res = probe::probe_site(&host, port);
-                            res.insert("start_ms".into(), json!(begin));
-                            let _ = tx.send(Msg::Work(Box::new(move |c: &mut Controller| c.on_conn_result(row, res))));
+                        std::thread::spawn(move || {
+                            loop {
+                                let next = queue.lock().unwrap().pop();
+                                let Some((row, host)) = next else { break };
+                                let begin = t_test.elapsed().as_secs_f64() * 1000.0;
+                                let mut res = probe::probe_site(&host, port);
+                                res.insert("start_ms".into(), json!(begin));
+                                let _ =
+                                    tx.send(Msg::Work(Box::new(move |c: &mut Controller| c.on_conn_result(row, res))));
+                            }
                         })
                     })
                     .collect();
@@ -2425,7 +2655,9 @@ impl Controller {
             tr("Could not start the test: {err}").replace("{err}", &err)
         } else {
             let n = self.conn_ok.len();
-            let mut msg = tr("Succeeded {len} / {len2}").replace("{len}", &n.to_string()).replace("{len2}", &self.conn_total.to_string());
+            let mut msg = tr("Succeeded {len} / {len2}")
+                .replace("{len}", &n.to_string())
+                .replace("{len2}", &self.conn_total.to_string());
             if n > 0 {
                 let avg = self.conn_ok.iter().sum::<f64>() / n as f64;
                 msg += &tr(" · average {avg:.0f} ms").replace("{avg:.0f}", &format!("{avg:.0}"));
@@ -2448,22 +2680,35 @@ impl Controller {
         for id in due {
             self.restart_at.remove(&id);
             let Some(p) = self.proxy(&id).cloned() else { continue };
-            if p["auto_restart"] == json!(true) && !matches!(self.manager.state(&id), State::Running | State::Starting) {
+            if p["auto_restart"] == json!(true) && !matches!(self.manager.state(&id), State::Running | State::Starting)
+            {
                 let _ = self.manager.start(&p, &self.glob);
             }
         }
         if self.update.next_check.is_some_and(|t| now >= t) {
             self.update.next_check = None;
-            let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+            let unix =
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
             if proxydock_core::update::due(&self.glob, unix) {
                 self.check_update(false);
             }
         }
         let point = self.stat_tick();
         // the tray icon's tooltip (Python `_tick`)
-        let running = self.proxies.iter().filter(|p| self.manager.state(p["id"].as_str().unwrap_or("")) == State::Running).count();
+        let running = self
+            .proxies
+            .iter()
+            .filter(|p| self.manager.state(p["id"].as_str().unwrap_or("")) == State::Running)
+            .count();
         let (up, down) = (point["cards"][""][0].as_f64().unwrap_or(0.0), point["cards"][""][1].as_f64().unwrap_or(0.0));
-        let conns: u64 = self.proxies.iter().map(|p| { let s = self.manager.stats(p["id"].as_str().unwrap_or("")); (s.tcp_active + s.udp_active) as u64 }).sum();
+        let conns: u64 = self
+            .proxies
+            .iter()
+            .map(|p| {
+                let s = self.manager.stats(p["id"].as_str().unwrap_or(""));
+                s.tcp_active + s.udp_active
+            })
+            .sum();
         let tip = tr("{APP_NAME}\n{running} proxies running\n↓ {fmt_rate}  ↑ {fmt_rate2}  · connections {value}")
             .replace("{APP_NAME}", "ProxyDock")
             .replace("{running}", &running.to_string())
@@ -2490,8 +2735,13 @@ impl Controller {
         let exit = conn_of_line(message)
             .and_then(|(who, target)| self.manager.route_of(id, &who, target.as_deref()))
             .or_else(|| (exits.len() == 1).then(|| exits[0].clone()));
-        let links: Vec<usize> = exit.and_then(|e| self.view.paths.get(&(id.to_string(), e)).cloned()).unwrap_or_default();
-        let error = if links.is_empty() { tr("This connection's way is no longer known (only recent connections of running cards are)") } else { String::new() };
+        let links: Vec<usize> =
+            exit.and_then(|e| self.view.paths.get(&(id.to_string(), e)).cloned()).unwrap_or_default();
+        let error = if links.is_empty() {
+            tr("This connection's way is no longer known (only recent connections of running cards are)")
+        } else {
+            String::new()
+        };
         self.send_to(client, &json!({"ev": "route", "links": links, "error": error}));
     }
 
@@ -2557,13 +2807,22 @@ mod route_tests {
 
     #[test]
     fn connection_lines_give_client_and_destination() {
-        assert_eq!(conn_of_line("127.0.0.1:5000 -> example.com:443"), Some(("127.0.0.1:5000".into(), Some("example.com:443".into()))));
-        assert_eq!(conn_of_line("127.0.0.1:5000 -> 1.1.1.1:53 UDP"), Some(("127.0.0.1:5000".into(), Some("1.1.1.1:53".into()))));
+        assert_eq!(
+            conn_of_line("127.0.0.1:5000 -> example.com:443"),
+            Some(("127.0.0.1:5000".into(), Some("example.com:443".into())))
+        );
+        assert_eq!(
+            conn_of_line("127.0.0.1:5000 -> 1.1.1.1:53 UDP"),
+            Some(("127.0.0.1:5000".into(), Some("1.1.1.1:53".into())))
+        );
         assert_eq!(
             conn_of_line("[::1]:5000 -> example.com:443 closed · normal close · ↑ 1 KB ↓ 2 KB · 1.0s"),
             Some(("[::1]:5000".into(), Some("example.com:443".into())))
         );
-        assert_eq!(conn_of_line("127.0.0.1:5000 UDP session ended · ↑ 1 B ↓ 2 B · 0.5s"), Some(("127.0.0.1:5000".into(), None)));
+        assert_eq!(
+            conn_of_line("127.0.0.1:5000 UDP session ended · ↑ 1 B ↓ 2 B · 0.5s"),
+            Some(("127.0.0.1:5000".into(), None))
+        );
         assert_eq!(conn_of_line("Card started"), None);
         assert_eq!(conn_of_line("sing-box: something UDP failed"), None);
     }

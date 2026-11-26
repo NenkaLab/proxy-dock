@@ -7,14 +7,15 @@
 
 use crate::graph::{self, Obj};
 use crate::i18n::tr;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// blocks that end a chain (their server connection dials out itself)
 const NO_VIA: [&str; 5] = ["direct", "hysteria2", "block", "subscription", "group"];
 const NO_MEMBER: [&str; 2] = ["group", "block"];
 /// UDP-based tunnels: only through blocks that carry UDP
 const NEEDS_UDP_VIA: [&str; 2] = ["wireguard", "tuic"];
-const UDP_VIA_OK: [&str; 9] = ["shadowsocks", "hysteria2", "wireguard", "socks5", "vless", "vmess", "trojan", "tuic", "subscription"];
+const UDP_VIA_OK: [&str; 9] =
+    ["shadowsocks", "hysteria2", "wireguard", "socks5", "vless", "vmess", "trojan", "tuic", "subscription"];
 
 fn cannot(msg: &str) -> Result<(), String> {
     Err(format!("{}: {msg}", tr("Cannot connect")))
@@ -75,22 +76,26 @@ pub fn set_target(g: &mut Obj, iid: &str, tid: Option<&str>) -> Result<(), Strin
             return cannot("");
         }
         if tk == Some("inbound") {
-            let ty = graph::find(g, t).and_then(|(_, n)| n["inbound"]["type"].as_str().map(String::from)).unwrap_or_default();
+            let ty = graph::find(g, t)
+                .and_then(|(_, n)| n["inbound"]["type"].as_str().map(String::from))
+                .unwrap_or_default();
             if ty == "tun" {
                 return cannot(&tr("A TUN card takes traffic from apps; another inbound cannot relay into it"));
             }
             if ty == "wireguard" {
-                return cannot(&tr("A WireGuard server takes traffic from devices; another inbound cannot relay into it"));
+                return cannot(&tr(
+                    "A WireGuard server takes traffic from devices; another inbound cannot relay into it",
+                ));
             }
         }
     }
     node_mut(g, "inbounds", iid).unwrap()["target"] = tid.map_or(Value::Null, |t| json!(t));
     let proxies: Vec<Value> = graph::compile(g).into_iter().map(Value::Object).collect();
-    if let Some(p) = proxies.iter().find(|p| p["id"] == json!(iid)) {
-        if let Some(cycle) = crate::checks::find_cycle(p, &proxies) {
-            node_mut(g, "inbounds", iid).unwrap()["target"] = old;
-            return cannot(&format!("{}{}", tr("The proxy chain loops: "), cycle.join(" → ")));
-        }
+    if let Some(p) = proxies.iter().find(|p| p["id"] == json!(iid))
+        && let Some(cycle) = crate::checks::find_cycle(p, &proxies)
+    {
+        node_mut(g, "inbounds", iid).unwrap()["target"] = old;
+        return cannot(&format!("{}{}", tr("The proxy chain loops: "), cycle.join(" → ")));
     }
     Ok(())
 }
@@ -117,7 +122,10 @@ pub fn set_via(g: &mut Obj, oid: &str, vid: Option<&str>) -> Result<(), String> 
             });
         }
         if NEEDS_UDP_VIA.contains(&own.as_str()) && !UDP_VIA_OK.contains(&ob_type(g, v).as_str()) {
-            return cannot(&tr("{type} needs UDP, so it cannot go through an HTTP or SOCKS4 proxy").replace("{type}", &graph::outbound_label(&own)));
+            return cannot(
+                &tr("{type} needs UDP, so it cannot go through an HTTP or SOCKS4 proxy")
+                    .replace("{type}", &graph::outbound_label(&own)),
+            );
         }
     }
     node_mut(g, "outbounds", oid).unwrap()["via"] = vid.map_or(Value::Null, |v| json!(v));
@@ -180,7 +188,12 @@ pub fn set_lane_target(g: &mut Obj, rid: &str, lane: usize, tid: Option<&str>) -
     let old = slot.clone();
     *slot = tid.map_or(Value::Null, |t| json!(t));
     let looped = tid.is_some_and(|t| graph::lane_index(g).lane_loop(t))
-        || g["routers"].as_array().into_iter().flatten().filter_map(|x| x["id"].as_str()).any(|id| graph::router_loop(g, id));
+        || g["routers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|x| x["id"].as_str())
+            .any(|id| graph::router_loop(g, id));
     if looped {
         node_mut(g, "relays", rid).unwrap()["outputs"][lane]["target"] = old;
         return cannot(&tr("The links would go round in a circle"));
@@ -251,8 +264,6 @@ pub fn move_block(g: &mut Obj, key: &str, x: f64, y: f64) {
     }
 }
 
-/// Delete a block (Python `graph.remove`): links into it are cut; links into a deleted pass-through's lanes are
-/// spliced to where those lanes led. A wireless half deletes the whole pair.
 // --- canvas groups (a box around blocks; display only: the wiring does not change) ---
 
 fn groups_mut(g: &mut Obj) -> &mut Vec<Value> {
@@ -349,9 +360,16 @@ pub fn set_group_collapsed(g: &mut Obj, gid: &str, collapsed: bool) -> bool {
 
 /// the group a block is in
 pub fn group_of(g: &Obj, key: &str) -> Option<String> {
-    g.get("groups").and_then(Value::as_array).into_iter().flatten().find(|x| x["members"].as_array().is_some_and(|m| m.iter().any(|k| k == key))).and_then(|x| x["id"].as_str().map(String::from))
+    g.get("groups")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|x| x["members"].as_array().is_some_and(|m| m.iter().any(|k| k == key)))
+        .and_then(|x| x["id"].as_str().map(String::from))
 }
 
+/// Delete a block (Python `graph.remove`): links into it are cut; links into a deleted pass-through's lanes are
+/// spliced to where those lanes led. A wireless half deletes the whole pair.
 pub fn delete(g: &mut Obj, key: &str) {
     let (nid, out_half) = block_of(key);
     let nid = nid.to_string();
@@ -439,10 +457,10 @@ pub fn delete(g: &mut Obj, key: &str) {
             m.retain(|x| x != &json!(nid));
         }
     }
-    if let Some(pc) = g.get_mut("pc") {
-        if pc["inbound"] == json!(nid) {
-            pc["inbound"] = Value::Null;
-        }
+    if let Some(pc) = g.get_mut("pc")
+        && pc["inbound"] == json!(nid)
+    {
+        pc["inbound"] = Value::Null;
     }
 }
 
@@ -499,7 +517,9 @@ pub fn add(g: &mut Obj, kind: i32, x: f64, y: f64) -> String {
             id
         }
         _ => {
-            let n = graph::validate_outbound_node(&json!({"id": crate::ids::new_id(), "outbound": {"type": "direct"}, "pos": pos}));
+            let n = graph::validate_outbound_node(
+                &json!({"id": crate::ids::new_id(), "outbound": {"type": "direct"}, "pos": pos}),
+            );
             let id = n["id"].as_str().unwrap().to_string();
             let name = unique_name(g, n["name"].as_str().unwrap_or("Direct"));
             let mut n = Value::Object(n);
@@ -517,15 +537,23 @@ pub fn add(g: &mut Obj, kind: i32, x: f64, y: f64) -> String {
 /// changed; Ok(false): the same; Err: why not.
 pub fn set_wireless_number(g: &mut Obj, rid: &str, text: &str) -> Result<bool, String> {
     let rid = block_of(rid).0;
-    let number = crate::py::strip(text).trim_start_matches('#').parse::<i64>().ok().filter(|n| (1..=graph::MAX_WIRELESS).contains(n));
+    let number = crate::py::strip(text)
+        .trim_start_matches('#')
+        .parse::<i64>()
+        .ok()
+        .filter(|n| (1..=graph::MAX_WIRELESS).contains(n));
     let Some(number) = number else {
         return Err(tr("Enter a number from 1 to {max}").replace("{max}", &graph::MAX_WIRELESS.to_string()));
     };
-    let taken = arr(g, "relays").iter().any(|r| r["id"] != json!(rid) && r["wireless"] == json!(true) && r["number"] == json!(number));
+    let taken = arr(g, "relays")
+        .iter()
+        .any(|r| r["id"] != json!(rid) && r["wireless"] == json!(true) && r["number"] == json!(number));
     if taken {
         return Err(tr("#{n} is already used by another wireless pair").replace("{n}", &number.to_string()));
     }
-    let Some(r) = arr(g, "relays").iter_mut().find(|r| r["id"] == json!(rid) && r["wireless"] == json!(true)) else { return Ok(false) };
+    let Some(r) = arr(g, "relays").iter_mut().find(|r| r["id"] == json!(rid) && r["wireless"] == json!(true)) else {
+        return Ok(false);
+    };
     if r["number"] == json!(number) {
         return Ok(false);
     }
@@ -636,129 +664,6 @@ pub fn duplicate(g: &mut Obj, keys: &[&str]) -> Vec<String> {
     made
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn sample() -> Obj {
-        graph::validate(&json!({
-            "inbounds": [
-                {"id": "a", "name": "A", "inbound": {"type": "socks5", "port": 1080}},
-                {"id": "b", "name": "B", "inbound": {"type": "http", "port": 8080}},
-            ],
-            "outbounds": [
-                {"id": "d", "name": "Direct", "outbound": {"type": "direct"}},
-                {"id": "s", "name": "S", "outbound": {"type": "socks5", "host": "127.0.0.1", "port": 1080}},
-                {"id": "h", "name": "H", "outbound": {"type": "http", "host": "p", "port": 3128}},
-                {"id": "w", "name": "W", "outbound": {"type": "wireguard", "host": "x", "port": 51820}},
-                {"id": "grp", "name": "G", "outbound": {"type": "group"}},
-            ],
-            "routers": [{"id": "r", "name": "R", "rules": [{"id": "x", "name": "x", "match": {}}]}],
-            "relays": [{"id": "rl", "name": "L", "inputs": [{"id": "L1"}, {"id": "L2"}]}],
-        }))
-    }
-
-    #[test]
-    fn wireless_numbers() {
-        let mut g = sample();
-        let a = add_wireless(&mut g, 0.0, 0.0);
-        let b = add_wireless(&mut g, 0.0, 100.0);
-        assert_eq!(set_wireless_number(&mut g, &a, "#7"), Ok(true));
-        assert_eq!(set_wireless_number(&mut g, &format!("{a}/out"), "7"), Ok(false));
-        assert!(set_wireless_number(&mut g, &b, "7").unwrap_err().contains('7'));
-        assert!(set_wireless_number(&mut g, &b, "0").is_err());
-        assert!(set_wireless_number(&mut g, &b, "x").is_err());
-    }
-
-    #[test]
-    fn canvas_groups() {
-        let mut g = sample();
-        assert!(!g.contains_key("groups"), "no groups: no key (Python's graphs stay the same)");
-        assert!(group_blocks(&mut g, &["a"]).is_none(), "one block is not a group");
-        let id = group_blocks(&mut g, &["a", "d", "nope"]).unwrap();
-        assert_eq!(g["groups"][0]["members"], json!(["a", "d"]));
-        // a block is in one group: grouping it again takes it out of the first
-        let id2 = group_blocks(&mut g, &["d", "s"]).unwrap();
-        assert_eq!(group_of(&g, "d"), Some(id2.clone()));
-        // the first group lost "d" and is left with one block: still a group (it was made with two)
-        assert_eq!(g["groups"][0]["members"], json!(["a"]));
-        assert!(rename_group(&mut g, &id, "Local"));
-        assert!(set_group_color(&mut g, &id, "#57ab5a"));
-        assert!(set_group_collapsed(&mut g, &id, true));
-        // kept through validation (load / save); a deleted block leaves its group, an empty group goes
-        let v = graph::validate(&Value::Object(g.clone()));
-        assert_eq!(v["groups"][0]["name"], "Local");
-        assert_eq!(v["groups"][0]["collapsed"], true);
-        delete(&mut g, "a");
-        graph::clean_groups(&mut g);
-        assert_eq!(g["groups"].as_array().unwrap().len(), 1);
-        // dropped onto a group: in it (and out of the other)
-        assert!(add_to_group(&mut g, &id2, "b"));
-        assert_eq!(group_of(&g, "b"), Some(id2.clone()));
-        assert!(!add_to_group(&mut g, &id2, "b"), "already in it");
-        assert!(ungroup(&mut g, &id2));
-        assert!(!g.contains_key("groups"));
-    }
-
-    #[test]
-    fn links_by_kind() {
-        let mut g = sample();
-        connect(&mut g, "a", 0, "r", 0).unwrap();
-        assert_eq!(graph::find(&g, "a").unwrap().1["target"], "r");
-        connect(&mut g, "r", 1, "rl", 1).unwrap(); // default -> lane 2
-        assert_eq!(graph::find(&g, "r").unwrap().1["default"], "L2");
-        let out_lane = graph::find(&g, "rl").unwrap().1["outputs"][1]["id"].clone();
-        assert!(out_lane.is_string());
-        connect(&mut g, "rl", 1, "d", 0).unwrap();
-        connect(&mut g, "grp", 0, "d", 0).unwrap();
-        connect(&mut g, "grp", 0, "h", 0).unwrap();
-        assert_eq!(graph::find(&g, "grp").unwrap().1["members"], json!(["d", "h"]));
-        disconnect(&mut g, "grp", 0, "d", 0).unwrap();
-        assert_eq!(graph::find(&g, "grp").unwrap().1["members"], json!(["h"]));
-        move_block(&mut g, "a", 12.5, -3.0);
-        assert_eq!(graph::find(&g, "a").unwrap().1["pos"], json!([12.5, -3.0]));
-    }
-
-    #[test]
-    fn refused_links_leave_the_graph_alone() {
-        let mut g = sample();
-        // Direct ends a chain; nothing goes through a group; WireGuard needs UDP
-        assert!(connect(&mut g, "d", 0, "h", 0).is_err() || graph::find(&g, "d").unwrap().1["via"].is_null());
-        assert!(set_via(&mut g, "h", Some("grp")).is_err());
-        assert!(set_via(&mut g, "w", Some("h")).is_err());
-        // a via loop
-        set_via(&mut g, "s", Some("h")).unwrap();
-        assert!(set_via(&mut g, "h", Some("s")).is_err());
-        assert!(graph::find(&g, "h").unwrap().1["via"].is_null());
-        // card A relays into its own port through S (S points at 127.0.0.1:1080 = A): a loop
-        set_via(&mut g, "s", None).unwrap();
-        let e = set_target(&mut g, "a", Some("s")).unwrap_err();
-        assert!(e.contains("A → A"), "{e}");
-        assert!(graph::find(&g, "a").unwrap().1["target"].is_null());
-        // routers pointing at each other
-        let r2 = add(&mut g, 1, 0.0, 0.0);
-        set_rule_target(&mut g, "r", 0, Some(&r2)).unwrap();
-        assert!(set_rule_target(&mut g, &r2, 0, Some("r")).is_err());
-    }
-
-    #[test]
-    fn delete_splices_pass_through_lanes() {
-        let mut g = sample();
-        connect(&mut g, "rl", 0, "d", 0).unwrap();
-        connect(&mut g, "r", 0, "rl", 0).unwrap();
-        connect(&mut g, "a", 0, "r", 0).unwrap();
-        delete(&mut g, "rl");
-        assert_eq!(graph::find(&g, "r").unwrap().1["rules"][0]["target"], "d");
-        delete(&mut g, "r");
-        assert!(graph::find(&g, "a").unwrap().1["target"].is_null());
-        let id = add(&mut g, 0, 0.0, 0.0);
-        let n = graph::find(&g, &id).unwrap().1;
-        assert_eq!(n["inbound"]["port"], 1081); // 1080 is taken by A
-        assert_eq!(unique_name(&g, "A"), "A 2");
-    }
-}
-
-
 // --- blocks by type, wireless pairs, cutting links, lanes (Python `ui/canvas.add_inbound`, `window.new_*`,
 // `graph.add_wireless / break_wireless / repair_wireless / cut_links / remove_lane`) ---
 
@@ -802,7 +707,8 @@ fn push(g: &mut Obj, list: &str, n: crate::graph::Obj) -> String {
 /// A new inbound block of type `t` at x, y, not connected (Python `canvas.add_inbound`): servers open to the LAN
 /// (Shadowsocks, Hysteria2, WireGuard), the others local, on the first free port from the type's usual one.
 pub fn add_inbound(g: &mut Obj, t: &str, x: f64, y: f64) -> String {
-    let used: std::collections::HashSet<i64> = arr(g, "inbounds").iter().filter_map(|n| n["inbound"]["port"].as_i64()).collect();
+    let used: std::collections::HashSet<i64> =
+        arr(g, "inbounds").iter().filter_map(|n| n["inbound"]["port"].as_i64()).collect();
     let port = (default_port(t)..).find(|p| !used.contains(p)).unwrap();
     let host = if matches!(t, "shadowsocks" | "hysteria2" | "wireguard") { "0.0.0.0" } else { "127.0.0.1" };
     let name = unique_name(g, &inbound_label(t));
@@ -813,13 +719,23 @@ pub fn add_inbound(g: &mut Obj, t: &str, x: f64, y: f64) -> String {
 }
 
 /// A new outbound block of type `t` (or with `fields` from a share link, named `name`) at x, y
-pub fn add_outbound(g: &mut Obj, t: &str, fields: Option<&serde_json::Map<String, Value>>, name: Option<&str>, x: f64, y: f64) -> String {
+pub fn add_outbound(
+    g: &mut Obj,
+    t: &str,
+    fields: Option<&serde_json::Map<String, Value>>,
+    name: Option<&str>,
+    x: f64,
+    y: f64,
+) -> String {
     let ob = match fields {
         Some(f) => Value::Object(f.clone()),
         None => json!({"type": t}),
     };
     let mut n = graph::validate_outbound_node(&json!({"id": crate::ids::new_id(), "outbound": ob, "pos": [x, y]}));
-    let base = name.filter(|s| !s.trim().is_empty()).map(|s| s.trim().to_string()).unwrap_or_else(|| n["name"].as_str().unwrap_or("").to_string());
+    let base = name
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| n["name"].as_str().unwrap_or("").to_string());
     n.insert("name".into(), json!(unique_name(g, &crate::py::head(&base, 60))));
     push(g, "outbounds", n)
 }
@@ -840,7 +756,8 @@ pub fn add_router(g: &mut Obj, style: &str, x: f64, y: f64) -> String {
 pub fn add_relay(g: &mut Obj, x: f64, y: f64) -> String {
     let lanes: Vec<Value> = (0..3).map(|_| Value::Object(graph::new_lane("out"))).collect();
     let name = unique_name(g, &tr("Pass-through"));
-    let n = graph::validate_relay_node(&json!({"id": crate::ids::new_id(), "name": name, "pos": [x, y], "inputs": lanes}));
+    let n =
+        graph::validate_relay_node(&json!({"id": crate::ids::new_id(), "name": name, "pos": [x, y], "inputs": lanes}));
     push(g, "relays", n)
 }
 
@@ -857,7 +774,11 @@ pub fn add_wireless(g: &mut Obj, x: f64, y: f64) -> String {
 /// half stays, disabled (Python `graph.break_wireless`). False if `rid` is no intact pair.
 pub fn break_wireless(g: &mut Obj, rid: &str, half: &str) -> bool {
     let Some((kind, r)) = graph::find(g, rid).map(|(k, n)| (k, n.clone())) else { return false };
-    if kind != "relay" || r["wireless"] != json!(true) || r["broken"].as_str().is_some_and(|b| !b.is_empty()) || !matches!(half, "in" | "out") {
+    if kind != "relay"
+        || r["wireless"] != json!(true)
+        || r["broken"].as_str().is_some_and(|b| !b.is_empty())
+        || !matches!(half, "in" | "out")
+    {
         return false;
     }
     let lane_in = r["inputs"][0]["id"].clone();
@@ -982,7 +903,13 @@ pub fn remove_lane(g: &mut Obj, rid: &str, lane: &str) -> bool {
         return false;
     }
     let has = |side: &str| n[side].as_array().is_some_and(|a| a.iter().any(|x| x["id"] == json!(lane)));
-    let side = if has("inputs") { "inputs" } else if has("outputs") { "outputs" } else { return false };
+    let side = if has("inputs") {
+        "inputs"
+    } else if has("outputs") {
+        "outputs"
+    } else {
+        return false;
+    };
     if n[side].as_array().map_or(0, Vec::len) <= 1 {
         return false;
     }
@@ -1012,11 +939,15 @@ fn item(action: &str, title: String) -> Value {
 /// all links" (`cut`) and Duplicate / Delete (`tail`). Each entry's action goes back to the core (`node_action`);
 /// "toggle" is titled Run / Stop by the window (from the card's live state).
 pub fn block_menu(g: &Obj, key: &str) -> Value {
-    let menu = |head: Vec<Value>, sub_title: String, sub: Vec<Value>, cut: bool, tail: bool| {
-        json!({"head": head, "sub_title": sub_title, "sub": sub, "cut": cut, "tail": tail})
-    };
+    let menu = |head: Vec<Value>, sub_title: String, sub: Vec<Value>, cut: bool, tail: bool| json!({"head": head, "sub_title": sub_title, "sub": sub, "cut": cut, "tail": tail});
     if key == "pc" {
-        return menu(vec![item("pc.restore", tr("Restore previous")), item("pc.off", tr("Off (default)"))], String::new(), vec![], false, false);
+        return menu(
+            vec![item("pc.restore", tr("Restore previous")), item("pc.off", tr("Off (default)"))],
+            String::new(),
+            vec![],
+            false,
+            false,
+        );
     }
     let (bid, out_half) = block_of(key);
     let Some((kind, b)) = graph::find(g, bid) else { return menu(vec![], String::new(), vec![], false, false) };
@@ -1025,7 +956,10 @@ pub fn block_menu(g: &Obj, key: &str) -> Value {
         if b["broken"].as_str().is_some_and(|s| !s.is_empty()) {
             head.push(item("wireless.repair", tr("Recreate the partner")));
         } else {
-            head.push(item(if out_half { "wireless.partner.in" } else { "wireless.partner.out" }, tr("Go to the partner")));
+            head.push(item(
+                if out_half { "wireless.partner.in" } else { "wireless.partner.out" },
+                tr("Go to the partner"),
+            ));
         }
         return menu(head, String::new(), vec![], false, true);
     }
@@ -1051,7 +985,8 @@ pub fn block_menu(g: &Obj, key: &str) -> Value {
                 let lanes = b[side].as_array().cloned().unwrap_or_default();
                 if lanes.len() > 1 && (routed || side == "inputs") {
                     for (i, l) in lanes.iter().enumerate() {
-                        let title = if routed { tr(label) } else { tr("Lane {n}") }.replace("{n}", &(i + 1).to_string());
+                        let title =
+                            if routed { tr(label) } else { tr("Lane {n}") }.replace("{n}", &(i + 1).to_string());
                         sub.push(item(&format!("lane.del.{}", l["id"].as_str().unwrap_or("")), title));
                     }
                 }
@@ -1070,12 +1005,16 @@ pub fn block_menu(g: &Obj, key: &str) -> Value {
             }
             if t == "group" && b["outbound"]["group_mode"] == json!("select") {
                 let sel = b["outbound"]["group_selected"].as_str().unwrap_or("");
-                let members: Vec<&str> = b["members"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+                let members: Vec<&str> =
+                    b["members"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
                 let cur = if members.contains(&sel) { sel } else { members.first().copied().unwrap_or("") };
                 for mid in &members {
                     if let Some((_, n)) = graph::find(g, mid) {
                         let name = n["name"].as_str().unwrap_or("");
-                        sub.push(item(&format!("member.{mid}"), if *mid == cur { format!("✓  {name}") } else { name.to_string() }));
+                        sub.push(item(
+                            &format!("member.{mid}"),
+                            if *mid == cur { format!("✓  {name}") } else { name.to_string() },
+                        ));
                     }
                 }
                 if !sub.is_empty() {
@@ -1094,15 +1033,60 @@ pub fn block_menu(g: &Obj, key: &str) -> Value {
 /// (name, what it is for, inbound, outbound)
 pub fn templates() -> Vec<(String, String, Value, Value)> {
     vec![
-        (tr("Local SOCKS5"), tr("SOCKS5 proxy for this PC"), json!({"type": "socks5", "port": 1080}), json!({"type": "direct"})),
-        (tr("Local HTTP"), tr("For HTTP proxy settings in browsers and apps"), json!({"type": "http", "port": 8080}), json!({"type": "direct"})),
-        (tr("HTTPS proxy"), tr("HTTP proxy wrapped in TLS (self-signed certificate generated)"), json!({"type": "https", "port": 8443}), json!({"type": "direct"})),
-        ("SOCKS4".into(), tr("For older programs (no authentication)"), json!({"type": "socks4", "port": 1084}), json!({"type": "direct"})),
-        (tr("Shadowsocks server"), tr("Shadowsocks apps on other devices connect to it"), json!({"type": "shadowsocks", "host": "0.0.0.0", "port": 8388}), json!({"type": "direct"})),
-        (tr("Hysteria2 server"), tr("Hysteria2 apps on other devices connect to it (QUIC)"), json!({"type": "hysteria2", "host": "0.0.0.0", "port": 8443}), json!({"type": "direct"})),
-        (tr("Local → upstream proxy"), tr("Local SOCKS5, forwarded to a company/other HTTP or SOCKS proxy"), json!({"type": "socks5", "port": 1080}), json!({"type": "http"})),
-        (tr("Local → Shadowsocks tunnel"), tr("Local SOCKS5, encrypted to a remote Shadowsocks server"), json!({"type": "socks5", "port": 1080}), json!({"type": "shadowsocks"})),
-        (tr("Local → Hysteria2 tunnel"), tr("Local SOCKS5, to a remote Hysteria2 server (QUIC)"), json!({"type": "socks5", "port": 1080}), json!({"type": "hysteria2"})),
+        (
+            tr("Local SOCKS5"),
+            tr("SOCKS5 proxy for this PC"),
+            json!({"type": "socks5", "port": 1080}),
+            json!({"type": "direct"}),
+        ),
+        (
+            tr("Local HTTP"),
+            tr("For HTTP proxy settings in browsers and apps"),
+            json!({"type": "http", "port": 8080}),
+            json!({"type": "direct"}),
+        ),
+        (
+            tr("HTTPS proxy"),
+            tr("HTTP proxy wrapped in TLS (self-signed certificate generated)"),
+            json!({"type": "https", "port": 8443}),
+            json!({"type": "direct"}),
+        ),
+        (
+            "SOCKS4".into(),
+            tr("For older programs (no authentication)"),
+            json!({"type": "socks4", "port": 1084}),
+            json!({"type": "direct"}),
+        ),
+        (
+            tr("Shadowsocks server"),
+            tr("Shadowsocks apps on other devices connect to it"),
+            json!({"type": "shadowsocks", "host": "0.0.0.0", "port": 8388}),
+            json!({"type": "direct"}),
+        ),
+        (
+            tr("Hysteria2 server"),
+            tr("Hysteria2 apps on other devices connect to it (QUIC)"),
+            json!({"type": "hysteria2", "host": "0.0.0.0", "port": 8443}),
+            json!({"type": "direct"}),
+        ),
+        (
+            tr("Local → upstream proxy"),
+            tr("Local SOCKS5, forwarded to a company/other HTTP or SOCKS proxy"),
+            json!({"type": "socks5", "port": 1080}),
+            json!({"type": "http"}),
+        ),
+        (
+            tr("Local → Shadowsocks tunnel"),
+            tr("Local SOCKS5, encrypted to a remote Shadowsocks server"),
+            json!({"type": "socks5", "port": 1080}),
+            json!({"type": "shadowsocks"}),
+        ),
+        (
+            tr("Local → Hysteria2 tunnel"),
+            tr("Local SOCKS5, to a remote Hysteria2 server (QUIC)"),
+            json!({"type": "socks5", "port": 1080}),
+            json!({"type": "hysteria2"}),
+        ),
     ]
 }
 
@@ -1111,13 +1095,22 @@ pub fn templates() -> Vec<(String, String, Value, Value)> {
 /// id, the new outbound's id).
 pub fn add_template(g: &mut Obj, i: usize) -> Option<(String, Option<String>)> {
     let (name, _, ib, ob) = templates().into_iter().nth(i)?;
-    let used: std::collections::HashSet<i64> = arr(g, "inbounds").iter().filter_map(|n| n["inbound"]["port"].as_i64()).collect();
+    let used: std::collections::HashSet<i64> =
+        arr(g, "inbounds").iter().filter_map(|n| n["inbound"]["port"].as_i64()).collect();
     let mut ib = ib;
     let port = (ib["port"].as_i64().unwrap_or(1080)..).find(|p| !used.contains(p)).unwrap();
     ib["port"] = json!(port);
     // below the inbounds there are (Python `next_free_pos`)
-    let y = arr(g, "inbounds").iter().filter_map(|n| n["pos"][1].as_f64()).fold(None, |m: Option<f64>, y| Some(m.map_or(y, |m| m.max(y)))).map_or(0.0, |y| y + 170.0);
-    let fresh = if ob["type"] != json!("direct") { Some(add_outbound(g, ob["type"].as_str().unwrap_or("direct"), None, None, 460.0, y)) } else { None };
+    let y = arr(g, "inbounds")
+        .iter()
+        .filter_map(|n| n["pos"][1].as_f64())
+        .fold(None, |m: Option<f64>, y| Some(m.map_or(y, |m| m.max(y))))
+        .map_or(0.0, |y| y + 170.0);
+    let fresh = if ob["type"] != json!("direct") {
+        Some(add_outbound(g, ob["type"].as_str().unwrap_or("direct"), None, None, 460.0, y))
+    } else {
+        None
+    };
     let name = unique_name(g, &name);
     let n = graph::validate_inbound_node(&json!({
         "id": crate::ids::new_id(), "name": name, "inbound": ib, "pos": [0.0, y], "target": fresh.clone(),
@@ -1127,4 +1120,126 @@ pub fn add_template(g: &mut Obj, i: usize) -> Option<(String, Option<String>)> {
     let id = n["id"].as_str().unwrap_or("").to_string();
     arr(g, "inbounds").push(n);
     Some((id, fresh))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample() -> Obj {
+        graph::validate(&json!({
+            "inbounds": [
+                {"id": "a", "name": "A", "inbound": {"type": "socks5", "port": 1080}},
+                {"id": "b", "name": "B", "inbound": {"type": "http", "port": 8080}},
+            ],
+            "outbounds": [
+                {"id": "d", "name": "Direct", "outbound": {"type": "direct"}},
+                {"id": "s", "name": "S", "outbound": {"type": "socks5", "host": "127.0.0.1", "port": 1080}},
+                {"id": "h", "name": "H", "outbound": {"type": "http", "host": "p", "port": 3128}},
+                {"id": "w", "name": "W", "outbound": {"type": "wireguard", "host": "x", "port": 51820}},
+                {"id": "grp", "name": "G", "outbound": {"type": "group"}},
+            ],
+            "routers": [{"id": "r", "name": "R", "rules": [{"id": "x", "name": "x", "match": {}}]}],
+            "relays": [{"id": "rl", "name": "L", "inputs": [{"id": "L1"}, {"id": "L2"}]}],
+        }))
+    }
+
+    #[test]
+    fn wireless_numbers() {
+        let mut g = sample();
+        let a = add_wireless(&mut g, 0.0, 0.0);
+        let b = add_wireless(&mut g, 0.0, 100.0);
+        assert_eq!(set_wireless_number(&mut g, &a, "#7"), Ok(true));
+        assert_eq!(set_wireless_number(&mut g, &format!("{a}/out"), "7"), Ok(false));
+        assert!(set_wireless_number(&mut g, &b, "7").unwrap_err().contains('7'));
+        assert!(set_wireless_number(&mut g, &b, "0").is_err());
+        assert!(set_wireless_number(&mut g, &b, "x").is_err());
+    }
+
+    #[test]
+    fn canvas_groups() {
+        let mut g = sample();
+        assert!(!g.contains_key("groups"), "no groups: no key (Python's graphs stay the same)");
+        assert!(group_blocks(&mut g, &["a"]).is_none(), "one block is not a group");
+        let id = group_blocks(&mut g, &["a", "d", "nope"]).unwrap();
+        assert_eq!(g["groups"][0]["members"], json!(["a", "d"]));
+        // a block is in one group: grouping it again takes it out of the first
+        let id2 = group_blocks(&mut g, &["d", "s"]).unwrap();
+        assert_eq!(group_of(&g, "d"), Some(id2.clone()));
+        // the first group lost "d" and is left with one block: still a group (it was made with two)
+        assert_eq!(g["groups"][0]["members"], json!(["a"]));
+        assert!(rename_group(&mut g, &id, "Local"));
+        assert!(set_group_color(&mut g, &id, "#57ab5a"));
+        assert!(set_group_collapsed(&mut g, &id, true));
+        // kept through validation (load / save); a deleted block leaves its group, an empty group goes
+        let v = graph::validate(&Value::Object(g.clone()));
+        assert_eq!(v["groups"][0]["name"], "Local");
+        assert_eq!(v["groups"][0]["collapsed"], true);
+        delete(&mut g, "a");
+        graph::clean_groups(&mut g);
+        assert_eq!(g["groups"].as_array().unwrap().len(), 1);
+        // dropped onto a group: in it (and out of the other)
+        assert!(add_to_group(&mut g, &id2, "b"));
+        assert_eq!(group_of(&g, "b"), Some(id2.clone()));
+        assert!(!add_to_group(&mut g, &id2, "b"), "already in it");
+        assert!(ungroup(&mut g, &id2));
+        assert!(!g.contains_key("groups"));
+    }
+
+    #[test]
+    fn links_by_kind() {
+        let mut g = sample();
+        connect(&mut g, "a", 0, "r", 0).unwrap();
+        assert_eq!(graph::find(&g, "a").unwrap().1["target"], "r");
+        connect(&mut g, "r", 1, "rl", 1).unwrap(); // default -> lane 2
+        assert_eq!(graph::find(&g, "r").unwrap().1["default"], "L2");
+        let out_lane = graph::find(&g, "rl").unwrap().1["outputs"][1]["id"].clone();
+        assert!(out_lane.is_string());
+        connect(&mut g, "rl", 1, "d", 0).unwrap();
+        connect(&mut g, "grp", 0, "d", 0).unwrap();
+        connect(&mut g, "grp", 0, "h", 0).unwrap();
+        assert_eq!(graph::find(&g, "grp").unwrap().1["members"], json!(["d", "h"]));
+        disconnect(&mut g, "grp", 0, "d", 0).unwrap();
+        assert_eq!(graph::find(&g, "grp").unwrap().1["members"], json!(["h"]));
+        move_block(&mut g, "a", 12.5, -3.0);
+        assert_eq!(graph::find(&g, "a").unwrap().1["pos"], json!([12.5, -3.0]));
+    }
+
+    #[test]
+    fn refused_links_leave_the_graph_alone() {
+        let mut g = sample();
+        // Direct ends a chain; nothing goes through a group; WireGuard needs UDP
+        assert!(connect(&mut g, "d", 0, "h", 0).is_err() || graph::find(&g, "d").unwrap().1["via"].is_null());
+        assert!(set_via(&mut g, "h", Some("grp")).is_err());
+        assert!(set_via(&mut g, "w", Some("h")).is_err());
+        // a via loop
+        set_via(&mut g, "s", Some("h")).unwrap();
+        assert!(set_via(&mut g, "h", Some("s")).is_err());
+        assert!(graph::find(&g, "h").unwrap().1["via"].is_null());
+        // card A relays into its own port through S (S points at 127.0.0.1:1080 = A): a loop
+        set_via(&mut g, "s", None).unwrap();
+        let e = set_target(&mut g, "a", Some("s")).unwrap_err();
+        assert!(e.contains("A → A"), "{e}");
+        assert!(graph::find(&g, "a").unwrap().1["target"].is_null());
+        // routers pointing at each other
+        let r2 = add(&mut g, 1, 0.0, 0.0);
+        set_rule_target(&mut g, "r", 0, Some(&r2)).unwrap();
+        assert!(set_rule_target(&mut g, &r2, 0, Some("r")).is_err());
+    }
+
+    #[test]
+    fn delete_splices_pass_through_lanes() {
+        let mut g = sample();
+        connect(&mut g, "rl", 0, "d", 0).unwrap();
+        connect(&mut g, "r", 0, "rl", 0).unwrap();
+        connect(&mut g, "a", 0, "r", 0).unwrap();
+        delete(&mut g, "rl");
+        assert_eq!(graph::find(&g, "r").unwrap().1["rules"][0]["target"], "d");
+        delete(&mut g, "r");
+        assert!(graph::find(&g, "a").unwrap().1["target"].is_null());
+        let id = add(&mut g, 0, 0.0, 0.0);
+        let n = graph::find(&g, &id).unwrap().1;
+        assert_eq!(n["inbound"]["port"], 1081); // 1080 is taken by A
+        assert_eq!(unique_name(&g, "A"), "A 2");
+    }
 }

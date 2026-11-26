@@ -23,12 +23,13 @@ pub fn rgba(size: u32) -> Vec<u8> {
         pb.finish()
     };
     let mut pm = Pixmap::new(size, size).unwrap();
-    let mut paint = Paint::default();
-    paint.anti_alias = true;
+    let mut paint = Paint { anti_alias: true, ..Default::default() };
     paint.set_color_rgba8(0x00, 0x78, 0xD4, 255);
     pm.fill_rect(Rect::from_xywh(0.0, 0.0, size as f32, size as f32).unwrap(), &paint, Transform::identity(), None);
     paint.set_color_rgba8(0xD9, 0xD9, 0xD9, 255);
-    for (x, y, w, h) in [(24.0, 106.0, 116.0, 20.0), (104.0, 65.0, 20.0, 35.0), (72.0, 49.0, 20.0, 51.0), (40.0, 37.0, 20.0, 63.0)] {
+    for (x, y, w, h) in
+        [(24.0, 106.0, 116.0, 20.0), (104.0, 65.0, 20.0, 35.0), (72.0, 49.0, 20.0, 51.0), (40.0, 37.0, 20.0, 63.0)]
+    {
         if let Some(path) = rounded(x * k, y * k, w * k, h * k, 6.0 * k) {
             pm.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
         }

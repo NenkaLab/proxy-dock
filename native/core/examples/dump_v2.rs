@@ -3,7 +3,7 @@
 //! output: for each the global settings and the (validated) graph, or null.
 
 use proxydock_core::{config, graph};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn main() {
     let path = std::env::args().nth(1).expect("input file");

@@ -9,9 +9,8 @@ pub const OLD_APP_ID: &str = "ProxyLocal";
 /// Windows `%APPDATA%\<name>`, macOS `~/Library/Application Support/<name>`, elsewhere `$XDG_CONFIG_HOME/<name>`
 /// (default `~/.config`).
 pub fn app_dir_named(name: &str) -> PathBuf {
-    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
-        .map(PathBuf::from)
-        .unwrap_or_default();
+    let home =
+        std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from).unwrap_or_default();
     let base = if cfg!(windows) {
         std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or(home)
     } else if cfg!(target_os = "macos") {

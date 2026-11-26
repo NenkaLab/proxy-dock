@@ -9,7 +9,7 @@ use crate::i18n::tr;
 use crate::ids::new_id;
 use crate::net::host_port;
 use crate::py;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
 
 /// end a chain (their servers dial out themselves)
@@ -27,7 +27,8 @@ pub type Obj = Map<String, Value>;
 
 pub fn empty() -> Obj {
     match json!({"inbounds": [], "outbounds": [], "routers": [], "relays": [],
-                 "pc": {"inbound": null, "pos": [460, -200], "backup": null, "applied": false, "server": ""}}) {
+                 "pc": {"inbound": null, "pos": [460, -200], "backup": null, "applied": false, "server": ""}})
+    {
         Value::Object(m) => m,
         _ => unreachable!(),
     }
@@ -60,12 +61,11 @@ fn num(v: &Value) -> Option<f64> {
 
 /// Python `_pos`: a valid [x, y] becomes floats; otherwise the default exactly as given (ints stay ints)
 fn pos(v: Option<&Value>, default: Value) -> Value {
-    if let Some(Value::Array(a)) = v {
-        if a.len() == 2 {
-            if let (Some(x), Some(y)) = (num(&a[0]), num(&a[1])) {
-                return json!([x, y]);
-            }
-        }
+    if let Some(Value::Array(a)) = v
+        && a.len() == 2
+        && let (Some(x), Some(y)) = (num(&a[0]), num(&a[1]))
+    {
+        return json!([x, y]);
     }
     default
 }
@@ -88,7 +88,9 @@ fn name(v: Option<&Value>, default: impl FnOnce() -> String) -> String {
 /// '#rrggbb' (lower case) or '' (no colour: the default)
 pub fn valid_color(v: Option<&Value>) -> String {
     match v {
-        Some(Value::String(s)) if s.chars().count() == 7 && s.starts_with('#') && py::int16_ok(&s[1..]) => s.to_lowercase(),
+        Some(Value::String(s)) if s.chars().count() == 7 && s.starts_with('#') && py::int16_ok(&s[1..]) => {
+            s.to_lowercase()
+        }
         _ => String::new(),
     }
 }
@@ -153,14 +155,15 @@ pub fn validate_outbound_node(raw: &Value) -> Obj {
     let id = id_or_new(r.get("id"));
     let t = s(&ob, "type").to_string();
     let mut members: Vec<Value> = vec![];
-    if t == "group" {
-        if let Some(Value::Array(ms)) = r.get("members") {
-            for m in ms {
-                if let Value::String(x) = m {
-                    if !x.is_empty() && !members.contains(m) {
-                        members.push(Value::String(x.clone()));
-                    }
-                }
+    if t == "group"
+        && let Some(Value::Array(ms)) = r.get("members")
+    {
+        for m in ms {
+            if let Value::String(x) = m
+                && !x.is_empty()
+                && !members.contains(m)
+            {
+                members.push(Value::String(x.clone()));
             }
         }
     }
@@ -231,7 +234,10 @@ pub fn validate_router_node(raw: &Value) -> Obj {
             seen.insert(rid.clone());
             let mut rule = Obj::new();
             rule.insert("id".into(), json!(rid));
-            rule.insert("name".into(), json!(name(x.get("name"), || tr("Rule {n}").replace("{n}", &(i + 1).to_string()))));
+            rule.insert(
+                "name".into(),
+                json!(name(x.get("name"), || tr("Rule {n}").replace("{n}", &(i + 1).to_string()))),
+            );
             rule.insert("match".into(), Value::Object(validate_match(x.get("match"))));
             rule.insert("target".into(), opt(text(x.get("target"))));
             rule.insert("color".into(), json!(valid_color(x.get("color"))));
@@ -486,7 +492,8 @@ pub fn router_loop(g: &Obj, rid: &str) -> bool {
 
 /// ("inbound" | "outbound" | "router" | "relay", node); pass-through lane ids are not blocks
 pub fn find<'a>(g: &'a Obj, nid: &str) -> Option<(&'static str, &'a Value)> {
-    for (key, kind) in [("inbounds", "inbound"), ("outbounds", "outbound"), ("routers", "router"), ("relays", "relay")] {
+    for (key, kind) in [("inbounds", "inbound"), ("outbounds", "outbound"), ("routers", "router"), ("relays", "relay")]
+    {
         if let Some(n) = list(g, key).iter().find(|n| n["id"].as_str() == Some(nid)) {
             return Some((kind, n));
         }
@@ -621,10 +628,11 @@ pub fn validate(raw: &Value) -> Obj {
         let n_out = list(&g, "relays")[ri]["outputs"].as_array().unwrap().len();
         for oi in 0..n_out {
             let target = list(&g, "relays")[ri]["outputs"][oi]["target"].as_str().map(String::from);
-            if let Some(t) = target {
-                if lanes_in.contains(&t) && lane_index(&g).lane_loop(&t) {
-                    arr_mut(&mut g, "relays")[ri]["outputs"][oi]["target"] = Value::Null;
-                }
+            if let Some(t) = target
+                && lanes_in.contains(&t)
+                && lane_index(&g).lane_loop(&t)
+            {
+                arr_mut(&mut g, "relays")[ri]["outputs"][oi]["target"] = Value::Null;
             }
         }
     }
@@ -710,10 +718,10 @@ pub fn validate(raw: &Value) -> Obj {
     let gpc = g.get_mut("pc").unwrap();
     let default_pos = gpc["pos"].clone();
     gpc["pos"] = pos(pc.get("pos"), default_pos);
-    if let Some(Value::String(i)) = pc.get("inbound") {
-        if inbound_ids.contains(i) {
-            gpc["inbound"] = json!(i);
-        }
+    if let Some(Value::String(i)) = pc.get("inbound")
+        && inbound_ids.contains(i)
+    {
+        gpc["inbound"] = json!(i);
     }
     if let Some(Value::Object(b)) = pc.get("backup") {
         let kept: Obj = b
@@ -739,7 +747,8 @@ pub fn validate(raw: &Value) -> Obj {
 
 /// The canvas keys a group can hold: blocks, the output half of a wireless pair ("<id>/out"), the PC block.
 pub fn canvas_keys(g: &Obj) -> HashSet<String> {
-    let mut keys: HashSet<String> = ["inbounds", "outbounds", "routers", "relays"].iter().flat_map(|k| ids_of(g, k)).collect();
+    let mut keys: HashSet<String> =
+        ["inbounds", "outbounds", "routers", "relays"].iter().flat_map(|k| ids_of(g, k)).collect();
     for r in list(g, "relays") {
         if r["wireless"] == json!(true) {
             keys.insert(format!("{}/out", r["id"].as_str().unwrap_or("")));
@@ -1039,7 +1048,9 @@ pub fn from_proxies(proxies: &[Value]) -> Obj {
         let target = match shared.iter().find(|(o, _)| o == ob) {
             Some((_, id)) => id.clone(),
             None => {
-                let n = validate_outbound_node(&json!({"id": new_id(), "name": null, "outbound": ob, "pos": [460, shared.len() * 190]}));
+                let n = validate_outbound_node(
+                    &json!({"id": new_id(), "name": null, "outbound": ob, "pos": [460, shared.len() * 190]}),
+                );
                 let id = n["id"].as_str().unwrap_or("").to_string();
                 g.get_mut("outbounds").and_then(Value::as_array_mut).unwrap().push(Value::Object(n));
                 shared.push((ob.clone(), id.clone()));

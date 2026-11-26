@@ -6,9 +6,12 @@
 use proxydock::ipc;
 use proxydock_core::i18n::{set_language, tr};
 use proxydock_core::log::fmt_size;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use slint::{Color, ComponentHandle, Model, ModelRc, SharedString, VecModel};
-use slint_node_editor::{wire_node_editor, wire_selection, Dragged, GroupData, GroupLogic, GroupMember, LinkData, LinkPath, MovableNode, NodeEditorSetup};
+use slint_node_editor::{
+    Dragged, GroupData, GroupLogic, GroupMember, LinkData, LinkPath, MovableNode, NodeEditorSetup, wire_node_editor,
+    wire_selection,
+};
 use std::collections::HashMap;
 use std::net::TcpStream;
 use std::rc::Rc;
@@ -19,17 +22,33 @@ slint::include_modules!();
 const LOG_CAP: usize = 5000;
 
 impl MovableNode for NodeData {
-    fn id(&self) -> i32 { self.id }
-    fn x(&self) -> f32 { self.x }
-    fn y(&self) -> f32 { self.y }
-    fn selected(&self) -> bool { self.selected }
-    fn set_x(&mut self, x: f32) { self.x = x; }
-    fn set_y(&mut self, y: f32) { self.y = y; }
+    fn id(&self) -> i32 {
+        self.id
+    }
+    fn x(&self) -> f32 {
+        self.x
+    }
+    fn y(&self) -> f32 {
+        self.y
+    }
+    fn selected(&self) -> bool {
+        self.selected
+    }
+    fn set_x(&mut self, x: f32) {
+        self.x = x;
+    }
+    fn set_y(&mut self, y: f32) {
+        self.y = y;
+    }
 }
 
 impl GroupMember for NodeData {
-    fn group_id(&self) -> i32 { self.group_id }
-    fn set_group_id(&mut self, group_id: i32) { self.group_id = group_id; }
+    fn group_id(&self) -> i32 {
+        self.group_id
+    }
+    fn set_group_id(&mut self, group_id: i32) {
+        self.group_id = group_id;
+    }
 }
 
 /// a group sheet's room around its blocks, and above them for its title band
@@ -59,7 +78,8 @@ fn pin_out(node: i32, lane: i32) -> i32 {
 }
 
 fn strings(v: &Value) -> ModelRc<SharedString> {
-    let items: Vec<SharedString> = v.as_array().into_iter().flatten().map(|x| SharedString::from(x.as_str().unwrap_or(""))).collect();
+    let items: Vec<SharedString> =
+        v.as_array().into_iter().flatten().map(|x| SharedString::from(x.as_str().unwrap_or(""))).collect();
     ModelRc::new(VecModel::from(items))
 }
 
@@ -72,17 +92,32 @@ fn hex_color(text: &str) -> Option<Color> {
 
 const WIRE: Color = Color::from_rgb_u8(90, 160, 240);
 
+/// links with a mix of colours: (link index, colour), and the block positions they were drawn for
+/// what back (false) / forward (true) runs
+type NavCallback = Rc<dyn Fn(bool)>;
+type MixedLinks = (Vec<(usize, Color)>, Vec<(i32, i32, i32)>);
+/// the log as shown: the lines the filters let through
+type LogView = Rc<slint::FilterModel<ModelRc<LogRow>, Box<dyn Fn(&LogRow) -> bool>>>;
+
 /// the block colours the palette offers (Python `PALETTE`)
 const PALETTE: [(&str, &str); 10] = [
-    ("#e5534b", "Red"), ("#e8912d", "Orange"), ("#d9b92f", "Yellow"), ("#57ab5a", "Green"), ("#39c5bb", "Teal"),
-    ("#4f8ef7", "Blue"), ("#7c6cf2", "Indigo"), ("#b76de0", "Purple"), ("#e26ba5", "Pink"), ("#9aa0a6", "Gray"),
+    ("#e5534b", "Red"),
+    ("#e8912d", "Orange"),
+    ("#d9b92f", "Yellow"),
+    ("#57ab5a", "Green"),
+    ("#39c5bb", "Teal"),
+    ("#4f8ef7", "Blue"),
+    ("#7c6cf2", "Indigo"),
+    ("#b76de0", "Purple"),
+    ("#e26ba5", "Pink"),
+    ("#9aa0a6", "Gray"),
 ];
 
 thread_local! {
     /// what the open palette colours: the block key, the router output ("" = the block), its colour now
     static PALETTE_FOR: std::cell::RefCell<(String, String, String)> = const { std::cell::RefCell::new((String::new(), String::new(), String::new())) };
     /// links carrying a mix of colours: their index and colour (drawn dotted), and the geometry they were drawn for
-    static MIXED: std::cell::RefCell<(Vec<(usize, Color)>, Vec<(i32, i32, i32)>)> = const { std::cell::RefCell::new((Vec::new(), Vec::new())) };
+    static MIXED: std::cell::RefCell<MixedLinks> = const { std::cell::RefCell::new((Vec::new(), Vec::new())) };
 }
 
 /// bytes per second as "1.2 MB/s"
@@ -169,7 +204,10 @@ fn leaves(v: &Value) -> ModelRc<MenuLeaf> {
         .as_array()
         .into_iter()
         .flatten()
-        .map(|e| MenuLeaf { action: e["action"].as_str().unwrap_or("").into(), title: e["title"].as_str().unwrap_or("").into() })
+        .map(|e| MenuLeaf {
+            action: e["action"].as_str().unwrap_or("").into(),
+            title: e["title"].as_str().unwrap_or("").into(),
+        })
         .collect();
     ModelRc::new(VecModel::from(items))
 }
@@ -269,7 +307,13 @@ fn canvas_nav(app: &App, models: &Models, rects: &HashMap<i32, (f32, f32, f32, f
         let mut options: Vec<i32> = vec![];
         // the other half of a wireless pair counts as linked
         let k = key(cur);
-        let partner = if forward && !k.ends_with("/out") { id_of(&format!("{k}/out")) } else if !forward { k.strip_suffix("/out").and_then(id_of) } else { None };
+        let partner = if forward && !k.ends_with("/out") {
+            id_of(&format!("{k}/out"))
+        } else if !forward {
+            k.strip_suffix("/out").and_then(id_of)
+        } else {
+            None
+        };
         options.extend(partner);
         // links out of (into) it, by port, then top to bottom
         let mut linked: Vec<(i32, f32, i32)> = vec![];
@@ -384,7 +428,12 @@ fn pair_focus(app: &App, models: &Models, rects: &HashMap<i32, (f32, f32, f32, f
         .map(|i| {
             let t = i as f32 / steps as f32;
             let u = 1.0 - t;
-            FlowDot { x: u * u * x0 + 2.0 * u * t * mx + t * t * x1, y: u * u * y0 + 2.0 * u * t * my + t * t * y1, size: 5.0, color }
+            FlowDot {
+                x: u * u * x0 + 2.0 * u * t * mx + t * t * x1,
+                y: u * u * y0 + 2.0 * u * t * my + t * t * y1,
+                size: 5.0,
+                color,
+            }
         })
         .collect();
     app.set_pair_dots(ModelRc::new(VecModel::from(dots)));
@@ -422,7 +471,11 @@ fn groups_follow(app: &App, models: &Models, rects: &HashMap<i32, (f32, f32, f32
     for (i, (_, members, _)) in groups.iter().enumerate() {
         let Some(mut row) = models.groups.row_data(i) else { continue };
         let (x, y, w, h) = group_bounds(&nodes, members);
-        if (row.x - x).abs() > 0.5 || (row.y - y).abs() > 0.5 || (row.width - w).abs() > 0.5 || (row.height - h).abs() > 0.5 {
+        if (row.x - x).abs() > 0.5
+            || (row.y - y).abs() > 0.5
+            || (row.width - w).abs() > 0.5
+            || (row.height - h).abs() > 0.5
+        {
             row.x = x;
             row.y = y;
             row.width = w;
@@ -452,7 +505,9 @@ thread_local! {
 /// group, not collapsed
 fn drop_group(groups: &VecModel<GroupData>, own: i32, rect: (f32, f32, f32, f32)) -> Option<GroupData> {
     let (cx, cy) = (rect.0 + rect.2 / 2.0, rect.1 + rect.3 / 2.0);
-    groups.iter().find(|g| g.id != own && !g.collapsed && cx >= g.x && cx <= g.x + g.width && cy >= g.y && cy <= g.y + g.height)
+    groups
+        .iter()
+        .find(|g| g.id != own && !g.collapsed && cx >= g.x && cx <= g.x + g.width && cy >= g.y && cy <= g.y + g.height)
 }
 
 /// While a block is dragged: over another group's box, an outline grows from the box to take the block in; it
@@ -461,14 +516,11 @@ fn drop_preview(app: &App, models: &Models) {
     let ds = app.global::<DragState>();
     let node = ds.get_dragged_node_id();
     let dragging = ds.get_is_dragging() && node != 0;
-    let hit = dragging
-        .then(|| models.nodes.iter().find(|n| n.id == node && n.kind != 5))
-        .flatten()
-        .and_then(|n| {
-            let (w, h) = SIZES.with(|s| s.borrow().get(&n.id).copied().unwrap_or((260.0, 120.0)));
-            let rect = (n.x + ds.get_drag_offset_x(), n.y + ds.get_drag_offset_y(), w, h);
-            drop_group(&models.groups, n.group_id, rect).map(|g| (g, rect))
-        });
+    let hit = dragging.then(|| models.nodes.iter().find(|n| n.id == node && n.kind != 5)).flatten().and_then(|n| {
+        let (w, h) = SIZES.with(|s| s.borrow().get(&n.id).copied().unwrap_or((260.0, 120.0)));
+        let rect = (n.x + ds.get_drag_offset_x(), n.y + ds.get_drag_offset_y(), w, h);
+        drop_group(&models.groups, n.group_id, rect).map(|g| (g, rect))
+    });
     match hit {
         Some((g, r)) => {
             if DROP_TARGET.with(|t| t.get()) != g.id {
@@ -559,7 +611,7 @@ struct History {
 thread_local! {
     static HISTORY: std::cell::RefCell<History> = std::cell::RefCell::new(History::default());
     /// what the window's message hook calls for back (false) / forward (true)
-    static NAV_CB: std::cell::RefCell<Option<Rc<dyn Fn(bool)>>> = const { std::cell::RefCell::new(None) };
+    static NAV_CB: std::cell::RefCell<Option<NavCallback>> = const { std::cell::RefCell::new(None) };
 }
 
 /// the editor's page: leaving it returns to where it was opened from
@@ -626,8 +678,10 @@ fn window_state_path() -> std::path::PathBuf {
 #[cfg(windows)]
 mod placement {
     use windows_sys::Win32::Foundation::{HWND, RECT};
-    use windows_sys::Win32::Graphics::Gdi::{MonitorFromRect, MONITOR_DEFAULTTONULL};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowPlacement, SetWindowPlacement, SW_SHOWMAXIMIZED, SW_SHOWNORMAL, WINDOWPLACEMENT};
+    use windows_sys::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONULL, MonitorFromRect};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowPlacement, SW_SHOWMAXIMIZED, SW_SHOWNORMAL, SetWindowPlacement, WINDOWPLACEMENT,
+    };
 
     /// (left, top, right, bottom of the normal place, maximized)
     pub fn get(hwnd: usize) -> Option<(i32, i32, i32, i32, bool)> {
@@ -654,7 +708,8 @@ mod placement {
         if unsafe { MonitorFromRect(&rc, MONITOR_DEFAULTTONULL) }.is_null() {
             // off every screen now: the size only, where Windows put it
             let cur = p.rcNormalPosition;
-            p.rcNormalPosition = RECT { left: cur.left, top: cur.top, right: cur.left + (r - l), bottom: cur.top + (b - t) };
+            p.rcNormalPosition =
+                RECT { left: cur.left, top: cur.top, right: cur.left + (r - l), bottom: cur.top + (b - t) };
         } else {
             p.rcNormalPosition = rc;
         }
@@ -669,7 +724,8 @@ fn save_window_state(app: &App) {
         let Some((l, t, r, b, max)) = placement::get(owner_hwnd(app)) else { return };
         let path = window_state_path();
         // (the Python app's "geometry" stays as it was)
-        let mut data: serde_json::Map<String, Value> = std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        let mut data: serde_json::Map<String, Value> =
+            std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
         data.insert("rust".into(), json!({"left": l, "top": t, "right": r, "bottom": b, "maximized": max}));
         let _ = std::fs::create_dir_all(path.parent().unwrap());
         let tmp = path.with_extension("json.tmp");
@@ -684,11 +740,22 @@ fn save_window_state(app: &App) {
 fn restore_window_state(app: &App) {
     #[cfg(windows)]
     {
-        let Some(v) = std::fs::read_to_string(window_state_path()).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()) else { return };
+        let Some(v) =
+            std::fs::read_to_string(window_state_path()).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        else {
+            return;
+        };
         let w = &v["rust"];
         let n = |k: &str| w[k].as_i64().unwrap_or(0) as i32;
         if w.is_object() {
-            placement::set(owner_hwnd(app), n("left"), n("top"), n("right"), n("bottom"), w["maximized"] == json!(true));
+            placement::set(
+                owner_hwnd(app),
+                n("left"),
+                n("top"),
+                n("right"),
+                n("bottom"),
+                w["maximized"] == json!(true),
+            );
         }
     }
     #[cfg(not(windows))]
@@ -743,10 +810,10 @@ fn owner_hwnd(w: &App) -> usize {
     {
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};
         let slint_handle = w.window().window_handle();
-        if let Ok(handle) = slint_handle.window_handle() {
-            if let RawWindowHandle::Win32(h) = handle.as_raw() {
-                return h.hwnd.get() as usize;
-            }
+        if let Ok(handle) = slint_handle.window_handle()
+            && let RawWindowHandle::Win32(h) = handle.as_raw()
+        {
+            return h.hwnd.get() as usize;
         }
     }
     let _ = w;
@@ -812,7 +879,11 @@ fn picker_rows(app: &App) {
     let words = app.get_picker_search().trim().to_lowercase();
     let rows: Vec<PickItem> = PICKER.with(|p| {
         let p = p.borrow();
-        p.all.iter().filter(|n| words.is_empty() || n.to_lowercase().contains(&words)).map(|n| PickItem { name: n.into(), checked: p.chosen.contains(n) }).collect()
+        p.all
+            .iter()
+            .filter(|n| words.is_empty() || n.to_lowercase().contains(&words))
+            .map(|n| PickItem { name: n.into(), checked: p.chosen.contains(n) })
+            .collect()
     });
     app.set_picker_items(ModelRc::new(VecModel::from(rows)));
 }
@@ -893,7 +964,9 @@ impl Models {
             let state = n["state"].as_str().unwrap_or("");
             let error = self.cards.iter().find(|r| r.id == card).map(|r| r.error.to_string()).unwrap_or_default();
             // the PC block: its status as its line
-            let lines = if n["lines"].as_array().is_some_and(|l| !l.is_empty()) || n["detail"].as_str().unwrap_or("").is_empty() {
+            let lines = if n["lines"].as_array().is_some_and(|l| !l.is_empty())
+                || n["detail"].as_str().unwrap_or("").is_empty()
+            {
                 info_lines(&n["lines"])
             } else {
                 info_lines(&json!([[n["detail"], 0]]))
@@ -954,7 +1027,13 @@ impl Models {
         let groups_raw: Vec<&Value> = c["groups"].as_array().into_iter().flatten().collect();
         let mut group_rows: Vec<(String, Vec<i32>, bool)> = vec![];
         for (gi, gr) in groups_raw.iter().enumerate() {
-            let members: Vec<i32> = gr["members"].as_array().into_iter().flatten().filter_map(Value::as_str).filter_map(|k| ids.get(k).copied()).collect();
+            let members: Vec<i32> = gr["members"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .filter_map(|k| ids.get(k).copied())
+                .collect();
             for n in nodes.iter_mut().filter(|n| members.contains(&n.id)) {
                 n.group_id = gi as i32 + 1;
             }
@@ -962,7 +1041,11 @@ impl Models {
         }
         let selected_groups: Vec<String> = GROUPS.with(|g| {
             let g = g.borrow();
-            self.groups.iter().filter(|r| r.selected).filter_map(|r| g.get(r.id as usize - 1).map(|x| x.0.clone())).collect()
+            self.groups
+                .iter()
+                .filter(|r| r.selected)
+                .filter_map(|r| g.get(r.id as usize - 1).map(|x| x.0.clone()))
+                .collect()
         });
         let rows: Vec<GroupData> = groups_raw
             .iter()
@@ -976,7 +1059,7 @@ impl Models {
                     y,
                     width: w,
                     height: h,
-                    color: hex_color(gr["color"].as_str().unwrap_or("")).map_or(Color::from_argb_u8(0, 0, 0, 0), |c| c),
+                    color: hex_color(gr["color"].as_str().unwrap_or("")).unwrap_or(Color::from_argb_u8(0, 0, 0, 0)),
                     collapsed: group_rows[gi].2,
                     selected: selected_groups.contains(&group_rows[gi].0),
                 }
@@ -995,7 +1078,12 @@ impl Models {
             let mut outs: Vec<(i32, String)> = vec![];
             let title_of = |id: i32| nodes.iter().find(|n| n.id == id).map(|n| n.title.to_string()).unwrap_or_default();
             for (k, l) in raw_links.iter().enumerate() {
-                let (Some(a), Some(b)) = (ids.get(l["from"].as_str().unwrap_or("")).copied(), ids.get(l["to"].as_str().unwrap_or("")).copied()) else { continue };
+                let (Some(a), Some(b)) = (
+                    ids.get(l["from"].as_str().unwrap_or("")).copied(),
+                    ids.get(l["to"].as_str().unwrap_or("")).copied(),
+                ) else {
+                    continue;
+                };
                 let (out, inp) = (l["out"].as_i64().unwrap_or(0) as i32, l["in"].as_i64().unwrap_or(0) as i32);
                 let (ain, bin) = (members.contains(&a), members.contains(&b));
                 if ain == bin {
@@ -1025,7 +1113,10 @@ impl Models {
                 }
             }
             let r = &rows[gi];
-            let lines = vec![InfoLine { text: tr("{count} blocks").replace("{count}", &members.len().to_string()).into(), tone: 2 }];
+            let lines = vec![InfoLine {
+                text: tr("{count} blocks").replace("{count}", &members.len().to_string()).into(),
+                tone: 2,
+            }];
             nodes.push(NodeData {
                 id: sid,
                 title: r.title.clone(),
@@ -1034,8 +1125,12 @@ impl Models {
                 y: r.y + GROUP_HEAD + 4.0,
                 ins: ins.len().min(31) as i32,
                 outs: outs.len().min(31) as i32,
-                in_labels: ModelRc::new(VecModel::from(ins.iter().map(|(_, t)| SharedString::from(t.as_str())).collect::<Vec<_>>())),
-                out_labels: ModelRc::new(VecModel::from(outs.iter().map(|(_, t)| SharedString::from(t.as_str())).collect::<Vec<_>>())),
+                in_labels: ModelRc::new(VecModel::from(
+                    ins.iter().map(|(_, t)| SharedString::from(t.as_str())).collect::<Vec<_>>(),
+                )),
+                out_labels: ModelRc::new(VecModel::from(
+                    outs.iter().map(|(_, t)| SharedString::from(t.as_str())).collect::<Vec<_>>(),
+                )),
                 lines: ModelRc::new(VecModel::from(lines)),
                 swatch: r.color,
                 ..Default::default()
@@ -1049,7 +1144,9 @@ impl Models {
         let mut meta = vec![];
         let mut mixed = vec![];
         for (k, l) in c["links"].as_array().into_iter().flatten().enumerate() {
-            let (Some(a), Some(b)) = (ids.get(l["from"].as_str().unwrap_or("")), ids.get(l["to"].as_str().unwrap_or(""))) else {
+            let (Some(a), Some(b)) =
+                (ids.get(l["from"].as_str().unwrap_or("")), ids.get(l["to"].as_str().unwrap_or("")))
+            else {
                 continue;
             };
             let full = hex_color(l["color"].as_str().unwrap_or("")).unwrap_or(WIRE);
@@ -1276,7 +1373,11 @@ fn field_rows(fields: &[Value]) -> Vec<FieldRow> {
                 };
                 let index = opts.iter().position(|(v, _)| *v == text).map_or(-1, |i| i as i32);
                 // an item's buttons: labels for the window, actions kept here
-                let buttons: Vec<SharedString> = if kind == "item" { opts.iter().map(|(_, l)| SharedString::from(l.as_str())).collect() } else { vec![] };
+                let buttons: Vec<SharedString> = if kind == "item" {
+                    opts.iter().map(|(_, l)| SharedString::from(l.as_str())).collect()
+                } else {
+                    vec![]
+                };
                 if f["rerender"] == json!(true) {
                     e.rerender.insert(key.clone());
                 }
@@ -1292,7 +1393,9 @@ fn field_rows(fields: &[Value]) -> Vec<FieldRow> {
                     kind: kind.into(),
                     text: text.into(),
                     checked: value == &json!(true),
-                    options: ModelRc::new(VecModel::from(opts.into_iter().map(|(_, l)| SharedString::from(l)).collect::<Vec<_>>())),
+                    options: ModelRc::new(VecModel::from(
+                        opts.into_iter().map(|(_, l)| SharedString::from(l)).collect::<Vec<_>>(),
+                    )),
                     index,
                     visible: f["visible"] == json!(true),
                     buttons: ModelRc::new(VecModel::from(buttons)),
@@ -1320,12 +1423,13 @@ fn merge_buttons(rows: &mut [FieldRow]) {
     let mut added: HashMap<usize, Vec<(String, String)>> = HashMap::new();
     for &i in &shown {
         let r = &rows[i];
-        if r.kind == "button" && r.joined {
-            if let Some(t) = target {
-                added.entry(t).or_default().push((r.key.to_string(), r.label.to_string()));
-                rows[i].visible = false;
-                continue;
-            }
+        if r.kind == "button"
+            && r.joined
+            && let Some(t) = target
+        {
+            added.entry(t).or_default().push((r.key.to_string(), r.label.to_string()));
+            rows[i].visible = false;
+            continue;
         }
         target = matches!(r.kind.as_str(), "text" | "secret" | "int" | "choice" | "bool").then_some(i);
     }
@@ -1334,7 +1438,9 @@ fn merge_buttons(rows: &mut [FieldRow]) {
         for (t, buttons) in added {
             let key = rows[t].key.to_string();
             e.actions.insert(key, buttons.iter().map(|(a, _)| a.clone()).collect());
-            rows[t].buttons = ModelRc::new(VecModel::from(buttons.into_iter().map(|(_, l)| SharedString::from(l)).collect::<Vec<_>>()));
+            rows[t].buttons = ModelRc::new(VecModel::from(
+                buttons.into_iter().map(|(_, l)| SharedString::from(l)).collect::<Vec<_>>(),
+            ));
         }
     });
 }
@@ -1348,7 +1454,12 @@ fn mark_groups(rows: &mut [FieldRow]) {
     let joins: Vec<bool> = shown
         .iter()
         .enumerate()
-        .map(|(n, &i)| n > 0 && !heads[n] && !heads[n - 1] && (rows[i].label.is_empty() || (rows[i].kind == "button" && rows[i].desc.is_empty())))
+        .map(|(n, &i)| {
+            n > 0
+                && !heads[n]
+                && !heads[n - 1]
+                && (rows[i].label.is_empty() || (rows[i].kind == "button" && rows[i].desc.is_empty()))
+        })
         .collect();
     for (n, &i) in shown.iter().enumerate() {
         let prev_head = n.checked_sub(1).map(|m| heads[m]);
@@ -1447,7 +1558,12 @@ fn flow_dots_tick(app: &App) -> bool {
                     let seg = (lens[k] - lens[k - 1]).max(1e-3);
                     let f = ((d - lens[k - 1]) / seg).clamp(0.0, 1.0);
                     let (a, b) = (pts[k - 1], pts[k]);
-                    dots.push(FlowDot { x: a.0 + (b.0 - a.0) * f, y: a.1 + (b.1 - a.1) * f, size: 7.0 + 5.0 * t, color });
+                    dots.push(FlowDot {
+                        x: a.0 + (b.0 - a.0) * f,
+                        y: a.1 + (b.1 - a.1) * f,
+                        size: 7.0 + 5.0 * t,
+                        color,
+                    });
                     d += SPACING;
                 }
             }
@@ -1475,7 +1591,8 @@ thread_local! {
 /// A logged connection's way on the canvas: its links stand out (the others fade) for a while
 fn show_route(app: &App, m: &Models, v: &Value) {
     let err = v["error"].as_str().unwrap_or("");
-    let ways: std::collections::HashSet<usize> = v["links"].as_array().into_iter().flatten().filter_map(|l| l.as_u64()).map(|l| l as usize).collect();
+    let ways: std::collections::HashSet<usize> =
+        v["links"].as_array().into_iter().flatten().filter_map(|l| l.as_u64()).map(|l| l as usize).collect();
     if ways.is_empty() {
         show_toast(app, if err.is_empty() { "?" } else { err }, false, 5.0);
         return;
@@ -1556,7 +1673,7 @@ struct LogFilter {
 
 thread_local! {
     static LOG_FILTER: std::cell::RefCell<LogFilter> = std::cell::RefCell::new(LogFilter::default());
-    static LOG_VIEW: std::cell::RefCell<Option<Rc<slint::FilterModel<ModelRc<LogRow>, Box<dyn Fn(&LogRow) -> bool>>>>> = const { std::cell::RefCell::new(None) };
+    static LOG_VIEW: std::cell::RefCell<Option<LogView>> = const { std::cell::RefCell::new(None) };
 }
 
 fn log_shown(r: &LogRow) -> bool {
@@ -1616,10 +1733,10 @@ fn show_toast(app: &App, text: &str, info: bool, secs: f32) {
     let seq = TOAST_SEQ.with(|n| n.get());
     let weak = app.as_weak();
     slint::Timer::single_shot(std::time::Duration::from_secs_f32(secs), move || {
-        if let Some(a) = weak.upgrade() {
-            if TOAST_SEQ.with(|n| n.get()) == seq {
-                a.set_toast(SharedString::new());
-            }
+        if let Some(a) = weak.upgrade()
+            && TOAST_SEQ.with(|n| n.get()) == seq
+        {
+            a.set_toast(SharedString::new());
         }
     });
 }
@@ -1628,9 +1745,11 @@ fn show_toast(app: &App, text: &str, info: bool, secs: f32) {
 fn set_clipboard_text(text: &str) -> bool {
     #[cfg(windows)]
     unsafe {
-        use windows_sys::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
         use windows_sys::Win32::Foundation::GlobalFree;
-        use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+        use windows_sys::Win32::System::DataExchange::{
+            CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+        };
+        use windows_sys::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
         const CF_UNICODETEXT: u32 = 13;
         let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
         if OpenClipboard(std::ptr::null_mut()) == 0 {
@@ -1736,16 +1855,22 @@ fn show_settings(app: &App, v: &Value) {
     st.set_text_size(i("text_size"));
     st.set_saved_text_size(i("text_size"));
     // the fonts: by name in this window's lists of the PC's fonts (0 = built in)
-    let (ui_font, mono_font) = (vals["ui_font"].as_str().unwrap_or("").to_string(), vals["mono_font"].as_str().unwrap_or("").to_string());
+    let (ui_font, mono_font) =
+        (vals["ui_font"].as_str().unwrap_or("").to_string(), vals["mono_font"].as_str().unwrap_or("").to_string());
     FONTS.with(|f| {
         let mut f = f.borrow_mut();
         f.ui_choice = ui_font.clone();
         let code = proxydock_core::i18n::current();
-        let builtin = tr("Built-in · {builtin_ui}").replace("{builtin_ui}", if lang_font(&code).is_empty() { system_ui_font() } else { lang_font(&code) });
-        let ui_names: Vec<SharedString> = std::iter::once(SharedString::from(builtin)).chain(f.ui.iter().map(|x| SharedString::from(x.as_str()))).collect();
-        let mono_names: Vec<SharedString> = std::iter::once(SharedString::from(tr("Built-in · {builtin_mono}").replace("{builtin_mono}", "JetBrains Mono")))
-            .chain(f.mono.iter().map(|x| SharedString::from(x.as_str())))
+        let builtin = tr("Built-in · {builtin_ui}")
+            .replace("{builtin_ui}", if lang_font(&code).is_empty() { system_ui_font() } else { lang_font(&code) });
+        let ui_names: Vec<SharedString> = std::iter::once(SharedString::from(builtin))
+            .chain(f.ui.iter().map(|x| SharedString::from(x.as_str())))
             .collect();
+        let mono_names: Vec<SharedString> = std::iter::once(SharedString::from(
+            tr("Built-in · {builtin_mono}").replace("{builtin_mono}", "JetBrains Mono"),
+        ))
+        .chain(f.mono.iter().map(|x| SharedString::from(x.as_str())))
+        .collect();
         st.set_ui_fonts(ModelRc::new(VecModel::from(ui_names)));
         st.set_mono_fonts(ModelRc::new(VecModel::from(mono_names)));
         let ui_i = f.ui.iter().position(|x| *x == ui_font).map_or(0, |k| k as i32 + 1);
@@ -1758,7 +1883,11 @@ fn show_settings(app: &App, v: &Value) {
     // text size: Python's 115% is this window's own size
     let size = proxydock_core::config::TEXT_SIZES.get(i("text_size").max(0) as usize).copied().unwrap_or(115);
     app.global::<Type>().set_scale(size as f32 / 115.0);
-    app.global::<Type>().set_mono(if mono_font.is_empty() { "JetBrains Mono".into() } else { mono_font.as_str().into() });
+    app.global::<Type>().set_mono(if mono_font.is_empty() {
+        "JetBrains Mono".into()
+    } else {
+        mono_font.as_str().into()
+    });
     apply_fonts(app, &proxydock_core::i18n::current());
     st.set_admin(b("run_as_admin"));
     st.set_windows(v["windows"] == json!(true));
@@ -1770,7 +1899,14 @@ fn show_settings(app: &App, v: &Value) {
         None => -1,
     };
     st.set_fw_state(fw);
-    st.set_fw_text(tr(match fw { 1 => "On", 0 => "Off", _ => "Checking…" }).into());
+    st.set_fw_text(
+        tr(match fw {
+            1 => "On",
+            0 => "Off",
+            _ => "Checking…",
+        })
+        .into(),
+    );
     st.set_engine(v["engine"].as_str().unwrap_or("").into());
     st.set_log_dir(v["log_dir"].as_str().unwrap_or("").into());
     // what applies to this window right away
@@ -1800,9 +1936,33 @@ fn lang_font(code: &str) -> &'static str {
     let mac = cfg!(target_os = "macos");
     match code {
         "ko" => "Pretendard Variable",
-        "ja" => if windows { "Yu Gothic UI" } else if mac { "Hiragino Sans" } else { "Noto Sans CJK JP" },
-        "zh_CN" => if windows { "Microsoft YaHei UI" } else if mac { "PingFang SC" } else { "Noto Sans CJK SC" },
-        "zh_TW" => if windows { "Microsoft JhengHei UI" } else if mac { "PingFang TC" } else { "Noto Sans CJK TC" },
+        "ja" => {
+            if windows {
+                "Yu Gothic UI"
+            } else if mac {
+                "Hiragino Sans"
+            } else {
+                "Noto Sans CJK JP"
+            }
+        }
+        "zh_CN" => {
+            if windows {
+                "Microsoft YaHei UI"
+            } else if mac {
+                "PingFang SC"
+            } else {
+                "Noto Sans CJK SC"
+            }
+        }
+        "zh_TW" => {
+            if windows {
+                "Microsoft JhengHei UI"
+            } else if mac {
+                "PingFang TC"
+            } else {
+                "Noto Sans CJK TC"
+            }
+        }
         // Segoe UI on Windows, San Francisco on macOS, the desktop's font elsewhere
         _ => "",
     }
@@ -1824,7 +1984,9 @@ thread_local! {
 fn system_fonts() -> (Vec<String>, Vec<String>) {
     #[cfg(windows)]
     {
-        use windows_sys::Win32::Graphics::Gdi::{EnumFontFamiliesExW, GetDC, ReleaseDC, DEFAULT_CHARSET, LOGFONTW, TEXTMETRICW};
+        use windows_sys::Win32::Graphics::Gdi::{
+            DEFAULT_CHARSET, EnumFontFamiliesExW, GetDC, LOGFONTW, ReleaseDC, TEXTMETRICW,
+        };
         unsafe extern "system" fn each(lf: *const LOGFONTW, _tm: *const TEXTMETRICW, _ty: u32, data: isize) -> i32 {
             let (out, lf) = unsafe { (&mut *(data as *mut Vec<(String, bool)>), &*lf) };
             let n = lf.lfFaceName.iter().position(|c| *c == 0).unwrap_or(32);
@@ -1838,7 +2000,7 @@ fn system_fonts() -> (Vec<String>, Vec<String>) {
         unsafe {
             let dc = GetDC(std::ptr::null_mut());
             let mut lf: LOGFONTW = std::mem::zeroed();
-            lf.lfCharSet = DEFAULT_CHARSET as u8;
+            lf.lfCharSet = DEFAULT_CHARSET;
             EnumFontFamiliesExW(dc, &lf, Some(each), &mut found as *mut _ as isize, 0);
             ReleaseDC(std::ptr::null_mut(), dc);
         }
@@ -1853,7 +2015,13 @@ fn system_fonts() -> (Vec<String>, Vec<String>) {
 
 /// the system's own UI font, for "Built-in" in languages that use it
 fn system_ui_font() -> &'static str {
-    if cfg!(windows) { "Segoe UI" } else if cfg!(target_os = "macos") { "SF Pro" } else { "Sans" }
+    if cfg!(windows) {
+        "Segoe UI"
+    } else if cfg!(target_os = "macos") {
+        "SF Pro"
+    } else {
+        "Sans"
+    }
 }
 
 /// the window's font for the language, and each language's name in its own font
@@ -1861,7 +2029,8 @@ fn apply_fonts(app: &App, code: &str) {
     // the user's UI font, else the language's own
     let chosen = FONTS.with(|f| f.borrow().ui_choice.clone());
     app.set_ui_font(if chosen.is_empty() { lang_font(code).into() } else { chosen.as_str().into() });
-    let fonts: Vec<SharedString> = proxydock_core::i18n::LANGUAGES.iter().map(|(c, _)| SharedString::from(lang_font(c))).collect();
+    let fonts: Vec<SharedString> =
+        proxydock_core::i18n::LANGUAGES.iter().map(|(c, _)| SharedString::from(lang_font(c))).collect();
     app.global::<Settings>().set_language_fonts(ModelRc::new(VecModel::from(fonts)));
 }
 
@@ -1890,9 +2059,17 @@ fn settings_text() -> SettingsText {
         logclose: t("Log connection close details"),
         logclose_desc: t("Upload/download amount, duration and reason when a connection ends"),
         dns: t("DNS server"),
-        dns_desc: SharedString::from(format!("{} {}", tr("Empty = the PC's DNS. Otherwise 1.1.1.1 (UDP), tcp://, tls:// (DoT), https://…/dns-query (DoH), quic:// or h3://. Used where ProxyDock looks names up itself (Direct, IP rules, TUN). Needs the sing-box engine"), tr("Several servers (separated by commas): all are asked at once and the first answer is used."))),
+        dns_desc: SharedString::from(format!(
+            "{} {}",
+            tr(
+                "Empty = the PC's DNS. Otherwise 1.1.1.1 (UDP), tcp://, tls:// (DoT), https://…/dns-query (DoH), quic:// or h3://. Used where ProxyDock looks names up itself (Direct, IP rules, TUN). Needs the sing-box engine"
+            ),
+            tr("Several servers (separated by commas): all are asked at once and the first answer is used.")
+        )),
         dnsvia: t("DNS through the outbound"),
-        dnsvia_desc: t("The card's own lookups go through its tunnel or upstream instead of leaving this PC directly (needs a DNS server above)"),
+        dnsvia_desc: t(
+            "The card's own lookups go through its tunnel or upstream instead of leaving this PC directly (needs a DNS server above)",
+        ),
         engine: t("Proxy engine"),
         latest: t(latest::SETTING_LABEL),
         latest_badge: t(latest::SETTING_BADGE),
@@ -1924,13 +2101,19 @@ fn settings_text() -> SettingsText {
         hidden: t("Hide startup notification"),
         hidden_desc: t("Do not show the 'running' notification when started automatically"),
         admin: t("Run as administrator"),
-        admin_desc: t("ProxyDock restarts itself with administrator rights (UAC prompt) when it starts, so TUN cards start without asking. Applies from the next start."),
+        admin_desc: t(
+            "ProxyDock restarts itself with administrator rights (UAC prompt) when it starts, so TUN cards start without asking. Applies from the next start.",
+        ),
         updates: t("Updates"),
         check_updates: t("Check for updates at startup"),
-        check_updates_desc: t("Asks GitHub for the latest release at most once a day. Only the app version is sent (as the User-Agent)."),
+        check_updates_desc: t(
+            "Asks GitHub for the latest release at most once a day. Only the app version is sent (as the User-Agent).",
+        ),
         firewall: t("Windows Firewall"),
         fw_block: t("Block external access"),
-        fw_block_desc: t("Blocks connections from other PCs to ProxyDock (all proxies, needs administrator rights). Turn off to use servers for other devices (Shadowsocks, Hysteria2, etc.)"),
+        fw_block_desc: t(
+            "Blocks connections from other PCs to ProxyDock (all proxies, needs administrator rights). Turn off to use servers for other devices (Shadowsocks, Hysteria2, etc.)",
+        ),
         fw_on: t("Turn block on"),
         fw_off: t("Turn block off"),
         cat_defaults: t("Proxy defaults"),
@@ -1950,7 +2133,10 @@ fn labels(app: &App) {
     u.set_t_downloading(tr("Downloading the update").into());
     u.set_t_cancel(tr("Cancel").into());
     u.set_t_install_title(tr("Install the update?").into());
-    u.set_t_install_text(tr("ProxyDock closes, the installer updates it and then starts it again. Running proxies stop until then.").into());
+    u.set_t_install_text(
+        tr("ProxyDock closes, the installer updates it and then starts it again. Running proxies stop until then.")
+            .into(),
+    );
     u.set_t_install(tr("Install").into());
     app.set_t_latency(tr("Test latency").into());
     app.set_t_close(tr("Close").into());
@@ -2004,8 +2190,12 @@ fn labels(app: &App) {
     app.set_t_collapse(tr("Collapse").into());
     app.set_t_expand(tr("Expand").into());
     app.set_t_colour(tr("Colour").into());
-    app.set_palette_colors(ModelRc::new(VecModel::from(PALETTE.iter().map(|(h, _)| hex_color(h).unwrap()).collect::<Vec<_>>())));
-    app.set_palette_names(ModelRc::new(VecModel::from(PALETTE.iter().map(|(_, n)| SharedString::from(tr(n))).collect::<Vec<_>>())));
+    app.set_palette_colors(ModelRc::new(VecModel::from(
+        PALETTE.iter().map(|(h, _)| hex_color(h).unwrap()).collect::<Vec<_>>(),
+    )));
+    app.set_palette_names(ModelRc::new(VecModel::from(
+        PALETTE.iter().map(|(_, n)| SharedString::from(tr(n))).collect::<Vec<_>>(),
+    )));
     app.set_t_palette_custom(tr("Custom colour…").into());
     app.set_t_pick_title(tr("Choose programs").into());
     app.set_t_pick_search(tr("Search running programs").into());
@@ -2034,7 +2224,8 @@ fn main() -> Result<(), slint::PlatformError> {
     if std::env::var_os("SLINT_BACKEND").is_none() {
         let gpu = slint::BackendSelector::new().backend_name("winit".into()).renderer_name("skia".into()).select();
         if gpu.is_err() {
-            let _ = slint::BackendSelector::new().backend_name("winit".into()).renderer_name("software".into()).select();
+            let _ =
+                slint::BackendSelector::new().backend_name("winit".into()).renderer_name("software".into()).select();
         }
     }
     let Some((port, token)) = std::env::var(ipc::ENV).ok().and_then(|v| {
@@ -2045,7 +2236,8 @@ fn main() -> Result<(), slint::PlatformError> {
         std::process::exit(2);
     };
     let mut stream = TcpStream::connect(("127.0.0.1", port)).map_err(|e| slint::PlatformError::Other(e.to_string()))?;
-    ipc::send(&mut stream, &json!({"cmd": "hello", "token": token})).map_err(|e| slint::PlatformError::Other(e.to_string()))?;
+    ipc::send(&mut stream, &json!({"cmd": "hello", "token": token}))
+        .map_err(|e| slint::PlatformError::Other(e.to_string()))?;
     let writer = Arc::new(Mutex::new(stream.try_clone().map_err(|e| slint::PlatformError::Other(e.to_string()))?));
 
     let app = App::new()?;
@@ -2094,7 +2286,9 @@ fn main() -> Result<(), slint::PlatformError> {
     {
         // a connection's log line clicked: ask the core which way it went
         let send = send.clone();
-        app.on_log_route(move |card, message| send(json!({"cmd": "route_of", "id": card.as_str(), "message": message.as_str()})));
+        app.on_log_route(move |card, message| {
+            send(json!({"cmd": "route_of", "id": card.as_str(), "message": message.as_str()}))
+        });
     }
     // canvas: moving and selecting blocks (a move is saved by the core when the drag ends)
     {
@@ -2106,10 +2300,21 @@ fn main() -> Result<(), slint::PlatformError> {
                 let before: Vec<(f32, f32)> = nodes.iter().map(|n| (n.x, n.y)).collect();
                 GroupLogic::commit_drag(&*nodes, &*groups, dragged, dx, dy);
                 // a collapsed group's stand-in carries its (hidden) members
-                let carried: Vec<i32> = nodes.iter().enumerate().filter(|(i, n)| n.kind == 5 && before.get(*i) != Some(&(n.x, n.y))).map(|(_, n)| n.id).collect();
+                let carried: Vec<i32> = nodes
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, n)| n.kind == 5 && before.get(*i) != Some(&(n.x, n.y)))
+                    .map(|(_, n)| n.id)
+                    .collect();
                 for sid in carried {
                     let key = key_of(sid);
-                    let members = GROUPS.with(|g| g.borrow().iter().find(|x| format!("group:{}", x.0) == key).map(|x| x.1.clone()).unwrap_or_default());
+                    let members = GROUPS.with(|g| {
+                        g.borrow()
+                            .iter()
+                            .find(|x| format!("group:{}", x.0) == key)
+                            .map(|x| x.1.clone())
+                            .unwrap_or_default()
+                    });
                     for i in 0..nodes.row_count() {
                         let Some(mut n) = nodes.row_data(i) else { continue };
                         if members.contains(&n.id) && before.get(i) == Some(&(n.x, n.y)) {
@@ -2146,8 +2351,16 @@ fn main() -> Result<(), slint::PlatformError> {
             let (controller, weak) = (controller.clone(), app.as_weak());
             app.on_canvas_fit(move || {
                 let Some(a) = weak.upgrade() else { return };
-                let rects: Vec<(f32, f32, f32, f32)> =
-                    controller.cache().borrow().node_rects.values().map(|r| { use slint_node_editor::NodeGeometry; r.rect() }).collect();
+                let rects: Vec<(f32, f32, f32, f32)> = controller
+                    .cache()
+                    .borrow()
+                    .node_rects
+                    .values()
+                    .map(|r| {
+                        use slint_node_editor::NodeGeometry;
+                        r.rect()
+                    })
+                    .collect();
                 fit_canvas(&a, &rects);
             });
         }
@@ -2160,8 +2373,16 @@ fn main() -> Result<(), slint::PlatformError> {
                 if a.get_page() != 0 {
                     return;
                 }
-                let rects: HashMap<i32, (f32, f32, f32, f32)> =
-                    controller.cache().borrow().node_rects.iter().map(|(id, r)| { use slint_node_editor::NodeGeometry; (*id, r.rect()) }).collect();
+                let rects: HashMap<i32, (f32, f32, f32, f32)> = controller
+                    .cache()
+                    .borrow()
+                    .node_rects
+                    .iter()
+                    .map(|(id, r)| {
+                        use slint_node_editor::NodeGeometry;
+                        (*id, r.rect())
+                    })
+                    .collect();
                 pair_focus(&a, &models, &rects);
                 mix_dots(&a, &models, &rects);
                 groups_follow(&a, &models, &rects);
@@ -2173,10 +2394,11 @@ fn main() -> Result<(), slint::PlatformError> {
             let (weak, models) = (app.as_weak(), models.clone());
             let t = slint::Timer::default();
             t.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(33), move || {
-                if let Some(a) = weak.upgrade() {
-                    if a.get_page() == 0 && (a.global::<DragState>().get_is_dragging() || a.get_drop_show()) {
-                        drop_preview(&a, &models);
-                    }
+                if let Some(a) = weak.upgrade()
+                    && a.get_page() == 0
+                    && (a.global::<DragState>().get_is_dragging() || a.get_drop_show())
+                {
+                    drop_preview(&a, &models);
                 }
             });
             std::mem::forget(t);
@@ -2186,8 +2408,16 @@ fn main() -> Result<(), slint::PlatformError> {
             let (controller, weak, models) = (controller.clone(), app.as_weak(), models.clone());
             app.on_canvas_nav(move |dir| {
                 let Some(a) = weak.upgrade() else { return };
-                let rects: HashMap<i32, (f32, f32, f32, f32)> =
-                    controller.cache().borrow().node_rects.iter().map(|(id, r)| { use slint_node_editor::NodeGeometry; (*id, r.rect()) }).collect();
+                let rects: HashMap<i32, (f32, f32, f32, f32)> = controller
+                    .cache()
+                    .borrow()
+                    .node_rects
+                    .iter()
+                    .map(|(id, r)| {
+                        use slint_node_editor::NodeGeometry;
+                        (*id, r.rect())
+                    })
+                    .collect();
                 canvas_nav(&a, &models, &rects, dir.as_str());
             });
         }
@@ -2195,7 +2425,9 @@ fn main() -> Result<(), slint::PlatformError> {
             // the links' curves, for the moving dots
             let controller = controller.clone();
             CURVE.with(|c| {
-                *c.borrow_mut() = Some(Box::new(move |a, b| controller.cache().borrow().link_curve_world(a, b, controller.bezier_offset())));
+                *c.borrow_mut() = Some(Box::new(move |a, b| {
+                    controller.cache().borrow().link_curve_world(a, b, controller.bezier_offset())
+                }));
             });
         }
         wire_node_editor!(app, setup);
@@ -2205,7 +2437,9 @@ fn main() -> Result<(), slint::PlatformError> {
             // groups: which move with a drag, which hide their members; the sheet's toggle goes to the core
             let computations = app.global::<NodeEditorComputations>();
             let g1 = groups.clone();
-            computations.on_group_in_drag(move |gid, node, group| GroupLogic::group_moves(&*g1, gid, Dragged::from_ids(node, group)));
+            computations.on_group_in_drag(move |gid, node, group| {
+                GroupLogic::group_moves(&*g1, gid, Dragged::from_ids(node, group))
+            });
             let g2 = groups.clone();
             computations.on_group_collapsed(move |gid, _| GroupLogic::is_collapsed(&*g2, gid));
             let send_c = send.clone();
@@ -2228,7 +2462,14 @@ fn main() -> Result<(), slint::PlatformError> {
                     let l = links.row_data(i)?;
                     Some((l.id, l.start_pin_id, l.end_pin_id))
                 });
-                controller.cache().borrow().find_bezier_link_at_world(x, y, rows, controller.screen_distance_to_world(8.0), 50.0, 20)
+                controller.cache().borrow().find_bezier_link_at_world(
+                    x,
+                    y,
+                    rows,
+                    controller.screen_distance_to_world(8.0),
+                    50.0,
+                    20,
+                )
             }
         });
         // a link dragged between two pins: the core decides (and answers with the new canvas or a reason)
@@ -2280,7 +2521,12 @@ fn main() -> Result<(), slint::PlatformError> {
         let weak12 = app.as_weak();
         app.on_log_copy(move || {
             let Some(a) = weak12.upgrade() else { return };
-            let text = LOG_VIEW.with(|v| v.borrow().as_ref().map(|v| v.iter().map(|r| r.text.to_string()).collect::<Vec<_>>().join("\n")).unwrap_or_default());
+            let text = LOG_VIEW.with(|v| {
+                v.borrow()
+                    .as_ref()
+                    .map(|v| v.iter().map(|r| r.text.to_string()).collect::<Vec<_>>().join("\n"))
+                    .unwrap_or_default()
+            });
             if set_clipboard_text(&text) {
                 show_toast(&a, &tr("Copied the visible log to the clipboard."), true, 2.5);
             } else {
@@ -2292,7 +2538,11 @@ fn main() -> Result<(), slint::PlatformError> {
             let card = LOG_FILTER.with(|f| f.borrow().card.clone());
             // (the core forgets them too: a window opened later does not get them back)
             send13(json!({"cmd": "log_clear", "id": card}));
-            let kept: Vec<LogRow> = if card.is_empty() { vec![] } else { models13.logs.iter().filter(|r| r.card != card.as_str()).collect() };
+            let kept: Vec<LogRow> = if card.is_empty() {
+                vec![]
+            } else {
+                models13.logs.iter().filter(|r| r.card != card.as_str()).collect()
+            };
             models13.logs.set_vec(kept);
             if let Some(a) = weak13.upgrade() {
                 a.set_log_count(models13.logs.row_count() as i32);
@@ -2346,7 +2596,11 @@ fn main() -> Result<(), slint::PlatformError> {
             } else {
                 let i = n.out_colors.iter().position(|c| c.key == out).unwrap_or(0);
                 let c = n.out_colors.row_data(i);
-                (n.out_labels.row_data(i).map(|s| s.to_string()).unwrap_or_default(), c.as_ref().map_or(WIRE, |c| c.color), c.is_some_and(|c| c.own))
+                (
+                    n.out_labels.row_data(i).map(|s| s.to_string()).unwrap_or_default(),
+                    c.as_ref().map_or(WIRE, |c| c.color),
+                    c.is_some_and(|c| c.own),
+                )
             };
             let cur_hex = format!("#{:02x}{:02x}{:02x}", cur.red(), cur.green(), cur.blue());
             let index = if own { PALETTE.iter().position(|(h, _)| *h == cur_hex).map_or(-1, |i| i as i32) } else { -1 };
@@ -2355,7 +2609,11 @@ fn main() -> Result<(), slint::PlatformError> {
             a.set_palette_current(index);
             a.set_palette_auto_current(!own);
             // an output without its own colour uses the block's (an IF: the incoming links)
-            let auto = if out.is_empty() || n.detail == "IF" { tr("Automatic (follow the incoming links)") } else { tr("Same as the block") };
+            let auto = if out.is_empty() || n.detail == "IF" {
+                tr("Automatic (follow the incoming links)")
+            } else {
+                tr("Same as the block")
+            };
             a.set_t_palette_auto(auto.into());
             a.set_palette_x(x);
             a.set_palette_y(y);
@@ -2397,7 +2655,9 @@ fn main() -> Result<(), slint::PlatformError> {
         let send_pc = send.clone();
         app.on_pc_action(move |what| send_pc(json!({"cmd": if what == "off" { "pc_off" } else { "pc_restore" }})));
         let send11 = send.clone();
-        app.on_set_flag(move |card, key, on| send11(json!({"cmd": "set_flag", "id": card.as_str(), "key": key.as_str(), "on": on})));
+        app.on_set_flag(move |card, key, on| {
+            send11(json!({"cmd": "set_flag", "id": card.as_str(), "key": key.as_str(), "on": on}))
+        });
         let key_of11 = key_of.clone();
         app.on_node_key(move |id| key_of11(id).into());
         let (send7, key_of7, models7, weak7) = (send.clone(), key_of.clone(), models.clone(), app.as_weak());
@@ -2405,17 +2665,14 @@ fn main() -> Result<(), slint::PlatformError> {
             let key = key.to_string();
             match action.as_str() {
                 "delete" => {
-                    let names: Vec<String> = models7
-                        .nodes
-                        .iter()
-                        .filter(|n| key_of7(n.id) == key)
-                        .map(|n| n.title.to_string())
-                        .collect();
+                    let names: Vec<String> =
+                        models7.nodes.iter().filter(|n| key_of7(n.id) == key).map(|n| n.title.to_string()).collect();
                     ask_delete(&weak7, &names, json!({"cmd": "delete", "keys": [key], "links": []}));
                 }
                 // "Group blocks": the selection, with this block
                 "group.make" => {
-                    let mut keys: Vec<String> = models7.nodes.iter().filter(|n| n.selected && n.kind != 5).map(|n| key_of7(n.id)).collect();
+                    let mut keys: Vec<String> =
+                        models7.nodes.iter().filter(|n| n.selected && n.kind != 5).map(|n| key_of7(n.id)).collect();
                     if !keys.contains(&key) {
                         keys.push(key.clone());
                     }
@@ -2431,13 +2688,11 @@ fn main() -> Result<(), slint::PlatformError> {
                             n.selected = on;
                             models7.nodes.set_row_data(i, n.clone());
                         }
-                        if on {
-                            if let Some(app) = weak7.upgrade() {
-                                // the partner in the middle of the view
-                                let z = app.get_canvas_zoom();
-                                app.set_canvas_pan_x(app.get_width_() / 2.0 - (n.x + 100.0) * z);
-                                app.set_canvas_pan_y(app.get_height_() / 2.0 - (n.y + 34.0) * z);
-                            }
+                        if on && let Some(app) = weak7.upgrade() {
+                            // the partner in the middle of the view
+                            let z = app.get_canvas_zoom();
+                            app.set_canvas_pan_x(app.get_width_() / 2.0 - (n.x + 100.0) * z);
+                            app.set_canvas_pan_y(app.get_height_() / 2.0 - (n.y + 34.0) * z);
                         }
                     }
                 }
@@ -2481,7 +2736,13 @@ fn main() -> Result<(), slint::PlatformError> {
         let weak_p = app.as_weak();
         app.on_form_pressed(move |key, i| {
             // a plain button's key is its action; a row's button n has its action kept here
-            let action = if i < 0 { key.to_string() } else { EDITOR.with(|e| e.borrow().actions.get(key.as_str()).and_then(|o| o.get(i as usize)).cloned().unwrap_or_default()) };
+            let action = if i < 0 {
+                key.to_string()
+            } else {
+                EDITOR.with(|e| {
+                    e.borrow().actions.get(key.as_str()).and_then(|o| o.get(i as usize)).cloned().unwrap_or_default()
+                })
+            };
             // "ui.…": done here (a file dialog, the program picker), the result goes into the draft
             if let Some(what) = action.strip_prefix("ui.") {
                 let Some(a) = weak_p.upgrade() else { return };
@@ -2493,7 +2754,8 @@ fn main() -> Result<(), slint::PlatformError> {
                     let (title, filter) = (tr("Choose file"), browse_filter(&field));
                     std::thread::spawn(move || {
                         if let Some(path) = proxydock::filedlg::open(owner, &title, &filter) {
-                            let _ = weak.upgrade_in_event_loop(move |_| preview_with(&send, &field, &path.to_string_lossy()));
+                            let _ = weak
+                                .upgrade_in_event_loop(move |_| preview_with(&send, &field, &path.to_string_lossy()));
                         }
                     });
                 } else if what == "wg.import" {
@@ -2508,7 +2770,14 @@ fn main() -> Result<(), slint::PlatformError> {
                                     let e = e.borrow();
                                     let mut values = e.values.clone();
                                     values.insert("conf_text".into(), json!(text));
-                                    values.insert("conf_name".into(), json!(path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+                                    values.insert(
+                                        "conf_name".into(),
+                                        json!(
+                                            path.file_name()
+                                                .map(|n| n.to_string_lossy().into_owned())
+                                                .unwrap_or_default()
+                                        ),
+                                    );
                                     json!({"cmd": "edit_action", "id": e.id, "action": "wg.import", "values": values})
                                 });
                                 send(msg);
@@ -2605,7 +2874,8 @@ fn main() -> Result<(), slint::PlatformError> {
                     json!({"from": key_of(a / 64), "out": (a % 64) / 2, "to": key_of(b / 64), "in": (b % 64) / 2})
                 })
                 .collect();
-            let keys: Vec<String> = models.nodes.iter().filter(|n| n.selected && n.kind != 5).map(|n| key_of(n.id)).collect();
+            let keys: Vec<String> =
+                models.nodes.iter().filter(|n| n.selected && n.kind != 5).map(|n| key_of(n.id)).collect();
             if keys.is_empty() {
                 if !links.is_empty() {
                     send(json!({"cmd": "delete", "keys": keys, "links": links}));
@@ -2629,7 +2899,13 @@ fn main() -> Result<(), slint::PlatformError> {
         let (models2, key_of2) = (models.clone(), key_of.clone());
         let send2 = send.clone();
         app.on_duplicate_selected(move || {
-            let keys: Vec<String> = models2.nodes.iter().filter(|n| n.selected && n.kind != 5).map(|n| key_of2(n.id)).filter(|k| k != "pc").collect();
+            let keys: Vec<String> = models2
+                .nodes
+                .iter()
+                .filter(|n| n.selected && n.kind != 5)
+                .map(|n| key_of2(n.id))
+                .filter(|k| k != "pc")
+                .collect();
             if !keys.is_empty() {
                 send2(json!({"cmd": "duplicate", "keys": keys}));
             }
@@ -2652,7 +2928,8 @@ fn main() -> Result<(), slint::PlatformError> {
         // canvas groups: make one of the selection, and the selected group's bar
         let (models4, key_of4, send4) = (models.clone(), key_of.clone(), send.clone());
         app.on_group_make(move || {
-            let keys: Vec<String> = models4.nodes.iter().filter(|n| n.selected && n.kind != 5).map(|n| key_of4(n.id)).collect();
+            let keys: Vec<String> =
+                models4.nodes.iter().filter(|n| n.selected && n.kind != 5).map(|n| key_of4(n.id)).collect();
             send4(json!({"cmd": "group", "keys": keys}));
         });
         let weak = app.as_weak();
@@ -2697,7 +2974,11 @@ fn main() -> Result<(), slint::PlatformError> {
             let hex = format!("#{:02x}{:02x}{:02x}", row.color.red(), row.color.green(), row.color.blue());
             PALETTE_FOR.with(|p| *p.borrow_mut() = (format!("group:{}", group_key(gid)), String::new(), hex.clone()));
             a.set_palette_title(row.title.clone());
-            a.set_palette_current(if own { PALETTE.iter().position(|(h, _)| *h == hex).map_or(-1, |i| i as i32) } else { -1 });
+            a.set_palette_current(if own {
+                PALETTE.iter().position(|(h, _)| *h == hex).map_or(-1, |i| i as i32)
+            } else {
+                -1
+            });
             a.set_palette_auto_current(!own);
             a.set_t_palette_auto(tr("Default").into());
             a.set_palette_x(x);
@@ -2861,10 +3142,10 @@ fn main() -> Result<(), slint::PlatformError> {
         let weak = app.as_weak();
         i.on_open_url(move |url| {
             // only web addresses (the how-to's links and the project's pages)
-            if url.starts_with("https://") {
-                if let (Err(e), Some(a)) = (open_with_system(&url), weak.upgrade()) {
-                    show_toast(&a, &e.to_string(), false, 5.0);
-                }
+            if url.starts_with("https://")
+                && let (Err(e), Some(a)) = (open_with_system(&url), weak.upgrade())
+            {
+                show_toast(&a, &e.to_string(), false, 5.0);
             }
         });
         let weak = app.as_weak();
@@ -2900,20 +3181,18 @@ fn main() -> Result<(), slint::PlatformError> {
         let send_c = send.clone();
         u.on_check(move || send_c(json!({"cmd": "update_check"})));
         let (send_a, weak) = (send.clone(), app.as_weak());
-        u.on_act(move || {
-            match UPDATE_PAGE.with(|p| p.borrow().clone()) {
-                Some(page) => {
-                    let _ = open_with_system(&page);
+        u.on_act(move || match UPDATE_PAGE.with(|p| p.borrow().clone()) {
+            Some(page) => {
+                let _ = open_with_system(&page);
+            }
+            None => {
+                if let Some(a) = weak.upgrade() {
+                    let u = a.global::<Upd>();
+                    u.set_progress(0.0);
+                    u.set_progress_text(tr("Starting…").into());
+                    u.set_downloading(true);
                 }
-                None => {
-                    if let Some(a) = weak.upgrade() {
-                        let u = a.global::<Upd>();
-                        u.set_progress(0.0);
-                        u.set_progress_text(tr("Starting…").into());
-                        u.set_downloading(true);
-                    }
-                    send_a(json!({"cmd": "update_download"}));
-                }
+                send_a(json!({"cmd": "update_download"}));
             }
         });
         let send_x = send.clone();
@@ -2952,192 +3231,232 @@ fn main() -> Result<(), slint::PlatformError> {
                 let Some(app) = weak.upgrade() else { return };
                 let batch = std::mem::take(&mut *queue.lock().unwrap());
                 for v in batch {
-                MODELS.with(|m| {
-                    let Some(m) = m.borrow().clone() else { return };
-                    match v["ev"].as_str().unwrap_or("") {
-                        "hello" => {
-                            if v["add_menu"].is_object() {
-                                let t = app.global::<CanvasText>();
-                                t.set_inbounds(type_leaves(&v["add_menu"]["inbounds"]));
-                                t.set_outbounds(type_leaves(&v["add_menu"]["outbounds"]));
-                                let templates: Vec<MenuLeaf> = v["add_menu"]["templates"]
-                                    .as_array()
-                                    .into_iter()
-                                    .flatten()
-                                    .enumerate()
-                                    .map(|(i, x)| MenuLeaf {
-                                        action: i.to_string().into(),
-                                        title: format!("{}  —  {}", x[0].as_str().unwrap_or(""), x[1].as_str().unwrap_or("")).into(),
-                                    })
-                                    .collect();
-                                t.set_templates(ModelRc::new(VecModel::from(templates)));
-                            }
-                            set_language(v["language"].as_str().unwrap_or("en"));
-                            apply_fonts(&app, v["language"].as_str().unwrap_or("en"));
-                            labels(&app);
-                            m.cards.set_vec(v["cards"].as_array().into_iter().flatten().map(card_row).collect::<Vec<_>>());
-                            log_sources(&app, &m.cards.iter().map(|c| (c.id.to_string(), c.name.to_string())).collect::<Vec<_>>());
-                            m.add_logs(v["logs"].as_array().map(Vec::as_slice).unwrap_or(&[]));
-                            m.set_stats(&v["stats"]);
-                            show_latency(&app, &m, &v["latency"]);
-                            m.set_canvas(&v["canvas"]);
-                            app.set_pc_state(v["canvas"]["pc_status"][0].as_str().unwrap_or("off").into());
-                            app.set_pc_text(v["canvas"]["pc_status"][1].as_str().unwrap_or("").into());
-                            show_settings(&app, &v["settings"]);
-                            stats_history(&v["history"]);
-                            stats_push(&v["stats"], &Value::Null);
-                            conn_sites(&app, &v["conn"]);
-                            conn_cards(&app, &m);
-                            show_about(&app, &v["about"]);
-                            show_update(&app, &v["update"]);
-                            stats_render(&app, &running_cards(&m));
-                            app.set_can_undo(v["undo"] == json!(true));
-                            app.set_can_redo(v["redo"] == json!(true));
-                            // debug builds: PROXYDOCK_EDIT=<block id>[,<button>] opens its editor (screenshots without clicking)
-                            if cfg!(debug_assertions) {
-                                if let Ok(id) = std::env::var("PROXYDOCK_EDIT") {
+                    MODELS.with(|m| {
+                        let Some(m) = m.borrow().clone() else { return };
+                        match v["ev"].as_str().unwrap_or("") {
+                            "hello" => {
+                                if v["add_menu"].is_object() {
+                                    let t = app.global::<CanvasText>();
+                                    t.set_inbounds(type_leaves(&v["add_menu"]["inbounds"]));
+                                    t.set_outbounds(type_leaves(&v["add_menu"]["outbounds"]));
+                                    let templates: Vec<MenuLeaf> = v["add_menu"]["templates"]
+                                        .as_array()
+                                        .into_iter()
+                                        .flatten()
+                                        .enumerate()
+                                        .map(|(i, x)| MenuLeaf {
+                                            action: i.to_string().into(),
+                                            title: format!(
+                                                "{}  —  {}",
+                                                x[0].as_str().unwrap_or(""),
+                                                x[1].as_str().unwrap_or("")
+                                            )
+                                            .into(),
+                                        })
+                                        .collect();
+                                    t.set_templates(ModelRc::new(VecModel::from(templates)));
+                                }
+                                set_language(v["language"].as_str().unwrap_or("en"));
+                                apply_fonts(&app, v["language"].as_str().unwrap_or("en"));
+                                labels(&app);
+                                m.cards.set_vec(
+                                    v["cards"].as_array().into_iter().flatten().map(card_row).collect::<Vec<_>>(),
+                                );
+                                log_sources(
+                                    &app,
+                                    &m.cards.iter().map(|c| (c.id.to_string(), c.name.to_string())).collect::<Vec<_>>(),
+                                );
+                                m.add_logs(v["logs"].as_array().map(Vec::as_slice).unwrap_or(&[]));
+                                m.set_stats(&v["stats"]);
+                                show_latency(&app, &m, &v["latency"]);
+                                m.set_canvas(&v["canvas"]);
+                                app.set_pc_state(v["canvas"]["pc_status"][0].as_str().unwrap_or("off").into());
+                                app.set_pc_text(v["canvas"]["pc_status"][1].as_str().unwrap_or("").into());
+                                show_settings(&app, &v["settings"]);
+                                stats_history(&v["history"]);
+                                stats_push(&v["stats"], &Value::Null);
+                                conn_sites(&app, &v["conn"]);
+                                conn_cards(&app, &m);
+                                show_about(&app, &v["about"]);
+                                show_update(&app, &v["update"]);
+                                stats_render(&app, &running_cards(&m));
+                                app.set_can_undo(v["undo"] == json!(true));
+                                app.set_can_redo(v["redo"] == json!(true));
+                                // debug builds: PROXYDOCK_EDIT=<block id>[,<button>] opens its editor (screenshots without clicking)
+                                if cfg!(debug_assertions)
+                                    && let Ok(id) = std::env::var("PROXYDOCK_EDIT")
+                                {
                                     EDIT_REQUEST.with(|r| *r.borrow_mut() = Some(id));
                                 }
                             }
-                        }
-                        "flow" => {
-                            m.set_flow(v["links"].as_array().map(Vec::as_slice).unwrap_or(&[]));
-                            start_flow_dots(&app);
-                        }
-                        "graph" => {
-                            m.cards.set_vec(v["cards"].as_array().into_iter().flatten().map(card_row).collect::<Vec<_>>());
-                            m.set_canvas(&v["canvas"]);
-                            app.set_pc_state(v["canvas"]["pc_status"][0].as_str().unwrap_or("off").into());
-                            app.set_pc_text(v["canvas"]["pc_status"][1].as_str().unwrap_or("").into());
-                            log_sources(&app, &m.cards.iter().map(|c| (c.id.to_string(), c.name.to_string())).collect::<Vec<_>>());
-                            stats_meta(&v["stat_meta"]);
-                            conn_cards(&app, &m);
-                        }
-                        "form" => {
-                            let id = v["id"].as_str().unwrap_or("").to_string();
-                            EDITOR.with(|e| {
-                                let mut e = e.borrow_mut();
-                                let fresh = e.id != id || app.get_page() != 3;
-                                if fresh {
-                                    // a fresh editor
-                                    e.id = id;
-                                    e.back_to = app.get_page();
-                                }
-                                // the core's draft has every value typed so far
-                                e.values.clear();
-                                if fresh {
-                                    app.set_form_notice(SharedString::new());
-                                }
-                            });
-                            let rows = field_rows(v["fields"].as_array().map(Vec::as_slice).unwrap_or(&[]));
-                            app.set_form_fields(ModelRc::new(VecModel::from(rows)));
-                            app.set_form_title(v["title"].as_str().unwrap_or("").into());
-                            app.set_form_errors(ModelRc::default());
-                            app.set_page(3);
-                        }
-                        "notice" => {
-                            let (title, text) = (v["title"].as_str().unwrap_or(""), v["text"].as_str().unwrap_or(""));
-                            let msg = if text.is_empty() { title.to_string() } else { format!("{title}\n{text}") };
-                            app.set_form_notice(msg.as_str().into());
-                            app.set_form_notice_ok(v["ok"] == json!(true));
-                            // the same message twice in a row stays (each one restarts the timer)
-                            NOTICE_SEQ.with(|n| n.set(n.get() + 1));
-                            let seq = NOTICE_SEQ.with(|n| n.get());
-                            let weak = app.as_weak();
-                            slint::Timer::single_shot(std::time::Duration::from_secs(7), move || {
-                                if let Some(a) = weak.upgrade() {
-                                    if NOTICE_SEQ.with(|n| n.get()) == seq {
+                            "flow" => {
+                                m.set_flow(v["links"].as_array().map(Vec::as_slice).unwrap_or(&[]));
+                                start_flow_dots(&app);
+                            }
+                            "graph" => {
+                                m.cards.set_vec(
+                                    v["cards"].as_array().into_iter().flatten().map(card_row).collect::<Vec<_>>(),
+                                );
+                                m.set_canvas(&v["canvas"]);
+                                app.set_pc_state(v["canvas"]["pc_status"][0].as_str().unwrap_or("off").into());
+                                app.set_pc_text(v["canvas"]["pc_status"][1].as_str().unwrap_or("").into());
+                                log_sources(
+                                    &app,
+                                    &m.cards.iter().map(|c| (c.id.to_string(), c.name.to_string())).collect::<Vec<_>>(),
+                                );
+                                stats_meta(&v["stat_meta"]);
+                                conn_cards(&app, &m);
+                            }
+                            "form" => {
+                                let id = v["id"].as_str().unwrap_or("").to_string();
+                                EDITOR.with(|e| {
+                                    let mut e = e.borrow_mut();
+                                    let fresh = e.id != id || app.get_page() != 3;
+                                    if fresh {
+                                        // a fresh editor
+                                        e.id = id;
+                                        e.back_to = app.get_page();
+                                    }
+                                    // the core's draft has every value typed so far
+                                    e.values.clear();
+                                    if fresh {
+                                        app.set_form_notice(SharedString::new());
+                                    }
+                                });
+                                let rows = field_rows(v["fields"].as_array().map(Vec::as_slice).unwrap_or(&[]));
+                                app.set_form_fields(ModelRc::new(VecModel::from(rows)));
+                                app.set_form_title(v["title"].as_str().unwrap_or("").into());
+                                app.set_form_errors(ModelRc::default());
+                                app.set_page(3);
+                            }
+                            "notice" => {
+                                let (title, text) =
+                                    (v["title"].as_str().unwrap_or(""), v["text"].as_str().unwrap_or(""));
+                                let msg = if text.is_empty() { title.to_string() } else { format!("{title}\n{text}") };
+                                app.set_form_notice(msg.as_str().into());
+                                app.set_form_notice_ok(v["ok"] == json!(true));
+                                // the same message twice in a row stays (each one restarts the timer)
+                                NOTICE_SEQ.with(|n| n.set(n.get() + 1));
+                                let seq = NOTICE_SEQ.with(|n| n.get());
+                                let weak = app.as_weak();
+                                slint::Timer::single_shot(std::time::Duration::from_secs(7), move || {
+                                    if let Some(a) = weak.upgrade()
+                                        && NOTICE_SEQ.with(|n| n.get()) == seq
+                                    {
                                         a.set_form_notice(SharedString::new());
                                     }
-                                }
-                            });
-                        }
-                        // a file to save (a WireGuard device's .conf): Windows' save dialog, then written
-                        "save_file" => {
-                            let (name, text) = (v["name"].as_str().unwrap_or("").to_string(), v["text"].as_str().unwrap_or("").to_string());
-                            let (owner, weak) = (owner_hwnd(&app), app.as_weak());
-                            std::thread::spawn(move || {
-                                let Some(path) = proxydock::filedlg::save(owner, &tr("Save .conf"), "WireGuard (*.conf)", &name) else { return };
-                                let result = std::fs::write(&path, text);
-                                let _ = weak.upgrade_in_event_loop(move |a| match result {
-                                    Ok(()) => show_toast(&a, &format!("{}\n{}", tr("Saved"), path.display()), true, 3.0),
-                                    Err(e) => show_toast(&a, &e.to_string(), false, 6.0),
                                 });
-                            });
-                        }
-                        "pick_programs" => open_picker(&app, v["key"].as_str().unwrap_or("")),
-                        "warn" => show_toast(&app, v["message"].as_str().unwrap_or(""), false, 6.0),
-                        // the tray's "Close window", or "Restart now": keep the place, end this process only
-                        "close_window" => {
-                            save_window_state(&app);
-                            let _ = app.hide();
-                            let _ = slint::quit_event_loop();
-                        }
-                        "restart_needed" => show_toast_action(&app, v["message"].as_str().unwrap_or(""), &tr("Restart now"), "restart", 15.0),
-                        // text to hand to another program (a WireGuard device's config): onto the clipboard
-                        "show_text" => {
-                            if set_clipboard_text(v["text"].as_str().unwrap_or("")) {
-                                show_toast(&app, &tr("Copied"), true, 2.5);
-                            } else {
-                                show_toast(&app, &tr("Cannot use the clipboard"), false, 5.0);
                             }
+                            // a file to save (a WireGuard device's .conf): Windows' save dialog, then written
+                            "save_file" => {
+                                let (name, text) = (
+                                    v["name"].as_str().unwrap_or("").to_string(),
+                                    v["text"].as_str().unwrap_or("").to_string(),
+                                );
+                                let (owner, weak) = (owner_hwnd(&app), app.as_weak());
+                                std::thread::spawn(move || {
+                                    let Some(path) =
+                                        proxydock::filedlg::save(owner, &tr("Save .conf"), "WireGuard (*.conf)", &name)
+                                    else {
+                                        return;
+                                    };
+                                    let result = std::fs::write(&path, text);
+                                    let _ = weak.upgrade_in_event_loop(move |a| match result {
+                                        Ok(()) => {
+                                            show_toast(&a, &format!("{}\n{}", tr("Saved"), path.display()), true, 3.0)
+                                        }
+                                        Err(e) => show_toast(&a, &e.to_string(), false, 6.0),
+                                    });
+                                });
+                            }
+                            "pick_programs" => open_picker(&app, v["key"].as_str().unwrap_or("")),
+                            "warn" => show_toast(&app, v["message"].as_str().unwrap_or(""), false, 6.0),
+                            // the tray's "Close window", or "Restart now": keep the place, end this process only
+                            "close_window" => {
+                                save_window_state(&app);
+                                let _ = app.hide();
+                                let _ = slint::quit_event_loop();
+                            }
+                            "restart_needed" => show_toast_action(
+                                &app,
+                                v["message"].as_str().unwrap_or(""),
+                                &tr("Restart now"),
+                                "restart",
+                                15.0,
+                            ),
+                            // text to hand to another program (a WireGuard device's config): onto the clipboard
+                            "show_text" => {
+                                if set_clipboard_text(v["text"].as_str().unwrap_or("")) {
+                                    show_toast(&app, &tr("Copied"), true, 2.5);
+                                } else {
+                                    show_toast(&app, &tr("Cannot use the clipboard"), false, 5.0);
+                                }
+                            }
+                            "form_errors" => {
+                                let errs: Vec<SharedString> = v["errors"]
+                                    .as_array()
+                                    .into_iter()
+                                    .flatten()
+                                    .filter_map(Value::as_str)
+                                    .map(SharedString::from)
+                                    .collect();
+                                app.set_form_errors(ModelRc::new(VecModel::from(errs)));
+                            }
+                            "form_saved" => {
+                                app.set_form_errors(ModelRc::default());
+                                app.set_page(EDITOR.with(|e| e.borrow().back_to));
+                            }
+                            "error" => show_toast(&app, v["message"].as_str().unwrap_or(""), false, 5.0),
+                            // a settings change (Python `on_notify` while the window is open: an InfoBar for 2.5 s)
+                            "info" => show_toast(&app, v["message"].as_str().unwrap_or(""), true, 2.5),
+                            "latency" => show_latency(&app, &m, &v["latency"]),
+                            "route" => show_route(&app, &m, &v),
+                            "settings" => show_settings(&app, &v["settings"]),
+                            "language" => {
+                                set_language(v["language"].as_str().unwrap_or("en"));
+                                apply_fonts(&app, v["language"].as_str().unwrap_or("en"));
+                                labels(&app);
+                            }
+                            "undo" => {
+                                app.set_can_undo(v["undo"] == json!(true));
+                                app.set_can_redo(v["redo"] == json!(true));
+                            }
+                            "card" => {
+                                m.set_card(&v["card"]);
+                                conn_cards(&app, &m);
+                            }
+                            "stats" => {
+                                m.set_stats(&v["stats"]);
+                                stats_push(&v["stats"], &v["point"]);
+                                stats_render(&app, &running_cards(&m));
+                            }
+                            "conn_sites" => conn_sites(&app, &v["conn"]),
+                            "about" => show_about(&app, &v["about"]),
+                            "update" => show_update(&app, &v["update"]),
+                            "update_dialog" => app.global::<Upd>().set_dialog(true),
+                            "update_progress" => {
+                                let (done, total) =
+                                    (v["done"].as_f64().unwrap_or(0.0), v["total"].as_f64().unwrap_or(0.0));
+                                let u = app.global::<Upd>();
+                                u.set_progress(if total > 0.0 { (done / total) as f32 } else { 0.0 });
+                                let mb = |n: f64| format!("{:.1} MB", n / (1024.0 * 1024.0));
+                                u.set_progress_text(
+                                    if total > 0.0 { format!("{} / {}", mb(done), mb(total)) } else { mb(done) }.into(),
+                                );
+                            }
+                            "update_ready" => {
+                                let u = app.global::<Upd>();
+                                u.set_downloading(false);
+                                let path = v["path"].as_str().unwrap_or("");
+                                UPDATE_FILE.with(|f| *f.borrow_mut() = path.to_string());
+                                u.set_ask_install(!path.is_empty());
+                            }
+                            "conn_start" | "conn_result" | "conn_done" => conn_event(&app, &v),
+                            "log" => m.add_logs(v["entries"].as_array().map(Vec::as_slice).unwrap_or(&[])),
+                            _ => {}
                         }
-                        "form_errors" => {
-                            let errs: Vec<SharedString> = v["errors"].as_array().into_iter().flatten().filter_map(Value::as_str).map(SharedString::from).collect();
-                            app.set_form_errors(ModelRc::new(VecModel::from(errs)));
-                        }
-                        "form_saved" => {
-                            app.set_form_errors(ModelRc::default());
-                            app.set_page(EDITOR.with(|e| e.borrow().back_to));
-                        }
-                        "error" => show_toast(&app, v["message"].as_str().unwrap_or(""), false, 5.0),
-                        // a settings change (Python `on_notify` while the window is open: an InfoBar for 2.5 s)
-                        "info" => show_toast(&app, v["message"].as_str().unwrap_or(""), true, 2.5),
-                        "latency" => show_latency(&app, &m, &v["latency"]),
-                        "route" => show_route(&app, &m, &v),
-                        "settings" => show_settings(&app, &v["settings"]),
-                        "language" => {
-                            set_language(v["language"].as_str().unwrap_or("en"));
-                            apply_fonts(&app, v["language"].as_str().unwrap_or("en"));
-                            labels(&app);
-                        }
-                        "undo" => {
-                            app.set_can_undo(v["undo"] == json!(true));
-                            app.set_can_redo(v["redo"] == json!(true));
-                        }
-                        "card" => {
-                            m.set_card(&v["card"]);
-                            conn_cards(&app, &m);
-                        }
-                        "stats" => {
-                            m.set_stats(&v["stats"]);
-                            stats_push(&v["stats"], &v["point"]);
-                            stats_render(&app, &running_cards(&m));
-                        }
-                        "conn_sites" => conn_sites(&app, &v["conn"]),
-                        "about" => show_about(&app, &v["about"]),
-                        "update" => show_update(&app, &v["update"]),
-                        "update_dialog" => app.global::<Upd>().set_dialog(true),
-                        "update_progress" => {
-                            let (done, total) = (v["done"].as_f64().unwrap_or(0.0), v["total"].as_f64().unwrap_or(0.0));
-                            let u = app.global::<Upd>();
-                            u.set_progress(if total > 0.0 { (done / total) as f32 } else { 0.0 });
-                            let mb = |n: f64| format!("{:.1} MB", n / (1024.0 * 1024.0));
-                            u.set_progress_text(if total > 0.0 { format!("{} / {}", mb(done), mb(total)) } else { mb(done) }.into());
-                        }
-                        "update_ready" => {
-                            let u = app.global::<Upd>();
-                            u.set_downloading(false);
-                            let path = v["path"].as_str().unwrap_or("");
-                            UPDATE_FILE.with(|f| *f.borrow_mut() = path.to_string());
-                            u.set_ask_install(!path.is_empty());
-                        }
-                        "conn_start" | "conn_result" | "conn_done" => conn_event(&app, &v),
-                        "log" => m.add_logs(v["entries"].as_array().map(Vec::as_slice).unwrap_or(&[])),
-                        _ => {}
-                    }
-                    app.set_log_count(m.logs.row_count() as i32);
-                });
+                        app.set_log_count(m.logs.row_count() as i32);
+                    });
                 }
             });
         }
@@ -3203,7 +3522,8 @@ thread_local! {
 
 const STAT_POINTS: usize = 60;
 /// line colours for cards and blocks without a colour of their own (Python `stats.LINE_COLORS`)
-const LINE_COLORS: [&str; 10] = ["#4f8ef7", "#e8912d", "#57ab5a", "#b76de0", "#e5534b", "#39c5bb", "#d9b92f", "#e26ba5", "#7c6cf2", "#9aa0a6"];
+const LINE_COLORS: [&str; 10] =
+    ["#4f8ef7", "#e8912d", "#57ab5a", "#b76de0", "#e5534b", "#39c5bb", "#d9b92f", "#e26ba5", "#7c6cf2", "#9aa0a6"];
 
 #[derive(Default)]
 struct StatState {
@@ -3238,7 +3558,13 @@ fn triples(v: &Value) -> Vec<(String, String, String)> {
     v.as_array()
         .into_iter()
         .flatten()
-        .map(|x| (x[0].as_str().unwrap_or("").to_string(), x[1].as_str().unwrap_or("").to_string(), x[2].as_str().unwrap_or("").to_string()))
+        .map(|x| {
+            (
+                x[0].as_str().unwrap_or("").to_string(),
+                x[1].as_str().unwrap_or("").to_string(),
+                x[2].as_str().unwrap_or("").to_string(),
+            )
+        })
         .collect()
 }
 
@@ -3254,10 +3580,25 @@ fn stats_meta(v: &Value) {
 fn stats_history(v: &Value) {
     STATS.with(|s| {
         let mut s = s.borrow_mut();
-        s.hist = v["cards"].as_object().into_iter().flatten()
-            .map(|(k, h)| (k.clone(), h.as_array().into_iter().flatten().map(|p| (p[0].as_f64().unwrap_or(0.0), p[1].as_f64().unwrap_or(0.0))).collect()))
+        s.hist = v["cards"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(k, h)| {
+                (
+                    k.clone(),
+                    h.as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|p| (p[0].as_f64().unwrap_or(0.0), p[1].as_f64().unwrap_or(0.0)))
+                        .collect(),
+                )
+            })
             .collect();
-        s.exits = v["exits"].as_object().into_iter().flatten()
+        s.exits = v["exits"]
+            .as_object()
+            .into_iter()
+            .flatten()
             .map(|(k, h)| (k.clone(), h.as_array().into_iter().flatten().map(|x| x.as_f64().unwrap_or(0.0)).collect()))
             .collect();
     });
@@ -3275,11 +3616,19 @@ fn stats_push(stats: &Value, point: &Value) {
         s.point = point.clone();
         let mut seen = std::collections::HashSet::new();
         for (id, r) in point["cards"].as_object().into_iter().flatten() {
-            push_hist(s.hist.entry(id.clone()).or_default(), (r[0].as_f64().unwrap_or(0.0), r[1].as_f64().unwrap_or(0.0)));
+            push_hist(
+                s.hist.entry(id.clone()).or_default(),
+                (r[0].as_f64().unwrap_or(0.0), r[1].as_f64().unwrap_or(0.0)),
+            );
             seen.insert(id.clone());
         }
         s.hist.retain(|k, _| seen.contains(k));
-        let rates: HashMap<String, f64> = point["exits"].as_object().into_iter().flatten().map(|(k, r)| (k.clone(), r.as_f64().unwrap_or(0.0))).collect();
+        let rates: HashMap<String, f64> = point["exits"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(k, r)| (k.clone(), r.as_f64().unwrap_or(0.0)))
+            .collect();
         for (oid, r) in &rates {
             if !s.exits.contains_key(oid) {
                 s.exits.insert(oid.clone(), Default::default());
@@ -3299,7 +3648,7 @@ fn thousands(n: u64) -> String {
     let s = n.to_string();
     let mut out = String::new();
     for (i, c) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i) % 3 == 0 {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);
@@ -3351,14 +3700,19 @@ fn stats_render(app: &App, running: &std::collections::HashSet<String>) {
         let (up, down) = (r[0].as_f64().unwrap_or(0.0), r[1].as_f64().unwrap_or(0.0));
         let rate = |b: f64| format!("{}/s", fmt_size(b));
         let total = |b: u64| tr("total {fmt_size}").replace("{fmt_size}", &fmt_size(b as f64));
-        let tile = |t: &str, v: String, sub: String| StatTileData { title: tr(t).into(), value: v.into(), sub: sub.into() };
+        let tile =
+            |t: &str, v: String, sub: String| StatTileData { title: tr(t).into(), value: v.into(), sub: sub.into() };
         let tiles = vec![
             tile("Active TCP connections", n("tcp").to_string(), String::new()),
             tile("Active UDP sessions", n("udp").to_string(), String::new()),
             tile("Total connections", thousands(n("total")), String::new()),
             tile("Download", rate(down), total(n("down"))),
             tile("Upload", rate(up), total(n("up"))),
-            tile("Blocked / failed", format!("{} / {}", thousands(n("blocked")), thousands(n("failed"))), String::new()),
+            tile(
+                "Blocked / failed",
+                format!("{} / {}", thousands(n("blocked")), thousands(n("failed"))),
+                String::new(),
+            ),
         ];
         st.set_tiles(ModelRc::new(VecModel::from(tiles)));
         // the graph
@@ -3415,8 +3769,14 @@ fn stats_render(app: &App, running: &std::collections::HashSet<String>) {
         let lines: Vec<ChartLine> = series
             .iter()
             .map(|(name, color, values, fill)| {
-                let (d, area) = chart_path(values, top, st.get_chart_w().max(1.0) as f64, st.get_chart_h().max(1.0) as f64);
-                ChartLine { name: name.as_str().into(), color: *color, commands: d.into(), area: if *fill { area.into() } else { SharedString::new() } }
+                let (d, area) =
+                    chart_path(values, top, st.get_chart_w().max(1.0) as f64, st.get_chart_h().max(1.0) as f64);
+                ChartLine {
+                    name: name.as_str().into(),
+                    color: *color,
+                    commands: d.into(),
+                    area: if *fill { area.into() } else { SharedString::new() },
+                }
             })
             .collect();
         st.set_lines(ModelRc::new(VecModel::from(lines)));
@@ -3429,7 +3789,8 @@ fn stats_labels(app: &App) {
     let st = app.global::<Stats>();
     st.set_title(tr("Statistics").into());
     st.set_chart_title(tr("Throughput (last 60 s)").into());
-    let modes: Vec<SharedString> = ["Combined", "Per proxy", "Per exit"].iter().map(|m| SharedString::from(tr(m))).collect();
+    let modes: Vec<SharedString> =
+        ["Combined", "Per proxy", "Per exit"].iter().map(|m| SharedString::from(tr(m))).collect();
     st.set_modes(ModelRc::new(VecModel::from(modes)));
     STATS.with(|s| s.borrow_mut().choice_ids.clear());
     app.set_t_stats(tr("Statistics").into());
@@ -3483,10 +3844,12 @@ fn conn_labels(app: &App) {
     c.set_title(tr("Connection test").into());
     c.set_placeholder(tr("Add a site, e.g. example.com").into());
     c.set_add_text(tr("Add").into());
-    let cols: Vec<SharedString> = ["Region", "Site", "Address", "Result", "Connect", "All"].iter().map(|x| SharedString::from(tr(x))).collect();
+    let cols: Vec<SharedString> =
+        ["Region", "Site", "Address", "Result", "Connect", "All"].iter().map(|x| SharedString::from(tr(x))).collect();
     c.set_columns(ModelRc::new(VecModel::from(cols)));
     c.set_t_waterfall(tr("Waterfall").into());
-    let phases: Vec<SharedString> = ["Proxy", "Connect", "TLS", "Waiting", "Response"].iter().map(|x| SharedString::from(tr(x))).collect();
+    let phases: Vec<SharedString> =
+        ["Proxy", "Connect", "TLS", "Waiting", "Response"].iter().map(|x| SharedString::from(tr(x))).collect();
     c.set_phases(ModelRc::new(VecModel::from(phases)));
 }
 
@@ -3512,7 +3875,11 @@ fn conn_rows(app: &App) {
                 3 => a.host.cmp(&b.host),
                 // answered first, then failed, then not tested; then by the text
                 4 => {
-                    let rank = |r: &ConnRow| match r.tone { 1 => 0, 2 => 1, _ => 2 };
+                    let rank = |r: &ConnRow| match r.tone {
+                        1 => 0,
+                        2 => 1,
+                        _ => 2,
+                    };
                     rank(a).cmp(&rank(b)).then_with(|| a.result.cmp(&b.result))
                 }
                 5..=7 => {
@@ -3543,7 +3910,10 @@ fn conn_rows(app: &App) {
 fn conn_sites(app: &App, v: &Value) {
     CONN.with(|s| {
         let mut s = s.borrow_mut();
-        s.rows = v["sites"].as_array().into_iter().flatten()
+        s.rows = v["sites"]
+            .as_array()
+            .into_iter()
+            .flatten()
             .enumerate()
             .map(|(i, x)| ConnRow {
                 index: i as i32 + 1,
@@ -3579,7 +3949,8 @@ fn conn_sites(app: &App, v: &Value) {
 /// the running cards in the choice box (kept on the same card)
 fn conn_cards(app: &App, m: &Models) {
     let c = app.global::<Conn>();
-    let running: Vec<(String, String)> = m.cards.iter().filter(|r| r.state == "running").map(|r| (r.id.to_string(), r.name.to_string())).collect();
+    let running: Vec<(String, String)> =
+        m.cards.iter().filter(|r| r.state == "running").map(|r| (r.id.to_string(), r.name.to_string())).collect();
     CONN.with(|s| {
         let mut s = s.borrow_mut();
         if s.cards == running {
@@ -3654,7 +4025,12 @@ fn conn_event(app: &App, v: &Value) {
                     conn_untimed(r);
                 }
             });
-            c.set_summary(tr("Testing '{name}'… 0 / {len}").replace("{name}", v["name"].as_str().unwrap_or("")).replace("{len}", &total.to_string()).into());
+            c.set_summary(
+                tr("Testing '{name}'… 0 / {len}")
+                    .replace("{name}", v["name"].as_str().unwrap_or(""))
+                    .replace("{len}", &total.to_string())
+                    .into(),
+            );
             conn_rows(app);
             conn_sync(app);
         }
@@ -3684,7 +4060,12 @@ fn conn_event(app: &App, v: &Value) {
                 }
                 (s.done, s.rows.len())
             });
-            c.set_summary(tr("Testing… {len} / {len2}").replace("{len}", &done.to_string()).replace("{len2}", &total.to_string()).into());
+            c.set_summary(
+                tr("Testing… {len} / {len2}")
+                    .replace("{len}", &done.to_string())
+                    .replace("{len2}", &total.to_string())
+                    .into(),
+            );
             conn_rows(app);
         }
         "conn_done" => {
@@ -3726,14 +4107,14 @@ const REPO_URL: &str = "https://github.com/NenkaLab/proxy-dock";
 /// the how-to text of a language (English when it has none)
 fn help_markdown(code: &str) -> &'static str {
     match code {
-        "ko" => include_str!("../../../../proxydock/locales/help/ko.md"),
-        "ja" => include_str!("../../../../proxydock/locales/help/ja.md"),
-        "zh_CN" => include_str!("../../../../proxydock/locales/help/zh_CN.md"),
-        "zh_TW" => include_str!("../../../../proxydock/locales/help/zh_TW.md"),
-        "de" => include_str!("../../../../proxydock/locales/help/de.md"),
-        "fr" => include_str!("../../../../proxydock/locales/help/fr.md"),
-        "es" => include_str!("../../../../proxydock/locales/help/es.md"),
-        _ => include_str!("../../../../proxydock/locales/help/en.md"),
+        "ko" => include_str!("../../../../locales/help/ko.md"),
+        "ja" => include_str!("../../../../locales/help/ja.md"),
+        "zh_CN" => include_str!("../../../../locales/help/zh_CN.md"),
+        "zh_TW" => include_str!("../../../../locales/help/zh_TW.md"),
+        "de" => include_str!("../../../../locales/help/de.md"),
+        "fr" => include_str!("../../../../locales/help/fr.md"),
+        "es" => include_str!("../../../../locales/help/es.md"),
+        _ => include_str!("../../../../locales/help/en.md"),
     }
 }
 
@@ -3826,7 +4207,11 @@ fn info_labels(app: &App, code: &str) {
     i.set_open(t("Open"));
     i.set_licenses(t("Licenses"));
     i.set_licenses_desc(t("Licenses of the fonts and open source components included in this program"));
-    i.set_lic_desc(t("Fonts and open source components included in ProxyDock (also in the {LICENSE_DIR} folder).").replace("{LICENSE_DIR}", "licenses").into());
+    i.set_lic_desc(
+        t("Fonts and open source components included in ProxyDock (also in the {LICENSE_DIR} folder).")
+            .replace("{LICENSE_DIR}", "licenses")
+            .into(),
+    );
     i.set_back(t("Back"));
     let names: Vec<SharedString> = licenses().into_iter().map(|(n, _)| SharedString::from(n)).collect();
     i.set_lic_names(ModelRc::new(VecModel::from(names)));
@@ -3842,7 +4227,10 @@ fn show_about(app: &App, v: &Value) {
     i.set_version_text(tr("Version {version}").replace("{version}", version).into());
     i.set_app_dir(v["app_dir"].as_str().unwrap_or("").into());
     let rows: Vec<EngineRow> = match v["engines"].as_array() {
-        None => vec![EngineRow { name: "sing-box".into(), text: tr("Checking…").into() }, EngineRow { name: "Hysteria2".into(), text: tr("Checking…").into() }],
+        None => vec![
+            EngineRow { name: "sing-box".into(), text: tr("Checking…").into() },
+            EngineRow { name: "Hysteria2".into(), text: tr("Checking…").into() },
+        ],
         Some(list) => list
             .iter()
             .map(|e| {
@@ -3885,9 +4273,14 @@ fn show_update(app: &App, v: &Value) {
         return;
     }
     let version = rel["version"].as_str().unwrap_or("");
-    u.set_title(tr("{APP_NAME} {version} is available").replace("{APP_NAME}", "ProxyDock").replace("{version}", version).into());
-    u.set_installed(tr("Installed version: {version}").replace("{version}", v["current"].as_str().unwrap_or("")).into());
-    let notes = rel["notes"].as_str().filter(|n| !n.is_empty()).map(String::from).unwrap_or_else(|| tr("No release notes."));
+    u.set_title(
+        tr("{APP_NAME} {version} is available").replace("{APP_NAME}", "ProxyDock").replace("{version}", version).into(),
+    );
+    u.set_installed(
+        tr("Installed version: {version}").replace("{version}", v["current"].as_str().unwrap_or("")).into(),
+    );
+    let notes =
+        rel["notes"].as_str().filter(|n| !n.is_empty()).map(String::from).unwrap_or_else(|| tr("No release notes."));
     // (Slint's styled text has no headings: they become bold lines)
     let notes: String = notes
         .lines()
@@ -3901,7 +4294,8 @@ fn show_update(app: &App, v: &Value) {
     let installs = rel["asset"].is_string();
     let size = rel["size"].as_f64().unwrap_or(0.0);
     let action = if installs {
-        tr("Download and install") + &if size > 0.0 { format!(" ({:.1} MB)", size / (1024.0 * 1024.0)) } else { String::new() }
+        tr("Download and install")
+            + &if size > 0.0 { format!(" ({:.1} MB)", size / (1024.0 * 1024.0)) } else { String::new() }
     } else {
         tr("Open the release page")
     };
@@ -3928,12 +4322,12 @@ mod caption {
     use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
     use windows_sys::Win32::UI::Controls::MARGINS;
     use windows_sys::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT};
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent};
     use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetClientRect, IsZoomed, PostMessageW, SetWindowPos, ShowWindow, HTCAPTION, HTCLIENT, HTCLOSE, HTMAXBUTTON,
-        HTMINBUTTON, HTTOP, HTTOPLEFT, HTTOPRIGHT, NCCALCSIZE_PARAMS, SM_CXPADDEDBORDER, SM_CYFRAME, SWP_FRAMECHANGED,
-        SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, WM_ACTIVATE, WM_CLOSE,
+        GetClientRect, HTCAPTION, HTCLIENT, HTCLOSE, HTMAXBUTTON, HTMINBUTTON, HTTOP, HTTOPLEFT, HTTOPRIGHT, IsZoomed,
+        NCCALCSIZE_PARAMS, PostMessageW, SM_CXPADDEDBORDER, SM_CYFRAME, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE,
+        SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos, ShowWindow, WM_ACTIVATE, WM_CLOSE,
         WM_MOUSEMOVE, WM_NCCALCSIZE, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
         WM_NCMOUSEMOVE, WM_SIZE,
     };
@@ -3951,13 +4345,21 @@ mod caption {
 
     /// Windows 11 (build 22000 or later)
     fn windows_11() -> bool {
-        use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
+        use windows_sys::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
         let key: Vec<u16> = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\0".encode_utf16().collect();
         let name: Vec<u16> = "CurrentBuildNumber\0".encode_utf16().collect();
         let mut buf = [0u16; 32];
         let mut size = (buf.len() * 2) as u32;
         let ok = unsafe {
-            RegGetValueW(HKEY_LOCAL_MACHINE, key.as_ptr(), name.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), buf.as_mut_ptr().cast(), &mut size)
+            RegGetValueW(
+                HKEY_LOCAL_MACHINE,
+                key.as_ptr(),
+                name.as_ptr(),
+                RRF_RT_REG_SZ,
+                std::ptr::null_mut(),
+                buf.as_mut_ptr().cast(),
+                &mut size,
+            )
         } == 0;
         let text = String::from_utf16_lossy(&buf[..buf.iter().position(|c| *c == 0).unwrap_or(0)]);
         ok && text.parse::<u32>().is_ok_and(|b| b >= 22000)
@@ -3985,7 +4387,15 @@ mod caption {
             // the shadow and the rounded corners stay with a frame extended one pixel into the client area
             let margins = MARGINS { cxLeftWidth: 0, cxRightWidth: 0, cyTopHeight: 1, cyBottomHeight: 0 };
             DwmExtendFrameIntoClientArea(hwnd, &margins);
-            SetWindowPos(hwnd, std::ptr::null_mut(), 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                0,
+                0,
+                0,
+                0,
+                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
+            );
         }
         app.set_caption_h(HEIGHT);
         app.set_win_maximized(unsafe { IsZoomed(hwnd) } != 0);
@@ -4087,7 +4497,12 @@ mod caption {
                 WM_NCMOUSEMOVE => {
                     let b = button_of(wp as u32);
                     set_hover(b);
-                    let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE | TME_NONCLIENT, hwndTrack: hwnd, dwHoverTime: 0 };
+                    let mut t = TRACKMOUSEEVENT {
+                        cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+                        dwFlags: TME_LEAVE | TME_NONCLIENT,
+                        hwndTrack: hwnd,
+                        dwHoverTime: 0,
+                    };
                     TrackMouseEvent(&mut t);
                     if b != 0 { 0 } else { DefSubclassProc(hwnd, msg, wp, lp) }
                 }

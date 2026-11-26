@@ -40,26 +40,29 @@ Die Proxys laufen auf [sing-box](https://github.com/SagerNet/sing-box), das im R
 
 ## Starten
 
-Unter Windows installiert `ProxyDock-<Version>-windows-x64-setup.exe` für Ihr Benutzerkonto (keine Administratorrechte nötig); die `.zip` ist dieselbe App als Ordner. Unter macOS die `.dmg` öffnen und ProxyDock in „Programme“ ziehen. Unter Linux die `.AppImage` ausführbar machen und starten.
+Windows 10 / 11: `ProxyDock-<Version>-windows-x64-setup.exe` installiert für Ihr Benutzerkonto (keine Administratorrechte
+nötig); die `.zip` ist dieselbe App als Ordner. Zu laden unter [Releases](https://github.com/NenkaLab/proxy-dock/releases).
 
-Einen Build von [Releases](https://github.com/NenkaLab/proxy-dock/releases) laden.
+Die Einstellungen liegen in `%APPDATA%\ProxyDock`; Version 3 liest die Einstellungen von 2.x weiter. Den Rest erklärt die Seite
+**Anleitung** in der App.
 
-Die Einstellungen liegen in `%APPDATA%\ProxyDock` (macOS: `~/Library/Application Support/ProxyDock`,
-Linux: `~/.config/ProxyDock`). Den Rest erklärt die Seite **Anleitung** in der App.
+ProxyDock 3 ist eine Neufassung in Rust und läuft vorerst nur unter Windows. Für macOS und Linux 2.x verwenden (die
+Python-App, im Zweig [`old`](https://github.com/NenkaLab/proxy-dock/tree/old) und in den 2.x-Releases).
 
 ## Bauen
 
-Aus dem Quellcode starten, Tests, Builds, Installer und Releases: [Build.md](Build.md) (Englisch).
+Aus dem Quellcode starten, Tests, Builds, Installer und Releases: [Build.md](Build.md) (Englisch). Prüfungen vor einem
+Release: [TESTING.md](../TESTING.md) (Koreanisch).
 
 ## Einschränkungen
 
-- Router, Gruppen, WireGuard, VLESS / VMess / Trojan / TUIC und TUN brauchen die sing-box-Engine (enthalten).
-- TUN und macOS wurden noch nicht in echten Umgebungen ausprobiert.
+- Nur Windows (macOS / Linux: 2.x).
+- TUN wurde noch nicht in echten Umgebungen ausprobiert.
 - SOCKS4 hat kein Passwort: nur auf diesem PC verwenden.
 
 ## Lizenz
 
-[GPL-3.0](../LICENSE). Enthaltene Komponenten (sing-box GPL-3.0, Hysteria MIT, Qt / PySide6 LGPL-3.0, Schriften OFL-1.1, ...)
+[GPL-3.0](../LICENSE). Enthaltene Komponenten (sing-box GPL-3.0, Hysteria MIT, Slint GPL-3.0, Rust-Crates, Schriften OFL-1.1, ...)
 und ihre Lizenzen stehen in [`licenses/`](../licenses/).
 
 Copyright (C) 2026 NenkaLab

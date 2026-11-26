@@ -135,16 +135,26 @@ mod tests {
 
     #[test]
     fn order_and_features() {
-        let mut list = ["1.15.0", "1.15.0-alpha.13", "1.15.0-alpha.2", "1.15.0-beta.1", "1.14.4", "1.15.0-rc.1", "1.16.0-alpha.1"]
-            .map(v)
-            .to_vec();
+        let mut list =
+            ["1.15.0", "1.15.0-alpha.13", "1.15.0-alpha.2", "1.15.0-beta.1", "1.14.4", "1.15.0-rc.1", "1.16.0-alpha.1"]
+                .map(v)
+                .to_vec();
         list.sort();
         let names: Vec<String> = list.iter().map(|x| x.to_string()).collect();
-        assert_eq!(names, ["1.14.4", "1.15.0-alpha.2", "1.15.0-alpha.13", "1.15.0-beta.1", "1.15.0-rc.1", "1.15.0", "1.16.0-alpha.1"]);
+        assert_eq!(
+            names,
+            ["1.14.4", "1.15.0-alpha.2", "1.15.0-alpha.13", "1.15.0-beta.1", "1.15.0-rc.1", "1.15.0", "1.16.0-alpha.1"]
+        );
         assert!(!v("1.14.4").has_certificate_pin());
-        assert!(v("1.15.0-alpha.1").has_certificate_pin() && v("1.15.0").has_certificate_pin() && v("2.0").has_certificate_pin());
+        assert!(
+            v("1.15.0-alpha.1").has_certificate_pin()
+                && v("1.15.0").has_certificate_pin()
+                && v("2.0").has_certificate_pin()
+        );
         assert_eq!(v("v1.14.4"), v("1.14.4"));
-        assert!(Version::parse("x.1").is_none() && Version::parse("1").is_none() && Version::parse("1.2.3.4").is_none());
+        assert!(
+            Version::parse("x.1").is_none() && Version::parse("1").is_none() && Version::parse("1.2.3.4").is_none()
+        );
     }
 
     #[test]

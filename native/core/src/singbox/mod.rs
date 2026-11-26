@@ -4,8 +4,8 @@ pub mod compile;
 pub mod guard;
 pub mod helper;
 pub mod hysteria;
-pub mod process;
 pub mod latest;
+pub mod process;
 pub mod rulesets;
 pub mod version;
 
@@ -52,7 +52,10 @@ pub fn find(exe: &str, custom: &str, bases: &[PathBuf]) -> Option<PathBuf> {
 /// not run a program an unelevated process could have replaced)
 pub fn find_bundled(exe: &str) -> Option<PathBuf> {
     default_bases().iter().find_map(|base| {
-        [Path::new("bin").join(platform_dir()).join(exe), Path::new("bin").join(exe)].into_iter().map(|r| base.join(r)).find(|p| p.is_file())
+        [Path::new("bin").join(platform_dir()).join(exe), Path::new("bin").join(exe)]
+            .into_iter()
+            .map(|r| base.join(r))
+            .find(|p| p.is_file())
     })
 }
 
@@ -67,10 +70,11 @@ pub fn default_bases() -> Vec<PathBuf> {
 /// setting singbox_latest is on (and one was downloaded), else bundled, else PATH
 pub fn find_binary(glob: &serde_json::Map<String, serde_json::Value>) -> Option<PathBuf> {
     let custom = glob.get("singbox_path").and_then(|v| v.as_str()).unwrap_or("");
-    if custom.is_empty() && glob.get("singbox_latest").and_then(|v| v.as_bool()) == Some(true) {
-        if let Some((_, exe)) = latest::installed() {
-            return Some(exe);
-        }
+    if custom.is_empty()
+        && glob.get("singbox_latest").and_then(|v| v.as_bool()) == Some(true)
+        && let Some((_, exe)) = latest::installed()
+    {
+        return Some(exe);
     }
     find(EXE, custom, &default_bases())
 }
@@ -114,7 +118,8 @@ pub fn all_outbounds(proxy: &serde_json::Value) -> Vec<&serde_json::Value> {
 /// an HTTPS / Hysteria2 outbound that pins its server certificate (pin_sha256)
 pub fn uses_certificate_pin(proxy: &serde_json::Value) -> bool {
     all_outbounds(proxy).iter().any(|ob| {
-        matches!(ob["type"].as_str(), Some("https" | "hysteria2")) && ob["pin_sha256"].as_str().is_some_and(|p| !p.is_empty())
+        matches!(ob["type"].as_str(), Some("https" | "hysteria2"))
+            && ob["pin_sha256"].as_str().is_some_and(|p| !p.is_empty())
     })
 }
 
@@ -124,7 +129,10 @@ fn is_loopback_host(host: &str) -> bool {
 
 /// The program that runs a card and the sing-box to use, or why the card cannot run (Python `engine_for`; the Rust
 /// app has no built-in engine, so a card the Python app ran on it cannot run here).
-pub fn engine_for(proxy: &serde_json::Value, glob: &serde_json::Map<String, serde_json::Value>) -> Result<(Kind, PathBuf), String> {
+pub fn engine_for(
+    proxy: &serde_json::Value,
+    glob: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(Kind, PathBuf), String> {
     use crate::i18n::tr;
     let exe = find_binary(glob).ok_or_else(|| tr("sing-box was not found"))?;
     if uses_certificate_pin(proxy) && !version::of(&exe).is_some_and(|v| v.has_certificate_pin()) {
@@ -133,7 +141,9 @@ pub fn engine_for(proxy: &serde_json::Value, glob: &serde_json::Map<String, serd
     let ib = &proxy["inbound"];
     if ib["type"] == "hysteria2" && !is_loopback_host(ib["host"].as_str().unwrap_or("")) {
         if find_hysteria(glob).is_none() {
-            return Err(tr("a Hysteria2 server open to other PCs needs the official Hysteria2 core, which was not found"));
+            return Err(tr(
+                "a Hysteria2 server open to other PCs needs the official Hysteria2 core, which was not found",
+            ));
         }
         return Ok((Kind::Hysteria, exe));
     }

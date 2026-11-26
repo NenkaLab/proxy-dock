@@ -18,7 +18,8 @@ pub const SS_METHODS: [(&str, usize, bool); 6] = [
 ];
 pub const VMESS_CIPHERS: [&str; 5] = ["auto", "aes-128-gcm", "chacha20-poly1305", "none", "zero"];
 const NEEDS_UDP_VIA: [&str; 2] = ["wireguard", "tuic"];
-const UDP_VIA_OK: [&str; 9] = ["shadowsocks", "hysteria2", "wireguard", "socks5", "vless", "vmess", "trojan", "tuic", "subscription"];
+const UDP_VIA_OK: [&str; 9] =
+    ["shadowsocks", "hysteria2", "wireguard", "socks5", "vless", "vmess", "trojan", "tuic", "subscription"];
 
 fn s<'a>(v: &'a Value, k: &str) -> &'a str {
     v[k].as_str().unwrap_or("")
@@ -87,7 +88,8 @@ fn binds_overlap(h1: &str, h2: &str, udp: bool) -> bool {
         out
     };
     let (a, b) = (addrs(h1), addrs(h2));
-    a.iter().any(|x| b.iter().any(|y| x.is_ipv4() == y.is_ipv4() && (x == y || x.is_unspecified() || y.is_unspecified())))
+    a.iter()
+        .any(|x| b.iter().any(|y| x.is_ipv4() == y.is_ipv4() && (x == y || x.is_unspecified() || y.is_unspecified())))
 }
 
 fn transports(ib: &Value) -> Vec<&'static str> {
@@ -113,10 +115,11 @@ pub fn wg_server_errors(ib: &Value) -> Vec<String> {
     if net.is_none() {
         errs.push(tr("WireGuard server: the tunnel address must be like 10.66.0.1/24"));
     }
-    let peers: Vec<Value> = match serde_json::from_str::<Value>(if s(ib, "wg_peers").is_empty() { "[]" } else { s(ib, "wg_peers") }) {
-        Ok(Value::Array(a)) => a.into_iter().filter(|x| x.is_object() && x["public_key"].is_string()).collect(),
-        _ => vec![],
-    };
+    let peers: Vec<Value> =
+        match serde_json::from_str::<Value>(if s(ib, "wg_peers").is_empty() { "[]" } else { s(ib, "wg_peers") }) {
+            Ok(Value::Array(a)) => a.into_iter().filter(|x| x.is_object() && x["public_key"].is_string()).collect(),
+            _ => vec![],
+        };
     if peers.is_empty() {
         errs.push(tr("WireGuard server: add at least one device"));
     }
@@ -145,7 +148,11 @@ pub fn wg_server_errors(ib: &Value) -> Vec<String> {
         if let Some(a) = addr.filter(|_| ok) {
             seen.push(a);
         } else {
-            errs.push(tr("WireGuard server: '{name}' needs its own address inside {net}").replace("{name}", &name).replace("{net}", s(ib, "wg_address")));
+            errs.push(
+                tr("WireGuard server: '{name}' needs its own address inside {net}")
+                    .replace("{name}", &name)
+                    .replace("{net}", s(ib, "wg_address")),
+            );
         }
     }
     let mtu = n(ib, "wg_mtu");
@@ -164,7 +171,10 @@ pub fn outbound_errors(ob: &Value) -> Vec<String> {
             errs.push(tr("Hysteria2 uses QUIC (UDP), so it cannot go through another outbound"));
         }
         if NEEDS_UDP_VIA.contains(&t) && !UDP_VIA_OK.contains(&s(via, "type")) {
-            errs.push(tr("{type} needs UDP, so it cannot go through an HTTP or SOCKS4 proxy").replace("{type}", &crate::graph::outbound_label(t)));
+            errs.push(
+                tr("{type} needs UDP, so it cannot go through an HTTP or SOCKS4 proxy")
+                    .replace("{type}", &crate::graph::outbound_label(t)),
+            );
         }
         errs.extend(outbound_errors(via));
     }
@@ -257,7 +267,10 @@ pub fn outbound_errors(ob: &Value) -> Vec<String> {
                         errs.push(tr("REALITY: enter the server's public key"));
                     }
                     let sid = py::strip(s(ob, "reality_short_id"));
-                    if sid.chars().count() > 16 || sid.chars().count() % 2 == 1 || !sid.chars().all(|c| c.is_ascii_hexdigit()) {
+                    if sid.chars().count() > 16
+                        || sid.chars().count() % 2 == 1
+                        || !sid.chars().all(|c| c.is_ascii_hexdigit())
+                    {
                         errs.push(tr("REALITY: the short ID is up to 16 hex digits"));
                     }
                     if py::strip(s(ob, "sni")).is_empty() {
@@ -305,7 +318,9 @@ pub fn find_cycle(p: &Value, proxies: &[Value]) -> Option<Vec<String>> {
     let local = |h: &str| -> bool {
         let h = h.trim().to_lowercase();
         let h = h.trim_end_matches('.');
-        h == "localhost" || h.ends_with(".localhost") || py::ip_address(h.trim_matches(['[', ']'])).is_some_and(|a| a.is_loopback() || a.is_unspecified())
+        h == "localhost"
+            || h.ends_with(".localhost")
+            || py::ip_address(h.trim_matches(['[', ']'])).is_some_and(|a| a.is_loopback() || a.is_unspecified())
     };
     let next = |cur: &Value| -> Option<Value> {
         let ob = &cur["outbound"];
@@ -350,7 +365,9 @@ pub fn check_proxy(p: &Value, others: &[Value]) -> Vec<String> {
     }
     let dns = p["overrides"]["dns_server"].as_str().filter(|d| !d.is_empty()).unwrap_or("");
     if dns_server_spec(dns).is_none() {
-        errs.push(tr("DNS server: use an address like 1.1.1.1, tls://dns.google or https://cloudflare-dns.com/dns-query"));
+        errs.push(tr(
+            "DNS server: use an address like 1.1.1.1, tls://dns.google or https://cloudflare-dns.com/dns-query",
+        ));
     }
     if p["unlinked"] == Value::Bool(true) {
         errs.push(unlinked_error());
@@ -417,13 +434,22 @@ pub fn check_proxy(p: &Value, others: &[Value]) -> Vec<String> {
             continue;
         }
         if shared.iter().any(|t| binds_overlap(s(ib, "host"), s(oi, "host"), *t == "udp")) {
-            errs.push(tr("Port {port} conflicts with '{name}'").replace("{name}", s(other, "name")).replace("{port}", &n(ib, "port").to_string()));
+            errs.push(
+                tr("Port {port} conflicts with '{name}'")
+                    .replace("{name}", s(other, "name"))
+                    .replace("{port}", &n(ib, "port").to_string()),
+            );
         }
     }
     let mut all: Vec<Value> = others.iter().filter(|o| o["id"] != p["id"]).cloned().collect();
     all.push(p.clone());
     if let Some(cycle) = find_cycle(p, &all) {
-        errs.push(format!("{}{}{}", tr("The proxy chain loops: "), cycle.join(" → "), tr(" (check the outbound address/port)")));
+        errs.push(format!(
+            "{}{}{}",
+            tr("The proxy chain loops: "),
+            cycle.join(" → "),
+            tr(" (check the outbound address/port)")
+        ));
     }
     errs
 }
@@ -434,7 +460,14 @@ pub fn unlinked_error() -> String {
 
 /// One router rule's conditions (Python `match_errors`).
 pub fn match_errors(name: &str, m: &Value) -> Vec<String> {
-    let list = |k: &str| m[k].as_array().cloned().unwrap_or_default().into_iter().filter_map(|x| x.as_str().map(String::from)).collect::<Vec<_>>();
+    let list = |k: &str| {
+        m[k].as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|x| x.as_str().map(String::from))
+            .collect::<Vec<_>>()
+    };
     let e = |t: &str, v: &str| tr(t).replace("{name}", name).replace("{value}", v);
     let mut errs = vec![];
     for x in list("ip_cidr") {

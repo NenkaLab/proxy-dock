@@ -4,7 +4,7 @@ sing-box and the official Hysteria2 core (used for Hysteria2 servers open to oth
     python tools/fetch_singbox.py              # this OS/arch -> bin/<os>-<arch>/sing-box[.exe], hysteria[.exe]
     python tools/fetch_singbox.py linux-amd64  # another target
 
-The versions are proxydock.singbox.SINGBOX_VERSION / HYSTERIA_VERSION. Every file is checked against the SHA-256
+The versions are the ones the Rust core pins (native/core/src/singbox/mod.rs). Every file is checked against the SHA-256
 digest GitHub lists for the release asset before it is used.
 """
 import hashlib
@@ -17,8 +17,26 @@ import urllib.request
 import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
-from proxydock.singbox import HYSTERIA_VERSION, SINGBOX_VERSION, platform_dir  # noqa: E402
+
+
+def _engine_versions():
+    """SINGBOX_VERSION / HYSTERIA_VERSION as the Rust core pins them (native/core/src/singbox/mod.rs)."""
+    import re
+    with open(os.path.join(ROOT, "native", "core", "src", "singbox", "mod.rs"), encoding="utf-8") as f:
+        src = f.read()
+    return tuple(re.search(rf'pub const {k}: &str = "([^"]+)";', src).group(1) for k in ("SINGBOX_VERSION", "HYSTERIA_VERSION"))
+
+
+SINGBOX_VERSION, HYSTERIA_VERSION = _engine_versions()
+
+
+def platform_dir():
+    """bin/<os>-<arch> of this computer, as the app looks for it (windows-amd64, linux-arm64, ...)."""
+    import platform
+    m = platform.machine().lower()
+    arch = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}.get(m, m)
+    osname = "windows" if os.name == "nt" else "darwin" if sys.platform == "darwin" else "linux"
+    return f"{osname}-{arch}"
 
 API = f"https://api.github.com/repos/SagerNet/sing-box/releases/tags/v{SINGBOX_VERSION}"
 HY_API = f"https://api.github.com/repos/apernet/hysteria/releases/tags/app%2Fv{HYSTERIA_VERSION}"

@@ -1,7 +1,7 @@
 //! Share links and subscription bodies read the way the app reads them, for the parity check against Python
 //! (tools/parity_links.py). Input: a JSON list of {"kind": "link" | "sub", "text": ...}; output: one result each.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn main() {
     let path = std::env::args().nth(1).expect("input file");

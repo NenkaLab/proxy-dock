@@ -8,7 +8,7 @@
 
 use proxydock_core::graph::LaneIndex;
 use proxydock_core::i18n::tr;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
 
 type Obj = Map<String, Value>;
@@ -116,16 +116,27 @@ fn name_of(g: &Obj, id: &str) -> Option<String> {
 
 /// inbound blocks whose traffic goes to `nid` (straight or through pass-through lanes)
 fn users(g: &Obj, idx: &LaneIndex, nid: &str) -> Vec<String> {
-    list(g, "inbounds").filter(|n| idx.follow(n.get("target").and_then(Value::as_str)).as_deref() == Some(nid)).map(|n| s(n, "name").to_string()).collect()
+    list(g, "inbounds")
+        .filter(|n| idx.follow(n.get("target").and_then(Value::as_str)).as_deref() == Some(nid))
+        .map(|n| s(n, "name").to_string())
+        .collect()
 }
 
 /// the blocks that send traffic to `nid`: inbounds, groups (members) and routers (rule targets)
 fn used_by(g: &Obj, idx: &LaneIndex, nid: &str) -> Vec<String> {
     let mut names = users(g, idx, nid);
-    names.extend(list(g, "outbounds").filter(|n| n.get("members").and_then(Value::as_array).is_some_and(|m| m.iter().any(|x| x == nid))).map(|n| s(n, "name").to_string()));
+    names.extend(
+        list(g, "outbounds")
+            .filter(|n| n.get("members").and_then(Value::as_array).is_some_and(|m| m.iter().any(|x| x == nid)))
+            .map(|n| s(n, "name").to_string()),
+    );
     names.extend(
         list(g, "routers")
-            .filter(|r| proxydock_core::graph::router_targets(&Value::Object((*r).clone())).iter().any(|(_, t)| idx.follow(Some(t)).as_deref() == Some(nid)))
+            .filter(|r| {
+                proxydock_core::graph::router_targets(&Value::Object((*r).clone()))
+                    .iter()
+                    .any(|(_, t)| idx.follow(Some(t)).as_deref() == Some(nid))
+            })
             .map(|r| s(r, "name").to_string()),
     );
     names
@@ -133,10 +144,13 @@ fn used_by(g: &Obj, idx: &LaneIndex, nid: &str) -> Vec<String> {
 
 /// the blocks linked straight into input lane `lane`
 fn lane_sources(g: &Obj, lane: &str) -> Vec<String> {
-    let mut names: Vec<String> = list(g, "inbounds").filter(|n| s(n, "target") == lane).map(|n| s(n, "name").to_string()).collect();
+    let mut names: Vec<String> =
+        list(g, "inbounds").filter(|n| s(n, "target") == lane).map(|n| s(n, "name").to_string()).collect();
     names.extend(
         list(g, "routers")
-            .filter(|r| proxydock_core::graph::router_targets(&Value::Object((*r).clone())).iter().any(|(_, t)| t == lane))
+            .filter(|r| {
+                proxydock_core::graph::router_targets(&Value::Object((*r).clone())).iter().any(|(_, t)| t == lane)
+            })
             .map(|r| s(r, "name").to_string()),
     );
     names.extend(list(g, "relays").filter(|r| list(r, "outputs").any(|x| s(x, "target") == lane)).map(|r| {
@@ -183,8 +197,13 @@ fn outbound_summary(ob: &Obj) -> String {
 /// Python `match_summary`: a rule's conditions in short, e.g. "Program: game.exe + GeoIP country: kr"
 pub fn match_summary(m: &Value, limit: usize) -> String {
     const FIELDS: [(&str, &str); 8] = [
-        ("domain_suffix", "Domain (with subdomains)"), ("domain", "Domain (exact)"), ("domain_keyword", "Domain keyword"),
-        ("ip_cidr", "IP / range"), ("geoip", "GeoIP country"), ("geosite", "Geosite category"), ("port", "Destination port"),
+        ("domain_suffix", "Domain (with subdomains)"),
+        ("domain", "Domain (exact)"),
+        ("domain_keyword", "Domain keyword"),
+        ("ip_cidr", "IP / range"),
+        ("geoip", "GeoIP country"),
+        ("geosite", "Geosite category"),
+        ("port", "Destination port"),
         ("process_name", "Program"),
     ];
     let mut parts: Vec<String> = FIELDS
@@ -206,7 +225,11 @@ fn inbound_lines(b: &Obj, unlinked: bool) -> Vec<(String, i32)> {
     let t = s(&ib, "type");
     let port = ib.get("port").and_then(Value::as_i64).unwrap_or(0);
     let where_ = match t {
-        "tun" => format!("{} · {}", tr("all apps"), if s(&ib, "tun_stack").is_empty() { "mixed" } else { s(&ib, "tun_stack") }),
+        "tun" => format!(
+            "{} · {}",
+            tr("all apps"),
+            if s(&ib, "tun_stack").is_empty() { "mixed" } else { s(&ib, "tun_stack") }
+        ),
         "wireguard" => format!("UDP {port}"),
         _ => proxydock_core::net::host_port(s(&ib, "host"), port),
     };
@@ -220,16 +243,27 @@ fn inbound_lines(b: &Obj, unlinked: bool) -> Vec<(String, i32)> {
 fn outbound_lines(g: &Obj, idx: &LaneIndex, b: &Obj) -> Vec<(String, i32)> {
     let id = s(b, "id");
     let ob = b.get("outbound").and_then(Value::as_object).cloned().unwrap_or_default();
-    let members: Vec<String> = b.get("members").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).filter_map(|m| name_of(g, m)).collect();
+    let members: Vec<String> = b
+        .get("members")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter_map(|m| name_of(g, m))
+        .collect();
     let mut lines = vec![];
     if s(&ob, "type") == "group" {
         let mut mode = group_mode(&ob);
-        let ids: Vec<&str> = b.get("members").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).collect();
+        let ids: Vec<&str> =
+            b.get("members").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).collect();
         if s(&ob, "group_mode") == "select" && !ids.is_empty() {
             let sel = if ids.contains(&s(&ob, "group_selected")) { s(&ob, "group_selected") } else { ids[0] };
             mode += &format!(" · {}", name_of(g, sel).unwrap_or_default());
         }
-        lines.push((format!("{mode} · {}", tr("{count} members").replace("{count}", &members.len().to_string())), NORMAL));
+        lines.push((
+            format!("{mode} · {}", tr("{count} members").replace("{count}", &members.len().to_string())),
+            NORMAL,
+        ));
         if members.is_empty() {
             lines.push((format!("⚠ {}", tr("no members")), WARN));
         }
@@ -268,9 +302,12 @@ fn router_lines(g: &Obj, idx: &LaneIndex, r: &Obj) -> Vec<(String, i32)> {
     lines
 }
 
-
 /// what a link to `target` lands on: (block key, input lane)
-fn landing(target: &str, lanes: &HashMap<String, (String, usize)>, blocks: &HashSet<String>) -> Option<(String, usize)> {
+fn landing(
+    target: &str,
+    lanes: &HashMap<String, (String, usize)>,
+    blocks: &HashSet<String>,
+) -> Option<(String, usize)> {
     if let Some(l) = lanes.get(target) {
         return Some(l.clone());
     }
@@ -308,12 +345,22 @@ pub fn build(g: &Obj, summary: &dyn Fn(&str) -> String, unlinked: &dyn Fn(&str) 
         let t = s(&ob, "type");
         let detail = match t {
             "direct" | "block" | "group" | "subscription" => proxydock_core::graph::outbound_label(t),
-            _ => format!("{} {}", proxydock_core::graph::outbound_label(t), proxydock_core::net::host_port(s(&ob, "host"), ob.get("port").and_then(Value::as_i64).unwrap_or(0))),
+            _ => format!(
+                "{} {}",
+                proxydock_core::graph::outbound_label(t),
+                proxydock_core::net::host_port(s(&ob, "host"), ob.get("port").and_then(Value::as_i64).unwrap_or(0))
+            ),
         };
         let mut n = node(id, 2, s(b, "name"), detail, pos(b.get("pos")));
         n.outs = if NO_VIA.contains(&t) && t != "group" { 0 } else { 1 };
         n.in_labels = vec![tr("Input")];
-        n.out_labels = if t == "group" { vec![tr("Members")] } else if n.outs == 1 { vec![tr("via")] } else { vec![] };
+        n.out_labels = if t == "group" {
+            vec![tr("Members")]
+        } else if n.outs == 1 {
+            vec![tr("via")]
+        } else {
+            vec![]
+        };
         n.lines = outbound_lines(g, &idx, b);
         n.color = s(b, "color").into();
         v.nodes.push(n);
@@ -356,7 +403,8 @@ pub fn build(g: &Obj, summary: &dyn Fn(&str) -> String, unlinked: &dyn Fn(&str) 
                 let src = lane_sources(g, lane);
                 let dest = idx.follow(Some(lane)).and_then(|t| name_of(g, &t)).unwrap_or_else(|| tr("not connected"));
                 a.lines = vec![(format!("→ {dest}"), NORMAL)];
-                z.lines = vec![(format!("← {}", if src.is_empty() { "-".to_string() } else { src.join(", ") }), NORMAL)];
+                z.lines =
+                    vec![(format!("← {}", if src.is_empty() { "-".to_string() } else { src.join(", ") }), NORMAL)];
             } else {
                 let text = format!("⚠ {}", tr("partner deleted"));
                 a.lines = vec![(text.clone(), WARN)];
@@ -366,7 +414,12 @@ pub fn build(g: &Obj, summary: &dyn Fn(&str) -> String, unlinked: &dyn Fn(&str) 
                 in_lanes.insert(s(l, "id").into(), (id.into(), 0));
             }
             if let Some(l) = outs.first() {
-                out_lanes.push((out_key.clone(), 0, l.get("target").and_then(Value::as_str).map(String::from), s(l, "id").to_string()));
+                out_lanes.push((
+                    out_key.clone(),
+                    0,
+                    l.get("target").and_then(Value::as_str).map(String::from),
+                    s(l, "id").to_string(),
+                ));
             }
             if broken != "in" {
                 v.nodes.push(a);
@@ -389,7 +442,12 @@ pub fn build(g: &Obj, summary: &dyn Fn(&str) -> String, unlinked: &dyn Fn(&str) 
             }
         }
         for (k, o) in outs.iter().enumerate() {
-            out_lanes.push((id.into(), k, o.get("target").and_then(Value::as_str).map(String::from), s(o, "id").to_string()));
+            out_lanes.push((
+                id.into(),
+                k,
+                o.get("target").and_then(Value::as_str).map(String::from),
+                s(o, "id").to_string(),
+            ));
         }
         v.nodes.push(n);
     }
@@ -404,19 +462,24 @@ pub fn build(g: &Obj, summary: &dyn Fn(&str) -> String, unlinked: &dyn Fn(&str) 
     for n in v.nodes.iter_mut() {
         let base = n.key.strip_suffix("/out").unwrap_or(&n.key).to_string();
         n.swatch = wire(&base).0;
-        if n.kind == 1 {
-            if let Some((_, r)) = proxydock_core::graph::find(g, &n.key) {
-                let mut keys: Vec<String> = r["rules"].as_array().into_iter().flatten().filter_map(|x| x["id"].as_str().map(String::from)).collect();
-                keys.push("default".into());
-                n.out_colors = keys
-                    .into_iter()
-                    .map(|k| {
-                        let own = proxydock_core::colors::output_color(g, &n.key, &k);
-                        let eff = wire(&proxydock_core::colors::router_out_key(&n.key, &k)).0;
-                        (k, own, eff)
-                    })
-                    .collect();
-            }
+        if n.kind == 1
+            && let Some((_, r)) = proxydock_core::graph::find(g, &n.key)
+        {
+            let mut keys: Vec<String> = r["rules"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|x| x["id"].as_str().map(String::from))
+                .collect();
+            keys.push("default".into());
+            n.out_colors = keys
+                .into_iter()
+                .map(|k| {
+                    let own = proxydock_core::colors::output_color(g, &n.key, &k);
+                    let eff = wire(&proxydock_core::colors::router_out_key(&n.key, &k)).0;
+                    (k, own, eff)
+                })
+                .collect();
         }
     }
     let blocks: HashSet<String> = v.nodes.iter().map(|n| n.key.clone()).collect();
@@ -442,9 +505,21 @@ pub fn build(g: &Obj, summary: &dyn Fn(&str) -> String, unlinked: &dyn Fn(&str) 
         let rules: Vec<&Obj> = list(b, "rules").collect();
         let rid = s(b, "id");
         for (i, r) in rules.iter().enumerate() {
-            link(rid, i, r.get("target").and_then(Value::as_str), &proxydock_core::colors::router_out_key(rid, s(r, "id")), &mut v);
+            link(
+                rid,
+                i,
+                r.get("target").and_then(Value::as_str),
+                &proxydock_core::colors::router_out_key(rid, s(r, "id")),
+                &mut v,
+            );
         }
-        link(rid, rules.len(), b.get("default").and_then(Value::as_str), &proxydock_core::colors::router_out_key(rid, "default"), &mut v);
+        link(
+            rid,
+            rules.len(),
+            b.get("default").and_then(Value::as_str),
+            &proxydock_core::colors::router_out_key(rid, "default"),
+            &mut v,
+        );
     }
     for (key, k, target, lane) in &out_lanes {
         link(key, *k, target.as_deref(), lane, &mut v);
@@ -508,14 +583,18 @@ fn paths(v: &View) -> HashMap<(String, String), Vec<usize>> {
                     if v.nodes.iter().any(|n| n.key == wireless_out(&key)) {
                         vec![0] // a wireless pair: on from the other half
                     } else {
-                        wires.get(key.as_str()).map(|w| w.iter().filter(|(i, _)| *i == lane).map(|(_, o)| *o).collect()).unwrap_or_default()
+                        wires
+                            .get(key.as_str())
+                            .map(|w| w.iter().filter(|(i, _)| *i == lane).map(|(_, o)| *o).collect())
+                            .unwrap_or_default()
                     }
                 }
                 Some(1) => (0..v.nodes.iter().find(|n| n.key == key).map_or(0, |n| n.outs)).collect(),
                 Some(0) => vec![0],
                 _ => vec![],
             };
-            let from = if v.nodes.iter().any(|n| n.key == wireless_out(&key)) { wireless_out(&key) } else { key.clone() };
+            let from =
+                if v.nodes.iter().any(|n| n.key == wireless_out(&key)) { wireless_out(&key) } else { key.clone() };
             for o in outs.into_iter().rev() {
                 for li in leaving.get(&(from.as_str(), o)).into_iter().flatten() {
                     let l = &v.links[*li];
@@ -596,13 +675,22 @@ mod tests {
             "relays": [{"id": "rl", "name": "lanes", "inputs": [{"id": "L1", "out": "O1"}], "outputs": [{"id": "O1", "target": "s"}]}],
         }));
         let v = build(&g, &|_| "SOCKS5".into(), &|_| false);
-        let kinds: Vec<(String, i32, usize, usize)> = v.nodes.iter().map(|n| (n.key.clone(), n.kind, n.ins, n.outs)).collect();
+        let kinds: Vec<(String, i32, usize, usize)> =
+            v.nodes.iter().map(|n| (n.key.clone(), n.kind, n.ins, n.outs)).collect();
         assert!(kinds.contains(&("r".into(), 1, 1, 2)));
         assert!(kinds.contains(&("d".into(), 2, 1, 0)));
         assert!(kinds.contains(&("s".into(), 2, 1, 1)));
         assert!(kinds.contains(&("rl".into(), 3, 1, 1)));
-        let has = |from: &str, out: usize, to: &str, inp: usize| v.links.iter().position(|l| l.from == from && l.out == out && l.to == to && l.inp == inp);
-        let (a, b, c, d, e) = (has("in1", 0, "r", 0).unwrap(), has("r", 0, "d", 0).unwrap(), has("r", 1, "rl", 0).unwrap(), has("rl", 0, "s", 0).unwrap(), has("s", 0, "hp", 0).unwrap());
+        let has = |from: &str, out: usize, to: &str, inp: usize| {
+            v.links.iter().position(|l| l.from == from && l.out == out && l.to == to && l.inp == inp)
+        };
+        let (a, b, c, d, e) = (
+            has("in1", 0, "r", 0).unwrap(),
+            has("r", 0, "d", 0).unwrap(),
+            has("r", 1, "rl", 0).unwrap(),
+            has("rl", 0, "s", 0).unwrap(),
+            has("s", 0, "hp", 0).unwrap(),
+        );
         assert_eq!(v.paths[&("in1".to_string(), "d".to_string())], vec![a, b]);
         assert_eq!(v.paths[&("in1".to_string(), "s".to_string())], vec![a, c, d, e]);
     }

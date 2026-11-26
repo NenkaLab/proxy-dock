@@ -91,7 +91,10 @@ pub fn local_minute(unix: i64) -> String {
         let ticks = (unix.max(0) as u64 + 11_644_473_600) * 10_000_000;
         let ft = FILETIME { dwLowDateTime: ticks as u32, dwHighDateTime: (ticks >> 32) as u32 };
         let (mut utc, mut local): (SYSTEMTIME, SYSTEMTIME) = unsafe { (std::mem::zeroed(), std::mem::zeroed()) };
-        let ok = unsafe { FileTimeToSystemTime(&ft, &mut utc) != 0 && SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc, &mut local) != 0 };
+        let ok = unsafe {
+            FileTimeToSystemTime(&ft, &mut utc) != 0
+                && SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc, &mut local) != 0
+        };
         let t = if ok { local } else { utc };
         format!("{:04}-{:02}-{:02} {:02}:{:02}", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute)
     }

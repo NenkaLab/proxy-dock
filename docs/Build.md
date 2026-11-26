@@ -2,57 +2,58 @@
 
 [← README](../README.md)
 
+ProxyDock 3 is written in Rust (`native/`): `proxydock.exe` is the tray and the proxy core, `proxydock-ui.exe` the
+window (Slint). It is Windows-only for now. The Python app it replaced (2.x) is on the
+[`old`](https://github.com/NenkaLab/proxy-dock/tree/old) branch.
+
 ## Run from source
 
-Python 3.14:
+Rust (the version in `native/rust-toolchain.toml` is installed by rustup on the first build) and Python 3 (for the
+engine download script only):
 
-```bash
-python -m venv .venv
-.venv\Scripts\activate            # macOS / Linux: source .venv/bin/activate
-pip install -r requirements.txt
-python tools/fetch_singbox.py     # sing-box and Hysteria for this PC
-python proxydock.py
+```powershell
+python tools\fetch_singbox.py     # sing-box and Hysteria for this PC, into bin\windows-amd64 (SHA-256 checked)
+cd native
+cargo build -p proxydock          # both programs: the tray starts the window next to itself
+.\target\debug\proxydock.exe
 ```
+
+`PROXYDOCK_HOME=<folder>` keeps the settings in another folder (handy for trying things without touching your own).
 
 ## Tests
 
-```bash
-python tests/run_tests.py
+```powershell
+cd native
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 ```
 
-## README images
-
-```bash
-python tools/readme_shots.py          # docs/images/{canvas,proxies,router}-{light,dark}.png
-```
-
-Draws a sample setup offscreen at 2x (nothing on this PC is changed).
+Comparing the Rust core with the Python app (random settings, links and edits) and the checks done by hand before a
+release: [TESTING.md](../TESTING.md) (Korean).
 
 ## Build the app
 
-| Target  | Command                   | Output                              | Builds on                          |
-|---------|---------------------------|-------------------------------------|------------------------------------|
-| Windows | `tools\build_win.bat`     | `dist/win/ProxyDock/ProxyDock.exe`  | Windows                            |
-| Linux   | `tools/build_linux.sh`    | `dist/linux/ProxyDock/ProxyDock`    | Linux (Docker on Windows / macOS)  |
-| macOS   | `tools/build_mac.sh`      | `dist/mac/ProxyDock.app`            | macOS                              |
+```powershell
+python tools\build_rust.py
+```
 
-The scripts call `tools/build.py` (`python tools/build.py win|linux|mac|all`). It makes a virtual environment per OS,
-installs what `requirements.txt` needs, downloads sing-box and Hysteria (SHA-256 checked) and puts them inside the app.
+Builds with `cargo build --release`, then puts the program folder in `dist/rust/ProxyDock` (ProxyDock.exe,
+proxydock-ui.exe, the engines and licenses) and into `dist/release-rust/` a `.zip` and the installer
+`ProxyDock-<version>-windows-x64-setup.exe` (each with a `.sha256` file). The installer needs Inno Setup 6
+(`winget install JRSoftware.InnoSetup`); `--no-installer` skips it. The version is `native/Cargo.toml`'s.
 
-## Installers
-
-Made from an existing build, into `dist/release/` (each with a `.sha256` file):
-
-- Windows installer: `python tools/build.py installer` (needs Inno Setup 6)
-- macOS disk image: `python tools/build.py dmg` (on macOS)
-- Linux AppImage: `python tools/build.py appimage` (on Linux)
+The installer installs for the current user (no administrator needed), over a 2.x install, and keeps the settings in
+`%APPDATA%\ProxyDock`.
 
 ## Releases
 
-```bash
-tools\release.bat <version>       # macOS / Linux: tools/release.sh <version>
+Set the version in `native/Cargo.toml` (`[workspace.package] version`), commit, then tag and push:
+
+```powershell
+git tag -s v3.0.0 -m "ProxyDock 3.0.0"
+git push origin v3.0.0
 ```
 
-This checks the tree and runs the tests, bumps the version, commits, tags `v<version>` and pushes.
-GitHub Actions (`.github/workflows/release.yml`) then builds every platform and publishes the GitHub Release.
-Add `--dry-run` to see what would happen.
+GitHub Actions (`.github/workflows/release.yml`) runs the tests, builds the installer and the zip and publishes the
+GitHub Release with `SHA256SUMS.txt`. The tag must match the version. "Run workflow" builds without releasing.

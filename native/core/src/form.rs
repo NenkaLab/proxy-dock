@@ -8,9 +8,9 @@
 
 use crate::graph::{self, Obj};
 use crate::i18n::tr;
-use serde_json::{json, Map, Value};
-use std::sync::atomic::{AtomicBool, Ordering};
+use serde_json::{Map, Value, json};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// the router editor's view, shared by every router while the app runs (Python `router.MODE`): false = simple
 /// (a row per condition in use), true = advanced (every condition field)
@@ -67,8 +67,18 @@ fn rule_templates() -> Vec<Template> {
         (tr("Empty rule"), None, json!({}), None),
         (tr("Programs..."), Some(tr("Programs")), json!({"process_name": []}), None),
         (tr("Ads and trackers (Geosite)"), Some(tr("Ads")), json!({"geosite": ["category-ads-all"]}), Some("block")),
-        (tr("Local network (LAN, private IPs)"), Some(tr("Local network")), json!({"ip_private": true}), Some("direct")),
-        (tr("Sites of one country (GeoIP + Geosite)"), Some(tr("Country")), json!({"geoip": ["kr"], "geosite": ["kr"]}), None),
+        (
+            tr("Local network (LAN, private IPs)"),
+            Some(tr("Local network")),
+            json!({"ip_private": true}),
+            Some("direct"),
+        ),
+        (
+            tr("Sites of one country (GeoIP + Geosite)"),
+            Some(tr("Country")),
+            json!({"geoip": ["kr"], "geosite": ["kr"]}),
+            None,
+        ),
     ]
 }
 
@@ -77,7 +87,11 @@ fn addable_members(g: &Obj, node: &Value) -> Vec<(String, String)> {
     let id = s(node, "id");
     let members: Vec<&str> = node["members"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
     list(g, "outbounds")
-        .filter(|x| s(x, "id") != id && !members.contains(&s(x, "id")) && !matches!(x["outbound"]["type"].as_str(), Some("group" | "block")))
+        .filter(|x| {
+            s(x, "id") != id
+                && !members.contains(&s(x, "id"))
+                && !matches!(x["outbound"]["type"].as_str(), Some("group" | "block"))
+        })
         .map(|x| (s(x, "id").into(), s(x, "name").into()))
         .collect()
 }
@@ -87,7 +101,11 @@ fn simple_conds(r: &Value) -> Vec<&'static str> {
     let rid = s(r, "id");
     let shown = SHOWN.lock().unwrap();
     let on = |k: &str| shown.iter().any(|(id, c)| id == rid && c == k);
-    let mut out: Vec<&'static str> = CONDS.iter().map(|c| c.0).filter(|k| r["match"][*k].as_array().is_some_and(|a| !a.is_empty()) || on(k)).collect();
+    let mut out: Vec<&'static str> = CONDS
+        .iter()
+        .map(|c| c.0)
+        .filter(|k| r["match"][*k].as_array().is_some_and(|a| !a.is_empty()) || on(k))
+        .collect();
     if r["match"]["ip_private"] == json!(true) || on("ip_private") {
         out.push("ip_private");
     }
@@ -102,7 +120,10 @@ pub enum Kind {
     Text,
     /// shown masked
     Secret,
-    Int { min: i64, max: i64 },
+    Int {
+        min: i64,
+        max: i64,
+    },
     Bool,
     /// (value, label)
     Choice(Vec<(String, String)>),
@@ -156,7 +177,15 @@ fn plain(values: &[&str]) -> Kind {
 }
 
 fn field(key: &str, label: &str, desc: &str, kind: Kind, value: Value, visible: bool) -> Field {
-    Field { key: key.into(), label: if label.is_empty() { String::new() } else { tr(label) }, desc: if desc.is_empty() { String::new() } else { tr(desc) }, kind, value, visible, rerender: false }
+    Field {
+        key: key.into(),
+        label: if label.is_empty() { String::new() } else { tr(label) },
+        desc: if desc.is_empty() { String::new() } else { tr(desc) },
+        kind,
+        value,
+        visible,
+        rerender: false,
+    }
 }
 
 struct Builder<'a> {
@@ -167,7 +196,11 @@ struct Builder<'a> {
 
 impl Builder<'_> {
     fn add(&mut self, key: &str, label: &str, desc: &str, kind: Kind, visible: bool) -> &mut Field {
-        let full = if matches!(key, "name" | "autostart" | "auto_restart") { key.to_string() } else { format!("{}.{key}", self.prefix) };
+        let full = if matches!(key, "name" | "autostart" | "auto_restart") {
+            key.to_string()
+        } else {
+            format!("{}.{key}", self.prefix)
+        };
         let value = match full.split_once('.') {
             Some((a, b)) => self.node[a][b].clone(),
             None => self.node[key].clone(),
@@ -218,7 +251,11 @@ fn inbound_targets(g: &Obj, own: &str) -> Kind {
     let mut o = vec![(String::new(), tr("(not connected)"))];
     o.extend(list(g, "outbounds").map(|x| (s(x, "id").into(), s(x, "name").into())));
     o.extend(list(g, "routers").map(|x| (s(x, "id").into(), tr("Router {name}").replace("{name}", s(x, "name")))));
-    o.extend(list(g, "inbounds").filter(|x| s(x, "id") != own).map(|x| (s(x, "id").into(), tr("relay → {name}").replace("{name}", s(x, "name")))));
+    o.extend(
+        list(g, "inbounds")
+            .filter(|x| s(x, "id") != own)
+            .map(|x| (s(x, "id").into(), tr("relay → {name}").replace("{name}", s(x, "name")))),
+    );
     o.extend(lane_choices(g));
     Kind::Choice(o)
 }
@@ -227,8 +264,16 @@ fn inbound_targets(g: &Obj, own: &str) -> Kind {
 fn router_targets(g: &Obj, own: &str) -> Kind {
     let mut o = vec![(String::new(), tr("(not connected)"))];
     o.extend(list(g, "outbounds").map(|x| (s(x, "id").into(), s(x, "name").into())));
-    o.extend(list(g, "routers").filter(|x| s(x, "id") != own).map(|x| (s(x, "id").into(), tr("Router {name}").replace("{name}", s(x, "name")))));
-    o.extend(lane_choices(g).into_iter().filter(|(id, _)| !own.is_empty() && !graph::find(g, own).is_some_and(|(_, n)| n["inputs"].as_array().is_some_and(|a| a.iter().any(|x| x["id"] == json!(id))))));
+    o.extend(
+        list(g, "routers")
+            .filter(|x| s(x, "id") != own)
+            .map(|x| (s(x, "id").into(), tr("Router {name}").replace("{name}", s(x, "name")))),
+    );
+    o.extend(lane_choices(g).into_iter().filter(|(id, _)| {
+        !own.is_empty()
+            && !graph::find(g, own)
+                .is_some_and(|(_, n)| n["inputs"].as_array().is_some_and(|a| a.iter().any(|x| x["id"] == json!(id))))
+    }));
     Kind::Choice(o)
 }
 
@@ -247,7 +292,23 @@ fn inbound_types() -> Kind {
 }
 
 fn outbound_types() -> Kind {
-    let types = ["direct", "http", "https", "socks4", "socks5", "shadowsocks", "hysteria2", "wireguard", "vless", "vmess", "trojan", "tuic", "subscription", "group", "block"];
+    let types = [
+        "direct",
+        "http",
+        "https",
+        "socks4",
+        "socks5",
+        "shadowsocks",
+        "hysteria2",
+        "wireguard",
+        "vless",
+        "vmess",
+        "trojan",
+        "tuic",
+        "subscription",
+        "group",
+        "block",
+    ];
     Kind::Choice(types.iter().map(|t| (t.to_string(), graph::outbound_label(t))).collect())
 }
 
@@ -262,9 +323,17 @@ pub const OVERRIDABLE: [(&str, &str, &str); 7] = [
     ("timeout", "Idle timeout (s)", ""),
     ("log_connections", "Log connections", ""),
     ("log_close", "Log connection close details", ""),
-    ("dns_server", "DNS server", "Empty = the PC's DNS. Otherwise 1.1.1.1 (UDP), tcp://, tls:// (DoT), https://…/dns-query (DoH), quic:// or h3://. Used where ProxyDock looks names up itself (Direct, IP rules, TUN). Needs the sing-box engine"),
+    (
+        "dns_server",
+        "DNS server",
+        "Empty = the PC's DNS. Otherwise 1.1.1.1 (UDP), tcp://, tls:// (DoT), https://…/dns-query (DoH), quic:// or h3://. Used where ProxyDock looks names up itself (Direct, IP rules, TUN). Needs the sing-box engine",
+    ),
     // (several servers in the same field: the extra ones go to dns_extra)
-    ("dns_via_outbound", "DNS through the outbound", "The card's own lookups go through its tunnel or upstream instead of leaving this PC directly (needs a DNS server above)"),
+    (
+        "dns_via_outbound",
+        "DNS through the outbound",
+        "The card's own lookups go through its tunnel or upstream instead of leaving this PC directly (needs a DNS server above)",
+    ),
 ];
 
 fn peers(ib: &Value) -> Vec<Value> {
@@ -286,16 +355,45 @@ pub fn inbound_form(g: &Obj, glob: &Map<String, Value>, node: &Value) -> Vec<Fie
     b.add("auto_restart", "Restart automatically", "If it stops on its own or fails to start (engine exit, port busy), try again after 3 s, then less often up to every minute", Kind::Bool, true);
     b.push(field("", "Inbound (how this PC accepts connections)", "", Kind::Heading, json!(null), true));
     b.add("type", "Protocol", "", inbound_types(), true).rerender = true;
-    b.add("host", "Listen address · port", "127.0.0.1 = this PC only, 0.0.0.0 = allow other PCs (check authentication and firewall)", Kind::Text, it != "tun" && it != "wireguard");
-    b.add("port", if it == "wireguard" { "Listen address · port" } else { "" }, "", Kind::Int { min: 1, max: 65535 }, it != "tun");
+    b.add(
+        "host",
+        "Listen address · port",
+        "127.0.0.1 = this PC only, 0.0.0.0 = allow other PCs (check authentication and firewall)",
+        Kind::Text,
+        it != "tun" && it != "wireguard",
+    );
+    b.add(
+        "port",
+        if it == "wireguard" { "Listen address · port" } else { "" },
+        "",
+        Kind::Int { min: 1, max: 65535 },
+        it != "tun",
+    );
     b.push(field("port.check", "Check availability", "", Kind::Button, json!(null), it != "tun"));
-    b.add("tun_stack", "Network stack", "How sing-box handles the captured packets. Try another one if some apps misbehave",
-        choice(&[("mixed", tr("mixed (recommended)")), ("system", "system".into()), ("gvisor", "gvisor".into())]), it == "tun");
-    b.add("tun_strict_route", "Strict route", "Also stops traffic that tries to go around the TUN. Can break IPv6 on Windows; leave off unless needed", Kind::Bool, it == "tun");
+    b.add(
+        "tun_stack",
+        "Network stack",
+        "How sing-box handles the captured packets. Try another one if some apps misbehave",
+        choice(&[("mixed", tr("mixed (recommended)")), ("system", "system".into()), ("gvisor", "gvisor".into())]),
+        it == "tun",
+    );
+    b.add(
+        "tun_strict_route",
+        "Strict route",
+        "Also stops traffic that tries to go around the TUN. Can break IPv6 on Windows; leave off unless needed",
+        Kind::Bool,
+        it == "tun",
+    );
     b.add("tun_fakeip", "Fake-IP DNS", "Apps get placeholder addresses (198.18.x.x) at once and the real name is looked up where the traffic leaves (e.g. at the VPN server), so names do not leak to the local network. Needs the sing-box engine", Kind::Bool, it == "tun");
     b.add("fwd_host", "Forward to", "Every connection to this port goes to this address, through the outbound below (e.g. a remote desktop or SSH server behind the VPN)", Kind::Text, it == "forward");
     b.add("fwd_port", "", "", Kind::Int { min: 0, max: 65535 }, it == "forward");
-    b.add("fwd_network", "", "", choice(&[("tcp", "TCP".into()), ("udp", "UDP".into()), ("both", "TCP + UDP".into())]), it == "forward");
+    b.add(
+        "fwd_network",
+        "",
+        "",
+        choice(&[("tcp", "TCP".into()), ("udp", "UDP".into()), ("both", "TCP + UDP".into())]),
+        it == "forward",
+    );
     // WireGuard server: key, network, devices
     let wg = it == "wireguard";
     b.add("wg_private_key", "Server private key", "Generated automatically. Keep it secret", Kind::Secret, wg);
@@ -303,11 +401,30 @@ pub fn inbound_form(g: &Obj, glob: &Map<String, Value>, node: &Value) -> Vec<Fie
     b.add("wg_address", "Tunnel network · address for devices", "Devices get addresses from this network. The second box is the address devices use to reach this PC (empty = this PC's LAN IP; for the internet use your public IP or DDNS name and forward the UDP port on the router)", Kind::Text, wg);
     b.add("wg_endpoint", "", "", Kind::Text, wg);
     let devices = peers(ib);
-    b.push(field("", "Devices", "Each phone or PC gets its own key. Copy or save its config and import it in the WireGuard app on that device", Kind::Heading, json!(null), wg));
+    b.push(field(
+        "",
+        "Devices",
+        "Each phone or PC gets its own key. Copy or save its config and import it in the WireGuard app on that device",
+        Kind::Heading,
+        json!(null),
+        wg,
+    ));
     for (i, p) in devices.iter().enumerate() {
-        let buttons = vec![(format!("wgdev.conf.{i}"), tr("Copy config")), (format!("wgdev.save.{i}"), tr("Save .conf")), (format!("wgdev.del.{i}"), tr("Remove"))];
+        let buttons = vec![
+            (format!("wgdev.conf.{i}"), tr("Copy config")),
+            (format!("wgdev.save.{i}"), tr("Save .conf")),
+            (format!("wgdev.del.{i}"), tr("Remove")),
+        ];
         let name = p.get("name").map_or_else(|| "?".to_string(), crate::singbox::compile::py_str);
-        b.push(Field { key: format!("wgdev.{i}"), label: name, desc: String::new(), kind: Kind::Item(buttons), value: p["address"].clone(), visible: wg, rerender: false });
+        b.push(Field {
+            key: format!("wgdev.{i}"),
+            label: name,
+            desc: String::new(),
+            kind: Kind::Item(buttons),
+            value: p["address"].clone(),
+            visible: wg,
+            rerender: false,
+        });
     }
     b.push(field("wg_new_name", "Add device", "", Kind::Text, json!(""), wg));
     b.push(field("wgdev.add", "Add", "", Kind::Button, json!(null), wg));
@@ -316,27 +433,64 @@ pub fn inbound_form(g: &Obj, glob: &Map<String, Value>, node: &Value) -> Vec<Fie
     b.add("username", "Account", "", Kind::Text, can_auth && auth);
     b.add("password", "", "", Kind::Secret, can_auth && auth);
     let tls_files = matches!(it, "https" | "hysteria2");
-    b.add("tls_cert", "TLS certificate", "PEM format. If empty, a self-signed certificate is generated (clients must skip certificate verification)", Kind::Text, tls_files);
+    b.add(
+        "tls_cert",
+        "TLS certificate",
+        "PEM format. If empty, a self-signed certificate is generated (clients must skip certificate verification)",
+        Kind::Text,
+        tls_files,
+    );
     b.push(field("ui.browse.inbound.tls_cert", "Browse", "", Kind::Button, json!(null), tls_files));
     b.add("tls_key", "TLS private key", "", Kind::Text, tls_files);
     b.push(field("ui.browse.inbound.tls_key", "Browse", "", Kind::Button, json!(null), tls_files));
     b.add("ss_method", "Cipher", "Must match the client", ss_methods(), it == "shadowsocks");
-    b.add("ss_password", "Shadowsocks password", "2022 ciphers use a base64 key - click 'Generate' after changing the cipher", Kind::Secret, it == "shadowsocks");
+    b.add(
+        "ss_password",
+        "Shadowsocks password",
+        "2022 ciphers use a base64 key - click 'Generate' after changing the cipher",
+        Kind::Secret,
+        it == "shadowsocks",
+    );
     b.push(field("gen.inbound.ss_password", "Generate", "", Kind::Button, json!(null), it == "shadowsocks"));
     b.add("hy2_password", "Hysteria2 password", "At least 8 characters", Kind::Secret, it == "hysteria2");
     b.push(field("gen.inbound.hy2_password", "Generate", "", Kind::Button, json!(null), it == "hysteria2"));
-    b.add("hy2_obfs_password", "Salamander obfuscation", "Makes the traffic look like random data. Clients need the same password. Needs the sing-box engine", Kind::Secret, it == "hysteria2");
-    b.add("hy2_up_mbps", "Speed limit up · down (Mbps)", "Upper limit per client. 0 = no limit", Kind::Int { min: 0, max: 100000 }, it == "hysteria2");
+    b.add(
+        "hy2_obfs_password",
+        "Salamander obfuscation",
+        "Makes the traffic look like random data. Clients need the same password. Needs the sing-box engine",
+        Kind::Secret,
+        it == "hysteria2",
+    );
+    b.add(
+        "hy2_up_mbps",
+        "Speed limit up · down (Mbps)",
+        "Upper limit per client. 0 = no limit",
+        Kind::Int { min: 0, max: 100000 },
+        it == "hysteria2",
+    );
     b.add("hy2_down_mbps", "", "", Kind::Int { min: 0, max: 100000 }, it == "hysteria2");
     // where it goes
     b.push(field("", "Connect to", "", Kind::Heading, json!(null), true));
     let id = s(node, "id");
-    b.push(field("target", "Outbound block", "Where this inbound sends its traffic. Choosing another inbound relays into it. Also editable on the canvas.",
-        inbound_targets(g, id), json!(node["target"].as_str().unwrap_or("")), true));
+    b.push(field(
+        "target",
+        "Outbound block",
+        "Where this inbound sends its traffic. Choosing another inbound relays into it. Also editable on the canvas.",
+        inbound_targets(g, id),
+        json!(node["target"].as_str().unwrap_or("")),
+        true,
+    ));
     // this card's own settings instead of the global ones
     b.push(field("", "Check connection", "", Kind::Heading, json!(null), true));
     b.push(field("probe", "Check connection", "Tests the current, unsaved settings: connects to an HTTPS site through the outbound and checks that the inbound port can be opened (including the certificate).", Kind::Button, json!(null), true));
-    b.push(field("", "Local settings (uncheck to use a value just for this proxy)", "", Kind::Heading, json!(null), true));
+    b.push(field(
+        "",
+        "Local settings (uncheck to use a value just for this proxy)",
+        "",
+        Kind::Heading,
+        json!(null),
+        true,
+    ));
     for (key, label, desc) in OVERRIDABLE {
         let own = &node["overrides"][key];
         let follow = own.is_null();
@@ -345,15 +499,31 @@ pub fn inbound_form(g: &Obj, glob: &Map<String, Value>, node: &Value) -> Vec<Fie
         f.rerender = true;
         f.desc = if f.desc.is_empty() { tr("Use global") } else { format!("{} · {}", tr("Use global"), f.desc) };
         if key == "dns_server" {
-            f.desc = format!("{} {}", f.desc, tr("Several servers (separated by commas): all are asked at once and the first answer is used."));
+            f.desc = format!(
+                "{} {}",
+                f.desc,
+                tr("Several servers (separated by commas): all are asked at once and the first answer is used.")
+            );
         }
         let value = if follow { glob.get(key).cloned().unwrap_or(Value::Null) } else { own.clone() };
         let (kind, value) = match key {
-            "allowed_domains" => (Kind::Text, json!(value.as_array().map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")).unwrap_or_default())),
+            "allowed_domains" => (
+                Kind::Text,
+                json!(
+                    value
+                        .as_array()
+                        .map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "))
+                        .unwrap_or_default()
+                ),
+            ),
             "timeout" => (Kind::Int { min: 10, max: 86400 }, value),
             // the main DNS server and the extra ones (they race it) in one field
             "dns_server" => {
-                let extra = if follow { glob.get("dns_extra").cloned().unwrap_or(Value::Null) } else { node["overrides"]["dns_extra"].clone() };
+                let extra = if follow {
+                    glob.get("dns_extra").cloned().unwrap_or(Value::Null)
+                } else {
+                    node["overrides"]["dns_extra"].clone()
+                };
                 (Kind::Text, json!(crate::config::dns_list_text(value.as_str().unwrap_or(""), &extra)))
             }
             _ => (Kind::Bool, value),
@@ -371,43 +541,83 @@ pub fn outbound_form(g: &Obj, node: &Value) -> Vec<Field> {
     let ot = ot.as_str();
     let sec = st("security");
     let remote = !matches!(ot, "direct" | "block" | "subscription" | "group");
-    let tls = matches!(ot, "https" | "hysteria2" | "trojan" | "tuic") || (matches!(ot, "vless" | "vmess") && sec != "none");
+    let tls =
+        matches!(ot, "https" | "hysteria2" | "trojan" | "tuic") || (matches!(ot, "vless" | "vmess") && sec != "none");
     let has_via = node["via"].is_string() && !matches!(ot, "direct" | "hysteria2" | "block");
     let fp = (matches!(ot, "vless" | "vmess" | "trojan") && sec != "none") || ot == "tuic";
     let tr_kind = st("transport");
     let gm = st("group_mode");
     let id = s(node, "id");
-    let members: Vec<String> = node["members"].as_array().into_iter().flatten().filter_map(|m| m.as_str().map(String::from)).collect();
+    let members: Vec<String> =
+        node["members"].as_array().into_iter().flatten().filter_map(|m| m.as_str().map(String::from)).collect();
     let mut b = Builder { node, prefix: "outbound", out: vec![] };
     b.add("name", "Name", "", Kind::Text, true);
-    b.add("type", "Type", "Direct = connect straight from this PC. The others go through another proxy/server", outbound_types(), true).rerender = true;
+    b.add(
+        "type",
+        "Type",
+        "Direct = connect straight from this PC. The others go through another proxy/server",
+        outbound_types(),
+        true,
+    )
+    .rerender = true;
     b.push(field("link.paste", "Paste share link", "", Kind::Button, json!(null), true));
     b.add("host", "Server address · port", "", Kind::Text, remote);
     b.add("port", "", "", Kind::Int { min: 0, max: 65535 }, remote);
     // through another block
     let mut vias = vec![(String::new(), tr("(directly)"))];
-    vias.extend(list(g, "outbounds").filter(|x| s(x, "id") != id && !matches!(x["outbound"]["type"].as_str(), Some("direct" | "group"))).map(|x| (s(x, "id").into(), s(x, "name").into())));
+    vias.extend(
+        list(g, "outbounds")
+            .filter(|x| s(x, "id") != id && !matches!(x["outbound"]["type"].as_str(), Some("direct" | "group")))
+            .map(|x| (s(x, "id").into(), s(x, "name").into())),
+    );
     b.push(field("via", "Through", "Connect to this server through another outbound block (e.g. a tunnel through the company proxy). Also editable on the canvas.",
         Kind::Choice(vias), json!(node["via"].as_str().unwrap_or("")), !matches!(ot, "direct" | "hysteria2" | "block" | "subscription" | "group"))).rerender = true;
-    b.add("bind", "Source address", "Connect from this IP of the PC (choose a network card / VPN). Empty = automatic", Kind::Text, ot == "direct");
+    b.add(
+        "bind",
+        "Source address",
+        "Connect from this IP of the PC (choose a network card / VPN). Empty = automatic",
+        Kind::Text,
+        ot == "direct",
+    );
     let iface_shown = !matches!(ot, "block" | "group") && !has_via;
     b.add("interface", "Network interface", "Leave through this network card, e.g. Tailscale, WireGuard, a VPN app or Wi-Fi, without changing the PC's routes. Needs the sing-box engine.", iface_choices(&st("interface")), iface_shown).rerender = true;
     b.push(field("iface.refresh", "Refresh the list", "", Kind::Button, json!(null), iface_shown));
     let user_shown = matches!(ot, "http" | "https" | "socks4" | "socks5");
     b.add("username", "Upstream proxy account", "", Kind::Text, user_shown);
-    b.add("password", if user_shown { "" } else { "Password" }, "", Kind::Secret, matches!(ot, "http" | "https" | "socks5" | "trojan" | "tuic"));
+    b.add(
+        "password",
+        if user_shown { "" } else { "Password" },
+        "",
+        Kind::Secret,
+        matches!(ot, "http" | "https" | "socks5" | "trojan" | "tuic"),
+    );
     // subscription
-    let servers: Vec<(String, String)> = crate::singbox::compile::servers_of(ob).iter().filter_map(|x| x["name"].as_str().map(|n| (n.to_string(), n.to_string()))).collect();
+    let servers: Vec<(String, String)> = crate::singbox::compile::servers_of(ob)
+        .iter()
+        .filter_map(|x| x["name"].as_str().map(|n| (n.to_string(), n.to_string())))
+        .collect();
     let updated = ob["sub_updated"].as_i64().unwrap_or(0);
     let when = if updated > 0 { crate::log::local_minute(updated) } else { "-".into() };
     b.add("sub_url", "Subscription address", "", Kind::Secret, ot == "subscription").desc =
         tr("{count} servers · updated {when}").replace("{count}", &servers.len().to_string()).replace("{when}", &when);
     b.push(field("sub.update", "Update now", "", Kind::Button, json!(null), ot == "subscription"));
-    b.add("sub_mode", "Server", "Fastest automatically measures the servers every few minutes and moves away from ones that stop working",
-        choice(&[("auto", tr("Fastest automatically")), ("select", tr("Pick a server"))]), ot == "subscription").rerender = true;
+    b.add(
+        "sub_mode",
+        "Server",
+        "Fastest automatically measures the servers every few minutes and moves away from ones that stop working",
+        choice(&[("auto", tr("Fastest automatically")), ("select", tr("Pick a server"))]),
+        ot == "subscription",
+    )
+    .rerender = true;
     let servers = if servers.is_empty() { vec![(String::new(), tr("(no servers yet)"))] } else { servers };
     b.add("sub_selected", "", "", Kind::Choice(servers), ot == "subscription" && st("sub_mode") == "select");
-    b.add("sub_interval", "Update every (hours)", "0 = only when you click 'Update now'", Kind::Int { min: 0, max: 720 }, ot == "subscription");
+    b.add(
+        "sub_interval",
+        "Update every (hours)",
+        "0 = only when you click 'Update now'",
+        Kind::Int { min: 0, max: 720 },
+        ot == "subscription",
+    );
     // group: mode and members
     let grp = ot == "group";
     b.add("group_mode", "Choose", match gm.as_str() {
@@ -415,22 +625,63 @@ pub fn outbound_form(g: &Obj, node: &Value) -> Vec<Field> {
         "select" => "Uses the member you choose. Switch it here or from the block's right-click menu (running cards restart)",
         _ => "Uses the member that answers fastest, and moves away from members that stop working",
     }, choice(&[("auto", tr("Fastest automatically")), ("failover", tr("Failover in order")), ("select", tr("Manual (choose one)"))]), grp).rerender = true;
-    b.add("group_selected", "", "", Kind::Choice(members.iter().map(|m| (m.clone(), name_of(g, m))).collect()), grp && gm == "select");
+    b.add(
+        "group_selected",
+        "",
+        "",
+        Kind::Choice(members.iter().map(|m| (m.clone(), name_of(g, m))).collect()),
+        grp && gm == "select",
+    );
     b.push(field("", "Members", "Outbound blocks this group uses, first one on top. You can also connect them on the canvas from the group's 'members' output.", Kind::Heading, json!(null), grp));
     for (i, m) in members.iter().enumerate() {
-        let buttons = vec![(format!("member.up.{i}"), "↑".into()), (format!("member.down.{i}"), "↓".into()), (format!("member.del.{i}"), tr("Remove"))];
-        b.push(Field { key: format!("member.{i}"), label: format!("{}. {}", i + 1, name_of(g, m)), desc: String::new(), kind: Kind::Item(buttons), value: json!(""), visible: grp, rerender: false });
+        let buttons = vec![
+            (format!("member.up.{i}"), "↑".into()),
+            (format!("member.down.{i}"), "↓".into()),
+            (format!("member.del.{i}"), tr("Remove")),
+        ];
+        b.push(Field {
+            key: format!("member.{i}"),
+            label: format!("{}. {}", i + 1, name_of(g, m)),
+            desc: String::new(),
+            kind: Kind::Item(buttons),
+            value: json!(""),
+            visible: grp,
+            rerender: false,
+        });
     }
     let addable = addable_members(g, node);
     let first = addable.first().map_or(String::new(), |a| a.0.clone());
     b.push(field("member_new", "Add a member", "", Kind::Choice(addable), json!(first), grp));
     b.push(field("member.add", "Add", "", Kind::Button, json!(null), grp));
-    b.add("group_test_url", "Test address · interval (s)", "Each member is measured by loading this address through it", Kind::Text, grp && gm != "select");
+    b.add(
+        "group_test_url",
+        "Test address · interval (s)",
+        "Each member is measured by loading this address through it",
+        Kind::Text,
+        grp && gm != "select",
+    );
     b.add("group_interval", "", "", Kind::Int { min: 10, max: 3600 }, grp && gm != "select");
-    b.add("group_tolerance", "Tolerance (ms)", "Switch only when another member is at least this much faster (avoids switching back and forth)", Kind::Int { min: 0, max: 5000 }, grp && gm == "auto");
+    b.add(
+        "group_tolerance",
+        "Tolerance (ms)",
+        "Switch only when another member is at least this much faster (avoids switching back and forth)",
+        Kind::Int { min: 0, max: 5000 },
+        grp && gm == "auto",
+    );
     // VMess / VLESS / TUIC / Trojan
-    b.add("vmess_cipher", "Encryption · alterId", "Use what the server expects. alterId 0 = current servers (AEAD)",
-        Kind::Choice(crate::checks::VMESS_CIPHERS.iter().enumerate().map(|(i, c)| (c.to_string(), if i == 0 { tr("auto (recommended)") } else { c.to_string() })).collect()), ot == "vmess");
+    b.add(
+        "vmess_cipher",
+        "Encryption · alterId",
+        "Use what the server expects. alterId 0 = current servers (AEAD)",
+        Kind::Choice(
+            crate::checks::VMESS_CIPHERS
+                .iter()
+                .enumerate()
+                .map(|(i, c)| (c.to_string(), if i == 0 { tr("auto (recommended)") } else { c.to_string() }))
+                .collect(),
+        ),
+        ot == "vmess",
+    );
     b.add("vmess_alter_id", "", "", Kind::Int { min: 0, max: 65535 }, ot == "vmess");
     b.add("uuid", "User UUID", "", Kind::Text, matches!(ot, "vless" | "vmess" | "tuic"));
     let secs: Vec<(&str, String)> = if ot == "vmess" {
@@ -438,49 +689,159 @@ pub fn outbound_form(g: &Obj, node: &Value) -> Vec<Field> {
     } else {
         vec![("none", tr("None")), ("tls", "TLS".into()), ("reality", "REALITY".into())]
     };
-    b.add("security", "Security · flow", if ot == "vless" { "Use what the server is set up with (REALITY usually with xtls-rprx-vision)" } else { "Use what the server is set up with" },
-        choice(&secs), matches!(ot, "vless" | "vmess")).rerender = true;
-    b.add("vless_flow", "", "", choice(&[("", tr("(no flow)")), ("xtls-rprx-vision", "xtls-rprx-vision".into())]), ot == "vless");
-    b.add("reality_public_key", "REALITY", "The server's public key and short ID. SNI = the site the server imitates", Kind::Text, ot == "vless" && sec == "reality");
+    b.add(
+        "security",
+        "Security · flow",
+        if ot == "vless" {
+            "Use what the server is set up with (REALITY usually with xtls-rprx-vision)"
+        } else {
+            "Use what the server is set up with"
+        },
+        choice(&secs),
+        matches!(ot, "vless" | "vmess"),
+    )
+    .rerender = true;
+    b.add(
+        "vless_flow",
+        "",
+        "",
+        choice(&[("", tr("(no flow)")), ("xtls-rprx-vision", "xtls-rprx-vision".into())]),
+        ot == "vless",
+    );
+    b.add(
+        "reality_public_key",
+        "REALITY",
+        "The server's public key and short ID. SNI = the site the server imitates",
+        Kind::Text,
+        ot == "vless" && sec == "reality",
+    );
     b.add("reality_short_id", "", "", Kind::Text, ot == "vless" && sec == "reality");
     let fps = ["", "chrome", "firefox", "safari", "edge", "ios", "android", "random", "randomized"];
-    b.add("fingerprint", "Fingerprint · ALPN", "Look like this browser's TLS (uTLS). Empty ALPN = default",
-        Kind::Choice(fps.iter().map(|f| (f.to_string(), if f.is_empty() { tr("(none)") } else { f.to_string() })).collect()), fp && ot != "tuic");
+    b.add(
+        "fingerprint",
+        "Fingerprint · ALPN",
+        "Look like this browser's TLS (uTLS). Empty ALPN = default",
+        Kind::Choice(
+            fps.iter().map(|f| (f.to_string(), if f.is_empty() { tr("(none)") } else { f.to_string() })).collect(),
+        ),
+        fp && ot != "tuic",
+    );
     b.add("alpn", if fp && ot != "tuic" { "" } else { "Fingerprint · ALPN" }, "", Kind::Text, fp);
-    b.add("transport", "Transport", "WebSocket and gRPC are used behind CDNs. Path for WebSocket, service name for gRPC",
-        choice(&[("tcp", "TCP".into()), ("ws", "WebSocket".into()), ("grpc", "gRPC".into())]), matches!(ot, "vless" | "vmess" | "trojan")).rerender = true;
+    b.add(
+        "transport",
+        "Transport",
+        "WebSocket and gRPC are used behind CDNs. Path for WebSocket, service name for gRPC",
+        choice(&[("tcp", "TCP".into()), ("ws", "WebSocket".into()), ("grpc", "gRPC".into())]),
+        matches!(ot, "vless" | "vmess" | "trojan"),
+    )
+    .rerender = true;
     b.add("transport_path", "", "", Kind::Text, matches!(ot, "vless" | "vmess" | "trojan") && tr_kind != "tcp");
     b.add("transport_host", "", "", Kind::Text, matches!(ot, "vless" | "vmess" | "trojan") && tr_kind == "ws");
-    b.add("tuic_congestion", "Congestion control · UDP relay", "Use what the TUIC server expects", plain(&["bbr", "cubic", "new_reno"]), ot == "tuic");
+    b.add(
+        "tuic_congestion",
+        "Congestion control · UDP relay",
+        "Use what the TUIC server expects",
+        plain(&["bbr", "cubic", "new_reno"]),
+        ot == "tuic",
+    );
     b.add("tuic_udp_relay", "", "", plain(&["native", "quic"]), ot == "tuic");
     // TLS
-    b.add("tls_verify", "Verify server certificate", "Turn off for servers with self-signed certificates (pinning the fingerprint is recommended)", Kind::Bool, tls && !(ot == "vless" && sec == "reality"));
+    b.add(
+        "tls_verify",
+        "Verify server certificate",
+        "Turn off for servers with self-signed certificates (pinning the fingerprint is recommended)",
+        Kind::Bool,
+        tls && !(ot == "vless" && sec == "reality"),
+    );
     b.add("sni", "SNI (server name)", "Servers that check the name (e.g. the official Hysteria2 server) refuse a wrong one. Connecting by IP? Click 'Detect from server'.", Kind::Text, tls);
-    b.push(field("sni.detect", "Detect from server", "Read the server's certificate and use its name", Kind::Button, json!(null), tls));
-    b.add("pin_sha256", "Pin certificate fingerprint", "If set, only a certificate with this fingerprint is accepted", Kind::Text, ot == "hysteria2");
+    b.push(field(
+        "sni.detect",
+        "Detect from server",
+        "Read the server's certificate and use its name",
+        Kind::Button,
+        json!(null),
+        tls,
+    ));
+    b.add(
+        "pin_sha256",
+        "Pin certificate fingerprint",
+        "If set, only a certificate with this fingerprint is accepted",
+        Kind::Text,
+        ot == "hysteria2",
+    );
     // Shadowsocks / Hysteria2
     b.add("ss_method", "Cipher", "Must match the server", ss_methods(), ot == "shadowsocks");
     b.add("ss_password", "Shadowsocks password", "", Kind::Secret, ot == "shadowsocks");
     b.add("hy2_password", "Hysteria2 password", "", Kind::Secret, ot == "hysteria2");
-    b.add("hy2_obfs_password", "Salamander obfuscation", "Only if the server uses it (obfs-password in the link)", Kind::Secret, ot == "hysteria2");
-    b.add("hy2_up_mbps", "Bandwidth up · down (Mbps)", "Brutal: enter your real line speed to push through lossy networks. 0 = automatic (BBR)", Kind::Int { min: 0, max: 100000 }, ot == "hysteria2");
+    b.add(
+        "hy2_obfs_password",
+        "Salamander obfuscation",
+        "Only if the server uses it (obfs-password in the link)",
+        Kind::Secret,
+        ot == "hysteria2",
+    );
+    b.add(
+        "hy2_up_mbps",
+        "Bandwidth up · down (Mbps)",
+        "Brutal: enter your real line speed to push through lossy networks. 0 = automatic (BBR)",
+        Kind::Int { min: 0, max: 100000 },
+        ot == "hysteria2",
+    );
     b.add("hy2_down_mbps", "", "", Kind::Int { min: 0, max: 100000 }, ot == "hysteria2");
-    b.add("hy2_ports", "Port hopping · interval (s)", "Ports the server listens on, e.g. 20000-30000 or 443,5000-6000. Empty = off", Kind::Text, ot == "hysteria2");
+    b.add(
+        "hy2_ports",
+        "Port hopping · interval (s)",
+        "Ports the server listens on, e.g. 20000-30000 or 443,5000-6000. Empty = off",
+        Kind::Text,
+        ot == "hysteria2",
+    );
     b.add("hy2_hop_interval", "", "", Kind::Int { min: 5, max: 3600 }, ot == "hysteria2");
     // WireGuard
     let wg = ot == "wireguard";
-    b.push(field("ui.wg.import", "Import .conf…", "Fill everything in from a .conf file from your VPN provider or WireGuard server", Kind::Button, json!(null), wg));
+    b.push(field(
+        "ui.wg.import",
+        "Import .conf…",
+        "Fill everything in from a .conf file from your VPN provider or WireGuard server",
+        Kind::Button,
+        json!(null),
+        wg,
+    ));
     b.add("wg_private_key", "Private key", "", Kind::Secret, wg);
     b.push(field("gen.outbound.wg_private_key", "Generate", "", Kind::Button, json!(null), wg));
     b.push(field("wg_public", "Public key", "", Kind::Info, json!(crate::wg::public_of(&st("wg_private_key"))), wg));
-    b.add("wg_address", "Tunnel address", "This side's address inside the tunnel (Address in the .conf)", Kind::Text, wg);
+    b.add(
+        "wg_address",
+        "Tunnel address",
+        "This side's address inside the tunnel (Address in the .conf)",
+        Kind::Text,
+        wg,
+    );
     b.add("wg_peer_public_key", "Server public key", "PublicKey of the [Peer]", Kind::Text, wg);
     b.add("wg_preshared_key", "Preshared key", "", Kind::Secret, wg);
-    b.add("wg_allowed_ips", "Allowed IPs", "Destinations sent into the tunnel. 0.0.0.0/0, ::/0 = everything", Kind::Text, wg);
-    b.add("wg_mtu", "MTU · keepalive (s)", "Keepalive 0 = off. 25 helps behind NAT", Kind::Int { min: 576, max: 9200 }, wg);
+    b.add(
+        "wg_allowed_ips",
+        "Allowed IPs",
+        "Destinations sent into the tunnel. 0.0.0.0/0, ::/0 = everything",
+        Kind::Text,
+        wg,
+    );
+    b.add(
+        "wg_mtu",
+        "MTU · keepalive (s)",
+        "Keepalive 0 = off. 25 helps behind NAT",
+        Kind::Int { min: 576, max: 9200 },
+        wg,
+    );
     b.add("wg_keepalive", "", "", Kind::Int { min: 0, max: 3600 }, wg);
     b.push(field("", "Check connection", "", Kind::Heading, json!(null), true));
-    b.push(field("probe", "Check connection", "Tests the current, unsaved settings: connects to an HTTPS site through this outbound.", Kind::Button, json!(null), true));
+    b.push(field(
+        "probe",
+        "Check connection",
+        "Tests the current, unsaved settings: connects to an HTTPS site through this outbound.",
+        Kind::Button,
+        json!(null),
+        true,
+    ));
     b.out
 }
 
@@ -492,16 +853,31 @@ pub fn router_form(g: &Obj, node: &Value) -> Vec<Field> {
     let targets = router_targets(g, id);
     let mut out = vec![field("name", "Name", "", Kind::Text, node["name"].clone(), true)];
     if is_if {
-        out.push(field("switch", "Manual switch", "No condition: switched on, everything goes to 'then'; off, to 'else' (a kill switch)", Kind::Bool, json!(node["switch"] == json!(true)), true));
+        out.push(field(
+            "switch",
+            "Manual switch",
+            "No condition: switched on, everything goes to 'then'; off, to 'else' (a kill switch)",
+            Kind::Bool,
+            json!(node["switch"] == json!(true)),
+            true,
+        ));
         out.last_mut().unwrap().rerender = true;
         out.push(field("switch_on", "Switched on", "", Kind::Bool, json!(node["switch_on"] == json!(true)), switch));
     }
     let advanced = ROUTER_ADVANCED.load(Ordering::Relaxed);
     // Simple / Advanced (Python's segmented switch above the rules); advanced shows the long note
-    let mut view = field("router_view", if is_if { "Condition" } else { "Rules (checked from the top; the first match wins)" }, "",
-        choice(&[("simple", tr("Simple")), ("advanced", tr("Advanced"))]), json!(if advanced { "advanced" } else { "simple" }), !switch);
+    let mut view = field(
+        "router_view",
+        if is_if { "Condition" } else { "Rules (checked from the top; the first match wins)" },
+        "",
+        choice(&[("simple", tr("Simple")), ("advanced", tr("Advanced"))]),
+        json!(if advanced { "advanced" } else { "simple" }),
+        !switch,
+    );
     if advanced {
-        view.desc = tr("Inside one rule, any one of the address conditions (domains, IPs, GeoIP, Geosite, private network) is enough; port and program must also match. Separate several values with commas. Program rules work for connections from this PC. GeoIP and Geosite data is downloaded once a day.");
+        view.desc = tr(
+            "Inside one rule, any one of the address conditions (domains, IPs, GeoIP, Geosite, private network) is enough; port and program must also match. Separate several values with commas. Program rules work for connections from this PC. GeoIP and Geosite data is downloaded once a day.",
+        );
     }
     view.rerender = true;
     out.push(view);
@@ -512,54 +888,150 @@ pub fn router_form(g: &Obj, node: &Value) -> Vec<Field> {
         let buttons = if is_if {
             vec![]
         } else {
-            vec![(format!("rule.up.{i}"), "↑".into()), (format!("rule.down.{i}"), "↓".into()), (format!("rule.del.{i}"), tr("Remove"))]
+            vec![
+                (format!("rule.up.{i}"), "↑".into()),
+                (format!("rule.down.{i}"), "↓".into()),
+                (format!("rule.del.{i}"), tr("Remove")),
+            ]
         };
-        out.push(Field { key: format!("rule.{i}"), label: title, desc: String::new(), kind: Kind::Item(buttons), value: json!(""), visible: true, rerender: false });
+        out.push(Field {
+            key: format!("rule.{i}"),
+            label: title,
+            desc: String::new(),
+            kind: Kind::Item(buttons),
+            value: json!(""),
+            visible: true,
+            rerender: false,
+        });
         if !is_if {
             out.push(field(&format!("{base}.name"), "Name", "", Kind::Text, r["name"].clone(), true));
         }
-        let text_of = |k: &str| r["match"][k].as_array().map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+        let text_of = |k: &str| {
+            r["match"][k]
+                .as_array()
+                .map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "))
+                .unwrap_or_default()
+        };
         let private = json!(r["match"]["ip_private"] == json!(true));
         if advanced {
             for (k, label, example) in CONDS {
-                out.push(Field { key: format!("{base}.match.{k}"), label: tr(label), desc: example.into(), kind: Kind::Text, value: json!(text_of(k)), visible: !switch, rerender: false });
+                out.push(Field {
+                    key: format!("{base}.match.{k}"),
+                    label: tr(label),
+                    desc: example.into(),
+                    kind: Kind::Text,
+                    value: json!(text_of(k)),
+                    visible: !switch,
+                    rerender: false,
+                });
                 if k == "process_name" {
-                    out.push(field(&format!("ui.pick.{base}.match.process_name"), "Choose...", "", Kind::Button, json!(null), !switch));
+                    out.push(field(
+                        &format!("ui.pick.{base}.match.process_name"),
+                        "Choose...",
+                        "",
+                        Kind::Button,
+                        json!(null),
+                        !switch,
+                    ));
                 }
             }
-            out.push(field(&format!("{base}.match.ip_private"), "Private network addresses", "", Kind::Bool, private, !switch));
+            out.push(field(
+                &format!("{base}.match.ip_private"),
+                "Private network addresses",
+                "",
+                Kind::Bool,
+                private,
+                !switch,
+            ));
         } else {
             // a row per condition in use, each with its remove button (Python `CondRow`)
             let used = simple_conds(r);
             for k in &used {
                 if *k == "ip_private" {
-                    out.push(field(&format!("{base}.match.ip_private"), "Private network addresses", "LAN, loopback and other private IPs", Kind::Bool, private.clone(), !switch));
+                    out.push(field(
+                        &format!("{base}.match.ip_private"),
+                        "Private network addresses",
+                        "LAN, loopback and other private IPs",
+                        Kind::Bool,
+                        private.clone(),
+                        !switch,
+                    ));
                 } else {
                     let (_, label, example) = CONDS.iter().find(|c| c.0 == *k).copied().unwrap();
-                    out.push(Field { key: format!("{base}.match.{k}"), label: tr(label), desc: example.into(), kind: Kind::Text, value: json!(text_of(k)), visible: !switch, rerender: false });
+                    out.push(Field {
+                        key: format!("{base}.match.{k}"),
+                        label: tr(label),
+                        desc: example.into(),
+                        kind: Kind::Text,
+                        value: json!(text_of(k)),
+                        visible: !switch,
+                        rerender: false,
+                    });
                     if *k == "process_name" {
-                        out.push(field(&format!("ui.pick.{base}.match.process_name"), "Choose...", "", Kind::Button, json!(null), !switch));
+                        out.push(field(
+                            &format!("ui.pick.{base}.match.process_name"),
+                            "Choose...",
+                            "",
+                            Kind::Button,
+                            json!(null),
+                            !switch,
+                        ));
                     }
                 }
-                out.push(field(&format!("rule.cond.del.{i}.{k}"), "Remove condition", "", Kind::Button, json!(null), !switch));
+                out.push(field(
+                    &format!("rule.cond.del.{i}.{k}"),
+                    "Remove condition",
+                    "",
+                    Kind::Button,
+                    json!(null),
+                    !switch,
+                ));
             }
-            let free: Vec<(String, String)> = CONDS.iter().filter(|c| !used.contains(&c.0)).map(|c| (c.0.to_string(), tr(c.1)))
-                .chain((!used.contains(&"ip_private")).then(|| ("ip_private".to_string(), tr("Private network addresses"))))
+            let free: Vec<(String, String)> = CONDS
+                .iter()
+                .filter(|c| !used.contains(&c.0))
+                .map(|c| (c.0.to_string(), tr(c.1)))
+                .chain(
+                    (!used.contains(&"ip_private"))
+                        .then(|| ("ip_private".to_string(), tr("Private network addresses"))),
+                )
                 .collect();
             if !free.is_empty() {
                 let first = free[0].0.clone();
-                out.push(field(&format!("{base}.cond_new"), "Add condition", "One matching website / IP / country condition is enough; ports and programs must also match.", Kind::Choice(free), json!(first), !switch));
+                out.push(field(
+                    &format!("{base}.cond_new"),
+                    "Add condition",
+                    "One matching website / IP / country condition is enough; ports and programs must also match.",
+                    Kind::Choice(free),
+                    json!(first),
+                    !switch,
+                ));
                 out.push(field(&format!("rule.cond.add.{i}"), "Add", "", Kind::Button, json!(null), !switch));
             }
         }
-        out.push(field(&format!("{base}.target"), if is_if { "then" } else { "then →" }, "", targets.clone(), json!(r["target"].as_str().unwrap_or("")), true));
+        out.push(field(
+            &format!("{base}.target"),
+            if is_if { "then" } else { "then →" },
+            "",
+            targets.clone(),
+            json!(r["target"].as_str().unwrap_or("")),
+            true,
+        ));
     }
     if !is_if {
-        let templates: Vec<(String, String)> = rule_templates().into_iter().enumerate().map(|(i, t)| (i.to_string(), t.0)).collect();
+        let templates: Vec<(String, String)> =
+            rule_templates().into_iter().enumerate().map(|(i, t)| (i.to_string(), t.0)).collect();
         out.push(field("rule_template", "Add rule", "", Kind::Choice(templates), json!("0"), true));
         out.push(field("rule.add", "Add", "", Kind::Button, json!(null), true));
     }
-    out.push(field("default", if is_if { "else" } else { "Default" }, "Where traffic goes when no rule matches", targets, json!(node["default"].as_str().unwrap_or("")), true));
+    out.push(field(
+        "default",
+        if is_if { "else" } else { "Default" },
+        "Where traffic goes when no rule matches",
+        targets,
+        json!(node["default"].as_str().unwrap_or("")),
+        true,
+    ));
     out
 }
 
@@ -571,29 +1043,69 @@ pub fn relay_form(g: &Obj, node: &Value) -> Vec<Field> {
     let routed = node["routed"] == json!(true);
     let ins: Vec<&Value> = node["inputs"].as_array().into_iter().flatten().collect();
     let outs: Vec<&Value> = node["outputs"].as_array().into_iter().flatten().collect();
-    let mut out = vec![field("name", "Name", if wireless { "The name above is the input block's title." } else { "" }, Kind::Text, node["name"].clone(), true)];
+    let mut out = vec![field(
+        "name",
+        "Name",
+        if wireless { "The name above is the input block's title." } else { "" },
+        Kind::Text,
+        node["name"].clone(),
+        true,
+    )];
     if wireless {
         out.push(field("name_out", "Output block title", "", Kind::Text, node["name_out"].clone(), true));
         out.push(field("number", "Pair number", "", Kind::Int { min: 1, max: 999 }, node["number"].clone(), true));
     } else {
-        out.push(field("routed", "Wiring", "", choice(&[("false", tr("Straight")), ("true", tr("Routed (wire lanes freely)"))]), json!(routed.to_string()), true));
+        out.push(field(
+            "routed",
+            "Wiring",
+            "",
+            choice(&[("false", tr("Straight")), ("true", tr("Routed (wire lanes freely)"))]),
+            json!(routed.to_string()),
+            true,
+        ));
         out.last_mut().unwrap().rerender = true;
-        out.push(field("lanes_in", "Inputs", "", Kind::Int { min: 1, max: graph::MAX_LANES as i64 }, json!(ins.len()), true));
+        out.push(field(
+            "lanes_in",
+            "Inputs",
+            "",
+            Kind::Int { min: 1, max: graph::MAX_LANES as i64 },
+            json!(ins.len()),
+            true,
+        ));
         out.last_mut().unwrap().rerender = true;
-        out.push(field("lanes_out", "Outputs", "", Kind::Int { min: 1, max: graph::MAX_LANES as i64 }, json!(outs.len()), routed));
+        out.push(field(
+            "lanes_out",
+            "Outputs",
+            "",
+            Kind::Int { min: 1, max: graph::MAX_LANES as i64 },
+            json!(outs.len()),
+            routed,
+        ));
         out.last_mut().unwrap().rerender = true;
         if routed {
             let mut wiring = vec![(String::new(), tr("(not wired)"))];
-            wiring.extend(outs.iter().enumerate().map(|(k, o)| (s(o, "id").to_string(), tr("→ output {n}").replace("{n}", &(k + 1).to_string()))));
+            wiring.extend(
+                outs.iter()
+                    .enumerate()
+                    .map(|(k, o)| (s(o, "id").to_string(), tr("→ output {n}").replace("{n}", &(k + 1).to_string()))),
+            );
             for (i, x) in ins.iter().enumerate() {
-                out.push(field(&format!("in.{i}.out"), "", "", Kind::Choice(wiring.clone()), json!(x["out"].as_str().unwrap_or("")), true));
+                out.push(field(
+                    &format!("in.{i}.out"),
+                    "",
+                    "",
+                    Kind::Choice(wiring.clone()),
+                    json!(x["out"].as_str().unwrap_or("")),
+                    true,
+                ));
                 out.last_mut().unwrap().label = tr("Input {n}").replace("{n}", &(i + 1).to_string());
             }
         }
     }
     let targets = router_targets(g, id);
     for (k, o) in outs.iter().enumerate() {
-        let mut f = field(&format!("out.{k}.target"), "", "", targets.clone(), json!(o["target"].as_str().unwrap_or("")), true);
+        let mut f =
+            field(&format!("out.{k}.target"), "", "", targets.clone(), json!(o["target"].as_str().unwrap_or("")), true);
         f.label = tr("Output {n}").replace("{n}", &(k + 1).to_string());
         out.push(f);
     }
@@ -663,9 +1175,32 @@ pub fn set_lane_count(n: &mut Value, side: &str, count: usize) {
 /// The draft with the values typed so far put in (Python `collect`), validated like a loaded block; links stay.
 pub fn apply(kind: &str, node: &Value, values: &Map<String, Value>) -> Value {
     let mut n = node.clone();
-    let strip_keys = ["host", "tls_cert", "tls_key", "ss_password", "fwd_host", "wg_private_key", "wg_address", "wg_endpoint", "sni", "pin_sha256",
-        "hy2_ports", "bind", "interface", "group_test_url", "wg_peer_public_key", "wg_preshared_key", "wg_allowed_ips", "uuid",
-        "reality_public_key", "reality_short_id", "alpn", "transport_path", "transport_host", "sub_url"];
+    let strip_keys = [
+        "host",
+        "tls_cert",
+        "tls_key",
+        "ss_password",
+        "fwd_host",
+        "wg_private_key",
+        "wg_address",
+        "wg_endpoint",
+        "sni",
+        "pin_sha256",
+        "hy2_ports",
+        "bind",
+        "interface",
+        "group_test_url",
+        "wg_peer_public_key",
+        "wg_preshared_key",
+        "wg_allowed_ips",
+        "uuid",
+        "reality_public_key",
+        "reality_short_id",
+        "alpn",
+        "transport_path",
+        "transport_host",
+        "sub_url",
+    ];
     let mut follows: Vec<(String, bool)> = vec![];
     let mut lanes: Vec<(&str, usize)> = vec![];
     for (key, v) in values {
@@ -703,10 +1238,10 @@ pub fn apply(kind: &str, node: &Value, values: &Map<String, Value>) -> Value {
             }
             [section @ ("inbound" | "outbound"), k] => {
                 let mut v = typed(&n[*section][*k], v);
-                if strip_keys.contains(k) {
-                    if let Some(t) = v.as_str() {
-                        v = json!(crate::py::strip(t));
-                    }
+                if strip_keys.contains(k)
+                    && let Some(t) = v.as_str()
+                {
+                    v = json!(crate::py::strip(t));
                 }
                 n[*section][*k] = v;
             }
@@ -840,7 +1375,9 @@ fn token() -> String {
 fn ss_password(method: &str) -> String {
     use base64::Engine;
     match crate::checks::SS_METHODS.iter().find(|m| m.0 == method) {
-        Some((_, len, true)) => base64::engine::general_purpose::STANDARD.encode(crate::singbox::process::random_bytes(*len)),
+        Some((_, len, true)) => {
+            base64::engine::general_purpose::STANDARD.encode(crate::singbox::process::random_bytes(*len))
+        }
         _ => token(),
     }
 }
@@ -852,7 +1389,9 @@ pub fn on_open(kind: &str, node: &mut Value) {
     }
     let ib = &mut node["inbound"];
     match ib["type"].as_str() {
-        Some("shadowsocks") if s(ib, "ss_password").is_empty() => ib["ss_password"] = json!(ss_password(s(ib, "ss_method"))),
+        Some("shadowsocks") if s(ib, "ss_password").is_empty() => {
+            ib["ss_password"] = json!(ss_password(s(ib, "ss_method")))
+        }
         Some("hysteria2") if s(ib, "hy2_password").is_empty() => ib["hy2_password"] = json!(token()),
         Some("wireguard") if s(ib, "wg_private_key").is_empty() => ib["wg_private_key"] = json!(crate::wg::keypair().0),
         _ => {}
@@ -876,8 +1415,11 @@ fn paste_link(n: &mut Value, clipboard: &str) -> (bool, String, String) {
     let (fields, name) = match crate::links::parse(clipboard) {
         Ok(x) => x,
         Err(e) => {
-            let text = format!("{e}
-{}", tr("Copy a vless://, vmess://, trojan://, tuic://, ss:// or hysteria2:// link first"));
+            let text = format!(
+                "{e}
+{}",
+                tr("Copy a vless://, vmess://, trojan://, tuic://, ss:// or hysteria2:// link first")
+            );
             return (false, tr("Cannot use the clipboard"), text);
         }
     };
@@ -930,8 +1472,13 @@ pub fn act(g: &Obj, kind: &str, node: &Value, action: &str, values: &Map<String,
                 return Err(tr("WireGuard server: the tunnel address must be like 10.66.0.1/24"));
             };
             let (private, public) = crate::wg::keypair();
-            let typed_name = crate::py::head(values.get("wg_new_name").and_then(Value::as_str).unwrap_or("").trim(), 40);
-            let name = if typed_name.is_empty() { tr("Device {n}").replace("{n}", &(devs.len() + 1).to_string()) } else { typed_name };
+            let typed_name =
+                crate::py::head(values.get("wg_new_name").and_then(Value::as_str).unwrap_or("").trim(), 40);
+            let name = if typed_name.is_empty() {
+                tr("Device {n}").replace("{n}", &(devs.len() + 1).to_string())
+            } else {
+                typed_name
+            };
             devs.push(json!({"name": name, "private_key": private, "public_key": public, "address": addr}));
             n["inbound"]["wg_peers"] = json!(serde_json::to_string(&devs).unwrap());
         }
@@ -940,7 +1487,8 @@ pub fn act(g: &Obj, kind: &str, node: &Value, action: &str, values: &Map<String,
             if let Some(i) = idx(i).filter(|i| *i < devs.len()) {
                 devs.remove(i);
             }
-            n["inbound"]["wg_peers"] = json!(if devs.is_empty() { String::new() } else { serde_json::to_string(&devs).unwrap() });
+            n["inbound"]["wg_peers"] =
+                json!(if devs.is_empty() { String::new() } else { serde_json::to_string(&devs).unwrap() });
         }
         ["wgdev", "conf", i] => {
             let devs = peers(&n["inbound"]);
@@ -961,7 +1509,8 @@ pub fn act(g: &Obj, kind: &str, node: &Value, action: &str, values: &Map<String,
             };
             // (Python `_wgi_save`: the device name with only letters, digits, - and _)
             let name = p.get("name").map_or_else(String::new, crate::singbox::compile::py_str);
-            let safe: String = name.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+            let safe: String =
+                name.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
             let safe = if safe.is_empty() { "device".to_string() } else { safe };
             save = Some((format!("{safe}.conf"), crate::wg::client_conf(&n["inbound"], p, &endpoint)));
         }
@@ -976,7 +1525,10 @@ pub fn act(g: &Obj, kind: &str, node: &Value, action: &str, values: &Map<String,
                     // a new block still named after its type takes the file's name (Python `_wg_import`)
                     let current = py_strip(s(&n, "name"));
                     if current.is_empty() || current.starts_with(&graph::outbound_label("wireguard")) {
-                        let stem = std::path::Path::new(file).file_stem().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default();
+                        let stem = std::path::Path::new(file)
+                            .file_stem()
+                            .map(|x| x.to_string_lossy().into_owned())
+                            .unwrap_or_default();
                         n["name"] = json!(crate::py::head(&stem, 60));
                     }
                     let text = if notes.is_empty() { file.to_string() } else { notes.join("\n") };
@@ -991,7 +1543,8 @@ pub fn act(g: &Obj, kind: &str, node: &Value, action: &str, values: &Map<String,
             // (untouched, the list shows its first condition not in use)
             let used = simple_conds(r);
             let first_free = CONDS.iter().map(|c| c.0).chain(["ip_private"]).find(|c| !used.contains(c)).unwrap_or("");
-            let k = values.get(&format!("rules.{i}.cond_new")).and_then(Value::as_str).unwrap_or(first_free).to_string();
+            let k =
+                values.get(&format!("rules.{i}.cond_new")).and_then(Value::as_str).unwrap_or(first_free).to_string();
             if k == "ip_private" {
                 r["match"]["ip_private"] = json!(true);
             } else if CONDS.iter().any(|c| c.0 == k) {
@@ -1016,7 +1569,13 @@ pub fn act(g: &Obj, kind: &str, node: &Value, action: &str, values: &Map<String,
         ["member", "add"] => {
             // (untouched, the list shows the first block it can add)
             let first = addable_members(g, &n).first().map_or(String::new(), |a| a.0.clone());
-            if let Some(m) = values.get("member_new").and_then(Value::as_str).or(Some(first.as_str())).filter(|m| !m.is_empty()).map(String::from) {
+            if let Some(m) = values
+                .get("member_new")
+                .and_then(Value::as_str)
+                .or(Some(first.as_str()))
+                .filter(|m| !m.is_empty())
+                .map(String::from)
+            {
                 let m = m.as_str();
                 let members = n["members"].as_array_mut().unwrap();
                 if !members.contains(&json!(m)) {
@@ -1044,16 +1603,23 @@ pub fn act(g: &Obj, kind: &str, node: &Value, action: &str, values: &Map<String,
         ["rule", "add"] => {
             // from the chosen template (Python `RouterSection.add_rule`): its target is the first block of its type
             let k = n["rules"].as_array().map_or(0, Vec::len);
-            let pick_t = values.get("rule_template").and_then(Value::as_str).and_then(|t| t.parse::<usize>().ok()).unwrap_or(0);
-            let (_, name, m, target_type) = rule_templates().into_iter().nth(pick_t).unwrap_or_else(|| rule_templates().remove(0));
-            let target = target_type.and_then(|t| list(g, "outbounds").find(|x| x["outbound"]["type"] == json!(t))).map_or(Value::Null, |x| x["id"].clone());
+            let pick_t =
+                values.get("rule_template").and_then(Value::as_str).and_then(|t| t.parse::<usize>().ok()).unwrap_or(0);
+            let (_, name, m, target_type) =
+                rule_templates().into_iter().nth(pick_t).unwrap_or_else(|| rule_templates().remove(0));
+            let target = target_type
+                .and_then(|t| list(g, "outbounds").find(|x| x["outbound"]["type"] == json!(t)))
+                .map_or(Value::Null, |x| x["id"].clone());
             let id = crate::ids::new_id();
             if m.get("process_name").is_some() {
                 SHOWN.lock().unwrap().push((id.clone(), "process_name".into()));
                 pick = Some(format!("rules.{k}.match.process_name"));
             }
             let name = name.unwrap_or_else(|| tr("Rule {n}").replace("{n}", &(k + 1).to_string()));
-            n["rules"].as_array_mut().unwrap().push(json!({"id": id, "name": name, "match": m, "target": target, "color": ""}));
+            n["rules"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"id": id, "name": name, "match": m, "target": target, "color": ""}));
         }
         _ => return Err(String::new()),
     }
@@ -1074,7 +1640,11 @@ pub fn with_node(g: &Obj, kind: &str, node: &Value) -> Obj {
     // links into lanes a pass-through no longer has are cut (Python drop_dead_lane_links)
     if kind == "relay" {
         let lanes = graph::lane_index(&g);
-        let blocks: Vec<String> = ["inbounds", "outbounds", "routers"].iter().flat_map(|k| list(&g, k)).filter_map(|n| n["id"].as_str().map(String::from)).collect();
+        let blocks: Vec<String> = ["inbounds", "outbounds", "routers"]
+            .iter()
+            .flat_map(|k| list(&g, k))
+            .filter_map(|n| n["id"].as_str().map(String::from))
+            .collect();
         let alive = |t: &Value| -> Value {
             match t.as_str() {
                 Some(t) if lanes.is_input(t) || blocks.iter().any(|b| b == t) => json!(t),
@@ -1119,7 +1689,9 @@ pub fn as_proxy(g: &Obj, kind: &str, node: &Value) -> Option<Value> {
     match kind {
         "inbound" => graph::compile(&g2).into_iter().map(Value::Object).find(|p| p["id"] == node["id"]),
         "outbound" => {
-            let mut p = Value::Object(crate::config::validate_proxy(&json!({"id": "__edit__", "name": node["name"], "outbound": node["outbound"]})));
+            let mut p = Value::Object(crate::config::validate_proxy(
+                &json!({"id": "__edit__", "name": node["name"], "outbound": node["outbound"]}),
+            ));
             let resolved = graph::resolve_outbound(&g2, s(node, "id"));
             p["outbound"]["via"] = resolved.get("via").cloned().unwrap_or(Value::Null);
             if let Some(m) = resolved.get("members") {
@@ -1139,8 +1711,12 @@ fn errors_for(g: &Obj, kind: &str, node: &Value, for_check: bool) -> Vec<String>
             let mut errs = vec![];
             if let Some(t) = node["target"].as_str() {
                 match graph::find(&g2, t).map(|(_, n)| s(&n["inbound"], "type").to_string()).as_deref() {
-                    Some("tun") => errs.push(tr("A TUN card takes traffic from apps; another inbound cannot relay into it")),
-                    Some("wireguard") => errs.push(tr("A WireGuard server takes traffic from devices; another inbound cannot relay into it")),
+                    Some("tun") => {
+                        errs.push(tr("A TUN card takes traffic from apps; another inbound cannot relay into it"))
+                    }
+                    Some("wireguard") => errs.push(tr(
+                        "A WireGuard server takes traffic from devices; another inbound cannot relay into it",
+                    )),
                     _ => {}
                 }
             }
@@ -1149,7 +1725,11 @@ fn errors_for(g: &Obj, kind: &str, node: &Value, for_check: bool) -> Vec<String>
             let others: Vec<Value> = compiled.iter().filter(|o| o["id"] != node["id"]).cloned().collect();
             let unlinked = crate::checks::unlinked_error();
             // an unconnected inbound can be saved, it just cannot start
-            errs.extend(crate::checks::check_proxy(p, &others).into_iter().filter(|e| for_check || p["unlinked"] != json!(true) || *e != unlinked));
+            errs.extend(
+                crate::checks::check_proxy(p, &others)
+                    .into_iter()
+                    .filter(|e| for_check || p["unlinked"] != json!(true) || *e != unlinked),
+            );
             errs
         }
         "outbound" => {
@@ -1171,7 +1751,11 @@ fn errors_for(g: &Obj, kind: &str, node: &Value, for_check: bool) -> Vec<String>
                 errs.push(tr("Choose the default target (where traffic goes when no rule matches)"));
             }
             for (i, r) in node["rules"].as_array().into_iter().flatten().enumerate() {
-                let rname = r["name"].as_str().filter(|n| !n.is_empty()).map(String::from).unwrap_or_else(|| (i + 1).to_string());
+                let rname = r["name"]
+                    .as_str()
+                    .filter(|n| !n.is_empty())
+                    .map(String::from)
+                    .unwrap_or_else(|| (i + 1).to_string());
                 if s(r, "name").is_empty() && !is_if {
                     errs.push(tr("Rule {n}: enter a name").replace("{n}", &(i + 1).to_string()));
                 }
@@ -1203,12 +1787,21 @@ fn errors_for(g: &Obj, kind: &str, node: &Value, for_check: bool) -> Vec<String>
                     errs.push(tr("Enter the output block's title"));
                 }
                 let number = node["number"].clone();
-                if list(&g2, "relays").any(|r| r["wireless"] == json!(true) && r["number"] == number && r["id"] != node["id"]) {
-                    errs.push(tr("#{n} is already used by another wireless pair").replace("{n}", &crate::singbox::compile::py_str(&number)));
+                if list(&g2, "relays")
+                    .any(|r| r["wireless"] == json!(true) && r["number"] == number && r["id"] != node["id"])
+                {
+                    errs.push(
+                        tr("#{n} is already used by another wireless pair")
+                            .replace("{n}", &crate::singbox::compile::py_str(&number)),
+                    );
                 }
             }
             let lanes = graph::lane_index(&g2);
-            let looped = node["outputs"].as_array().into_iter().flatten().any(|x| x["target"].as_str().is_some_and(|t| lanes.lane_loop(t)))
+            let looped = node["outputs"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|x| x["target"].as_str().is_some_and(|t| lanes.lane_loop(t)))
                 || list(&g2, "routers").filter_map(|r| r["id"].as_str()).any(|rid| graph::router_loop(&g2, rid));
             if looped {
                 errs.push(tr("The links would go round in a circle"));
@@ -1255,16 +1848,26 @@ mod tests {
         let fs = inbound_form(&g, &glob, &n);
         assert!(!f(&fs, "inbound.username").visible);
         assert_eq!(f(&fs, "target").value, "d");
-        assert!(matches!(&f(&fs, "target").kind, Kind::Choice(o) if o.iter().any(|(v, l)| v == "L2" && l.contains("L"))));
+        assert!(
+            matches!(&f(&fs, "target").kind, Kind::Choice(o) if o.iter().any(|(v, l)| v == "L2" && l.contains("L")))
+        );
         assert!(!f(&fs, "overrides.timeout").visible);
         assert_eq!(f(&fs, "overrides.timeout").value, 300);
         // own timeout, then back to the global one
-        let n2 = apply("inbound", &n, &vals(&[("follow.timeout", json!(false)), ("overrides.timeout", json!("600")), ("target", json!("r"))]));
+        let n2 = apply(
+            "inbound",
+            &n,
+            &vals(&[("follow.timeout", json!(false)), ("overrides.timeout", json!("600")), ("target", json!("r"))]),
+        );
         assert_eq!(n2["overrides"]["timeout"], 600);
         assert_eq!(n2["target"], "r");
         let n3 = apply("inbound", &n2, &vals(&[("follow.timeout", json!(true))]));
         assert!(n3["overrides"]["timeout"].is_null());
-        let n4 = apply("inbound", &n, &vals(&[("follow.allowed_domains", json!(false)), ("overrides.allowed_domains", json!("a.com; *.b.com"))]));
+        let n4 = apply(
+            "inbound",
+            &n,
+            &vals(&[("follow.allowed_domains", json!(false)), ("overrides.allowed_domains", json!("a.com; *.b.com"))]),
+        );
         assert_eq!(n4["overrides"]["allowed_domains"], json!(["a.com", "*.b.com"]));
     }
 
@@ -1272,7 +1875,11 @@ mod tests {
     fn keys_devices_members_rules() {
         let g = g();
         // a WireGuard server: key on open, two devices with their own addresses and configs
-        let mut n = apply("inbound", &node(&g, "a"), &vals(&[("inbound.type", json!("wireguard")), ("inbound.port", json!("51820"))]));
+        let mut n = apply(
+            "inbound",
+            &node(&g, "a"),
+            &vals(&[("inbound.type", json!("wireguard")), ("inbound.port", json!("51820"))]),
+        );
         on_open("inbound", &mut n);
         assert!(crate::checks::valid_wg_key(n["inbound"]["wg_private_key"].as_str().unwrap()));
         let n = act(&g, "inbound", &n, "wgdev.add", &vals(&[("wg_new_name", json!("phone"))])).unwrap().node;
@@ -1281,22 +1888,38 @@ mod tests {
         assert_eq!((devs[0]["name"].as_str(), devs[0]["address"].as_str()), (Some("phone"), Some("10.66.0.2/32")));
         assert_eq!(devs[1]["address"], "10.66.0.3/32");
         let conf = act(&g, "inbound", &n, "wgdev.conf.0", &Map::new()).unwrap().show.unwrap().1;
-        assert!(conf.contains("Address = 10.66.0.2/32") && conf.contains(":51820") && conf.contains(&crate::wg::public_of(n["inbound"]["wg_private_key"].as_str().unwrap())));
+        assert!(
+            conf.contains("Address = 10.66.0.2/32")
+                && conf.contains(":51820")
+                && conf.contains(&crate::wg::public_of(n["inbound"]["wg_private_key"].as_str().unwrap()))
+        );
         assert!(errors(&g, "inbound", &n).iter().all(|e| !e.contains("WireGuard")), "{:?}", errors(&g, "inbound", &n));
         let n = act(&g, "inbound", &n, "wgdev.del.0", &Map::new()).unwrap().node;
         assert_eq!(peers(&n["inbound"]).len(), 1);
         // 2022 key of the right length
-        let ss = apply("inbound", &node(&g, "a"), &vals(&[("inbound.type", json!("shadowsocks")), ("inbound.ss_method", json!("2022-blake3-aes-128-gcm"))]));
+        let ss = apply(
+            "inbound",
+            &node(&g, "a"),
+            &vals(&[("inbound.type", json!("shadowsocks")), ("inbound.ss_method", json!("2022-blake3-aes-128-gcm"))]),
+        );
         let ss = act(&g, "inbound", &ss, "gen.inbound.ss_password", &Map::new()).unwrap().node;
-        assert!(crate::checks::ss_key_error("2022-blake3-aes-128-gcm", ss["inbound"]["ss_password"].as_str().unwrap()).is_none());
+        assert!(
+            crate::checks::ss_key_error("2022-blake3-aes-128-gcm", ss["inbound"]["ss_password"].as_str().unwrap())
+                .is_none()
+        );
         // group members: add, order, remove
-        let gn = act(&g, "outbound", &node(&g, "grp"), "member.add", &vals(&[("member_new", json!("v"))])).unwrap().node;
+        let gn =
+            act(&g, "outbound", &node(&g, "grp"), "member.add", &vals(&[("member_new", json!("v"))])).unwrap().node;
         assert_eq!(gn["members"], json!(["d", "v"]));
         let gn = act(&g, "outbound", &gn, "member.up.1", &Map::new()).unwrap().node;
         assert_eq!(gn["members"], json!(["v", "d"]));
         // rules: add, name, target, order, delete
         let r = act(&g, "router", &node(&g, "r"), "rule.add", &Map::new()).unwrap().node;
-        let r = apply("router", &r, &vals(&[("rules.1.match.domain_suffix", json!("ads.example")), ("rules.1.target", json!("v"))]));
+        let r = apply(
+            "router",
+            &r,
+            &vals(&[("rules.1.match.domain_suffix", json!("ads.example")), ("rules.1.target", json!("v"))]),
+        );
         let r = act(&g, "router", &r, "rule.up.1", &Map::new()).unwrap().node;
         assert_eq!(r["rules"][0]["target"], "v");
         assert_eq!(r["rules"][0]["match"]["domain_suffix"], json!(["ads.example"]));
@@ -1319,15 +1942,34 @@ mod tests {
         let has = |node: &Value, key: &str| router_form(&g, node).iter().any(|x| x.key == key);
         assert!(has(&a.node, &format!("ui.pick.rules.{n}.match.process_name")));
         // a condition added stays while empty, and goes again with its remove button
-        let b = act(&g, "router", &a.node, &format!("rule.cond.add.{n}"), &vals(&[(&format!("rules.{n}.cond_new"), json!("geoip"))])).unwrap().node;
+        let b = act(
+            &g,
+            "router",
+            &a.node,
+            &format!("rule.cond.add.{n}"),
+            &vals(&[(&format!("rules.{n}.cond_new"), json!("geoip"))]),
+        )
+        .unwrap()
+        .node;
         assert!(has(&b, &format!("rules.{n}.match.geoip")) && has(&b, &format!("rules.{n}.match.process_name")));
         let c = act(&g, "router", &b, &format!("rule.cond.del.{n}.geoip"), &Map::new()).unwrap().node;
         assert!(!has(&c, &format!("rules.{n}.match.geoip")));
         // a .conf fills a WireGuard outbound and names a new block after the file
         let w = apply("outbound", &node(&g, "v"), &vals(&[("outbound.type", json!("wireguard")), ("name", json!(""))]));
-        let conf = "[Interface]\nPrivateKey = k\nAddress = 10.0.0.2/32\n[Peer]\nPublicKey = p\nEndpoint = vpn.example:51820\n";
-        let w = act(&g, "outbound", &w, "wg.import", &vals(&[("conf_text", json!(conf)), ("conf_name", json!("home-vpn.conf"))])).unwrap();
-        assert_eq!((w.node["outbound"]["host"].clone(), w.node["outbound"]["port"].clone(), w.node["name"].clone()), (json!("vpn.example"), json!(51820), json!("home-vpn")));
+        let conf =
+            "[Interface]\nPrivateKey = k\nAddress = 10.0.0.2/32\n[Peer]\nPublicKey = p\nEndpoint = vpn.example:51820\n";
+        let w = act(
+            &g,
+            "outbound",
+            &w,
+            "wg.import",
+            &vals(&[("conf_text", json!(conf)), ("conf_name", json!("home-vpn.conf"))]),
+        )
+        .unwrap();
+        assert_eq!(
+            (w.node["outbound"]["host"].clone(), w.node["outbound"]["port"].clone(), w.node["name"].clone()),
+            (json!("vpn.example"), json!(51820), json!("home-vpn"))
+        );
         assert!(w.notice.unwrap().0);
         // a server's device saved as a file, named after the device
         let mut s = apply("inbound", &node(&g, "a"), &vals(&[("inbound.type", json!("wireguard"))]));

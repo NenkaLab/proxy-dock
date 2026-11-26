@@ -2,7 +2,7 @@
 //! (tools/parity_edit.py). Input: a JSON list of {"graph": ..., "ops": [["duplicate", [keys]] | ["rename", key, name]]};
 //! output: for each case the graph after its ops and what each op returned.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn main() {
     let path = std::env::args().nth(1).expect("input file");
@@ -18,11 +18,16 @@ fn main() {
             for op in c["ops"].as_array().into_iter().flatten() {
                 match op[0].as_str().unwrap_or("") {
                     "duplicate" => {
-                        let keys: Vec<&str> = op[1].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+                        let keys: Vec<&str> =
+                            op[1].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
                         results.push(json!(proxydock_core::edit::duplicate(&mut g, &keys).len()));
                     }
                     _ => {
-                        let r = proxydock_core::edit::rename(&mut g, op[1].as_str().unwrap_or(""), op[2].as_str().unwrap_or(""));
+                        let r = proxydock_core::edit::rename(
+                            &mut g,
+                            op[1].as_str().unwrap_or(""),
+                            op[2].as_str().unwrap_or(""),
+                        );
                         results.push(json!(r));
                     }
                 }

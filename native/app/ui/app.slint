@@ -369,7 +369,7 @@ component ProxyNode inherits BaseNode {
     property <bool> chips: root.state != "" || root.has-switch;
     property <length> chips-top: root.top + root.line-count * root.line-h + 6px;
     property <length> ports-top: root.chips-top + (root.chips ? 40px : 4px);
-    node-width: kind == 0 || kind == 1 ? 280px : kind == 3 ? 220px : 260px;
+    node-width: kind == 0 ? 300px : kind == 1 ? 280px : kind == 3 ? 220px : 260px;
     node-height: root.ports-top + (root.rows > 0 ? root.rows * root.lane-h + 8px : 0px);
 
     // (5: a collapsed group standing in for its blocks, in the group's colour)

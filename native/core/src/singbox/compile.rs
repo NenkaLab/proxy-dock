@@ -4,7 +4,7 @@
 use crate::config::dns_server_spec;
 use crate::net::{is_ip_literal, strip_scope};
 use crate::secret::truthy;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::net::IpAddr;
 
 pub const IN_TAG: &str = "in";
@@ -22,8 +22,15 @@ pub const FAILOVER_TOLERANCE: i64 = 30000;
 pub const IP_KEYS: [&str; 3] = ["ip_cidr", "ip_private", "geoip"];
 /// internal ranges sing-box's ip_is_private does not cover
 const EXTRA_INTERNAL: [&str; 9] = [
-    "0.0.0.0/8", "100.64.0.0/10", "192.0.0.0/24", "198.18.0.0/15", "224.0.0.0/4", "240.0.0.0/4", "ff00::/8",
-    "64:ff9b:1::/48", "2001:db8::/32",
+    "0.0.0.0/8",
+    "100.64.0.0/10",
+    "192.0.0.0/24",
+    "198.18.0.0/15",
+    "224.0.0.0/4",
+    "240.0.0.0/4",
+    "ff00::/8",
+    "64:ff9b:1::/48",
+    "2001:db8::/32",
 ];
 const TEST_URL: &str = "https://www.gstatic.com/generate_204";
 
@@ -81,7 +88,13 @@ fn st(v: &Value) -> &str {
 pub fn py_str(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
-        Value::Bool(b) => if *b { "True".into() } else { "False".into() },
+        Value::Bool(b) => {
+            if *b {
+                "True".into()
+            } else {
+                "False".into()
+            }
+        }
         Value::Null => "None".into(),
         Value::Number(n) if n.is_f64() => crate::py::float_repr(n.as_f64().unwrap()),
         other => other.to_string(),
@@ -277,10 +290,10 @@ fn tls_full(ob: &Value, default_alpn: Option<Vec<&str>>) -> R<Value> {
         t["alpn"] = json!(d);
     }
     let kind = st(get(ob, "type")?);
-    if let Some(fp) = opt(ob, "fingerprint") {
-        if kind != "tuic" {
-            t["utls"] = json!({"enabled": true, "fingerprint": fp});
-        }
+    if let Some(fp) = opt(ob, "fingerprint")
+        && kind != "tuic"
+    {
+        t["utls"] = json!({"enabled": true, "fingerprint": fp});
     }
     if ob.get("security") == Some(&json!("reality")) && kind == "vless" {
         let pk = strip(st(get(ob, "reality_public_key")?));
@@ -381,12 +394,12 @@ pub fn outbound(ob: &Value, tag: &str) -> R<Value> {
                 d.push(("down_mbps", v.clone()));
             }
             let ports_text = ob.get("hy2_ports").filter(|v| truthy(v)).and_then(Value::as_str).unwrap_or("");
-            if !crate::py::strip(ports_text).is_empty() {
-                if let Some(ports) = crate::config::hop_ports(ports_text) {
-                    d.push(("server_ports", json!(ports)));
-                    let interval = opt(ob, "hy2_hop_interval").cloned().unwrap_or(json!(30));
-                    d.push(("hop_interval", json!(format!("{}s", py_str(&interval)))));
-                }
+            if !crate::py::strip(ports_text).is_empty()
+                && let Some(ports) = crate::config::hop_ports(ports_text)
+            {
+                d.push(("server_ports", json!(ports)));
+                let interval = opt(ob, "hy2_hop_interval").cloned().unwrap_or(json!(30));
+                d.push(("hop_interval", json!(format!("{}s", py_str(&interval)))));
             }
             Ok(obj(d))
         }
@@ -524,7 +537,12 @@ pub fn subscription_outbounds(ob: &Value, tag: &str) -> R<Vec<Value>> {
             .and_then(|sel| tags.iter().find(|(n, _)| n == sel))
             .map(|(_, t)| t.clone())
             .unwrap_or_else(|| tags[0].1.clone());
-        obj(vec![("type", json!("selector")), ("tag", json!(tag)), ("outbounds", json!(all)), ("default", json!(chosen))])
+        obj(vec![
+            ("type", json!("selector")),
+            ("tag", json!(tag)),
+            ("outbounds", json!(all)),
+            ("default", json!(chosen)),
+        ])
     } else {
         obj(vec![
             ("type", json!("urltest")),
@@ -587,11 +605,8 @@ pub fn group_outbounds(ob: &Value, tag: &str) -> R<Vec<Value>> {
     }
     let failover = ob.get("group_mode") == Some(&json!("failover"));
     let interval = py_max(10, opt(ob, "group_interval").unwrap_or(&json!(180)));
-    let tolerance = if failover {
-        json!(FAILOVER_TOLERANCE)
-    } else {
-        py_max(0, ob.get("group_tolerance").unwrap_or(&json!(50)))
-    };
+    let tolerance =
+        if failover { json!(FAILOVER_TOLERANCE) } else { py_max(0, ob.get("group_tolerance").unwrap_or(&json!(50))) };
     out.push(obj(vec![
         ("type", json!("urltest")),
         ("tag", json!(tag)),
@@ -617,7 +632,10 @@ pub fn ruleset_tag(kind: &str, name: &str) -> String {
 pub fn match_fields(m: &Value) -> R<Value> {
     let mut d = Obj::new();
     if opt(m, "domain").is_some() {
-        d.insert("domain".into(), json!(strs(m.get("domain")).iter().map(|x| x.trim_end_matches('.')).collect::<Vec<_>>()));
+        d.insert(
+            "domain".into(),
+            json!(strs(m.get("domain")).iter().map(|x| x.trim_end_matches('.')).collect::<Vec<_>>()),
+        );
     }
     if opt(m, "domain_suffix").is_some() {
         let v: Vec<String> = strs(m.get("domain_suffix"))
@@ -725,15 +743,17 @@ pub fn dns(proxy: &Value, cfg: &Value) -> (Option<Value>, Option<String>) {
     let mut conf = json!({"servers": servers, "final": real});
     let mut rules: Vec<Value> = vec![];
     if fakeip {
-        conf["servers"].as_array_mut().unwrap().push(
-            json!({"type": "fakeip", "tag": FAKEIP_TAG, "inet4_range": FAKEIP_V4, "inet6_range": FAKEIP_V6}),
-        );
+        conf["servers"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"type": "fakeip", "tag": FAKEIP_TAG, "inet4_range": FAKEIP_V4, "inet6_range": FAKEIP_V6}));
         rules.push(json!({"query_type": ["A", "AAAA"], "server": FAKEIP_TAG}));
     }
     if !extra.is_empty() {
         // every server asked at the same time; the first real answer (an address, or "no such name") wins, and
         // when none gives one the main server is asked again (sing-box 1.14 evaluate / race)
-        let tags: Vec<String> = (0..=extra.len()).map(|i| if i == 0 { DNS_TAG.to_string() } else { format!("{DNS_TAG}{i}") }).collect();
+        let tags: Vec<String> =
+            (0..=extra.len()).map(|i| if i == 0 { DNS_TAG.to_string() } else { format!("{DNS_TAG}{i}") }).collect();
         for t in &tags {
             rules.push(json!({"action": "evaluate", "server": t, "tag": format!("r_{t}")}));
         }
@@ -846,9 +866,9 @@ pub fn route(
         add(json!({"ip_cidr": extra, "action": "reject"}), Some(Reason::Private));
     }
     let routes: Vec<Value> = proxy.get("routes").and_then(Value::as_array).cloned().unwrap_or_default();
-    let needs_ip = routes.iter().any(|r| {
-        r["match"].as_array().into_iter().flatten().any(|m| IP_KEYS.iter().any(|k| m.get(*k).is_some()))
-    });
+    let needs_ip = routes
+        .iter()
+        .any(|r| r["match"].as_array().into_iter().flatten().any(|m| IP_KEYS.iter().any(|k| m.get(*k).is_some())));
     if needs_ip {
         // IP / GeoIP conditions need the destination address (a tunnel then connects to the IP, not the domain)
         add(resolve.clone(), None);
@@ -913,10 +933,10 @@ pub fn build(proxy: &Value, cfg: &Value, env: &BuildEnv) -> R<(Value, Vec<Option
             continue;
         }
         let block = st(&r["block"]);
-        if let Some((_, prefix)) = route_tags.iter().find(|(b, _)| b == block) {
-            if !obs.iter().any(|o| st(&o["tag"]).starts_with(prefix.as_str())) {
-                obs.extend(outbounds(&r["outbound"], prefix)?);
-            }
+        if let Some((_, prefix)) = route_tags.iter().find(|(b, _)| b == block)
+            && !obs.iter().any(|o| st(&o["tag"]).starts_with(prefix.as_str()))
+        {
+            obs.extend(outbounds(&r["outbound"], prefix)?);
         }
     }
     let tun = proxy["inbound"]["type"] == json!("tun");

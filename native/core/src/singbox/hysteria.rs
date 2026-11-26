@@ -10,19 +10,19 @@
 //! included), and its Clash API gives the statistics, so only authentication lives in hysteria + ProxyDock.
 
 use super::guard;
-use super::process::{random_hex, start_error, Engine, EngineEnv, Hooks, StartError, Stats, START_TIMEOUT};
+use super::process::{Engine, EngineEnv, Hooks, START_TIMEOUT, StartError, Stats, random_hex, start_error};
 use crate::config;
 use crate::i18n::tr;
 use crate::log::Level;
 use crate::net::host_port;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 /// max concurrent QUIC connections from one IP (loopback excluded)
@@ -62,7 +62,8 @@ impl Shared {
             self.blocked.fetch_add(1, Ordering::Relaxed);
             return false;
         }
-        if !guard::is_loopback_ip(&ip) && self.active.lock().unwrap().get(&ip).copied().unwrap_or(0) >= MAX_QUIC_PER_IP {
+        if !guard::is_loopback_ip(&ip) && self.active.lock().unwrap().get(&ip).copied().unwrap_or(0) >= MAX_QUIC_PER_IP
+        {
             self.blocked.fetch_add(1, Ordering::Relaxed); // refused without a log line, as before
             return false;
         }
@@ -85,7 +86,10 @@ impl Shared {
         match msg.as_str() {
             "client connected" => {
                 *self.active.lock().unwrap().entry(ip_of(&addr)).or_default() += 1;
-                self.log_conn(Level::Tcp, &tr("H2 {client} connected (Hysteria2 authenticated)").replace("{client}", &addr));
+                self.log_conn(
+                    Level::Tcp,
+                    &tr("H2 {client} connected (Hysteria2 authenticated)").replace("{client}", &addr),
+                );
             }
             "client disconnected" => {
                 let mut a = self.active.lock().unwrap();
@@ -160,7 +164,13 @@ fn inner_proxy(proxy: &Value, login: &(u16, String, String)) -> Value {
 }
 
 /// the hysteria server config (JSON is valid YAML)
-fn hysteria_config(ib: &Value, cert: &(String, String), auth_port: u16, login: &(u16, String, String), timeout: &Value) -> Value {
+fn hysteria_config(
+    ib: &Value,
+    cert: &(String, String),
+    auth_port: u16,
+    login: &(u16, String, String),
+    timeout: &Value,
+) -> Value {
     let host = ib["host"].as_str().unwrap_or("");
     let host = if host.eq_ignore_ascii_case("localhost") { "127.0.0.1" } else { host };
     let mut conf = json!({
@@ -205,10 +215,10 @@ fn auth_client(shared: &Shared, mut s: TcpStream) {
         if line.is_empty() {
             break;
         }
-        if let Some((k, v)) = line.split_once(':') {
-            if k.trim().eq_ignore_ascii_case("content-length") {
-                length = v.trim().parse().unwrap_or(0);
-            }
+        if let Some((k, v)) = line.split_once(':')
+            && k.trim().eq_ignore_ascii_case("content-length")
+        {
+            length = v.trim().parse().unwrap_or(0);
         }
         if length > 1 << 16 {
             return;
@@ -226,13 +236,23 @@ fn auth_client(shared: &Shared, mut s: TcpStream) {
     };
     let ok = shared.check_auth(&text("addr"), &text("auth"));
     let out = json!({"ok": ok, "id": if ok { "user" } else { "" }}).to_string();
-    let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{out}", out.len());
+    let _ = write!(
+        s,
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{out}",
+        out.len()
+    );
 }
 
 impl HyEngine {
     /// Start the card's inner sing-box, the auth server and the Hysteria2 core (`hysteria`), and wait until the
     /// core reports "server up and running". env.cert is the certificate the core serves.
-    pub fn start(proxy: &Value, glob: &Map<String, Value>, env: &EngineEnv, hooks: Hooks, hysteria: &Path) -> Result<HyEngine, StartError> {
+    pub fn start(
+        proxy: &Value,
+        glob: &Map<String, Value>,
+        env: &EngineEnv,
+        hooks: Hooks,
+        hysteria: &Path,
+    ) -> Result<HyEngine, StartError> {
         let id = proxy["id"].as_str().unwrap_or("").to_string();
         let cfg = config::resolve(proxy, glob);
         let cert = env.cert.clone().ok_or_else(|| StartError::Other("no certificate".into()))?;
@@ -245,7 +265,10 @@ impl HyEngine {
             active: Mutex::new(HashMap::new()),
             stopping: AtomicBool::new(false),
         });
-        let port = TcpListener::bind("127.0.0.1:0").and_then(|l| l.local_addr()).map(|a| a.port()).map_err(|e| StartError::Other(e.to_string()))?;
+        let port = TcpListener::bind("127.0.0.1:0")
+            .and_then(|l| l.local_addr())
+            .map(|a| a.port())
+            .map_err(|e| StartError::Other(e.to_string()))?;
         let login = (port, random_hex(8), random_hex(16));
         let inner_hooks = {
             let s = shared.clone();
@@ -292,7 +315,9 @@ impl HyEngine {
             config_path: config_path.clone(),
             threads,
         };
-        if let Err(e) = std::fs::create_dir_all(&env.run_dir).and_then(|()| std::fs::write(&config_path, serde_json::to_string_pretty(&conf).unwrap())) {
+        if let Err(e) = std::fs::create_dir_all(&env.run_dir)
+            .and_then(|()| std::fs::write(&config_path, serde_json::to_string_pretty(&conf).unwrap()))
+        {
             hy.stop();
             return Err(StartError::Other(e.to_string()));
         }
@@ -316,9 +341,12 @@ impl HyEngine {
         #[cfg(windows)]
         super::process::attach_to_job(&child);
         let (tx, rx) = mpsc::channel::<Option<String>>();
-        for pipe in [child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>), child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>)]
-            .into_iter()
-            .flatten()
+        for pipe in [
+            child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>),
+            child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>),
+        ]
+        .into_iter()
+        .flatten()
         {
             let tx = tx.clone();
             hy.threads.push(std::thread::spawn(move || {
@@ -335,7 +363,9 @@ impl HyEngine {
             let (shared, child) = (shared.clone(), hy.child.clone());
             hy.threads.push(std::thread::spawn(move || read_output(&shared, &child, rx, started_tx)));
         }
-        let result = started_rx.recv_timeout(START_TIMEOUT).unwrap_or_else(|_| Err(StartError::Other(tr("The Hysteria2 core did not start in time"))));
+        let result = started_rx
+            .recv_timeout(START_TIMEOUT)
+            .unwrap_or_else(|_| Err(StartError::Other(tr("The Hysteria2 core did not start in time"))));
         if let Err(e) = result {
             hy.stop();
             return Err(e);
@@ -364,7 +394,8 @@ impl HyEngine {
 
     pub fn needs_restart(&self, proxy: &Value, glob: &Map<String, Value>) -> bool {
         let new = config::resolve(proxy, glob);
-        RESTART_KEYS.iter().any(|k| new[*k] != self.cfg[*k]) || self.inner.needs_restart(&inner_proxy(proxy, &self.inner_login), glob)
+        RESTART_KEYS.iter().any(|k| new[*k] != self.cfg[*k])
+            || self.inner.needs_restart(&inner_proxy(proxy, &self.inner_login), glob)
     }
 
     pub fn update(&mut self, proxy: &Value, glob: &Map<String, Value>) {
@@ -402,7 +433,12 @@ impl Drop for HyEngine {
     }
 }
 
-fn read_output(shared: &Shared, child: &Mutex<Option<Child>>, lines: mpsc::Receiver<Option<String>>, started: mpsc::Sender<Result<(), StartError>>) {
+fn read_output(
+    shared: &Shared,
+    child: &Mutex<Option<Child>>,
+    lines: mpsc::Receiver<Option<String>>,
+    started: mpsc::Sender<Result<(), StartError>>,
+) {
     let mut errors: Vec<String> = vec![];
     let mut is_started = false;
     let mut open = 2;
