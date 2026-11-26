@@ -2533,16 +2533,38 @@ fn labels(app: &App) {
     app.set_t_empty(tr("No proxies yet. Create one with 'New proxy'.").into());
 }
 
+/// macOS: the title bar made transparent with the window's content under it, so the app's own bar (the app, the
+/// page, its buttons) sits beside the window buttons as on Windows 11 (PROXYDOCK_NATIVE_CAPTION: the usual bar)
+fn mac_merged_bar() -> bool {
+    cfg!(target_os = "macos") && std::env::var_os("PROXYDOCK_NATIVE_CAPTION").is_none()
+}
+
+fn mac_title_bar(b: slint::BackendSelector) -> slint::BackendSelector {
+    #[cfg(target_os = "macos")]
+    if mac_merged_bar() {
+        return b.with_winit_window_attributes_hook(|a| {
+            use slint::winit_030::winit::platform::macos::WindowAttributesExtMacOS;
+            a.with_titlebar_transparent(true).with_fullsize_content_view(true).with_title_hidden(true)
+        });
+    }
+    b
+}
+
 fn main() -> Result<(), slint::PlatformError> {
     // Slint draws its own context menus
     unsafe { std::env::set_var("SLINT_NO_MUDA", "1") };
     // Skia on the GPU: the CPU renderer redraws every pixel of the canvas on each pan or zoom, which gets slow
     // on large windows (measured: 59 ms a frame at 1900x1100). The CPU renderer stays as the fallback.
     if std::env::var_os("SLINT_BACKEND").is_none() {
-        let gpu = slint::BackendSelector::new().backend_name("winit".into()).renderer_name("skia".into()).select();
+        let gpu = mac_title_bar(slint::BackendSelector::new())
+            .backend_name("winit".into())
+            .renderer_name("skia".into())
+            .select();
         if gpu.is_err() {
-            let _ =
-                slint::BackendSelector::new().backend_name("winit".into()).renderer_name("software".into()).select();
+            let _ = mac_title_bar(slint::BackendSelector::new())
+                .backend_name("winit".into())
+                .renderer_name("software".into())
+                .select();
         }
     }
     let Some((port, token)) = std::env::var(ipc::ENV).ok().and_then(|v| {
@@ -4022,6 +4044,13 @@ fn main() -> Result<(), slint::PlatformError> {
                 apply_title_bar(&a);
                 #[cfg(windows)]
                 caption::install(&a);
+                // macOS: the bar beside the window buttons (they stay the system's, on the left)
+                if mac_merged_bar() {
+                    a.set_caption_h(48.0); // (as Windows 11's bar)
+                    a.set_merged_bar(true);
+                    a.set_own_buttons(false);
+                    a.set_caption_inset(72.0);
+                }
                 restore_window_state(&a);
                 #[cfg(windows)]
                 nav_hook::install(owner_hwnd(&a));
@@ -4930,6 +4959,8 @@ mod caption {
             );
         }
         app.set_caption_h(HEIGHT);
+        // one bar for the app and the page
+        app.set_merged_bar(true);
         app.set_win_maximized(unsafe { IsZoomed(hwnd) } != 0);
         true
     }
@@ -5011,11 +5042,16 @@ mod caption {
                         } as LRESULT;
                     }
                     // the page title bar's empty part is a caption too (moving, double click, snapping)
-                    let mut band = (0.0f32, 0.0f32, 0.0f32);
-                    with_app(|a| band = (a.get_bar_h(), a.get_drag_left(), a.get_drag_right()));
+                    let mut band = (0.0f32, 0.0f32, 0.0f32, false);
+                    with_app(|a| band = (a.get_bar_h(), a.get_drag_left(), a.get_drag_right(), a.get_merged_bar()));
                     let (x, y) = (pt.x as f32 / scale, pt.y as f32 / scale);
-                    if y >= HEIGHT && y < HEIGHT + band.0 && x >= band.1 && x < band.2 {
+                    if !band.3 && y >= HEIGHT && y < HEIGHT + band.0 && x >= band.1 && x < band.2 {
                         return HTCAPTION as LRESULT;
+                    }
+                    // merged: the page's buttons in the bar are the window's own
+                    let buttons_left = rc.right as f32 / scale - BUTTON_W * 3.0;
+                    if band.3 && y < HEIGHT && x >= band.2 && x < buttons_left {
+                        return HTCLIENT as LRESULT;
                     }
                     if (pt.y as f32) < HEIGHT * scale {
                         let bw = BUTTON_W * scale;

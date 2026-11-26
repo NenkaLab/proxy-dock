@@ -864,24 +864,25 @@ component ToolbarButton inherits Rectangle {
     in property <bool> filled;
     in property <bool> enabled: true;
     callback clicked();
-    height: 44px;
-    width: root.compact ? 44px : label.preferred-width + 58px;
+    // (48: the toolbar's 64 less its padding of 8 on every side, so the buttons sit in the middle)
+    height: 48px;
+    width: root.compact ? 48px : label.preferred-width + 60px;
     accessible-role: button;
     accessible-label: root.text;
     opacity: root.enabled ? 1 : 0.38;
     // pressed buttons square off, then spring back
-    border-radius: ta.pressed ? 12px : 22px;
+    border-radius: ta.pressed ? 12px : 24px;
     background: filled ? M3.primary : ta.has-hover && root.enabled ? M3.on-surface.with-alpha(0.08) : transparent;
     animate border-radius { duration: Motion.fast-spatial; easing: cubic-bezier(0.42, 1.67, 0.21, 0.90); }
     Image {
-        x: root.compact ? (parent.width - self.width) / 2 : 14px;
+        x: root.compact ? (parent.width - self.width) / 2 : 16px;
         width: 20px;
         height: 20px;
         source: root.icon;
         colorize: root.filled ? M3.on-primary : M3.on-surface;
     }
     label := Text {
-        x: 42px;
+        x: 44px;
         visible: !root.compact;
         text: root.text;
         font-size: 14px * Type.scale;
@@ -1174,6 +1175,8 @@ component AppSpinBox inherits Rectangle {
 component AppButton inherits Rectangle {
     in property <string> text;
     in property <image> icon;
+    // only the icon (the text stays the accessible name)
+    in property <bool> icon-only;
     // (the icons are always drawn in the label's colour)
     in property <bool> colorize-icon: true;
     in property <bool> primary;
@@ -1198,8 +1201,8 @@ component AppButton inherits Rectangle {
         background: !root.enabled ? transparent : ta.pressed ? root.fg.with-alpha(0.10) : ta.has-hover ? root.fg.with-alpha(0.08) : transparent;
     }
     lay := HorizontalLayout {
-        padding-left: 16px;
-        padding-right: 16px;
+        padding-left: root.icon-only ? 10px : 16px;
+        padding-right: root.icon-only ? 10px : 16px;
         spacing: 8px;
         alignment: center;
         if root.icon.width > 0: Image {
@@ -1209,7 +1212,7 @@ component AppButton inherits Rectangle {
             source: root.icon;
             colorize: root.fg;
         }
-        if root.text != "": Text {
+        if root.text != "" && !(root.icon-only && root.icon.width > 0): Text {
             text: root.text;
             font-size: 14px * Type.scale;
             font-weight: 500;
@@ -1518,6 +1521,8 @@ component ThemeCard inherits Rectangle {
 // the page's buttons beside its title: the proxies' "stop all", the editor's cancel and save
 component PageActions inherits HorizontalLayout {
     in property <int> page;
+    // in the merged title bar (Windows 11 / macOS): icon buttons
+    in property <bool> icon-only;
     in property <bool> has-cards;
     in property <string> t-stop-all;
     in property <string> t-cancel;
@@ -1536,31 +1541,38 @@ component PageActions inherits HorizontalLayout {
     spacing: 8px;
     if root.page == 1 && root.has-cards: AppButton {
         text: root.t-stop-all;
+        icon: root.icon-only ? @image-url("icons/stop_circle.svg") : @image-url("");
+        icon-only: root.icon-only;
         clicked => { root.stop-all(); }
     }
     if root.page == 2: AppButton {
         text: root.t-clear-log;
+        icon-only: root.icon-only;
         icon: @image-url("icons/delete.svg");
         clicked => { root.log-clear(); }
     }
     if root.page == 2: AppButton {
         text: root.t-copy-log;
+        icon-only: root.icon-only;
         icon: @image-url("icons/content_copy.svg");
         clicked => { root.log-copy(); }
     }
     // the list page's "add" buttons open menus (Python's drop-down buttons)
     if root.page == 1: AppButton {
         text: CanvasText.add-router;
+        icon-only: root.icon-only;
         icon: @image-url("icons/alt_route.svg");
         clicked => { router-menu.show({ x: self.absolute-position.x - router-menu.absolute-position.x, y: self.absolute-position.y - router-menu.absolute-position.y + self.height + 4px }); }
     }
     if root.page == 1: AppButton {
         text: root.t-new-outbound;
+        icon-only: root.icon-only;
         icon: @image-url("icons/logout.svg");
         clicked => { out-menu.show({ x: self.absolute-position.x - out-menu.absolute-position.x, y: self.absolute-position.y - out-menu.absolute-position.y + self.height + 4px }); }
     }
     if root.page == 1: AppButton {
         text: root.t-new-proxy;
+        icon-only: root.icon-only;
         icon: @image-url("icons/add.svg");
         primary: true;
         clicked => { proxy-menu.show({ x: self.absolute-position.x - proxy-menu.absolute-position.x + self.width - 420px, y: self.absolute-position.y - proxy-menu.absolute-position.y + self.height + 4px }); }
@@ -1598,28 +1610,33 @@ component PageActions inherits HorizontalLayout {
     }
     if root.page == 3: AppButton {
         text: root.t-cancel;
+        icon: root.icon-only ? @image-url("icons/close.svg") : @image-url("");
+        icon-only: root.icon-only;
         clicked => { root.cancel(); }
     }
     if root.page == 3: AppButton {
         text: root.t-save;
+        icon: root.icon-only ? @image-url("icons/save.svg") : @image-url("");
+        icon-only: root.icon-only;
         primary: true;
         clicked => { root.save(); }
     }
     if root.page == 5: AppComboBox {
-        width: 240px;
+        width: root.icon-only ? 200px : 240px;
         model: Stats.choices;
         current-index <=> Stats.choice;
         selected => { Stats.changed(); }
     }
     if root.page == 6: AppComboBox {
-        width: 220px;
+        width: root.icon-only ? 180px : 220px;
         model: Conn.proxies;
         current-index <=> Conn.proxy;
         enabled: Conn.proxies.length > 0;
         selected => { Conn.proxy-changed(); }
     }
     if root.page == 6: AppButton {
-        min-width: 190px;
+        min-width: root.icon-only ? 40px : 190px;
+        icon-only: root.icon-only;
         text: Conn.button;
         icon: @image-url("icons/network_check.svg");
         colorize-icon: true;
@@ -3998,7 +4015,9 @@ export component App inherits Window {
     out property <length> bar-h: max(64px, 22px * Type.scale * 2.4);
     // the page title bar's empty part, from the rail to the page's actions (Windows 11: a caption, see `caption`)
     out property <length> drag-left: root.rail-w + 24px;
-    out property <length> drag-right: root.rail-w + 24px + title-acts.width - title-acts.preferred-width - 12px;
+    out property <length> drag-right: root.merged-bar
+        ? root.width - root.own-buttons-w - 12px - title-acts.preferred-width
+        : root.rail-w + 24px + title-acts.width - title-acts.preferred-width - 12px;
     // the navigation rail's width (M3 Expressive collapsed rail)
     out property <length> rail-w: 96px;
     // every page's content (not the title bar, not the canvas) is at most this wide, in the middle of the room
@@ -4019,6 +4038,14 @@ export component App inherits Window {
     // the window's own title bar (proxydock-ui.rs `caption`, Windows 11): its height (0 = Windows draws its
     // own), the button under the mouse / pressed (1 minimise, 2 maximise, 3 close), the window's state
     in property <length> caption-h: 0px;
+    // one bar for the app and the page (Windows 11's own bar, macOS' transparent one): the page's title and
+    // its icon buttons in it, no page title bar below. own-buttons: minimise / maximise / close drawn here
+    // (Windows 11); caption-inset: room on the left (macOS' window buttons)
+    in property <bool> merged-bar;
+    in property <bool> own-buttons: true;
+    in property <length> caption-inset: 0px;
+    property <length> page-bar-h: root.merged-bar ? 0px : root.bar-h;
+    property <length> own-buttons-w: root.own-buttons ? 3 * 46px : 0px;
     in property <int> caption-hover;
     in property <int> caption-pressed;
     in property <bool> win-maximized;
@@ -4077,7 +4104,7 @@ export component App inherits Window {
         VerticalLayout {
         // the title bar above the page (its title and actions are drawn over it, below)
         Rectangle {
-            height: root.bar-h;
+            height: root.page-bar-h;
         }
         // page container
         Rectangle {
@@ -4371,8 +4398,8 @@ export component App inherits Window {
                             x: (parent.width - self.width) / 2;
                             y: parent.height - 64px - 24px - self.height - 12px;
                             width: gbar.preferred-width;
-                            height: 56px;
-                            border-radius: 28px;
+                            height: 64px;
+                            border-radius: 32px;
                             background: M3.secondary-container;
                             drop-shadow-blur: 10px;
                             drop-shadow-offset-y: 3px;
@@ -4767,8 +4794,20 @@ export component App inherits Window {
         width: root.width;
         height: root.caption-h;
         background: M3.surface-container;
+        // (macOS: the bar is the window's content, so a press here moves the window; on Windows 11 the system
+        // takes these presses itself)
+        TouchArea {
+            pointer-event(e) => {
+                if e.button == PointerEventButton.left && e.kind == PointerEventKind.down {
+                    root.drag-window();
+                }
+            }
+        }
         HorizontalLayout {
-            padding-left: 18px;
+            // (merged: up to the page's buttons)
+            x: 0;
+            width: root.width - root.own-buttons-w - (root.merged-bar ? title-acts.preferred-width + 24px : 0px);
+            padding-left: 18px + root.caption-inset;
             spacing: 10px;
             alignment: start;
             Image {
@@ -4783,8 +4822,23 @@ export component App inherits Window {
                 color: root.window-active ? M3.on-surface : M3.on-surface-variant;
                 vertical-alignment: center;
             }
+            if root.merged-bar: Text {
+                text: "·";
+                font-size: 14px;
+                color: M3.on-surface-variant;
+                vertical-alignment: center;
+            }
+            if root.merged-bar: Text {
+                horizontal-stretch: 1;
+                text: root.page-title;
+                font-size: 20px * Type.scale;
+                font-weight: 400;
+                color: root.window-active ? M3.on-surface : M3.on-surface-variant;
+                vertical-alignment: center;
+                overflow: elide;
+            }
         }
-        for i in 3: cap-btn := Rectangle {
+        for i in root.own-buttons ? 3 : 0: cap-btn := Rectangle {
             property <bool> hover: root.caption-hover == i + 1;
             property <bool> down: root.caption-pressed == i + 1;
             out property <color> fg: i == 2 && (self.hover || self.down) ? #ffffff
@@ -4843,12 +4897,12 @@ export component App inherits Window {
             }
         }
     }
-    // the title bar's title and the page's actions
+    // the title bar's title and the page's actions (merged: only the actions, at the right of the window's bar)
     Rectangle {
-        x: root.rail-w + 24px;
-        y: root.caption-h;
-        width: root.width - root.rail-w - 48px;
-        height: root.bar-h;
+        x: root.merged-bar ? root.width - root.own-buttons-w - 12px - title-acts.preferred-width : root.rail-w + 24px;
+        y: root.merged-bar ? 0px : root.caption-h;
+        width: root.merged-bar ? title-acts.preferred-width : root.width - root.rail-w - 48px;
+        height: root.merged-bar ? root.caption-h : root.bar-h;
         // its empty part moves the window like a title bar (a double click maximises / restores)
         TouchArea {
             pointer-event(e) => {
@@ -4862,6 +4916,7 @@ export component App inherits Window {
             y: (parent.height - 40px) / 2;
             width: parent.width;
             height: 40px;
+            icon-only: root.merged-bar;
             page: root.page;
             has-cards: root.cards.length > 0;
             t-stop-all: root.t-stop-all;
@@ -4878,7 +4933,7 @@ export component App inherits Window {
             log-copy => { root.log-copy(); }
             log-clear => { root.log-clear(); }
         }
-        Text {
+        if !root.merged-bar: Text {
             x: 0;
             height: parent.height;
             width: max(0px, title-acts.width - title-acts.preferred-width - 12px - self.x);
