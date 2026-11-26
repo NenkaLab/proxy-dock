@@ -4773,9 +4773,12 @@ fn info_labels(app: &App, code: &str) {
             .replace("{LICENSE_DIR}", "licenses")
             .into(),
     );
-    i.set_back(t("Back"));
     let names: Vec<SharedString> = licenses().into_iter().map(|(n, _)| SharedString::from(n)).collect();
     i.set_lic_names(ModelRc::new(VecModel::from(names)));
+    // (the page can be opened straight from the settings list: the first licence is there already)
+    if i.get_lic_text().is_empty() {
+        show_license(app);
+    }
     app.set_t_help(t("How to use"));
     app.set_t_about(t("About"));
 }

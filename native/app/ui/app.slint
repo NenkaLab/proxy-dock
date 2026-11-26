@@ -1762,6 +1762,8 @@ component Chip inherits Rectangle {
 component Card inherits Rectangle {
     in property <CardRow> card;
     in property <string> t-copy;
+    // a narrow list: no state chip, Run / Stop as an icon
+    in property <bool> narrow;
     callback toggle(string);
     callback edit(string);
     // the card's address / link for client apps, to the clipboard
@@ -1810,7 +1812,7 @@ component Card inherits Rectangle {
                 color: M3.on-surface-variant;
             }
         }
-        VerticalLayout {
+        if !root.narrow: VerticalLayout {
             alignment: center;
             Chip { text: card.state-text; state: card.state; }
         }
@@ -1839,6 +1841,9 @@ component Card inherits Rectangle {
             alignment: center;
             AppButton {
                 text: card.action;
+                icon: !root.narrow ? @image-url("") : card.state == "running" || card.state == "starting"
+                    ? @image-url("icons/stop_circle.svg") : @image-url("icons/play_arrow.svg");
+                icon-only: root.narrow;
                 primary: card.state != "running" && card.state != "starting";
                 clicked => { root.toggle(card.id); }
             }
@@ -3090,7 +3095,6 @@ export global Info {
     callback show-licenses();
     // licenses
     in property <string> lic-desc;
-    in property <string> back;
     in property <[string]> lic-names;
     in-out property <int> lic-index;
     in property <string> lic-text;
@@ -3288,32 +3292,15 @@ component AboutPage inherits VerticalLayout {
 }
 
 component LicensePage inherits VerticalLayout {
-    callback back();
     // another licence: from its top
     property <string> shown: Info.lic-text;
     changed shown => { lic-scroll.content-y = 0; }
     spacing: 10px;
     HorizontalLayout {
         spacing: 8px;
-        Rectangle {
-            width: 40px;
-            height: 40px;
-            y: (parent.height - self.height) / 2;
-            border-radius: 20px;
-            background: back-ta.has-hover ? M3.on-surface.with-alpha(0.08) : transparent;
-            accessible-role: button;
-            accessible-label: Info.back;
-            Image {
-                width: 22px;
-                height: 22px;
-                source: @image-url("icons/arrow_back.svg");
-                colorize: M3.on-surface;
-            }
-            back-ta := TouchArea { clicked => { root.back(); } }
-        }
-        Rectangle { horizontal-stretch: 1; }
         AppComboBox {
-            width: 320px;
+            horizontal-stretch: 1;
+            max-width: 360px;
             y: (parent.height - self.height) / 2;
             model: Info.lic-names;
             current-index <=> Info.lic-index;
@@ -3337,17 +3324,21 @@ component LicensePage inherits VerticalLayout {
         border-radius: 16px;
         background: M3.surface-container-low;
         clip: true;
+        // (in a layout, so the scroll view knows the text's height)
         lic-scroll := ScrollView {
-            Text {
-                x: 16px;
-                y: 12px;
-                width: lic-scroll.visible-width - 32px;
-                height: self.preferred-height + 24px;
-                text: Info.lic-text;
-                font-family: Type.mono;
-                font-size: 12px * Type.scale;
-                color: M3.on-surface;
-                wrap: word-wrap;
+            VerticalLayout {
+                width: lic-scroll.visible-width;
+                padding-left: 16px;
+                padding-right: 16px;
+                padding-top: 12px;
+                padding-bottom: 12px;
+                Text {
+                    text: Info.lic-text;
+                    font-family: Type.mono;
+                    font-size: 12px * Type.scale;
+                    color: M3.on-surface;
+                    wrap: word-wrap;
+                }
             }
         }
         EdgeFade {
@@ -4045,6 +4036,11 @@ export component App inherits Window {
     in property <bool> own-buttons: true;
     in property <length> caption-inset: 0px;
     property <length> page-bar-h: root.merged-bar ? 0px : root.bar-h;
+    // merged bar: a wide window has the list, log, statistics and connection test buttons over the page (with
+    // their text); a narrow one keeps them in the bar as icons, and a very narrow one drops the page's title there
+    property <bool> acts-in-content: root.merged-bar && root.width >= 900px
+        && (root.page == 1 || root.page == 2 || root.page == 5 || root.page == 6);
+    property <bool> bar-title: root.width >= 560px;
     property <length> own-buttons-w: root.own-buttons ? 3 * 46px : 0px;
     in property <int> caption-hover;
     in property <int> caption-pressed;
@@ -4114,8 +4110,31 @@ export component App inherits Window {
             VerticalLayout {
                 padding: 24px;
                 spacing: 12px;
+                // the page's buttons over it (a wide window with the merged bar)
+                if root.acts-in-content: PageActions {
+                    height: 40px;
+                    page: root.page;
+                    has-cards: root.cards.length > 0;
+                    t-stop-all: root.t-stop-all;
+                    t-cancel: root.t-cancel;
+                    t-save: root.t-save;
+                    stop-all => { root.stop-all(); }
+                    cancel => { root.form-cancel(); }
+                    save => { root.form-save(); }
+                    t-new-proxy: root.t-new-proxy;
+                    t-new-outbound: root.t-new-outbound;
+                    add(what, t) => { root.list-add(what, t); }
+                    t-copy-log: root.t-copy-log;
+                    t-clear-log: root.t-clear-log;
+                    log-copy => { root.log-copy(); }
+                    log-clear => { root.log-clear(); }
+                }
                 // both pages stay (the log keeps its scroll position); the hidden one is not drawn
+                // (hidden pages still count in a layout: no minimum here, so the widest page cannot make every
+                // page wider than the window)
                 Rectangle {
+                    min-width: 0px;
+                    min-height: 0px;
                     // canvas: edge to edge in the page container
                     Rectangle {
                         x: -24px;
@@ -4337,24 +4356,60 @@ export component App inherits Window {
                             bar := HorizontalLayout {
                                 padding: 8px;
                                 spacing: 4px;
-                                ToolbarButton { text: root.t-add-inbound; icon: @image-url("icons/login.svg"); compact: tool-row.add-compact; clicked => { root.add-block(0); } }
-                                ToolbarButton { text: root.t-add-router; icon: @image-url("icons/alt_route.svg"); compact: tool-row.add-compact; clicked => { root.add-block(1); } }
-                                ToolbarButton { text: root.t-add-relay; icon: @image-url("icons/swap_horiz.svg"); compact: tool-row.add-compact; clicked => { root.add-block(3); } }
-                                ToolbarButton { text: root.t-add-outbound; icon: @image-url("icons/logout.svg"); compact: tool-row.add-compact; clicked => { root.add-block(2); } }
-                                Rectangle { width: 1px; background: M3.outline-variant; }
-                                ToolbarButton { text: root.t-undo; icon: @image-url("icons/undo.svg"); compact: tool-row.all-compact; enabled: root.can-undo; clicked => { root.undo(); } }
-                                ToolbarButton { text: root.t-redo; icon: @image-url("icons/redo.svg"); compact: tool-row.all-compact; enabled: root.can-redo; clicked => { root.redo(); } }
-                                ToolbarButton { text: root.t-rename; icon: @image-url("icons/edit.svg"); compact: tool-row.all-compact; clicked => { root.rename-selected(); } }
-                                ToolbarButton { text: root.t-duplicate; icon: @image-url("icons/content_copy.svg"); compact: tool-row.all-compact; clicked => { root.duplicate-selected(); } }
-                                ToolbarButton { text: root.t-group; icon: @image-url("icons/account_tree.svg"); compact: tool-row.all-compact; enabled: root.sel-count >= 2; clicked => { root.group-make(); } }
-                                ToolbarButton {
+                                if !tool-row.only-more: ToolbarButton { text: root.t-add-inbound; icon: @image-url("icons/login.svg"); compact: tool-row.add-compact; clicked => { root.add-block(0); } }
+                                if !tool-row.only-more: ToolbarButton { text: root.t-add-router; icon: @image-url("icons/alt_route.svg"); compact: tool-row.add-compact; clicked => { root.add-block(1); } }
+                                if !tool-row.only-more: ToolbarButton { text: root.t-add-relay; icon: @image-url("icons/swap_horiz.svg"); compact: tool-row.add-compact; clicked => { root.add-block(3); } }
+                                if !tool-row.only-more: ToolbarButton { text: root.t-add-outbound; icon: @image-url("icons/logout.svg"); compact: tool-row.add-compact; clicked => { root.add-block(2); } }
+                                if !tool-row.only-more: Rectangle { width: 1px; background: M3.outline-variant; }
+                                if !tool-row.overflow: ToolbarButton { text: root.t-undo; icon: @image-url("icons/undo.svg"); compact: tool-row.all-compact; enabled: root.can-undo; clicked => { root.undo(); } }
+                                if !tool-row.overflow: ToolbarButton { text: root.t-redo; icon: @image-url("icons/redo.svg"); compact: tool-row.all-compact; enabled: root.can-redo; clicked => { root.redo(); } }
+                                if !tool-row.overflow: ToolbarButton { text: root.t-rename; icon: @image-url("icons/edit.svg"); compact: tool-row.all-compact; clicked => { root.rename-selected(); } }
+                                if !tool-row.overflow: ToolbarButton { text: root.t-duplicate; icon: @image-url("icons/content_copy.svg"); compact: tool-row.all-compact; clicked => { root.duplicate-selected(); } }
+                                if !tool-row.overflow: ToolbarButton { text: root.t-group; icon: @image-url("icons/account_tree.svg"); compact: tool-row.all-compact; enabled: root.sel-count >= 2; clicked => { root.group-make(); } }
+                                if !tool-row.overflow: ToolbarButton {
                                     text: root.latency-progress != "" ? root.latency-progress : root.t-latency;
                                     icon: @image-url("icons/speed.svg");
                                     compact: tool-row.all-compact && root.latency-progress == "";
                                     enabled: root.latency-progress == "";
                                     clicked => { root.test-latency(); }
                                 }
-                                ToolbarButton { text: root.t-delete; icon: @image-url("icons/delete.svg"); compact: tool-row.all-compact; filled: true; clicked => { root.delete-selected(); } }
+                                if !tool-row.overflow: ToolbarButton { text: root.t-delete; icon: @image-url("icons/delete.svg"); compact: tool-row.all-compact; filled: true; clicked => { root.delete-selected(); } }
+                                // no room: the rest in a menu (and with even less, everything)
+                                if tool-row.overflow: ToolbarButton {
+                                    icon: @image-url("icons/more_vert.svg");
+                                    compact: true;
+                                    clicked => {
+                                        more-menu.show({
+                                            x: self.absolute-position.x - more-menu.absolute-position.x,
+                                            y: self.absolute-position.y - more-menu.absolute-position.y - 8px,
+                                        });
+                                    }
+                                }
+                            }
+                            more-menu := ContextMenuArea {
+                                x: 0;
+                                y: 0;
+                                width: 0;
+                                height: 0;
+                                Menu {
+                                    if tool-row.only-more: MenuItem { title: root.t-add-inbound; activated => { root.add-block(0); } }
+                                    if tool-row.only-more: MenuItem { title: root.t-add-router; activated => { root.add-block(1); } }
+                                    if tool-row.only-more: MenuItem { title: root.t-add-relay; activated => { root.add-block(3); } }
+                                    if tool-row.only-more: MenuItem { title: root.t-add-outbound; activated => { root.add-block(2); } }
+                                    if tool-row.only-more: MenuSeparator {}
+                                    MenuItem { title: root.t-undo; enabled: root.can-undo; activated => { root.undo(); } }
+                                    MenuItem { title: root.t-redo; enabled: root.can-redo; activated => { root.redo(); } }
+                                    MenuItem { title: root.t-rename; activated => { root.rename-selected(); } }
+                                    MenuItem { title: root.t-duplicate; activated => { root.duplicate-selected(); } }
+                                    MenuItem { title: root.t-group; enabled: root.sel-count >= 2; activated => { root.group-make(); } }
+                                    MenuItem {
+                                        title: root.latency-progress != "" ? root.latency-progress : root.t-latency;
+                                        enabled: root.latency-progress == "";
+                                        activated => { root.test-latency(); }
+                                    }
+                                    MenuSeparator {}
+                                    MenuItem { title: root.t-delete; activated => { root.delete-selected(); } }
+                                }
                             }
                         }
                         // the toolbar's widths with and without text: the buttons drop their text when it does not fit
@@ -4363,6 +4418,23 @@ export component App inherits Window {
                             property <length> room: parent.width - 48px;
                             out property <bool> add-compact: full.preferred-width > self.room;
                             out property <bool> all-compact: mid.preferred-width > self.room;
+                            // all icons do not fit: the actions go to a menu; the adds and that menu neither: all
+                            out property <bool> overflow: icons.preferred-width > self.room;
+                            out property <bool> only-more: adds-more.preferred-width > self.room;
+                            icons := HorizontalLayout {
+                                padding: 8px;
+                                spacing: 4px;
+                                for i in 4: ToolbarButton { compact: true; }
+                                Rectangle { width: 1px; }
+                                for i in 7: ToolbarButton { compact: true; }
+                            }
+                            adds-more := HorizontalLayout {
+                                padding: 8px;
+                                spacing: 4px;
+                                for i in 4: ToolbarButton { compact: true; }
+                                Rectangle { width: 1px; }
+                                ToolbarButton { compact: true; }
+                            }
                             full := HorizontalLayout {
                                 padding: 8px;
                                 spacing: 4px;
@@ -4474,6 +4546,7 @@ export component App inherits Window {
                                             }
                                             AppButton {
                                                 y: (parent.height - self.height) / 2;
+                                                icon-only: card-list.visible-width < 560px;
                                                 text: root.t-pc-restore;
                                                 icon: @image-url("icons/undo.svg");
                                                 enabled: root.pc-state != "unsupported";
@@ -4481,6 +4554,7 @@ export component App inherits Window {
                                             }
                                             AppButton {
                                                 y: (parent.height - self.height) / 2;
+                                                icon-only: card-list.visible-width < 560px;
                                                 text: root.t-pc-off;
                                                 icon: @image-url("icons/power_settings_new.svg");
                                                 enabled: root.pc-state != "unsupported";
@@ -4497,6 +4571,7 @@ export component App inherits Window {
                                     }
                                     for c in root.cards: Card {
                                         card: c;
+                                        narrow: card-list.visible-width < 560px;
                                         toggle(id) => { root.toggle(id); }
                                         edit(id) => { root.edit-card(id); }
                                         copy(id) => { root.copy-card(id); }
@@ -4662,19 +4737,24 @@ export component App inherits Window {
                                     fade-color: M3.surface;
                                 }
                             }
+                            // (as tall as the room: they scroll inside)
                             help-page := HelpPage {
                                 visible: root.page == 7;
                                 x: 0;
                                 width: min(parent.width, 776px);
+                                height: parent.height;
                             }
                             about-page := AboutPage {
                                 visible: root.page == 8;
                                 x: 0;
                                 width: min(parent.width, 776px);
+                                height: parent.height;
                             }
                             lic-page := LicensePage {
                                 visible: root.page == 9;
-                                back => { root.page = 8; }
+                                x: 0;
+                                width: min(parent.width, 776px);
+                                height: parent.height;
                             }
                         }
                     }
@@ -4722,22 +4802,27 @@ export component App inherits Window {
                         x: (parent.width - self.width) / 2;
                         spacing: 16px;
                         // which lines: a card (or all), a level group, words (Python's log filters)
+                        // (a narrow window: all three narrower, none cut off)
                         HorizontalLayout {
                             spacing: 12px;
                             AppComboBox {
-                                width: 260px;
+                                horizontal-stretch: 2;
+                                max-width: 260px;
                                 model: root.log-sources;
                                 current-index <=> root.log-source;
                                 selected => { root.log-filter(); }
                             }
                             AppComboBox {
-                                width: 220px;
+                                horizontal-stretch: 1;
+                                max-width: 220px;
+                                min-width: 90px;
                                 model: root.log-levels;
                                 current-index <=> root.log-level;
                                 selected => { root.log-filter(); }
                             }
                             AppLineEdit {
-                                horizontal-stretch: 1;
+                                horizontal-stretch: 3;
+                                min-width: 100px;
                                 text <=> root.log-search;
                                 placeholder-text: root.t-search;
                                 edited => { root.log-filter(); }
@@ -4822,13 +4907,13 @@ export component App inherits Window {
                 color: root.window-active ? M3.on-surface : M3.on-surface-variant;
                 vertical-alignment: center;
             }
-            if root.merged-bar: Text {
+            if root.merged-bar && root.bar-title: Text {
                 text: "·";
                 font-size: 14px;
                 color: M3.on-surface-variant;
                 vertical-alignment: center;
             }
-            if root.merged-bar: Text {
+            if root.merged-bar && root.bar-title: Text {
                 horizontal-stretch: 1;
                 text: root.page-title;
                 font-size: 20px * Type.scale;
@@ -4917,7 +5002,8 @@ export component App inherits Window {
             width: parent.width;
             height: 40px;
             icon-only: root.merged-bar;
-            page: root.page;
+            // (none: they are over the page)
+            page: root.acts-in-content ? -1 : root.page;
             has-cards: root.cards.length > 0;
             t-stop-all: root.t-stop-all;
             t-cancel: root.t-cancel;
