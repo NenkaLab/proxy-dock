@@ -76,6 +76,9 @@ fn focus_process_window(pid: u32) -> bool {
     true
 }
 
+/// the window is drawn at this much of the display's scale when "App scale" is 100%
+const BASE_SCALE: f64 = 0.9;
+
 /// start (or bring up) the window process; `page`: 0 canvas, 1 proxy cards, 2 log
 fn open_ui(page: u32) {
     let Some(core) = CORE.get() else { return };
@@ -90,9 +93,11 @@ fn open_ui(page: u32) {
     let mut cmd = std::process::Command::new(exe);
     cmd.env(proxydock::ipc::ENV, core.ipc_env()).env("PROXYDOCK_PAGE", page.to_string());
     // "App scale": on top of the display's own scale (Python QT_SCALE_FACTOR)
-    let scale = core.setting("ui_scale").as_f64().unwrap_or(100.0) / 100.0;
+    // (100% is drawn a little smaller than the display's scale: the M3 sizes read large next to other apps)
+    let scale = core.setting("ui_scale").as_f64().unwrap_or(100.0) / 100.0 * BASE_SCALE;
     let dpi = unsafe { windows_sys::Win32::UI::HiDpi::GetDpiForSystem() } as f64 / 96.0;
-    if (scale - 1.0).abs() > 1e-6 {
+    // (a SLINT_SCALE_FACTOR already set, as for the README pictures, is kept)
+    if std::env::var_os("SLINT_SCALE_FACTOR").is_none() {
         cmd.env("SLINT_SCALE_FACTOR", format!("{:.3}", dpi * scale));
     }
     *child = cmd.spawn().ok();

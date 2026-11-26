@@ -1,0 +1,76 @@
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
+
+import { MaterialPalette, MaterialFontSettings } from "styling.slint";
+import { MenuBarItemBase, MenuBarBase, MenuFrameBase, MenuItemBase } from "../common/menu-base.slint";
+
+export component MenuBarItem {
+    in property <MenuEntry> entry <=> base.entry;
+
+    callback clicked <=> base.clicked;
+    callback hovered <=> base.hovered;
+
+    min-width: base.min-width;
+    min-height: base.min-height;
+
+    base := MenuBarItemBase {
+        horizontal-padding: 12px;
+        top-padding: 8px;
+        bottom-padding: 8px;
+        default-foreground: MaterialPalette.foreground;
+        hover-foreground: MaterialPalette.foreground;
+        pressed-foreground: MaterialPalette.foreground;
+        hover-background: MaterialPalette.surface-container-highest;
+        pressed-background: MaterialPalette.surface-container-highest;
+        font-size: MaterialFontSettings.body-large.font-size;
+        font-weight: MaterialFontSettings.body-large.font-weight;
+    }
+}
+
+export component MenuBar inherits MenuBarBase {
+    horizontal-padding: 4px;
+    spacing: 8px;
+    min-layout-height: 40px;
+}
+
+// ProxyDock: an M3 menu in the app's own colours (its M3 global): a raised surface-container-highest card,
+// rounded, no outline, items with a rounded state layer
+export component MenuFrame inherits MenuFrameBase {
+    background: MaterialPalette.is-dark ? #32353a : #e0e2e8;
+    border-radius: 16px;
+    drop-shadow-color: #00000059;
+    drop-shadow-offset-y: 4px;
+    drop-shadow-blur: 16px;
+    margin: 8px;
+    layout-min-width: 200px;
+}
+
+export component MenuItem {
+    in property <bool> is-current <=> base.is-current;
+    in property <MenuEntry> entry <=> base.entry;
+
+    callback set-current <=> base.set-current;
+    callback clear-current <=> base.clear-current;
+    callback activate <=> base.activate;
+
+    min-height: entry.is-separator ? 9px : max(44px, base.min-height);
+    max-height: entry.is-separator ? 9px : base.max-height;
+
+    HorizontalLayout {
+        base := MenuItemBase {
+            default-foreground: MaterialPalette.is-dark ? #e1e2e8 : #191c20;
+            alternate-foreground: MaterialPalette.is-dark ? #c3c7cf : #43474e;
+            current-foreground: MaterialPalette.is-dark ? #e1e2e8 : #191c20;
+            current-background: MaterialPalette.is-dark ? #e1e2e81a : #191c2014;
+            separator-color: MaterialPalette.is-dark ? #43474e : #c3c7cf;
+            border-radius: 12px;
+            font-size: 14px;
+            font-weight: 400;
+            horizontal-padding: 14px;
+            vertical-padding: 8px;
+            spacing: 12px;
+            sub-menu-icon: @image-url("_arrow_forward.svg");
+            icon-size: 16px;
+        }
+    }
+}

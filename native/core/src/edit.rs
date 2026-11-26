@@ -894,6 +894,51 @@ pub fn add_lane(g: &mut Obj, rid: &str, side: &str) -> bool {
     true
 }
 
+/// Wire input lane `input` of pass-through rid inside the block to output lane `output` (None = to nothing),
+/// as dragged on the block (Python `set_lane_map`). A straight block that gets a crossing wire becomes routed,
+/// its other lanes kept as they are. Ok(false): nothing changed.
+pub fn set_lane_map(g: &mut Obj, rid: &str, input: usize, output: Option<usize>) -> Result<bool, String> {
+    let Some(before) = node_mut(g, "relays", rid).map(|n| n.clone()) else { return Ok(false) };
+    if before["wireless"] == json!(true) {
+        return Ok(false);
+    }
+    let outs: Vec<Value> = before["outputs"].as_array().into_iter().flatten().map(|o| o["id"].clone()).collect();
+    let Some(in_id) = before["inputs"].get(input).and_then(|x| x["id"].as_str()).map(str::to_string) else {
+        return Ok(false);
+    };
+    let new_out = match output {
+        Some(o) => match outs.get(o) {
+            Some(id) => id.clone(),
+            None => return Ok(false),
+        },
+        None => Value::Null,
+    };
+    if before["inputs"][input]["out"] == new_out {
+        return Ok(false);
+    }
+    let n = node_mut(g, "relays", rid).unwrap();
+    if n["routed"] != json!(true) {
+        // straight: lane i goes to lane i; keep that for the others
+        n["routed"] = json!(true);
+        for (i, x) in n["inputs"].as_array_mut().into_iter().flatten().enumerate() {
+            x["out"] = outs.get(i).cloned().unwrap_or(Value::Null);
+        }
+    }
+    n["inputs"][input]["out"] = new_out;
+    let looped = graph::lane_index(g).lane_loop(&in_id)
+        || g["routers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|x| x["id"].as_str())
+            .any(|id| graph::router_loop(g, id));
+    if looped {
+        *node_mut(g, "relays", rid).unwrap() = before;
+        cannot(&tr("The links would go round in a circle"))?;
+    }
+    Ok(true)
+}
+
 /// Remove one lane (an input or output lane id) of a pass-through (Python `graph.remove_lane`): a straight block
 /// loses it on both sides, a routed one only on that side; one lane per side stays. Links into lanes that are
 /// gone are cut.
@@ -1142,6 +1187,24 @@ mod tests {
             "routers": [{"id": "r", "name": "R", "rules": [{"id": "x", "name": "x", "match": {}}]}],
             "relays": [{"id": "rl", "name": "L", "inputs": [{"id": "L1"}, {"id": "L2"}]}],
         }))
+    }
+
+    #[test]
+    fn lane_map_on_the_block() {
+        let mut g = sample();
+        let rl = |g: &Obj| graph::find(g, "rl").unwrap().1.clone();
+        let outs: Vec<Value> = rl(&g)["outputs"].as_array().unwrap().iter().map(|o| o["id"].clone()).collect();
+        // the same wire: nothing changes; a crossing wire makes the block routed, the other lane kept
+        assert_eq!(set_lane_map(&mut g, "rl", 0, Some(0)), Ok(false));
+        assert_eq!(set_lane_map(&mut g, "rl", 0, Some(1)), Ok(true));
+        let n = rl(&g);
+        assert_eq!(n["routed"], json!(true));
+        assert_eq!((n["inputs"][0]["out"].clone(), n["inputs"][1]["out"].clone()), (outs[1].clone(), outs[1].clone()));
+        // to nothing, and lanes that do not exist
+        assert_eq!(set_lane_map(&mut g, "rl", 1, None), Ok(true));
+        assert_eq!(rl(&g)["inputs"][1]["out"], Value::Null);
+        assert_eq!(set_lane_map(&mut g, "rl", 5, Some(0)), Ok(false));
+        assert_eq!(set_lane_map(&mut g, "rl", 0, Some(9)), Ok(false));
     }
 
     #[test]

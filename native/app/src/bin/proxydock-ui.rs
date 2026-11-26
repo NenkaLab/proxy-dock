@@ -9,8 +9,8 @@ use proxydock_core::log::fmt_size;
 use serde_json::{Value, json};
 use slint::{Color, ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use slint_node_editor::{
-    Dragged, GroupData, GroupLogic, GroupMember, LinkData, LinkPath, MovableNode, NodeEditorSetup, wire_node_editor,
-    wire_selection,
+    Dragged, GroupData, GroupLogic, GroupMember, LinkData, LinkPath, MovableNode, NodeEditorSetup, PinGrab,
+    wire_node_editor, wire_selection,
 };
 use std::collections::HashMap;
 use std::net::TcpStream;
@@ -58,6 +58,8 @@ const GROUP_HEAD: f32 = 36.0;
 thread_local! {
     /// canvas groups: the core's id of each group row (row n has id n + 1), its member node ids, collapsed
     static GROUPS: std::cell::RefCell<Vec<(String, Vec<i32>, bool)>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// a link picked up at its input end (see grab-input-link): its source pin, input pin, row and colour
+    static GRAB: std::cell::Cell<Option<(i32, i32, usize, Color)>> = const { std::cell::Cell::new(None) };
     /// a collapsed group's stand-in block: its pins -> the member pins they stand for
     static STANDIN_PINS: std::cell::RefCell<HashMap<i32, i32>> = std::cell::RefCell::new(HashMap::new());
     /// the last size seen of each block (a collapsed group's members are not measured while hidden)
@@ -2177,6 +2179,7 @@ fn labels(app: &App) {
         t.set_undo(tr("Undo").into());
         t.set_redo(tr("Redo").into());
         t.set_cut(tr("Disconnect all links").into());
+        t.set_add_lane(tr("Add a lane").into());
         t.set_duplicate(tr("Duplicate").into());
         t.set_delete(tr("Delete").into());
     }
@@ -2457,6 +2460,7 @@ fn main() -> Result<(), slint::PlatformError> {
         }
         app.on_compute_link_at({
             let links = links.clone();
+            let controller = controller.clone();
             move |x, y| {
                 let rows = (0..links.row_count()).filter_map(|i| {
                     let l = links.row_data(i)?;
@@ -2475,15 +2479,71 @@ fn main() -> Result<(), slint::PlatformError> {
         // a link dragged between two pins: the core decides (and answers with the new canvas or a reason)
         {
             let (send, key_of) = (send.clone(), key_of.clone());
+            // (a stand-in block's pin: the member pin it stands for)
+            let link_cmd = move |cmd: &str, out: i32, inp: i32| {
+                let (out, inp) = (real_pin(out), real_pin(inp));
+                json!({"cmd": cmd, "from": key_of(out / 64), "out": (out % 64) / 2, "to": key_of(inp / 64), "in": (inp % 64) / 2})
+            };
+            // a link picked up at its input end: shown again where it was (dropped back, or nowhere useful)
+            let put_back = {
+                let links = links.clone();
+                move || {
+                    if let Some((_, _, row, color)) = GRAB.take()
+                        && let Some(mut l) = links.row_data(row)
+                    {
+                        l.color = color;
+                        links.set_row_data(row, l);
+                    }
+                }
+            };
+            // pressing an input pin that has a link picks that link up there: it hangs from its source pin and
+            // follows the mouse until dropped on another input (moved), on nothing (removed) or back (kept)
+            let (links_g, ctl_g, weak_g) = (links.clone(), controller.clone(), app.as_weak());
+            app.global::<NodeEditorInternalCallbacks>().on_grab_input_link(move |pin| {
+                let none = PinGrab { pin: 0, x: 0.0, y: 0.0 };
+                let Some(app) = weak_g.upgrade() else { return none };
+                let Some(row) =
+                    (0..links_g.row_count()).rev().find(|&i| links_g.row_data(i).is_some_and(|l| l.end_pin_id == pin))
+                else {
+                    return none;
+                };
+                let mut l = links_g.row_data(row).unwrap();
+                let cache = ctl_g.cache();
+                let Some(p) = cache.borrow().get_absolute_pins().find(|p| p.id == l.start_pin_id) else { return none };
+                let z = app.get_canvas_zoom();
+                GRAB.set(Some((l.start_pin_id, pin, row, l.color)));
+                let start = l.start_pin_id;
+                l.color = Color::from_argb_u8(0, 0, 0, 0);
+                links_g.set_row_data(row, l);
+                PinGrab { pin: start, x: p.x * z + app.get_canvas_pan_x(), y: p.y * z + app.get_canvas_pan_y() }
+            });
+            let (send_r, cmd_r, back_r) = (send.clone(), link_cmd.clone(), put_back.clone());
             app.on_link_requested(move |a, b| {
-                let (out, inp) = if a % 2 == 1 && b % 2 == 0 { (a, b) } else if b % 2 == 1 && a % 2 == 0 { (b, a) } else { return };
-                if out / 64 == inp / 64 {
+                let grabbed = GRAB.get();
+                let (out, inp) = if a % 2 == 1 && b % 2 == 0 {
+                    (a, b)
+                } else if b % 2 == 1 && a % 2 == 0 {
+                    (b, a)
+                } else {
+                    (0, 0)
+                };
+                if out == 0 || out / 64 == inp / 64 || grabbed.is_some_and(|(o, i, ..)| (o, i) == (out, inp)) {
+                    back_r();
                     return;
                 }
-                // (a stand-in block's pin: the member pin it stands for)
-                let (out, inp) = (real_pin(out), real_pin(inp));
-                send(json!({"cmd": "connect", "from": key_of(out / 64), "out": (out % 64) / 2, "to": key_of(inp / 64), "in": (inp % 64) / 2}));
+                if let Some((o, i, ..)) = grabbed {
+                    GRAB.set(None);
+                    send_r(cmd_r("disconnect", o, i));
+                }
+                send_r(cmd_r("connect", out, inp));
             });
+            let (send_d, cmd_d) = (send.clone(), link_cmd.clone());
+            app.on_link_dropped(move |_, _, _| {
+                if let Some((o, i, ..)) = GRAB.take() {
+                    send_d(cmd_d("disconnect", o, i));
+                }
+            });
+            app.on_link_cancelled(put_back);
         }
     }
     if let Some(p) = std::env::var("PROXYDOCK_PAGE").ok().and_then(|p| p.parse::<i32>().ok()) {
@@ -2694,6 +2754,15 @@ fn main() -> Result<(), slint::PlatformError> {
                             app.set_canvas_pan_x(app.get_width_() / 2.0 - (n.x + 100.0) * z);
                             app.set_canvas_pan_y(app.get_height_() / 2.0 - (n.y + 34.0) * z);
                         }
+                    }
+                }
+                // a pass-through's inside wire dragged on the block: "lane.wire.<input>.<output or -1>"
+                a if a.starts_with("lane.wire.") => {
+                    let mut it = a["lane.wire.".len()..].split('.').map(|x| x.parse::<i64>().unwrap_or(-1));
+                    let (i, o) = (it.next().unwrap_or(-1), it.next().unwrap_or(-1));
+                    if i >= 0 {
+                        let out = if o >= 0 { json!(o) } else { Value::Null };
+                        send7(json!({"cmd": "lane_map", "id": key, "in": i, "out": out}));
                     }
                 }
                 _ => send7(json!({"cmd": "node_action", "key": key, "action": action.as_str()})),

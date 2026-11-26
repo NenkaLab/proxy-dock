@@ -1877,6 +1877,13 @@ impl Controller {
                 r
             }
             "disconnect" => edit::disconnect(&mut self.graph, &s("from"), n("out"), &s("to"), n("in")),
+            "lane_map" => {
+                let out = v["out"].as_u64().map(|x| x as usize);
+                match edit::set_lane_map(&mut self.graph, &s("id"), n("in"), out) {
+                    Ok(false) => return,
+                    r => r.map(|_| ()),
+                }
+            }
             "delete" => {
                 // selected links are cut first (a refused one is skipped), then the selected blocks deleted
                 for l in v["links"].as_array().into_iter().flatten() {
@@ -2288,8 +2295,8 @@ impl Controller {
                 };
                 self.send_to(n, &msg);
             }
-            "move" | "connect" | "disconnect" | "delete" | "duplicate" | "rename" | "color" | "group" | "ungroup"
-            | "group_color" | "group_collapse" | "group_add" => self.edit(cmd, v),
+            "move" | "connect" | "disconnect" | "lane_map" | "delete" | "duplicate" | "rename" | "color" | "group"
+            | "ungroup" | "group_color" | "group_collapse" | "group_add" => self.edit(cmd, v),
             "add" => {
                 // (Python opens the editor for a new outbound other than Direct, and for a router / IF)
                 if let Some(open) = self.add_block(v) {

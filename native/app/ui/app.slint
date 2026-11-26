@@ -2,10 +2,10 @@
 // the prototype. Pages so far: the proxy cards and the log; everything comes from the core process over ipc.
 import { ListView, Palette, ScrollView } from "std-widgets.slint";
 import {
-    NodeEditor, BaseNode, Pin, PinTypes, NodeEditorEvents, NodeEditorInternalCallbacks, NodeEditorComputations, LinkData, GroupData, GroupStyleDefaults, DragState,
+    NodeEditor, BaseNode, Pin, PinTypes, NodeEditorEvents, NodeEditorInternalCallbacks, NodeEditorComputations, LinkData, GroupData, GroupStyleDefaults, DragState, PinGrab,
 } from "@nodeeditor";
 
-export { PinTypes, NodeEditorEvents, NodeEditorInternalCallbacks, NodeEditorComputations, DragState }
+export { PinTypes, NodeEditorEvents, NodeEditorInternalCallbacks, NodeEditorComputations, DragState, PinGrab }
 import "../../../fonts/PretendardVariable.ttf";
 import "../../../fonts/JetBrainsMono.ttf";
 
@@ -113,6 +113,7 @@ export global CanvasText {
     in property <string> auto-restart: "Auto-restart";
     in property <string> switched-on: "Switched on";
     in property <string> switched-off: "Switched off";
+    in property <string> add-lane: "Add a lane";
     in property <string> stop: "Stop";
     in property <string> add-inbound: "Add inbound";
     in property <string> add-outbound: "Add outbound";
@@ -369,8 +370,24 @@ component ProxyNode inherits BaseNode {
     property <bool> chips: root.state != "" || root.has-switch;
     property <length> chips-top: root.top + root.line-count * root.line-h + 6px;
     property <length> ports-top: root.chips-top + (root.chips ? 40px : 4px);
-    node-width: kind == 0 ? 300px : kind == 1 ? 280px : kind == 3 ? 220px : 260px;
-    node-height: root.ports-top + (root.rows > 0 ? root.rows * root.lane-h + 8px : 0px);
+    // the block grows to fit its chips (measured as all on: with their check, so a click never resizes it)
+    property <length> base-width: kind == 0 ? 260px : kind == 1 ? 280px : kind == 3 ? 220px : 260px;
+    property <length> card-chips-w: root.state != "" ? card-measure.preferred-width + 32px : 0px;
+    property <length> switch-chips-w: root.has-switch ? 2 * max(on-measure.preferred-width, off-measure.preferred-width) + 6px + 32px : 0px;
+    node-width: max(root.base-width, root.card-chips-w, root.switch-chips-w);
+    card-measure := HorizontalLayout {
+        visible: false;
+        spacing: 6px;
+        NodeChip { text: CanvasText.run; on: true; }
+        NodeChip { text: CanvasText.at-start; on: true; }
+        NodeChip { text: CanvasText.auto-restart; on: true; }
+    }
+    on-measure := NodeChip { visible: false; text: CanvasText.switched-on; on: true; }
+    off-measure := NodeChip { visible: false; text: CanvasText.switched-off; on: true; }
+    // a pass-through (not a wireless half): its inside wires are dragged on the block, a footer adds a lane
+    property <bool> lane-edit: root.kind == 3 && root.lanes && root.detail == "";
+    property <length> foot-h: root.lane-edit ? 36px : 0px;
+    node-height: root.ports-top + (root.rows > 0 ? root.rows * root.lane-h + 8px : 0px) + root.foot-h;
 
     // (5: a collapsed group standing in for its blocks, in the group's colour)
     in property <color> group-color: transparent;
@@ -468,6 +485,7 @@ component ProxyNode inherits BaseNode {
         if root.state != "": HorizontalLayout {
             x: 16px;
             y: root.chips-top;
+            width: root.node-width - 32px;
             height: 32px;
             spacing: 6px;
             NodeChip {
@@ -595,6 +613,109 @@ component ProxyNode inherits BaseNode {
         }
     }
 
+    // a pass-through's inner dots: drag from one to a dot on the other side to wire the lanes inside the block,
+    // from an input dot to nowhere to leave that input unwired (Python RelayItem)
+    property <int> drag-side;    // 0 none, 1 from an input dot, 2 from an output dot
+    property <int> drag-k;
+    property <length> drag-x;
+    property <length> drag-y;
+    pure function lane-at(y: length, count: int) -> int {
+        return y < root.ports-top || y >= root.ports-top + count * root.lane-h ? -1 : floor((y - root.ports-top) / root.lane-h);
+    }
+    function drop-wire(x: length, y: length) {
+        if root.drag-side == 1 {
+            if abs(x - (root.node-width - root.inset)) < 24px && root.lane-at(y, root.outs) >= 0 {
+                root.menu-action("lane.wire." + root.drag-k + "." + root.lane-at(y, root.outs));
+            } else if abs(x - root.inset) > 24px || root.lane-at(y, root.ins) != root.drag-k {
+                root.menu-action("lane.wire." + root.drag-k + ".-1");
+            }
+        } else if root.drag-side == 2 && abs(x - root.inset) < 24px && root.lane-at(y, root.ins) >= 0 {
+            root.menu-action("lane.wire." + root.lane-at(y, root.ins) + "." + root.drag-k);
+        }
+        root.drag-side = 0;
+    }
+    if root.lane-edit && root.drag-side != 0: Path {
+        x: 0; y: 0;
+        width: root.node-width;
+        height: root.node-height;
+        viewbox-x: 0; viewbox-y: 0;
+        viewbox-width: root.node-width / 1px;
+        viewbox-height: root.node-height / 1px;
+        stroke: M3.dark ? #6ccb5f : #107c10;
+        stroke-width: 2px;
+        MoveTo {
+            x: (root.drag-side == 1 ? root.inset : root.node-width - root.inset) / 1px;
+            y: root.lane-y(root.drag-k) / 1px;
+        }
+        LineTo { x: root.drag-x / 1px; y: root.drag-y / 1px; }
+    }
+    for i in root.lane-edit ? root.ins : 0: Rectangle {
+        x: root.inset - 5px;
+        y: root.lane-y(i) - 5px;
+        width: 10px; height: 10px; border-radius: 5px;
+        background: root.container;
+        border-width: 2px;
+        border-color: root.on-container.with-alpha(0.7);
+    }
+    for o in root.lane-edit ? root.outs : 0: Rectangle {
+        x: root.node-width - root.inset - 5px;
+        y: root.lane-y(o) - 5px;
+        width: 10px; height: 10px; border-radius: 5px;
+        background: root.container;
+        border-width: 2px;
+        border-color: root.on-container.with-alpha(0.7);
+    }
+    for side in root.lane-edit ? 2 : 0: TouchArea {
+        x: (side == 0 ? root.inset : root.node-width - root.inset) - 14px;
+        y: root.ports-top;
+        width: 28px;
+        height: (side == 0 ? root.ins : root.outs) * root.lane-h;
+        mouse-cursor: crosshair;
+        pointer-event(e) => {
+            if e.button == PointerEventButton.left && e.kind == PointerEventKind.down {
+                root.drag-side = side + 1;
+                root.drag-k = root.lane-at(self.y + self.mouse-y, side == 0 ? root.ins : root.outs);
+                root.drag-x = self.x + self.mouse-x;
+                root.drag-y = self.y + self.mouse-y;
+                if root.drag-k < 0 { root.drag-side = 0; }
+            } else if e.button == PointerEventButton.left && e.kind == PointerEventKind.up && root.drag-side != 0 {
+                root.drop-wire(self.x + self.mouse-x, self.y + self.mouse-y);
+            }
+        }
+        moved => {
+            root.drag-x = self.x + self.mouse-x;
+            root.drag-y = self.y + self.mouse-y;
+        }
+    }
+    // "+ Add a lane" under the lanes (Python's footer)
+    if root.lane-edit: Rectangle {
+        x: 12px;
+        y: root.node-height - root.foot-h;
+        width: root.node-width - 24px;
+        height: 28px;
+        border-radius: 14px;
+        background: add-ta.pressed ? root.on-container.with-alpha(0.16) : add-ta.has-hover ? root.on-container.with-alpha(0.12) : root.on-container.with-alpha(0.06);
+        HorizontalLayout {
+            alignment: center;
+            spacing: 6px;
+            Image {
+                width: 16px;
+                height: 16px;
+                y: (parent.height - self.height) / 2;
+                source: @image-url("icons/add.svg");
+                colorize: root.on-container;
+            }
+            Text {
+                text: CanvasText.add-lane;
+                font-size: 12px * Type.scale;
+                font-weight: 500;
+                color: root.on-container;
+                vertical-alignment: center;
+            }
+        }
+        add-ta := TouchArea { clicked => { root.menu-action("lane.add.inputs"); } }
+    }
+
     // each port's name, small, inside the block next to its dot (M3 Label Small)
     for label[i] in root.in-labels: Text {
         x: 16px;
@@ -607,7 +728,7 @@ component ProxyNode inherits BaseNode {
         overflow: elide;
     }
     for c[o] in root.kind == 1 ? root.out-colors : []: Rectangle {
-        x: root.node-width - 34px - out-label-w.preferred-width - 14px;
+        x: root.node-width - 38px;
         y: root.lane-y(o) - 12px;
         width: 24px; height: 24px; border-radius: 12px;
         background: out-ta.has-hover ? root.on-container.with-alpha(0.14) : transparent;
@@ -627,10 +748,11 @@ component ProxyNode inherits BaseNode {
             clicked => { root.pick-color(c.key, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y); }
         }
     }
+    // (a Router's colour dot sits right of its name, next to the port)
     for label[o] in root.out-labels: Text {
         x: root.node-width / 2 + 4px;
         y: root.lane-y(o) - self.height / 2;
-        width: root.node-width / 2 - 20px;
+        width: root.node-width / 2 - (root.kind == 1 ? 42px : 20px);
         horizontal-alignment: right;
         text: label;
         font-size: 11px * Type.scale;
@@ -830,12 +952,12 @@ component ComboItem inherits Rectangle {
     in property <string> font;
     in property <bool> current;
     callback picked();
-    height: 38px;
-    border-radius: 8px;
+    height: 44px;
+    border-radius: 12px;
     background: root.current ? M3.secondary-container : item-ta.has-hover ? M3.on-surface.with-alpha(0.08) : transparent;
     Text {
-        x: 12px;
-        width: parent.width - 44px;
+        x: 14px;
+        width: parent.width - 48px;
         text: root.text;
         font-size: 14px * Type.scale;
         font-family: root.font;
@@ -844,7 +966,7 @@ component ComboItem inherits Rectangle {
         overflow: elide;
     }
     if root.current: Image {
-        x: parent.width - 30px;
+        x: parent.width - 32px;
         width: 18px;
         height: 18px;
         source: @image-url("icons/check.svg");
@@ -893,23 +1015,21 @@ component AppComboBox inherits Rectangle {
     }
     popup := PopupWindow {
         x: 0;
-        y: root.height + 4px;
+        y: root.height + 6px;
         width: root.width;
-        height: min(root.model.length * 38px + 12px, 340px);
+        height: min(root.model.length * 44px + 16px, 380px);
         Rectangle {
-            border-radius: Field.radius;
-            background: M3.surface-container-high;
-            drop-shadow-blur: 12px;
-            drop-shadow-offset-y: 3px;
-            drop-shadow-color: #00000050;
-            border-width: 1px;
-            border-color: M3.outline-variant;
+            border-radius: 16px;
+            background: M3.surface-container-highest;
+            drop-shadow-blur: 16px;
+            drop-shadow-offset-y: 4px;
+            drop-shadow-color: #00000059;
             // a short list as it is, a long one scrolls
             if root.model.length <= 8: VerticalLayout {
-                x: 6px;
-                y: 6px;
-                width: parent.width - 12px;
-                height: root.model.length * 38px;
+                x: 8px;
+                y: 8px;
+                width: parent.width - 16px;
+                height: root.model.length * 44px;
                 alignment: start;
                 for item[i] in root.model: ComboItem {
                     text: item;
@@ -922,10 +1042,10 @@ component AppComboBox inherits Rectangle {
                 }
             }
             if root.model.length > 8: Rectangle {
-                x: 6px;
-                y: 6px;
-                width: parent.width - 12px;
-                height: parent.height - 12px;
+                x: 8px;
+                y: 8px;
+                width: parent.width - 16px;
+                height: parent.height - 16px;
                 combo-list := ListView {
                     for item[i] in root.model: ComboItem {
                         text: item;
@@ -944,7 +1064,7 @@ component AppComboBox inherits Rectangle {
                     offset: combo-list.content-y;
                     content: combo-list.content-height;
                     view: combo-list.visible-height;
-                    fade-color: M3.surface-container-high;
+                    fade-color: M3.surface-container-highest;
                 }
             }
         }
@@ -3375,6 +3495,8 @@ export component App inherits Window {
     callback delete-selected();
     in property <string> t-no-graph: "";
     callback link-requested <=> editor.link-requested;
+    callback link-dropped <=> editor.link-dropped;
+    callback link-cancelled <=> editor.link-cancelled;
     callback node-selected <=> editor.node-selected;
     callback select-link <=> editor.select-link;
     callback selection-cleared <=> editor.selection-cleared;

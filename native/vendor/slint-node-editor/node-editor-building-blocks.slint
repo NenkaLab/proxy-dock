@@ -193,7 +193,14 @@ export struct LinkPath {
     height: length,
 }
 
+/// (ProxyDock) the link grabbed at an input pin: the pin it starts from and that pin's position on the editor
+/// (pin 0: no link there)
+export struct PinGrab { pin: int, x: length, y: length }
+
 export global NodeEditorInternalCallbacks {
+    /// (ProxyDock) an input pin pressed: a link into it is picked up from its far end (the host hides it and
+    /// says where that end is); pin 0 = start a new link from this pin as usual
+    callback grab-input-link(/* pin-id */ int) -> PinGrab;
     /// Give the editor keyboard focus inside a pointer press. TouchAreas accept
     /// presses before the ancestor FocusScope can apply focus-on-click.
     /// This must be synchronous: a deferred changed watcher could steal focus
@@ -1427,6 +1434,15 @@ export component Pin inherits Rectangle {
                     BoxSelectionGesture.state = BoxSelectionGestureState.started;
                     BoxSelectionGesture.version += 1;
                 } else {
+                    // (ProxyDock) an input pin with a link: that link is picked up at this end
+                    let grab = root.pin-type == 1 ? NodeEditorInternalCallbacks.grab-input-link(pin-id) : { pin: 0, x: 0px, y: 0px };
+                    if grab.pin != 0 {
+                        LinkCreation.start-pin-id = grab.pin;
+                        LinkCreation.current-x = grab.x;
+                        LinkCreation.current-y = grab.y;
+                        LinkCreation.state = LinkCreationState.started;
+                        LinkCreation.version += 1;
+                    } else {
                     // Set LinkCreation state to start link creation (NodeEditor watches this)
                     // Pin position within node must be scaled by zoom since we're inside a scaled container
                     LinkCreation.start-pin-id = pin-id;
@@ -1434,6 +1450,7 @@ export component Pin inherits Rectangle {
                     LinkCreation.current-y = node-screen-y + (parent-offset-y + root.y + self.y + self.height / 2) * ViewportState.zoom;
                     LinkCreation.state = LinkCreationState.started;
                     LinkCreation.version += 1;
+                    }
                 }
             } else if event.kind == PointerEventKind.up && event.button == PointerEventButton.left {
                 if forwarding-box-selection {

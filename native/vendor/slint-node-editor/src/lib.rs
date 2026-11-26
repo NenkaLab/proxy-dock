@@ -110,7 +110,7 @@ pub mod tracking;
 // forwards those only into its private inner module), so without this a
 // consumer building a `LinkData` has no name to reach for.
 pub use nodeeditor::{
-    BoxSelectionModifier, GroupData, LinkCreationState, LinkData, LinkPath, MinimapNode,
+    BoxSelectionModifier, GroupData, LinkCreationState, LinkData, LinkPath, MinimapNode, PinGrab,
     MinimapPosition,
 };
 
