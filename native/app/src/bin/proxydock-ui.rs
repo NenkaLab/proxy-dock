@@ -2099,6 +2099,7 @@ fn show_settings(app: &App, v: &Value) {
     apply_fonts(app, &proxydock_core::i18n::current());
     st.set_admin(b("run_as_admin"));
     st.set_windows(v["windows"] == json!(true));
+    st.set_startup_supported(v["startup_supported"] == json!(true));
     st.set_login(v["startup"]["registered"] == json!(true));
     st.set_hidden(v["startup"]["hidden"] == json!(true));
     let fw = match v["firewall"].as_bool() {
@@ -3436,7 +3437,7 @@ fn main() -> Result<(), slint::PlatformError> {
             let Some(a) = weak.upgrade() else { return };
             let dir = a.global::<Settings>().get_log_dir().to_string();
             let _ = std::fs::create_dir_all(&dir);
-            if let Err(e) = std::process::Command::new("explorer").arg(&dir).spawn() {
+            if let Err(e) = open_with_system(&dir) {
                 show_toast(&a, &format!("{}: {e}", tr("Cannot open the folder")), false, 5.0);
             }
         });
@@ -4582,9 +4583,16 @@ fn license_dir() -> std::path::PathBuf {
     }
 }
 
-/// Open a folder or a web address with the system (Explorer, the default browser)
+/// Open a folder or a web address with the system (Explorer / Finder / the file manager, the default browser)
 fn open_with_system(target: &str) -> std::io::Result<()> {
-    std::process::Command::new("explorer").arg(target).spawn().map(|_| ())
+    let program = if cfg!(windows) {
+        "explorer"
+    } else if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(program).arg(target).spawn().map(|_| ())
 }
 
 fn info_labels(app: &App, code: &str) {

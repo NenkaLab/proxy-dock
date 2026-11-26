@@ -1990,6 +1990,8 @@ export global Settings {
     in property <[string]> mono-fonts;
     // Windows only: start at login (applied at once), the firewall rule (text, and whether it is on; -1 = checking)
     in property <bool> windows;
+    // start at login works here (Windows, macOS, Linux)
+    in property <bool> startup-supported;
     in-out property <bool> login;
     in-out property <bool> hidden;
     in property <string> fw-text;
@@ -2311,7 +2313,8 @@ component SettingsStartup inherits SettingsSection {
             toggled => { Settings.set-hidden(self.checked); }
         }
     }
-    SettingRow {
+    // (Windows: UAC; macOS / Linux have no such start)
+    if Settings.windows: SettingRow {
         label: Settings.text.admin;
         desc: Settings.text.admin-desc;
         AppSwitch { checked <=> Settings.admin; }
@@ -3964,7 +3967,7 @@ export component App inherits Window {
     property <[SettingsCat]> cats: [
         { label: Settings.text.title, header: true, show: true },
         { label: Settings.text.cat-defaults, icon: @image-url("icons/tune.svg"), page: 4, cat: 0, show: true },
-        { label: Settings.text.cat-startup, icon: @image-url("icons/power_settings_new.svg"), page: 4, cat: 1, show: Settings.windows },
+        { label: Settings.text.cat-startup, icon: @image-url("icons/power_settings_new.svg"), page: 4, cat: 1, show: Settings.startup-supported },
         { label: Settings.text.firewall, icon: @image-url("icons/shield.svg"), page: 4, cat: 2, show: Settings.windows },
         { label: Settings.text.updates, icon: @image-url("icons/sync.svg"), page: 4, cat: 3, show: true },
         { label: Settings.text.display, icon: @image-url("icons/palette.svg"), page: 4, cat: 4, show: true },

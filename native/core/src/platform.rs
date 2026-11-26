@@ -1,7 +1,9 @@
-//! OS integration (Python `platform_utils`): start at login, the system proxy of the PC block (Windows WinINet)
-//! and the Windows Firewall rule that blocks other PCs.
+//! OS integration (Python `platform_utils`): start at login (Windows: the HKCU Run value, macOS: a LaunchAgent,
+//! Linux: an XDG autostart entry), the system proxy of the PC block (Windows WinINet) and the Windows Firewall
+//! rule that blocks other PCs (the last two are Windows only, as in the Python app).
 //!
-//! Tests point the registry keys somewhere else (`set_test_keys`), so they never change the real settings.
+//! Tests point the registry keys and the login-item folder somewhere else (`set_test_keys`, `set_test_dir`), so
+//! they never change the real settings.
 
 use crate::i18n::tr;
 use serde_json::{Map, Value, json};
@@ -43,8 +45,89 @@ fn inet_key() -> String {
     KEYS.read().unwrap().as_ref().map_or(INET_KEY.into(), |k| k.1.clone())
 }
 
+/// the system proxy and the firewall rule (Windows only, as in the Python app)
 pub fn supported() -> bool {
     cfg!(windows)
+}
+
+/// start at login (Windows, macOS, Linux)
+pub fn startup_supported() -> bool {
+    cfg!(any(windows, target_os = "macos", target_os = "linux"))
+}
+
+/// Tests: the folder that stands for ~/Library/LaunchAgents (macOS) or ~/.config/autostart (Linux)
+static TEST_DIR: RwLock<Option<PathBuf>> = RwLock::new(None);
+
+pub fn set_test_dir(dir: &Path) {
+    *TEST_DIR.write().unwrap() = Some(dir.to_path_buf());
+}
+
+/// the login-item file of `name` ("current" or the previous version's): macOS LaunchAgent plist, Linux autostart
+/// .desktop (Python `MAC_AGENT`, `LINUX_AUTOSTART` and the OLD_ ones)
+#[cfg(not(windows))]
+fn login_item(old: bool) -> Option<PathBuf> {
+    let mac = cfg!(target_os = "macos");
+    let file = match (mac, old) {
+        (true, false) => "com.proxydock.app.plist",
+        (true, true) => "com.proxylocal.socks5.plist",
+        (false, false) => "proxydock.desktop",
+        (false, true) => "proxylocal.desktop",
+    };
+    if let Some(d) = TEST_DIR.read().unwrap().as_ref() {
+        return Some(d.join(file));
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    let dir = if mac {
+        home.join("Library").join("LaunchAgents")
+    } else {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .unwrap_or_else(|| home.join(".config"))
+            .join("autostart")
+    };
+    Some(dir.join(file))
+}
+
+/// the program a login item starts: inside an AppImage the AppImage file itself (the running program lives in a
+/// mount that is gone after a restart)
+pub fn launch_exe(exe: &Path) -> PathBuf {
+    match std::env::var_os("APPIMAGE") {
+        Some(a) if cfg!(target_os = "linux") && !a.is_empty() => PathBuf::from(a),
+        _ => exe.to_path_buf(),
+    }
+}
+
+/// the login item's text: a LaunchAgent plist (macOS) or an autostart .desktop entry (Linux)
+pub fn login_item_text(exe: &Path, hidden: bool, mac: bool) -> String {
+    let mut argv = vec![launch_exe(exe).display().to_string()];
+    if hidden {
+        argv.push("--hidden".into());
+    }
+    if mac {
+        let esc = |a: &str| a.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+        let args: String = argv.iter().map(|a| format!("<string>{}</string>", esc(a))).collect();
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \
+             \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>Label</key>\
+             <string>com.proxydock.app</string><key>ProgramArguments</key><array>{args}</array><key>RunAtLoad</key>\
+             <true/></dict></plist>\n"
+        )
+    } else {
+        // (Python shlex.quote: quoted when the argument has anything but safe characters)
+        let quote = |a: &str| {
+            if !a.is_empty() && a.chars().all(|c| c.is_ascii_alphanumeric() || "@%+=:,./-_".contains(c)) {
+                a.to_string()
+            } else {
+                format!("'{}'", a.replace('\'', "'\"'\"'"))
+            }
+        };
+        let exec: Vec<String> = argv.iter().map(|a| quote(a)).collect();
+        format!(
+            "[Desktop Entry]\nType=Application\nName=ProxyDock\nExec={}\nX-GNOME-Autostart-enabled=true\nTerminal=false\n",
+            exec.join(" ")
+        )
+    }
 }
 
 // --- the registry (HKCU) ---
@@ -166,7 +249,7 @@ pub fn startup_command() -> Option<String> {
         reg::get(&k, APP_ID).and_then(|v| v.as_str().map(String::from))
     }
     #[cfg(not(windows))]
-    None
+    login_item(false).and_then(|p| std::fs::read_to_string(p).ok())
 }
 
 /// (registered, hidden) (Python `is_startup_registered` / `is_startup_hidden`)
@@ -191,8 +274,17 @@ pub fn set_startup(exe: &Path, register: bool, hidden: bool) -> Result<(), Strin
     }
     #[cfg(not(windows))]
     {
-        let _ = (exe, register, hidden);
-        Err(tr("Windows only for now"))
+        let Some(path) = login_item(false) else { return Err(tr("Windows only for now")) };
+        if !register {
+            return match std::fs::remove_file(&path) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+                _ => Ok(()),
+            };
+        }
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(&path, login_item_text(exe, hidden, cfg!(target_os = "macos"))).map_err(|e| e.to_string())
     }
 }
 
@@ -213,8 +305,12 @@ pub fn migrate_autostart(exe: &Path) -> bool {
     }
     #[cfg(not(windows))]
     {
-        let _ = exe;
-        false
+        let Some(old_path) = login_item(true) else { return false };
+        let Ok(old) = std::fs::read_to_string(&old_path) else { return false };
+        if std::fs::remove_file(&old_path).is_err() {
+            return false;
+        }
+        set_startup(exe, true, old.contains("--hidden")).is_ok()
     }
 }
 
@@ -457,5 +553,46 @@ mod tests {
                 w.as_ptr(),
             );
         }
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+mod login_item_tests {
+    use super::*;
+
+    #[test]
+    fn login_items_in_a_test_folder() {
+        let dir = std::env::temp_dir().join(format!("proxydock-login-{}", std::process::id()));
+        set_test_dir(&dir);
+        let exe = Path::new("/opt/Proxy Dock/proxydock");
+        assert_eq!(startup_state(), (false, false));
+        set_startup(exe, true, true).unwrap();
+        assert_eq!(startup_state(), (true, true));
+        let text = startup_command().unwrap();
+        assert!(text.contains("Proxy Dock"), "{text}");
+        set_startup(exe, false, false).unwrap();
+        assert_eq!(startup_state(), (false, false));
+        // the previous version's entry becomes ours, keeping a hidden start
+        std::fs::write(login_item(true).unwrap(), "x --hidden").unwrap();
+        assert!(migrate_autostart(exe));
+        assert_eq!(startup_state(), (true, true));
+        assert!(!login_item(true).unwrap().exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod login_text_tests {
+    #[test]
+    fn plist_and_desktop_entry() {
+        let exe = std::path::Path::new("/Applications/ProxyDock.app/Contents/MacOS/proxydock");
+        let plist = super::login_item_text(exe, true, true);
+        assert!(plist.contains(
+            "<string>/Applications/ProxyDock.app/Contents/MacOS/proxydock</string><string>--hidden</string>"
+        ));
+        assert!(plist.contains("<key>RunAtLoad</key><true/>"));
+        let desktop = super::login_item_text(std::path::Path::new("/opt/it's here/proxydock"), false, false);
+        assert!(desktop.contains("Exec='/opt/it'\"'\"'s here/proxydock'\n"), "{desktop}");
+        assert!(desktop.starts_with("[Desktop Entry]\nType=Application\nName=ProxyDock\n"));
     }
 }

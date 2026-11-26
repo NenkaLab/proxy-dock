@@ -80,6 +80,21 @@ fn listen_for_second_start() {
     });
 }
 
+/// A system notification (Python's tray message): macOS through AppleScript, Linux through notify-send (libnotify;
+/// nothing when it is not installed)
+pub fn notify(text: &str) {
+    let text = text.to_string();
+    std::thread::spawn(move || {
+        if cfg!(target_os = "macos") {
+            let q = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+            let script = format!("display notification \"{}\" with title \"ProxyDock\"", q(&text));
+            let _ = std::process::Command::new("osascript").args(["-e", &script]).status();
+        } else {
+            let _ = std::process::Command::new("notify-send").args(["-a", "ProxyDock", "ProxyDock", &text]).status();
+        }
+    });
+}
+
 /// the system menu from the entries: items, check items for choices, headers as disabled items
 fn build_menu(entries: &[Entry]) -> Menu {
     let menu = Menu::new();
@@ -100,8 +115,7 @@ pub fn run_tray(show_at_start: Option<u32>, note: Option<String>) {
     let event_loop = EventLoopBuilder::<Ask>::with_user_event().build();
     let _ = PROXY.set(Mutex::new(event_loop.create_proxy()));
     let hooks = controller::Hooks {
-        // (no system notifications here: the window shows them when it is open)
-        notify: std::sync::Arc::new(|_text: &str| {}),
+        notify: std::sync::Arc::new(|text: &str| notify(text)),
         quit: std::sync::Arc::new(|| ask(Ask::Quit)),
         restart: std::sync::Arc::new(|app: bool| ask(Ask::Restart(!app))),
         tooltip: std::sync::Arc::new(|text: &str| ask(Ask::Tooltip(text.to_string()))),
@@ -147,6 +161,12 @@ pub fn run_tray(show_at_start: Option<u32>, note: Option<String>) {
                 }
                 if let Some(page) = show_at_start {
                     open_ui(page);
+                    // started by the user (not at login with --hidden): say what runs (Python `show_start_notice`)
+                    let auto = CORE.get().map_or(0, |c| c.cards().iter().filter(|c| c.autostart).count());
+                    notify(
+                        &proxydock_core::i18n::tr("Running · {len} autostart proxies")
+                            .replace("{len}", &auto.to_string()),
+                    );
                 }
             }
             Event::NewEvents(StartCause::ResumeTimeReached { .. }) => remake = true,

@@ -565,6 +565,7 @@ impl Controller {
             "scales": config::UI_SCALES.iter().map(|s| format!("{s}%") + &if *s == 100 { tr(" (default)") } else { String::new() }).collect::<Vec<_>>(),
             "engine": self.engine_text,
             "windows": proxydock_core::platform::supported(),
+            "startup_supported": proxydock_core::platform::startup_supported(),
             "startup": {"registered": proxydock_core::platform::startup_state().0, "hidden": proxydock_core::platform::startup_state().1},
             "firewall": self.firewall,
             "log_dir": self.log_dir().display().to_string(),

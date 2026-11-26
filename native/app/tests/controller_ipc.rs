@@ -16,6 +16,10 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let base = format!(r"Software\ProxyDockTest\ipc{}", std::process::id());
     proxydock_core::platform::set_test_keys(&format!(r"{base}\Run"), &format!(r"{base}\Inet"));
+    // (macOS / Linux: the login items in a temporary folder)
+    proxydock_core::platform::set_test_dir(
+        &std::env::temp_dir().join(format!("proxydock-ipc-login-{}", std::process::id())),
+    );
     g
 }
 
