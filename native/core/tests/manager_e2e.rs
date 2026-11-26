@@ -149,12 +149,7 @@ fn busy_port_and_death() {
     // killed from outside: the card goes to error
     let port = free_port();
     assert!(m.start(&card("m3", port), &glob(json!({}))).recv().unwrap());
-    let out = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-Command",
-            "Get-CimInstance Win32_Process -Filter \"Name='sing-box.exe'\" | Where-Object { $_.CommandLine -like '*m3.json*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"])
-        .output()
-        .unwrap();
-    assert!(out.status.success());
+    kill_by_command_line("m3.json");
     assert!(wait(|| matches!(m.state("m3"), State::Error(_)), 5), "{:?}", m.state("m3"));
     assert!(!m.is_running("m3"));
     // it can be started again
@@ -257,42 +252,10 @@ fn card_through_the_administrator_helper() {
 
     // sing-box ends under the helper: the card hears it through the helper
     assert!(m.start(&p, &glob(json!({}))).recv().unwrap());
-    let out = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-Command",
-            "Get-CimInstance Win32_Process -Filter \"Name='sing-box.exe'\" | Where-Object { $_.CommandLine -like '*h1.json*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"])
-        .output()
-        .unwrap();
-    assert!(out.status.success());
+    kill_by_command_line("h1.json");
     assert!(wait(|| matches!(m.state("h1"), State::Error(_)), 8), "{:?}", m.state("h1"));
     // no helper left behind
-    let left = std::process::Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-Command",
-            "(Get-Process tun_helper -ErrorAction SilentlyContinue | Measure-Object).Count",
-        ])
-        .output()
-        .unwrap();
-    assert!(
-        wait(
-            || String::from_utf8_lossy(
-                &std::process::Command::new("powershell")
-                    .args([
-                        "-NoProfile",
-                        "-Command",
-                        "(Get-Process tun_helper -ErrorAction SilentlyContinue | Measure-Object).Count"
-                    ])
-                    .output()
-                    .unwrap()
-                    .stdout
-            )
-            .trim()
-                == "0",
-            5
-        ),
-        "{}",
-        String::from_utf8_lossy(&left.stdout)
-    );
+    assert!(wait(|| running("tun_helper") == 0, 5), "{} tun_helper left", running("tun_helper"));
 }
 
 #[test]
@@ -389,4 +352,67 @@ fn connection_check_uses_the_chain() {
 
 fn card_direct() -> Value {
     card("cd", free_port())
+}
+
+/// End the processes whose command line contains `pattern` (a sing-box killed from outside)
+fn kill_by_command_line(pattern: &str) {
+    #[cfg(windows)]
+    {
+        let out = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", &format!(
+                "Get-CimInstance Win32_Process -Filter \"Name='sing-box.exe'\" | Where-Object {{ $_.CommandLine -like '*{}*' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}",
+                pattern.replace('\'', "''"))])
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+    }
+    // (Linux: /proc/<pid>/cmdline, arguments separated by NULs)
+    #[cfg(target_os = "linux")]
+    for entry in std::fs::read_dir("/proc").unwrap().flatten() {
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else { continue };
+        let Ok(cmd) = std::fs::read(entry.path().join("cmdline")) else { continue };
+        // (sing-box only, as on Windows: the helper's command line names the same config)
+        let comm = std::fs::read_to_string(entry.path().join("comm")).unwrap_or_default();
+        if comm.trim() == "sing-box" && String::from_utf8_lossy(&cmd).contains(pattern) {
+            let ok = std::process::Command::new("kill").args(["-9", &pid.to_string()]).status().unwrap();
+            assert!(ok.success());
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let ok = std::process::Command::new("pkill")
+            .args(["-9", "-f", &format!("sing-box run.*{pattern}")])
+            .status()
+            .unwrap();
+        assert!(ok.success());
+    }
+}
+
+/// How many processes of this program name run
+fn running(name: &str) -> usize {
+    #[cfg(windows)]
+    {
+        let out = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                &format!("(Get-Process {name} -ErrorAction SilentlyContinue | Measure-Object).Count"),
+            ])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(0)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_dir("/proc")
+            .unwrap()
+            .flatten()
+            .filter(|e| std::fs::read_to_string(e.path().join("comm")).is_ok_and(|c| c.trim() == name))
+            .count()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let out = std::process::Command::new("pgrep").args(["-x", name]).output().unwrap();
+        String::from_utf8_lossy(&out.stdout).lines().count()
+    }
 }

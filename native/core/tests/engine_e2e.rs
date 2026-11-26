@@ -234,13 +234,7 @@ fn port_in_use_and_death_are_reported() {
     let cfg = dir.join("card1.json");
     let pid_filter = format!("{}", cfg.display());
     // find this card's sing-box by its config path on the command line and end it
-    let out = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-Command", &format!(
-            "Get-CimInstance Win32_Process -Filter \"Name='sing-box.exe'\" | Where-Object {{ $_.CommandLine -like '*{}*' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}",
-            pid_filter.replace('\'', "''"))])
-        .output()
-        .unwrap();
-    assert!(out.status.success());
+    kill_by_command_line(&pid_filter);
     let until = Instant::now() + Duration::from_secs(5);
     while died.lock().unwrap().is_empty() && Instant::now() < until {
         std::thread::sleep(Duration::from_millis(50));
@@ -248,6 +242,40 @@ fn port_in_use_and_death_are_reported() {
     assert_eq!(died.lock().unwrap().len(), 1, "{:?}", log.0.lock().unwrap());
     assert!(died.lock().unwrap()[0].contains("sing-box"));
     drop(engine);
+}
+
+/// End the processes whose command line contains `pattern` (a sing-box killed from outside)
+fn kill_by_command_line(pattern: &str) {
+    #[cfg(windows)]
+    {
+        let out = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", &format!(
+                "Get-CimInstance Win32_Process -Filter \"Name='sing-box.exe'\" | Where-Object {{ $_.CommandLine -like '*{}*' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}",
+                pattern.replace('\'', "''"))])
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+    }
+    // (Linux: /proc/<pid>/cmdline, arguments separated by NULs)
+    #[cfg(target_os = "linux")]
+    for entry in std::fs::read_dir("/proc").unwrap().flatten() {
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else { continue };
+        let Ok(cmd) = std::fs::read(entry.path().join("cmdline")) else { continue };
+        // (sing-box only, as on Windows: the helper's command line names the same config)
+        let comm = std::fs::read_to_string(entry.path().join("comm")).unwrap_or_default();
+        if comm.trim() == "sing-box" && String::from_utf8_lossy(&cmd).contains(pattern) {
+            let ok = std::process::Command::new("kill").args(["-9", &pid.to_string()]).status().unwrap();
+            assert!(ok.success());
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let ok = std::process::Command::new("pkill")
+            .args(["-9", "-f", &format!("sing-box run.*{pattern}")])
+            .status()
+            .unwrap();
+        assert!(ok.success());
+    }
 }
 
 fn card_graph(g: Value) -> Value {

@@ -65,7 +65,11 @@ pub fn launch(how: &Launch, config_path: &Path, workdir: &Path) -> Result<Conn, 
             use std::os::windows::process::CommandExt;
             cmd.creation_flags(0x0800_0000);
         }
-        cmd.spawn().map_err(|e| e.to_string())?;
+        let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+        // (reaped when it ends: no zombie left on Linux / macOS)
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
     }
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
     let until = Instant::now() + CONNECT_TIMEOUT;
@@ -74,10 +78,14 @@ pub fn launch(how: &Launch, config_path: &Path, workdir: &Path) -> Result<Conn, 
             Ok((s, _)) => {
                 let _ = s.set_nonblocking(false);
                 let _ = s.set_read_timeout(Some(Duration::from_secs(10)));
+                // the token line a byte at a time: what follows it (sing-box's output, or at once the reason
+                // the helper could not start it and its exit code) stays in the socket for the reader
                 let mut line = vec![];
-                let mut r = BufReader::new(&s);
-                if r.read_until(b'\n', &mut line).is_ok() && same(line.trim_ascii(), token.as_bytes()) {
-                    // nothing else was sent yet: the helper waits for its sing-box first, so the buffer is empty
+                let mut byte = [0u8; 1];
+                while line.len() < 256 && (&s).read_exact(&mut byte).is_ok() && byte[0] != b'\n' {
+                    line.push(byte[0]);
+                }
+                if same(line.trim_ascii(), token.as_bytes()) {
                     let _ = s.set_read_timeout(None);
                     return Ok(Conn { stream: s, code: Arc::new(Mutex::new(None)) });
                 }

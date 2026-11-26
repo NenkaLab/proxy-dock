@@ -115,6 +115,9 @@ def main():
     tmp = tempfile.mkdtemp()
     bad = 0
     for c, r in zip(cases, rust):
+        # (the Rust app's own setting, which the Python app does not have)
+        if isinstance(r, dict) and isinstance(r.get("global"), dict):
+            r["global"].pop("theme_color", None)
         known = set(re.findall(r'"([0-9a-f]{8})"', json.dumps(c["raw"])))
         py = python_v2(c["raw"]) if c["kind"] == "v2" else python_old(c["raw"], tmp)
         a, b = normalise(py, known), normalise(r, known)
