@@ -484,9 +484,18 @@ fn groups_follow(app: &App, models: &Models, rects: &HashMap<i32, (f32, f32, f32
     });
     let nodes: Vec<NodeData> = models.nodes.iter().collect();
     let groups = GROUPS.with(|g| g.borrow().clone());
-    for (i, (_, members, _)) in groups.iter().enumerate() {
+    for (i, (_, members, collapsed)) in groups.iter().enumerate() {
         let Some(mut row) = models.groups.row_data(i) else { continue };
-        let (x, y, w, h) = group_bounds(&nodes, members);
+        let (x, y, mut w, h) = group_bounds(&nodes, members);
+        // collapsed: the band over the stand-in block is as wide as that block, not as the hidden members
+        if *collapsed
+            && let Some(sw) = nodes
+                .iter()
+                .find(|n| n.kind == 5 && (n.x - x).abs() < 0.5 && (n.y - (y + GROUP_HEAD + 4.0)).abs() < 0.5)
+                .and_then(|n| SIZES.with(|s| s.borrow().get(&n.id).map(|z| z.0)))
+        {
+            w = sw;
+        }
         if (row.x - x).abs() > 0.5
             || (row.y - y).abs() > 0.5
             || (row.width - w).abs() > 0.5

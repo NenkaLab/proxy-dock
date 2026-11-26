@@ -1543,6 +1543,38 @@ component PageActions inherits HorizontalLayout {
     callback log-clear();
     alignment: end;
     spacing: 8px;
+    // the "add" buttons' menus (no width; first, so their spacing is not after the last button)
+    router-menu := ContextMenuArea {
+        width: 0;
+        Menu {
+            MenuItem {
+                title: CanvasText.router;
+                activated => { root.add("router", ""); }
+            }
+            MenuItem {
+                title: CanvasText.if-block;
+                activated => { root.add("if", ""); }
+            }
+        }
+    }
+    out-menu := ContextMenuArea {
+        width: 0;
+        Menu {
+            for t in CanvasText.outbounds: MenuItem {
+                title: t.title;
+                activated => { root.add("outbound", t.action); }
+            }
+        }
+    }
+    proxy-menu := ContextMenuArea {
+        width: 0;
+        Menu {
+            for t in CanvasText.templates: MenuItem {
+                title: t.title;
+                activated => { root.add("template", t.action); }
+            }
+        }
+    }
     if root.page == 1 && root.has-cards: AppButton {
         text: root.t-stop-all;
         icon: root.icon-only ? @image-url("icons/stop_circle.svg") : @image-url("");
@@ -1580,37 +1612,6 @@ component PageActions inherits HorizontalLayout {
         icon: @image-url("icons/add.svg");
         primary: true;
         clicked => { proxy-menu.show({ x: self.absolute-position.x - proxy-menu.absolute-position.x + self.width - 420px, y: self.absolute-position.y - proxy-menu.absolute-position.y + self.height + 4px }); }
-    }
-    router-menu := ContextMenuArea {
-        width: 0;
-        Menu {
-            MenuItem {
-                title: CanvasText.router;
-                activated => { root.add("router", ""); }
-            }
-            MenuItem {
-                title: CanvasText.if-block;
-                activated => { root.add("if", ""); }
-            }
-        }
-    }
-    out-menu := ContextMenuArea {
-        width: 0;
-        Menu {
-            for t in CanvasText.outbounds: MenuItem {
-                title: t.title;
-                activated => { root.add("outbound", t.action); }
-            }
-        }
-    }
-    proxy-menu := ContextMenuArea {
-        width: 0;
-        Menu {
-            for t in CanvasText.templates: MenuItem {
-                title: t.title;
-                activated => { root.add("template", t.action); }
-            }
-        }
     }
     if root.page == 3: AppButton {
         text: root.t-cancel;
@@ -2436,9 +2437,9 @@ component SettingsDisplay inherits SettingsSection {
             font-weight: 500;
             color: M3.on-surface;
         }
-        HorizontalLayout {
+        // (a narrow window: the dots go on to the next line, not out of the tile)
+        FlexboxLayout {
             spacing: 0px;
-            alignment: start;
             ThemeDot {
                 fill: Settings.system-accent;
                 chosen: Settings.theme-color == "system";
@@ -2449,7 +2450,7 @@ component SettingsDisplay inherits SettingsSection {
                     Settings.preview-theme-color(Settings.theme-color);
                 }
             }
-            Rectangle { width: 1px; height: 36px; y: 4px; background: M3.outline-variant; }
+            Rectangle { width: 1px; height: 44px; Rectangle { y: 4px; height: 36px; background: M3.outline-variant; } }
             for c[i] in Settings.presets: ThemeDot {
                 fill: c;
                 chosen: i == 0 ? Settings.theme-color == "" : Settings.theme-color == Settings.preset-values[i];
@@ -2458,7 +2459,7 @@ component SettingsDisplay inherits SettingsSection {
                     Settings.preview-theme-color(Settings.theme-color);
                 }
             }
-            Rectangle { width: 1px; height: 36px; y: 4px; background: M3.outline-variant; }
+            Rectangle { width: 1px; height: 44px; Rectangle { y: 4px; height: 36px; background: M3.outline-variant; } }
             ThemeDot {
                 property <bool> custom: Settings.theme-color-custom;
                 fill: self.custom ? Settings.custom-color : M3.surface-container-highest;
@@ -4117,23 +4118,30 @@ export component App inherits Window {
                 padding: 24px;
                 spacing: 12px;
                 // the page's buttons over it (a wide window with the merged bar)
-                if root.acts-in-content: PageActions {
+                // (as wide as the page under them: a wide window centres the page at its widest)
+                if root.acts-in-content: Rectangle {
                     height: 40px;
-                    page: root.page;
-                    has-cards: root.cards.length > 0;
-                    t-stop-all: root.t-stop-all;
-                    t-cancel: root.t-cancel;
-                    t-save: root.t-save;
-                    stop-all => { root.stop-all(); }
-                    cancel => { root.form-cancel(); }
-                    save => { root.form-save(); }
-                    t-new-proxy: root.t-new-proxy;
-                    t-new-outbound: root.t-new-outbound;
-                    add(what, t) => { root.list-add(what, t); }
-                    t-copy-log: root.t-copy-log;
-                    t-clear-log: root.t-clear-log;
-                    log-copy => { root.log-copy(); }
-                    log-clear => { root.log-clear(); }
+                    min-width: 0px;
+                    PageActions {
+                        width: min(parent.width, root.content-max);
+                        x: (parent.width - self.width) / 2;
+                        height: 40px;
+                        page: root.page;
+                        has-cards: root.cards.length > 0;
+                        t-stop-all: root.t-stop-all;
+                        t-cancel: root.t-cancel;
+                        t-save: root.t-save;
+                        stop-all => { root.stop-all(); }
+                        cancel => { root.form-cancel(); }
+                        save => { root.form-save(); }
+                        t-new-proxy: root.t-new-proxy;
+                        t-new-outbound: root.t-new-outbound;
+                        add(what, t) => { root.list-add(what, t); }
+                        t-copy-log: root.t-copy-log;
+                        t-clear-log: root.t-clear-log;
+                        log-copy => { root.log-copy(); }
+                        log-clear => { root.log-clear(); }
+                    }
                 }
                 // both pages stay (the log keeps its scroll position); the hidden one is not drawn
                 // (hidden pages still count in a layout: no minimum here, so the widest page cannot make every
