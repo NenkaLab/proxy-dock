@@ -403,7 +403,9 @@ component ProxyNode inherits BaseNode {
     property <length> inset: 40px;
     property <int> rows: max(ins, outs);
     property <bool> lanes: kind == 1 || (kind == 3 && (ins > 1 || outs > 1 || wires.length > 0));
-    property <int> line-count: root.lines.length + (root.state != "" ? 1 : 0) + (root.rate != "" ? 1 : 0);
+    // blocks traffic passes keep a line for its speed (faded while there is none), so they keep their size
+    property <bool> shows-rate: root.kind <= 3;
+    property <int> line-count: root.lines.length + (root.state != "" ? 1 : 0) + (root.shows-rate ? 1 : 0);
     // a card: Run / At start / Auto-restart chips; an IF in switch mode: its on / off buttons (Python's block widgets)
     property <bool> chips: root.state != "" || root.has-switch;
     property <length> chips-top: root.top + root.line-count * root.line-h + 6px;
@@ -511,14 +513,16 @@ component ProxyNode inherits BaseNode {
                 : root.state == "error" ? M3.error : root.on-container.with-alpha(0.6);
             overflow: elide;
         }
-        if root.rate != "": Text {
+        if root.shows-rate: Text {
             x: 20px;
             y: root.top + (root.line-count - 1) * root.line-h;
-            text: root.rate;
+            text: root.rate != "" ? root.rate : "0 B/s";
             font-size: 11px * Type.scale;
             font-family: Type.mono;
             font-weight: 600;
             color: root.on-container;
+            opacity: root.rate != "" ? 1 : 0.4;
+            animate opacity { duration: Motion.fast-effects; }
         }
         if root.state != "": HorizontalLayout {
             x: 16px;
