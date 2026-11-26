@@ -1085,5 +1085,7 @@
  "Monitor colour profile unknown: sRGB assumed": "Perfil de color del monitor desconocido: se supone sRGB",
  "Monitor colour profile: {name}": "Perfil de color del monitor: {name}",
  "Beyond sRGB: saved as an OKLCH colour (Display P3)": "Fuera de sRGB: se guarda como color OKLCH (Display P3)",
- "This monitor cannot show this colour exactly; it is drawn as the nearest one": "Este monitor no puede mostrar este color con exactitud; se dibuja el más cercano"
+ "This monitor cannot show this colour exactly; it is drawn as the nearest one": "Este monitor no puede mostrar este color con exactitud; se dibuja el más cercano",
+ "Theme colour": "Color del tema",
+ "Custom": "Personalizado"
 }

@@ -553,6 +553,7 @@ impl Controller {
                 "dns_server": config::dns_list_text(g["dns_server"].as_str().unwrap_or(""), &g["dns_extra"]),
                 "dns_via_outbound": g["dns_via_outbound"], "log_to_file": g["log_to_file"],
                 "language": index(&codes, &g["language"]), "theme": index(&config::THEMES, &g["theme"]), "ui_scale": scale,
+                "theme_color": g["theme_color"],
                 "log_font_size": g["log_font_size"], "close_exits": g["close_exits"], "singbox_latest": g["singbox_latest"],
                 "run_as_admin": g["run_as_admin"], "check_updates": g["check_updates"],
                 "text_size": config::TEXT_SIZES.iter().position(|x| Some(*x) == g["text_size"].as_i64()).unwrap_or(1),
@@ -627,6 +628,7 @@ impl Controller {
         g.insert("dns_extra".into(), json!(dns_extra));
         g.insert("language".into(), json!(pick(&codes, "language")));
         g.insert("theme".into(), json!(pick(&config::THEMES, "theme")));
+        g.insert("theme_color".into(), json!(vals["theme_color"].as_str().unwrap_or("")));
         let size = config::TEXT_SIZES.get(vals["text_size"].as_u64().unwrap_or(1) as usize).copied().unwrap_or(115);
         g.insert("text_size".into(), json!(size));
         for k in ["ui_font", "mono_font"] {

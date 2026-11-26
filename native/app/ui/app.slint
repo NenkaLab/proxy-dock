@@ -9,32 +9,65 @@ export { PinTypes, NodeEditorEvents, NodeEditorInternalCallbacks, NodeEditorComp
 import "../../../fonts/PretendardVariable.ttf";
 import "../../../fonts/JetBrainsMono.ttf";
 
-// M3 color roles for seed #0061A4 (baseline tonal palette), light / dark
-global M3 {
+// M3 color roles, light / dark: the seed's roles (l-* / d-*) are set from the theme colour (core theme.rs);
+// the defaults are the baseline for seed #0061A4
+export global M3 {
     out property <bool> dark: Palette.color-scheme == ColorScheme.dark;
-    out property <color> primary: dark ? #9ecaff : #0061a4;
-    out property <color> on-primary: dark ? #003258 : #ffffff;
-    out property <color> primary-container: dark ? #00497d : #d1e4ff;
-    out property <color> on-primary-container: dark ? #d1e4ff : #001d36;
-    out property <color> secondary-container: dark ? #3b4858 : #d7e3f7;
-    out property <color> on-secondary-container: dark ? #d7e3f7 : #101c2b;
+    in property <color> l-primary: #0061a4;
+    in property <color> d-primary: #9ecaff;
+    out property <color> primary: dark ? d-primary : l-primary;
+    in property <color> l-on-primary: #ffffff;
+    in property <color> d-on-primary: #003258;
+    out property <color> on-primary: dark ? d-on-primary : l-on-primary;
+    in property <color> l-primary-container: #d1e4ff;
+    in property <color> d-primary-container: #00497d;
+    out property <color> primary-container: dark ? d-primary-container : l-primary-container;
+    in property <color> l-on-primary-container: #001d36;
+    in property <color> d-on-primary-container: #d1e4ff;
+    out property <color> on-primary-container: dark ? d-on-primary-container : l-on-primary-container;
+    in property <color> l-secondary-container: #d7e3f7;
+    in property <color> d-secondary-container: #3b4858;
+    out property <color> secondary-container: dark ? d-secondary-container : l-secondary-container;
+    in property <color> l-on-secondary-container: #101c2b;
+    in property <color> d-on-secondary-container: #d7e3f7;
+    out property <color> on-secondary-container: dark ? d-on-secondary-container : l-on-secondary-container;
     out property <color> error: dark ? #ffb4ab : #ba1a1a;
     out property <color> error-container: dark ? #93000a : #ffdad6;
     out property <color> on-error-container: dark ? #ffdad6 : #410002;
     out property <color> green-container: dark ? #1f5129 : #b7f1bc;
     out property <color> on-green-container: dark ? #b7f1bc : #002107;
-    out property <color> tertiary-container: dark ? #523f5f : #f2daff;
-    out property <color> on-tertiary-container: dark ? #f2daff : #251431;
-    out property <color> surface-container-highest: dark ? #32353a : #e0e2e8;
+    in property <color> l-tertiary-container: #f2daff;
+    in property <color> d-tertiary-container: #523f5f;
+    out property <color> tertiary-container: dark ? d-tertiary-container : l-tertiary-container;
+    in property <color> l-on-tertiary-container: #251431;
+    in property <color> d-on-tertiary-container: #f2daff;
+    out property <color> on-tertiary-container: dark ? d-on-tertiary-container : l-on-tertiary-container;
+    in property <color> l-surface-container-highest: #e0e2e8;
+    in property <color> d-surface-container-highest: #32353a;
+    out property <color> surface-container-highest: dark ? d-surface-container-highest : l-surface-container-highest;
     out property <color> amber-container: dark ? #5a4300 : #ffdf9e;
     out property <color> on-amber-container: dark ? #ffdf9e : #261a00;
-    out property <color> surface: dark ? #111418 : #f8f9ff;
-    out property <color> surface-container-low: dark ? #191c20 : #f2f3f9;
-    out property <color> surface-container: dark ? #1d2024 : #eceef4;
-    out property <color> surface-container-high: dark ? #272a2f : #e6e8ee;
-    out property <color> on-surface: dark ? #e1e2e8 : #191c20;
-    out property <color> on-surface-variant: dark ? #c3c7cf : #43474e;
-    out property <color> outline-variant: dark ? #43474e : #c3c7cf;
+    in property <color> l-surface: #f8f9ff;
+    in property <color> d-surface: #111418;
+    out property <color> surface: dark ? d-surface : l-surface;
+    in property <color> l-surface-container-low: #f2f3f9;
+    in property <color> d-surface-container-low: #191c20;
+    out property <color> surface-container-low: dark ? d-surface-container-low : l-surface-container-low;
+    in property <color> l-surface-container: #eceef4;
+    in property <color> d-surface-container: #1d2024;
+    out property <color> surface-container: dark ? d-surface-container : l-surface-container;
+    in property <color> l-surface-container-high: #e6e8ee;
+    in property <color> d-surface-container-high: #272a2f;
+    out property <color> surface-container-high: dark ? d-surface-container-high : l-surface-container-high;
+    in property <color> l-on-surface: #191c20;
+    in property <color> d-on-surface: #e1e2e8;
+    out property <color> on-surface: dark ? d-on-surface : l-on-surface;
+    in property <color> l-on-surface-variant: #43474e;
+    in property <color> d-on-surface-variant: #c3c7cf;
+    out property <color> on-surface-variant: dark ? d-on-surface-variant : l-on-surface-variant;
+    in property <color> l-outline-variant: #c3c7cf;
+    in property <color> d-outline-variant: #43474e;
+    out property <color> outline-variant: dark ? d-outline-variant : l-outline-variant;
 }
 
 // text settings (proxydock-ui.rs `show_settings`): the size of all text (Python "Text size", 115% = 1),
@@ -1423,12 +1456,12 @@ component ThemeCard inherits Rectangle {
             height: 84px;
             border-radius: 16px;
             clip: true;
-            background: root.kind == 2 ? #1d2024 : #eceef4;
+            background: root.kind == 2 ? M3.d-surface-container : M3.l-surface-container;
             // the system's: the right half dark
             if root.kind == 0: Rectangle {
                 x: parent.width / 2;
                 width: parent.width / 2;
-                background: #1d2024;
+                background: M3.d-surface-container;
             }
             for bar[i] in [{ y: 16px, w: 0.70, accent: true }, { y: 38px, w: 0.45, accent: false }, { y: 58px, w: 0.55, accent: false }]: Rectangle {
                 x: 14px;
@@ -1438,8 +1471,8 @@ component ThemeCard inherits Rectangle {
                 border-radius: self.height / 2;
                 clip: true;
                 // light colours on the left, dark on the right (system: split in the middle of the card)
-                property <color> light: bar.accent ? #0061a4 : #c3c7cf;
-                property <color> dark: bar.accent ? #9ecaff : #43474e;
+                property <color> light: bar.accent ? M3.l-primary : M3.l-outline-variant;
+                property <color> dark: bar.accent ? M3.d-primary : M3.d-outline-variant;
                 background: root.kind == 2 ? self.dark : self.light;
                 if root.kind == 0: Rectangle {
                     x: preview.width / 2 - parent.x;
@@ -1983,12 +2016,27 @@ export global Settings {
     in property <bool> saved-logfile;
     in property <int> saved-language;
     in property <int> saved-theme;
+    // the theme colour: "" = the app's, "system" = Windows' accent colour, else a colour (core theme.rs makes the
+    // window's colours from it)
+    in-out property <string> theme-color;
+    in property <string> saved-theme-color;
+    in property <color> system-accent;
+    in property <[color]> presets;
+    in property <[string]> preset-values;
+    in property <color> custom-color;
+    // (the theme colour is none of the above)
+    in property <bool> theme-color-custom;
+    in property <string> t-theme-color: "Theme colour";
+    in property <string> t-system: "System";
+    in property <string> t-custom: "Custom";
+    callback pick-theme-color();
+    callback preview-theme-color(string);
     in property <int> saved-scale;
     in property <int> saved-logsize;
     in property <bool> saved-close;
     in property <bool> saved-latest;
     out property <bool> dirty: admin != saved-admin || check-updates != saved-check-updates || text-size != saved-text-size || ui-font != saved-ui-font
-        || mono-font != saved-mono-font || allowed != saved-allowed || private != saved-private || timeout != saved-timeout || logconn != saved-logconn || logclose != saved-logclose || dns != saved-dns || dnsvia != saved-dnsvia || logfile != saved-logfile || language != saved-language || theme != saved-theme || scale != saved-scale || logsize != saved-logsize || close != saved-close || latest != saved-latest;
+        || mono-font != saved-mono-font || allowed != saved-allowed || private != saved-private || timeout != saved-timeout || logconn != saved-logconn || logclose != saved-logclose || dns != saved-dns || dnsvia != saved-dnsvia || logfile != saved-logfile || language != saved-language || theme != saved-theme || theme-color != saved-theme-color || scale != saved-scale || logsize != saved-logsize || close != saved-close || latest != saved-latest;
     public function revert() {
         self.allowed = self.saved-allowed;
         self.private = self.saved-private;
@@ -2000,6 +2048,10 @@ export global Settings {
         self.logfile = self.saved-logfile;
         self.language = self.saved-language;
         self.theme = self.saved-theme;
+        if self.theme-color != self.saved-theme-color {
+            self.theme-color = self.saved-theme-color;
+            self.preview-theme-color(self.theme-color);
+        }
         self.scale = self.saved-scale;
         self.logsize = self.saved-logsize;
         self.close = self.saved-close;
@@ -2012,6 +2064,59 @@ export global Settings {
     }
     callback apply();
     callback open-log-dir();
+}
+
+// a theme colour choice: a filled circle (a ring and a check when chosen), an optional icon and a label under it
+component ThemeDot inherits VerticalLayout {
+    in property <color> fill;
+    in property <bool> chosen;
+    in property <image> icon;
+    in property <string> label;
+    callback clicked();
+    // (dark marks on a light colour)
+    property <bool> light: (root.fill.red * 0.299 + root.fill.green * 0.587 + root.fill.blue * 0.114) / 255 > 0.6;
+    spacing: 4px;
+    alignment: start;
+    width: 60px;
+    HorizontalLayout {
+    alignment: center;
+    Rectangle {
+        width: 44px;
+        height: 44px;
+        border-radius: 22px;
+        border-width: root.chosen ? 3px : 0px;
+        border-color: M3.on-surface;
+        Rectangle {
+            width: root.chosen ? 32px : 40px;
+            height: self.width;
+            border-radius: self.width / 2;
+            background: root.fill;
+            border-width: 1px;
+            border-color: M3.outline-variant;
+            animate width { duration: Motion.fast-effects; }
+        }
+        if root.chosen: Image {
+            width: 18px;
+            height: 18px;
+            source: @image-url("icons/check.svg");
+            colorize: root.light ? #191c20 : white;
+        }
+        if !root.chosen && root.icon.width > 0: Image {
+            width: 20px;
+            height: 20px;
+            source: root.icon;
+            colorize: root.light ? #191c20 : white;
+        }
+        TouchArea { clicked => { root.clicked(); } }
+    }
+    }
+    Text {
+        text: root.label;
+        font-size: 11px * Type.scale;
+        color: M3.on-surface-variant;
+        horizontal-alignment: center;
+        overflow: elide;
+    }
 }
 
 // A group of settings (M3 list): a small title in the primary colour, then each setting on a card of its own;
@@ -2285,6 +2390,45 @@ component SettingsDisplay inherits SettingsSection {
                 kind: i;
                 selected: Settings.theme == i;
                 clicked => { Settings.theme = i; }
+            }
+        }
+        // the colour the theme is made from: Windows' accent, one of the app's, or any colour
+        Text {
+            text: Settings.t-theme-color;
+            font-size: 14px * Type.scale;
+            font-weight: 500;
+            color: M3.on-surface;
+        }
+        HorizontalLayout {
+            spacing: 0px;
+            alignment: start;
+            ThemeDot {
+                fill: Settings.system-accent;
+                chosen: Settings.theme-color == "system";
+                icon: @image-url("icons/settings.svg");
+                label: Settings.t-system;
+                clicked => {
+                    Settings.theme-color = "system";
+                    Settings.preview-theme-color(Settings.theme-color);
+                }
+            }
+            Rectangle { width: 1px; height: 36px; y: 4px; background: M3.outline-variant; }
+            for c[i] in Settings.presets: ThemeDot {
+                fill: c;
+                chosen: i == 0 ? Settings.theme-color == "" : Settings.theme-color == Settings.preset-values[i];
+                clicked => {
+                    Settings.theme-color = i == 0 ? "" : Settings.preset-values[i];
+                    Settings.preview-theme-color(Settings.theme-color);
+                }
+            }
+            Rectangle { width: 1px; height: 36px; y: 4px; background: M3.outline-variant; }
+            ThemeDot {
+                property <bool> custom: Settings.theme-color-custom;
+                fill: self.custom ? Settings.custom-color : M3.surface-container-highest;
+                chosen: self.custom;
+                icon: @image-url("icons/palette.svg");
+                label: Settings.t-custom;
+                clicked => { Settings.pick-theme-color(); }
             }
         }
     }

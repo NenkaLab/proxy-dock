@@ -65,7 +65,7 @@ fn obj(v: Value) -> Map<String, Value> {
 
 pub fn global_defaults() -> Map<String, Value> {
     obj(json!({
-        "language": "en", "theme": "auto", "ui_scale": 100, "text_size": 115, "ui_font": "", "mono_font": "",
+        "language": "en", "theme": "auto", "theme_color": "", "ui_scale": 100, "text_size": 115, "ui_font": "", "mono_font": "",
         "disable_ligatures": false, "log_font_size": 10, "close_exits": false, "log_to_file": false,
         "engine": "sing-box", "run_as_admin": false, "singbox_path": "", "hysteria_path": "", "singbox_latest": false,
         "test_sites": [],
@@ -222,6 +222,11 @@ pub fn validate_global(raw: &Value) -> Map<String, Value> {
     let defaults = global_defaults();
     let mut g = typed(&defaults, raw);
     let s = |g: &Map<String, Value>, k: &str| g[k].as_str().unwrap_or("").to_string();
+    // the theme colour: "" (the app's), "system" (Windows' accent colour) or a colour (Rust app only)
+    let tc = s(&g, "theme_color");
+    if !tc.is_empty() && tc != "system" {
+        g.insert("theme_color".into(), json!(crate::graph::valid_color(Some(&json!(tc)))));
+    }
     if !LANGUAGE_CODES.contains(&s(&g, "language").as_str()) {
         g.insert("language".into(), json!("en"));
     }

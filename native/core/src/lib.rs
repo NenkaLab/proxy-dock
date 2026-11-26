@@ -25,6 +25,7 @@ pub mod py;
 pub mod secret;
 pub mod singbox;
 pub mod subscription;
+pub mod theme;
 pub mod tls;
 pub mod update;
 pub mod wg;

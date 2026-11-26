@@ -125,6 +125,9 @@ const PALETTE: [(&str, &str); 10] = [
 thread_local! {
     /// what the open palette colours: the block key, the router output ("" = the block), its colour now
     static PALETTE_FOR: std::cell::RefCell<(String, String, String)> = const { std::cell::RefCell::new((String::new(), String::new(), String::new())) };
+    /// the theme colour in use ("" / "system" / a colour), and what redoes it when Windows' accent changes
+    static THEME_COLOR: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+    static ON_ACCENT: std::cell::RefCell<Option<Rc<dyn Fn()>>> = const { std::cell::RefCell::new(None) };
     /// each block's stored own colour by (node id, router output key or ""): what the picker starts from
     static RAW_COLORS: std::cell::RefCell<HashMap<(i32, String), String>> = std::cell::RefCell::new(HashMap::new());
     /// the open colour picker and what its OK does
@@ -799,6 +802,14 @@ mod nav_hook {
                     go(button == 2);
                     return 1;
                 }
+            }
+            // Windows' accent colour changed
+            0x0320 => {
+                let _ = slint::invoke_from_event_loop(|| {
+                    if let Some(cb) = super::ON_ACCENT.with(|c| c.borrow().clone()) {
+                        cb();
+                    }
+                });
             }
             // Alt+← / →: (with Alt, keys come as system keys)
             WM_SYSKEYDOWN if wp == 0x25 || wp == 0x27 => {
@@ -1799,6 +1810,122 @@ fn picker_show(app: &App, ring: bool) {
     });
 }
 
+/// Windows' accent colour (the DWM's "AccentColor", 0xAABBGGRR) as "#rrggbb"
+fn system_accent() -> Option<String> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
+        let key: Vec<u16> = "Software\\Microsoft\\Windows\\DWM".encode_utf16().chain(Some(0)).collect();
+        let name: Vec<u16> = "AccentColor".encode_utf16().chain(Some(0)).collect();
+        let (mut v, mut len) = (0u32, 4u32);
+        let r = unsafe {
+            RegGetValueW(
+                HKEY_CURRENT_USER,
+                key.as_ptr(),
+                name.as_ptr(),
+                RRF_RT_REG_DWORD,
+                std::ptr::null_mut(),
+                (&mut v as *mut u32).cast(),
+                &mut len,
+            )
+        };
+        if r == 0 {
+            return Some(format!("#{:02x}{:02x}{:02x}", v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff));
+        }
+    }
+    None
+}
+
+/// The window's colours from the theme colour ("" = the app's, "system" = Windows' accent, else a colour)
+fn apply_theme_color(app: &App, value: &str) {
+    use proxydock_core::theme;
+    let seed = match value {
+        "" => theme::APP_SEED.to_string(),
+        "system" => system_accent().unwrap_or_else(|| theme::APP_SEED.to_string()),
+        c => c.to_string(),
+    };
+    THEME_COLOR.with(|t| *t.borrow_mut() = value.to_string());
+    let m = app.global::<M3>();
+    for (role, l, d) in theme::scheme(&seed) {
+        let (l, d) = (hex(&l), hex(&d));
+        match role {
+            "primary" => {
+                m.set_l_primary(l);
+                m.set_d_primary(d);
+            }
+            "on-primary" => {
+                m.set_l_on_primary(l);
+                m.set_d_on_primary(d);
+            }
+            "primary-container" => {
+                m.set_l_primary_container(l);
+                m.set_d_primary_container(d);
+            }
+            "on-primary-container" => {
+                m.set_l_on_primary_container(l);
+                m.set_d_on_primary_container(d);
+            }
+            "secondary-container" => {
+                m.set_l_secondary_container(l);
+                m.set_d_secondary_container(d);
+            }
+            "on-secondary-container" => {
+                m.set_l_on_secondary_container(l);
+                m.set_d_on_secondary_container(d);
+            }
+            "tertiary-container" => {
+                m.set_l_tertiary_container(l);
+                m.set_d_tertiary_container(d);
+            }
+            "on-tertiary-container" => {
+                m.set_l_on_tertiary_container(l);
+                m.set_d_on_tertiary_container(d);
+            }
+            "surface" => {
+                m.set_l_surface(l);
+                m.set_d_surface(d);
+            }
+            "surface-container-low" => {
+                m.set_l_surface_container_low(l);
+                m.set_d_surface_container_low(d);
+            }
+            "surface-container" => {
+                m.set_l_surface_container(l);
+                m.set_d_surface_container(d);
+            }
+            "surface-container-high" => {
+                m.set_l_surface_container_high(l);
+                m.set_d_surface_container_high(d);
+            }
+            "surface-container-highest" => {
+                m.set_l_surface_container_highest(l);
+                m.set_d_surface_container_highest(d);
+            }
+            "on-surface" => {
+                m.set_l_on_surface(l);
+                m.set_d_on_surface(d);
+            }
+            "on-surface-variant" => {
+                m.set_l_on_surface_variant(l);
+                m.set_d_on_surface_variant(d);
+            }
+            "outline-variant" => {
+                m.set_l_outline_variant(l);
+                m.set_d_outline_variant(d);
+            }
+            _ => {}
+        }
+    }
+    // the settings page's own dots
+    let st = app.global::<Settings>();
+    st.set_system_accent(hex(&system_accent().unwrap_or_else(|| theme::APP_SEED.to_string())));
+    let custom = value != "system" && !value.is_empty() && !theme::PRESETS.contains(&value);
+    st.set_theme_color_custom(custom);
+    if custom {
+        st.set_custom_color(hex_color(value).unwrap_or(hex(theme::APP_SEED)));
+    }
+}
+
 /// a message at the bottom of the canvas for `secs` (a newer one replaces it and its timer)
 fn show_toast(app: &App, text: &str, info: bool, secs: f32) {
     app.set_toast_action(SharedString::new());
@@ -1919,6 +2046,9 @@ fn show_settings(app: &App, v: &Value) {
     st.set_saved_logfile(b("log_to_file"));
     st.set_saved_language(i("language"));
     st.set_saved_theme(i("theme"));
+    let tc = vals["theme_color"].as_str().unwrap_or("").to_string();
+    st.set_theme_color(tc.as_str().into());
+    st.set_saved_theme_color(tc.as_str().into());
     st.set_saved_scale(i("ui_scale"));
     st.set_saved_logsize(i("log_font_size"));
     st.set_saved_close(b("close_exits"));
@@ -1986,6 +2116,7 @@ fn show_settings(app: &App, v: &Value) {
     st.set_log_dir(v["log_dir"].as_str().unwrap_or("").into());
     // what applies to this window right away
     app.set_theme(i("theme"));
+    apply_theme_color(app, &tc);
     app.set_log_px(i("log_font_size") as f32 * 1.2);
     CLOSE_EXITS.with(|c| c.set(b("close_exits")));
 }
@@ -2253,6 +2384,10 @@ fn labels(app: &App) {
         t.set_redo(tr("Redo").into());
         t.set_cut(tr("Disconnect all links").into());
         t.set_add_lane(tr("Add a lane").into());
+        let st = app.global::<Settings>();
+        st.set_t_theme_color(tr("Theme colour").into());
+        st.set_t_system(tr("System").into());
+        st.set_t_custom(tr("Custom").into());
         let pick = app.global::<Pick>();
         pick.set_t_cancel(tr("Cancel").into());
         pick.set_t_ok(tr("Apply").into());
@@ -3233,6 +3368,51 @@ fn main() -> Result<(), slint::PlatformError> {
         st.on_set_hidden(move |on| send_h(json!({"cmd": "startup_hidden", "on": on})));
         let send_f = send.clone();
         st.on_firewall(move |on| send_f(json!({"cmd": "firewall", "on": on})));
+        // the theme colour: shown at once (the apply bar saves it, Cancel puts the saved one back)
+        let presets = proxydock_core::theme::PRESETS;
+        st.set_presets(ModelRc::new(VecModel::from(presets.iter().map(|c| hex(c)).collect::<Vec<_>>())));
+        st.set_preset_values(ModelRc::new(VecModel::from(
+            presets.iter().map(|c| SharedString::from(*c)).collect::<Vec<_>>(),
+        )));
+        let weak = app.as_weak();
+        st.on_preview_theme_color(move |v| {
+            if let Some(a) = weak.upgrade() {
+                apply_theme_color(&a, &v);
+            }
+        });
+        let weak = app.as_weak();
+        st.on_pick_theme_color(move || {
+            let Some(a) = weak.upgrade() else { return };
+            let st = a.global::<Settings>();
+            let cur = match st.get_theme_color().as_str() {
+                "" => proxydock_core::theme::APP_SEED.to_string(),
+                "system" => system_accent().unwrap_or_else(|| proxydock_core::theme::APP_SEED.to_string()),
+                c => c.to_string(),
+            };
+            let w = a.as_weak();
+            let apply = move |c: String| {
+                if let Some(a) = w.upgrade() {
+                    a.global::<Settings>().set_theme_color(c.as_str().into());
+                    apply_theme_color(&a, &c);
+                }
+            };
+            open_color_picker(&a, &cur, &tr("Theme colour"), Rc::new(apply));
+        });
+        // Windows' accent changed: the colours follow it when the theme colour is "system"
+        let weak = app.as_weak();
+        ON_ACCENT.with(|c| {
+            *c.borrow_mut() = Some(Rc::new(move || {
+                if let Some(a) = weak.upgrade() {
+                    let v = THEME_COLOR.with(|t| t.borrow().clone());
+                    a.global::<Settings>().set_system_accent(hex(
+                        &system_accent().unwrap_or_else(|| proxydock_core::theme::APP_SEED.to_string())
+                    ));
+                    if v == "system" {
+                        apply_theme_color(&a, &v);
+                    }
+                }
+            }))
+        });
         let (send, weak) = (send.clone(), app.as_weak());
         st.on_apply(move || {
             let Some(a) = weak.upgrade() else { return };
@@ -3243,7 +3423,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 "dns_via_outbound": st.get_dnsvia(), "log_to_file": st.get_logfile(), "language": st.get_language(),
                 "theme": st.get_theme(), "ui_scale": st.get_scale(), "log_font_size": st.get_logsize(),
                 "close_exits": st.get_close(), "singbox_latest": st.get_latest(), "run_as_admin": st.get_admin(), "check_updates": st.get_check_updates(),
-                "text_size": st.get_text_size(),
+                "text_size": st.get_text_size(), "theme_color": st.get_theme_color().as_str(),
                 "ui_font": FONTS.with(|f| f.borrow().ui.get((st.get_ui_font() - 1).max(-1) as usize).cloned().filter(|_| st.get_ui_font() > 0).unwrap_or_default()),
                 "mono_font": FONTS.with(|f| f.borrow().mono.get((st.get_mono_font() - 1).max(-1) as usize).cloned().filter(|_| st.get_mono_font() > 0).unwrap_or_default()),
             }}));

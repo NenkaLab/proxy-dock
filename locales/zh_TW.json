@@ -1085,5 +1085,7 @@
  "Monitor colour profile unknown: sRGB assumed": "無法取得螢幕色彩設定檔，以 sRGB 處理",
  "Monitor colour profile: {name}": "螢幕色彩設定檔：{name}",
  "Beyond sRGB: saved as an OKLCH colour (Display P3)": "超出 sRGB：將以 OKLCH 顏色（Display P3）儲存",
- "This monitor cannot show this colour exactly; it is drawn as the nearest one": "此螢幕無法準確顯示該顏色，將以最接近的顏色繪製"
+ "This monitor cannot show this colour exactly; it is drawn as the nearest one": "此螢幕無法準確顯示該顏色，將以最接近的顏色繪製",
+ "Theme colour": "主題顏色",
+ "Custom": "自訂"
 }

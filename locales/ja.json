@@ -1085,5 +1085,7 @@
  "Monitor colour profile unknown: sRGB assumed": "モニターのカラープロファイルが不明なため sRGB とみなします",
  "Monitor colour profile: {name}": "モニターのカラープロファイル: {name}",
  "Beyond sRGB: saved as an OKLCH colour (Display P3)": "sRGB の範囲外: OKLCH の色 (Display P3) として保存されます",
- "This monitor cannot show this colour exactly; it is drawn as the nearest one": "このモニターではこの色を正確に表示できないため、最も近い色で表示します"
+ "This monitor cannot show this colour exactly; it is drawn as the nearest one": "このモニターではこの色を正確に表示できないため、最も近い色で表示します",
+ "Theme colour": "テーマの色",
+ "Custom": "カスタム"
 }
