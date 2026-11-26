@@ -4022,9 +4022,11 @@ export component App inherits Window {
     icon: @image-url("icons/app.svg");
     preferred-width: 980px;
     preferred-height: 680px;
-    min-width: 560px;
-    // (the navigation rail's eight items)
-    min-height: 580px;
+    // the smallest window: 854 x 480 on the screen as a game's default window (16:9), whatever the
+    // "App scale" (`app-zoom`, proxydock-ui.rs); a large app scale keeps what the rail and the pages need
+    in property <float> app-zoom: 1;
+    min-width: max(854px / root.app-zoom, 560px);
+    min-height: max(480px / root.app-zoom, 476px);
     background: M3.surface-container;
     // the language's usual UI font ("" = the system's; proxydock-ui.rs `lang_font`)
     in property <string> ui-font;

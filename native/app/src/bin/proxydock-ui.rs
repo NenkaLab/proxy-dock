@@ -2580,6 +2580,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let writer = Arc::new(Mutex::new(stream.try_clone().map_err(|e| slint::PlatformError::Other(e.to_string()))?));
 
     let app = App::new()?;
+    app.set_app_zoom(app_zoom());
     FONTS.with(|f| {
         let (ui, mono) = system_fonts();
         let mut f = f.borrow_mut();
@@ -4871,6 +4872,17 @@ fn show_update(app: &App, v: &Value) {
 
 // --- the window's own title bar (Windows 11): taller, in the app's M3 colours, with Windows' snapping kept ---
 //
+/// "App scale" alone, without the display's own scale: the tray process passes both together in
+/// SLINT_SCALE_FACTOR on Windows (main.rs `open_ui`), and elsewhere only the app's (none: 1)
+fn app_zoom() -> f32 {
+    let Some(env) = std::env::var("SLINT_SCALE_FACTOR").ok().and_then(|v| v.parse::<f32>().ok()) else { return 1.0 };
+    #[cfg(windows)]
+    let display = unsafe { windows_sys::Win32::UI::HiDpi::GetDpiForSystem() } as f32 / 96.0;
+    #[cfg(not(windows))]
+    let display = 1.0;
+    if env > 0.0 { env / display } else { 1.0 }
+}
+
 // Windows draws no caption (WM_NCCALCSIZE gives its height to the client area) but keeps the borders, the
 // shadow and resizing. WM_NCHITTEST tells Windows where the bar and its buttons are: the bar moves the window
 // (drag, double-click, Aero Snap), and HTMAXBUTTON over the maximise button brings Windows 11's snap layouts.
@@ -4890,10 +4902,10 @@ mod caption {
     use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetClientRect, HTCAPTION, HTCLIENT, HTCLOSE, HTMAXBUTTON, HTMINBUTTON, HTTOP, HTTOPLEFT, HTTOPRIGHT, IsZoomed,
-        NCCALCSIZE_PARAMS, PostMessageW, SM_CXPADDEDBORDER, SM_CYFRAME, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE,
-        SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos, ShowWindow, WM_ACTIVATE, WM_CLOSE,
-        WM_MOUSEMOVE, WM_NCCALCSIZE, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
-        WM_NCMOUSEMOVE, WM_SIZE,
+        MINMAXINFO, NCCALCSIZE_PARAMS, PostMessageW, SM_CXPADDEDBORDER, SM_CYCAPTION, SM_CYFRAME, SW_MAXIMIZE,
+        SW_MINIMIZE, SW_RESTORE, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos, ShowWindow,
+        WM_ACTIVATE, WM_CLOSE, WM_GETMINMAXINFO, WM_MOUSEMOVE, WM_NCCALCSIZE, WM_NCHITTEST, WM_NCLBUTTONDBLCLK,
+        WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSEMOVE, WM_SIZE,
     };
 
     /// the bar's height and each button's width (logical px, as in app.slint)
@@ -5021,6 +5033,14 @@ mod caption {
                     let top = (*params).rgrc[0].top;
                     let r = DefSubclassProc(hwnd, msg, wp, lp);
                     (*params).rgrc[0].top = top + if IsZoomed(hwnd) != 0 { frame(hwnd) } else { 0 };
+                    r
+                }
+                // the smallest size counts Windows' caption and top border, which this window has not got
+                WM_GETMINMAXINFO => {
+                    let r = DefSubclassProc(hwnd, msg, wp, lp);
+                    let info = lp as *mut MINMAXINFO;
+                    let top = GetSystemMetricsForDpi(SM_CYCAPTION, GetDpiForWindow(hwnd)) + frame(hwnd);
+                    (*info).ptMinTrackSize.y = ((*info).ptMinTrackSize.y - top).max(1);
                     r
                 }
                 WM_NCHITTEST => {
