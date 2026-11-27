@@ -34,4 +34,6 @@ export global Palette {
     out property <brush> selection-foreground: MaterialPalette.selection-foreground;
     out property <brush> border: MaterialPalette.border;
     in-out property <ColorScheme> color-scheme <=> MaterialPalette.color-scheme;
+    // ProxyDock: the app window's height (the app keeps it), so a menu is never taller than the window
+    in-out property <length> window-height: 100000px;
 }

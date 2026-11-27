@@ -29,5 +29,6 @@ panic = "abort"
 # (upstream zooms with Ctrl + wheel and pans with the wheel). See vendor/slint-node-editor/node-editor.slint.
 [patch.crates-io]
 slint-node-editor = { path = "vendor/slint-node-editor" }
-# its material menus restyled to the app's M3 colours (widgets/material/menu.slint, styling.slint is-dark)
+# its material menus restyled to the app's M3 colours (widgets/material/menu.slint, styling.slint is-dark), and
+# menus taller than the window scroll (widgets/common/menus.slint, Palette.window-height)
 i-slint-compiler = { path = "vendor/i-slint-compiler" }

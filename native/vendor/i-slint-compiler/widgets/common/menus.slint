@@ -24,12 +24,28 @@ export component PopupMenuImpl inherits Window {
 
     focus-scope := FocusScope {
         frame := MenuFrame {
+          // ProxyDock: a menu taller than the window scrolls (Slint moves a popup into the window but does
+          // not make it smaller)
+          flick := Flickable {
+            min-height: 0px;
+            max-height: max(88px, Palette.window-height - 32px);
+            preferred-height: items.preferred-height;
+            content-height: items.preferred-height;
+            content-width: self.width;
+            items := VerticalLayout {
+            width: flick.width;
             for entry[index] in entries: MenuItem {
                 entry: entry;
                 is-current: current-highlight == index;
 
                 changed is-current => {
                     if self.is-current {
+                        // (the keyboard's choice scrolled into view)
+                        if self.y + flick.content-y < 0 {
+                            flick.content-y = -self.y;
+                        } else if self.y + self.height + flick.content-y > flick.height {
+                            flick.content-y = flick.height - self.y - self.height;
+                        }
                         current-highlight-y-pos = self.absolute-position.y - root.absolute-position.y;
                     }
                 }
@@ -48,6 +64,17 @@ export component PopupMenuImpl inherits Window {
                     root.activate(entry, y, index);
                 }
             }
+            }
+          }
+        }
+        // (where the scrolled list is: a thin bar over the frame, only when it scrolls)
+        if flick.content-height > flick.height + 1px: Rectangle {
+            x: frame.x + frame.width - 6px;
+            y: frame.y + flick.y + 4px + (flick.height - 8px - self.height) * (-flick.content-y / max(1px, flick.content-height - flick.height));
+            width: 3px;
+            height: max(24px, (flick.height - 8px) * flick.height / flick.content-height);
+            border-radius: 1.5px;
+            background: Palette.foreground.with-alpha(0.38);
         }
 
         for entry[index] in entries: KeyBinding {

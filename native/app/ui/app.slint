@@ -1063,7 +1063,10 @@ component AppComboBox inherits Rectangle {
         x: 0;
         y: root.height + 6px;
         width: root.width;
-        height: min(root.model.length * 44px + 16px, 380px);
+        // (Slint keeps it in the window, moved up if need be: no taller than the window, a longer list scrolls)
+        height: min(self.full, 380px, Palette.window-height - 16px);
+        property <length> full: root.model.length * 44px + 16px;
+        property <bool> scrolls: self.full > self.height + 0.5px;
         Rectangle {
             border-radius: 16px;
             background: M3.surface-container-highest;
@@ -1071,7 +1074,7 @@ component AppComboBox inherits Rectangle {
             drop-shadow-offset-y: 4px;
             drop-shadow-color: #00000059;
             // a short list as it is, a long one scrolls
-            if root.model.length <= 8: VerticalLayout {
+            if !popup.scrolls: VerticalLayout {
                 x: 8px;
                 y: 8px;
                 width: parent.width - 16px;
@@ -1087,7 +1090,7 @@ component AppComboBox inherits Rectangle {
                     }
                 }
             }
-            if root.model.length > 8: Rectangle {
+            if popup.scrolls: Rectangle {
                 x: 8px;
                 y: 8px;
                 width: parent.width - 16px;
@@ -3730,8 +3733,11 @@ component UpdateDialogs inherits Rectangle {
 }
 
 export component App inherits Window {
+    // (a menu or drop-down list is never taller than the window: longer ones scroll)
+    changed height => { Palette.window-height = self.height; }
     // canvas group sheets in M3 terms: a 36px title band, 24px corners, the theme's colours
     init => {
+        Palette.window-height = self.height;
         GroupStyleDefaults.header-height = 36px;
         GroupStyleDefaults.border-radius = 24px;
         GroupStyleDefaults.title-font-size = 14px;
