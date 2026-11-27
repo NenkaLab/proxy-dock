@@ -55,6 +55,24 @@ libxkbcommon-dev libwayland-dev libgtk-3-dev libayatana-appindicator3-dev libxdo
 The Windows installer installs for the current user (no administrator needed), over a 2.x install, and keeps the
 settings in `%APPDATA%\ProxyDock`.
 
+## VPN-bypass VM image
+
+```powershell
+python tools\build_bypass_image.py --test
+```
+
+Needs Docker. Builds the disk of the small Linux VM that lets a block leave outside a running VPN (Hyper-V,
+bridged to a physical network card): `pd-agent` (`native/bypass-guest`, static musl, `--test` runs its tests
+first), an Alpine `linux-virt` kernel with a busybox initramfs, GRUB, and the musl build of sing-box (fetched into
+`bin/linux-amd64-musl`) on a read-only squashfs partition. The result is `dist/bypass/proxydock-bypass-x64.vhdx`,
+a `.vhdx.zst` copy for downloading, their `.sha256` files and `manifest.json`. The installer does not include it:
+ProxyDock downloads it the first time the VM is prepared.
+
+Inside the VM, `pd-agent` answers on Hyper-V socket port 20548 (line JSON: `status`, `net` = DHCP or a fixed
+address, `poweroff`) and relays every stream on port 20549 to the VM's sing-box SOCKS5 server (127.0.0.1 only), which
+ProxyDock's sing-box uses with UDP over TCP. Each VM gets a small differencing disk; the image itself is never
+written. The VM needs at least 192 MB of memory (less and the kernel cannot unpack itself).
+
 ## Releases
 
 Set the version in `native/Cargo.toml` (`[workspace.package] version`), commit, then tag and push:

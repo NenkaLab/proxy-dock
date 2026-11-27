@@ -42,4 +42,5 @@ desktop.ini
 
 # Rust port (native/) build output
 native/target/
+native/bypass-guest/target/
 proto/*/target/

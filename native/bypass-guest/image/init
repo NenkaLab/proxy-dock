@@ -1,0 +1,22 @@
+#!/bin/sh
+# /init of the VPN-bypass VM (initramfs). Loads the few drivers that are modules, mounts the read-only squashfs
+# with sing-box from the second partition and keeps pd-agent running.
+export PATH=/sbin:/bin:/usr/sbin:/usr/bin
+mkdir -p /proc /sys /dev
+mount -t proc proc /proc
+mount -t sysfs sys /sys
+mount -t devtmpfs dev /dev
+mkdir -p /tmp /run/proxydock /opt
+for m in hv_utils af_packet vsock hv_sock hv_storvsc sd_mod squashfs; do modprobe -q "$m"; done
+ip link set lo up
+# the disk shows up asynchronously
+i=0
+while [ ! -b /dev/sda2 ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+mount -t squashfs -o ro /dev/sda2 /opt || echo "pd-init: cannot mount /dev/sda2" > /dev/console
+export PD_SINGBOX=/opt/sing-box
+while true; do
+    /sbin/pd-agent 2> /dev/console
+    # anything it started would keep the SOCKS port or eth0 busy for the next run
+    killall sing-box udhcpc 2> /dev/null
+    sleep 1
+done

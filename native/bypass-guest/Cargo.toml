@@ -1,0 +1,23 @@
+# pd-agent: the program inside the VPN-bypass VM (a tiny Linux guest on Hyper-V; see tools/build_bypass_image.py).
+# It sets up the VM's network card (DHCP or a fixed address), keeps a sing-box SOCKS5 server running inside the
+# VM and relays streams from the host over Hyper-V sockets (AF_VSOCK in the guest) to it. Linux only, built
+# statically with musl inside Docker - not part of the Windows workspace, hence the empty [workspace] table.
+[package]
+name = "pd-agent"
+version = "1.0.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+
+[workspace]
+
+[dependencies]
+libc = "0.2"
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

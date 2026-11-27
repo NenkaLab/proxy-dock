@@ -7,3 +7,6 @@ Dockerfile eol=lf
 
 *.ttf binary
 *.png binary
+
+# files that run inside the Linux guest of the VPN-bypass VM
+native/bypass-guest/image/* eol=lf
