@@ -28,6 +28,18 @@
 | ← → | Bloque anterior / siguiente por las líneas |
 | ↑ ↓ | Bloque de arriba / abajo (tras ← →, la otra opción si hay varias) |
 
+## Evitar la VPN (Windows)
+
+Aunque haya una VPN activa en todo el PC, un bloque puede salir fuera de ella: pon su **Interfaz de red** en **Fuera de la VPN**. Una pequeña máquina virtual Hyper-V conectada directamente a una tarjeta de red lleva ese tráfico (**Ajustes > Evitar la VPN**: tarjeta de red, memoria, dirección; **Crear** pide primero tu consentimiento). Requiere Windows Pro, Enterprise o Education con Hyper-V activado.
+
+Ese tráfico muestra tu IP real, y el kill switch y la protección DNS de la VPN no se aplican; con una VPN de empresa o centro educativo puede incumplir sus normas. Eres responsable de lo que resulte de activarlo.
+
+## Evitar la VPN (Windows)
+
+Aunque haya una VPN activa en todo el PC, un bloque puede salir fuera de ella: pon su **Interfaz de red** en **Fuera de la VPN**. Una pequeña máquina virtual Hyper-V conectada directamente a una tarjeta de red lleva ese tráfico (**Ajustes > Evitar la VPN**: tarjeta de red, memoria, dirección; **Crear** pide primero tu consentimiento). Requiere Windows Pro, Enterprise o Education con Hyper-V activado.
+
+Ese tráfico muestra tu IP real, y el kill switch y la protección DNS de la VPN no se aplican; con una VPN de empresa o centro educativo puede incumplir sus normas. Eres responsable de lo que resulte de activarlo.
+
 ## Otros PC
 
 Pon la dirección de la entrada en `0.0.0.0` y activa una contraseña. En Windows, la regla del firewall está en **Configuración**.

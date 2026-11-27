@@ -490,13 +490,26 @@ pub fn outbounds(ob: &Value, prefix: &str) -> R<Vec<Value>> {
         if cur.get("via").is_some_and(truthy) {
             d["detour"] = json!(format!("{prefix}{}", i + 1));
         } else if let Some(iface) = opt(cur, "interface") {
-            d["bind_interface"] = iface.clone();
+            leave_through(&mut d, iface);
         }
         out.push(d);
         cur = cur.get("via").unwrap_or(&Value::Null);
         i += 1;
     }
     Ok(out)
+}
+
+/// An outbound's network interface: a card's name for sing-box's bind_interface, or a VPN bypass VM (`@bypass`,
+/// `@bypass:<name>`): then it dials through that VM's socks outbound (added by `build`).
+fn leave_through(d: &mut Value, iface: &Value) {
+    match crate::bypass::instance_of(st(iface)) {
+        // (sing-box takes no detour on a Direct outbound: it becomes an alias of the VM's outbound)
+        Some(name) if d["type"] == json!("direct") => {
+            *d = json!({"type": "selector", "tag": d["tag"].clone(), "outbounds": [crate::bypass::tag_for(&name)]});
+        }
+        Some(name) => d["detour"] = json!(crate::bypass::tag_for(&name)),
+        None => d["bind_interface"] = iface.clone(),
+    }
 }
 
 /// the servers of a subscription block (Python `subscription.servers_of`)
@@ -521,7 +534,7 @@ pub fn subscription_outbounds(ob: &Value, tag: &str) -> R<Vec<Value>> {
             Err(_) => continue,
         };
         if let Some(iface) = opt(ob, "interface") {
-            d["bind_interface"] = iface.clone();
+            leave_through(&mut d, iface);
         }
         let name = get(s, "name")?.clone();
         tags.push((name, st(&d["tag"]).to_string()));
@@ -918,6 +931,8 @@ pub struct BuildEnv<'a> {
     pub rulesets: &'a [(String, String)],
     /// ProxyDock's own engines: a TUN card routes them around itself
     pub exclude_paths: &'a [String],
+    /// VPN bypass instance -> where its VM is reached (the card started them)
+    pub bypass: &'a [(String, crate::bypass::hub::Endpoint)],
 }
 
 /// Full sing-box config of a card. cfg = the card's effective proxy settings (config resolve). Returns the config
@@ -938,6 +953,14 @@ pub fn build(proxy: &Value, cfg: &Value, env: &BuildEnv) -> R<(Value, Vec<Option
         {
             obs.extend(outbounds(&r["outbound"], prefix)?);
         }
+    }
+    for name in crate::bypass::instances_in(proxy) {
+        let ep = env.bypass.iter().find(|(n, _)| *n == name).map(|(_, e)| e);
+        let ep = ep.ok_or_else(|| BuildError::Unsupported(format!("VPN bypass {name:?} is not running")))?;
+        obs.push(json!({
+            "type": "socks", "tag": crate::bypass::tag_for(&name), "server": "127.0.0.1", "server_port": ep.port,
+            "username": ep.user, "password": ep.pass, "udp_over_tcp": {"enabled": true, "version": 2},
+        }));
     }
     let tun = proxy["inbound"]["type"] == json!("tun");
     if tun {
@@ -976,6 +999,53 @@ pub fn build(proxy: &Value, cfg: &Value, env: &BuildEnv) -> R<(Value, Vec<Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bypass_exits() {
+        use crate::bypass::hub::Endpoint;
+        let with = |defaults: serde_json::Map<String, Value>, v: Value| {
+            let mut m = defaults;
+            m.extend(v.as_object().unwrap().clone());
+            Value::Object(m)
+        };
+        let ob = |v| with(crate::config::outbound_defaults(), v);
+        let proxy = json!({
+            "id": "p",
+            "inbound": with(crate::config::inbound_defaults(), json!({"type": "socks5", "port": 1080})),
+            "outbound": ob(json!({"type": "socks5", "host": "10.0.0.1", "port": 1, "interface": "@bypass:game", "via": null})),
+            "routes": [{"block": "d", "name": "r", "match": [{"domain": ["a.com"]}],
+                        "outbound": ob(json!({"type": "direct", "interface": "@bypass", "via": null}))}],
+        });
+        let cfg = Value::Object(crate::config::resolve(&proxy, &crate::config::global_defaults()));
+        let ep = |port| Endpoint { port, user: "u".into(), pass: "p".into() };
+        let eps = [("".to_string(), ep(5001)), ("game".to_string(), ep(5002))];
+        let env = BuildEnv {
+            bans_path: "B",
+            api_port: 1,
+            api_secret: "s",
+            cert: None,
+            rulesets: &[],
+            exclude_paths: &[],
+            bypass: &eps,
+        };
+        let (conf, _) = build(&proxy, &cfg, &env).unwrap();
+        let obs = conf["outbounds"].as_array().unwrap();
+        let by_tag = |t: &str| obs.iter().find(|o| o["tag"] == json!(t)).cloned().unwrap();
+        assert_eq!(by_tag("out0")["detour"], json!("bypass:game"));
+        assert!(by_tag("out0").get("bind_interface").is_none());
+        // a Direct exit becomes an alias of the VM's outbound (sing-box has no detour on direct)
+        assert_eq!(by_tag("r0_0"), json!({"type": "selector", "tag": "r0_0", "outbounds": ["bypass"]}));
+        let vm = by_tag("bypass");
+        assert_eq!((vm["type"].clone(), vm["server_port"].clone()), (json!("socks"), json!(5001)));
+        assert_eq!(vm["udp_over_tcp"]["enabled"], json!(true));
+        assert_eq!(by_tag("bypass:game")["username"], json!("u"));
+        // a card whose VM is not running cannot be built
+        let env = BuildEnv { bypass: &eps[..1], ..env };
+        assert!(build(&proxy, &cfg, &env).is_err());
+        // an ordinary interface is still bind_interface
+        let wifi = ob(json!({"type": "direct", "interface": "Wi-Fi", "via": null}));
+        assert_eq!(outbounds(&wifi, "o").unwrap()[0]["bind_interface"], json!("Wi-Fi"));
+    }
 
     #[test]
     fn cidr_like_python() {

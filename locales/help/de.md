@@ -28,6 +28,18 @@
 | ← → | Block davor / danach entlang der Linien |
 | ↑ ↓ | Block darüber / darunter (nach ← → die andere Wahl, wenn es mehrere gibt) |
 
+## VPN-Umgehung (Windows)
+
+Auch wenn ein VPN auf dem ganzen PC läuft, geht ein Block außerhalb davon hinaus, wenn seine **Netzwerkschnittstelle** auf **Außerhalb des VPN** steht. Eine kleine Hyper-V-VM, die direkt mit einer Netzwerkkarte verbunden ist, überträgt diesen Verkehr (**Einstellungen > VPN-Umgehung**: Netzwerkkarte, Speicher, Adresse; **Erstellen** fragt zuerst nach deiner Zustimmung). Benötigt Windows Pro, Enterprise oder Education mit eingeschaltetem Hyper-V.
+
+Dieser Verkehr zeigt deine echte IP-Adresse, und Kill-Switch und DNS-Schutz des VPN gelten dafür nicht; bei einem Firmen- oder Schul-VPN kann das gegen deren Regeln verstoßen. Für die Folgen des Einschaltens bist du verantwortlich.
+
+## VPN-Umgehung (Windows)
+
+Auch wenn ein VPN auf dem ganzen PC läuft, geht ein Block außerhalb davon hinaus, wenn seine **Netzwerkschnittstelle** auf **Außerhalb des VPN** steht. Eine kleine Hyper-V-VM, die direkt mit einer Netzwerkkarte verbunden ist, überträgt diesen Verkehr (**Einstellungen > VPN-Umgehung**: Netzwerkkarte, Speicher, Adresse; **Erstellen** fragt zuerst nach deiner Zustimmung). Benötigt Windows Pro, Enterprise oder Education mit eingeschaltetem Hyper-V.
+
+Dieser Verkehr zeigt deine echte IP-Adresse, und Kill-Switch und DNS-Schutz des VPN gelten dafür nicht; bei einem Firmen- oder Schul-VPN kann das gegen deren Regeln verstoßen. Für die Folgen des Einschaltens bist du verantwortlich.
+
 ## Andere PCs
 
 Setze die Adresse des Eingangs auf `0.0.0.0` und schalte ein Passwort ein. Unter Windows steht die Firewall-Regel in den **Einstellungen**.

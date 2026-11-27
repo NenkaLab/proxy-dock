@@ -28,6 +28,18 @@
 | ← → | Bloc précédent / suivant le long des liens |
 | ↑ ↓ | Bloc au-dessus / en dessous (après ← →, l'autre choix s'il y en a plusieurs) |
 
+## Contournement du VPN (Windows)
+
+Même avec un VPN actif sur tout le PC, un bloc peut sortir en dehors : réglez son **Interface réseau** sur **Hors du VPN**. Une petite machine virtuelle Hyper-V reliée directement à une carte réseau transporte ce trafic (**Réglages > Contournement du VPN** : carte réseau, mémoire, adresse ; **Créer** demande d'abord votre accord). Nécessite Windows Pro, Entreprise ou Éducation avec Hyper-V activé.
+
+Ce trafic montre votre vraie adresse IP, et le kill switch et la protection DNS du VPN ne s'y appliquent pas ; avec un VPN d'entreprise ou d'école, cela peut enfreindre leurs règles. Vous êtes responsable des conséquences de son activation.
+
+## Contournement du VPN (Windows)
+
+Même avec un VPN actif sur tout le PC, un bloc peut sortir en dehors : réglez son **Interface réseau** sur **Hors du VPN**. Une petite machine virtuelle Hyper-V reliée directement à une carte réseau transporte ce trafic (**Réglages > Contournement du VPN** : carte réseau, mémoire, adresse ; **Créer** demande d'abord votre accord). Nécessite Windows Pro, Entreprise ou Éducation avec Hyper-V activé.
+
+Ce trafic montre votre vraie adresse IP, et le kill switch et la protection DNS du VPN ne s'y appliquent pas ; avec un VPN d'entreprise ou d'école, cela peut enfreindre leurs règles. Vous êtes responsable des conséquences de son activation.
+
 ## Autres PC
 
 Mettez l'adresse de l'entrée sur `0.0.0.0` et activez un mot de passe. Sous Windows, la règle du pare-feu est dans les **Paramètres**.

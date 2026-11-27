@@ -91,6 +91,7 @@ fn main() {
             cert: Some(("C", "K")),
             rulesets: &rulesets,
             exclude_paths: &exclude,
+            bypass: &[],
         };
         let entry = match sb::build(&p, &cfg, &env) {
             Ok((mut conf, reasons)) => {

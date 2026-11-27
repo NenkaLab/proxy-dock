@@ -114,6 +114,14 @@ pub fn check() -> Result<Option<Release>, String> {
     Ok(parse_release(&v)?.filter(|r| is_newer(&r.tag, current_version())))
 }
 
+/// the release with this tag ("v3.1.0"), whatever its age (the VPN bypass image belongs to the app's own version)
+pub fn release_for_tag(tag: &str) -> Result<Release, String> {
+    let url = format!("https://api.github.com/repos/NenkaLab/proxy-dock/releases/tags/{tag}");
+    let data = http_get(&url, MAX_JSON, "application/vnd.github+json")?;
+    let v: Value = serde_json::from_slice(&data).map_err(|_| tr("GitHub returned an unexpected answer"))?;
+    parse_release(&v)?.ok_or_else(|| tr("GitHub returned an unexpected answer"))
+}
+
 /// the automatic startup check is due (switched on and the last one a day old) (Python `due`)
 pub fn due(glob: &serde_json::Map<String, Value>, now: i64) -> bool {
     let last = glob.get("update_checked").and_then(Value::as_i64).unwrap_or(0);

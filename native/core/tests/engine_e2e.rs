@@ -73,6 +73,7 @@ fn env(dir: &std::path::Path) -> EngineEnv {
         cert: None,
         exclude_paths: vec![],
         helper: None,
+        bypass: vec![],
     }
 }
 

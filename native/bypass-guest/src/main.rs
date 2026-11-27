@@ -1,7 +1,7 @@
 //! pd-agent - runs inside the VPN-bypass VM (started by /init, restarted if it exits).
 //!
 //! * control port (vsock 20548): line-JSON requests from ProxyDock - `status`, `net` (DHCP or a fixed address),
-//!   `poweroff` - each answered with one JSON line.
+//!   `socks_auth`, `poweroff` - each answered with one JSON line.
 //! * data port (vsock 20549): every stream is relayed to the sing-box SOCKS5 server inside the VM (127.0.0.1
 //!   only), which leaves through the VM's own network card. ProxyDock's sing-box reaches it as a `socks` outbound
 //!   with UDP over TCP, so UDP travels over these streams too.
@@ -55,6 +55,13 @@ pub struct Agent {
     started: Instant,
     net: Mutex<net::Net>,
     singbox_up: AtomicBool,
+    /// the account the SOCKS5 server asks for (set by ProxyDock before it opens the relay on the host, so no other
+    /// program on the host can use this way out)
+    auth: Mutex<Option<(String, String)>>,
+    /// sing-box's pid while it runs (socks_auth restarts it)
+    singbox_pid: Mutex<Option<u32>>,
+    /// a restart was asked for: start again at once
+    restart: AtomicBool,
 }
 
 fn main() {
@@ -65,6 +72,9 @@ fn main() {
         opts,
         started: Instant::now(),
         singbox_up: AtomicBool::new(false),
+        auth: Mutex::new(None),
+        singbox_pid: Mutex::new(None),
+        restart: AtomicBool::new(false),
     });
     log(&format!("pd-agent {VERSION} starting"));
     if !agent.opts.no_net {
@@ -119,32 +129,49 @@ pub fn log(msg: &str) {
 
 /// The sing-box config inside the VM: a SOCKS5 server on 127.0.0.1 (only the relay reaches it) that sends
 /// everything out directly. UDP over TCP from ProxyDock's socks outbound is handled by sing-box itself.
-pub fn singbox_config(socks_port: u16) -> Value {
+pub fn singbox_config(socks_port: u16, auth: Option<&(String, String)>) -> Value {
+    let mut inbound = json!({"type": "socks", "tag": "in", "listen": "127.0.0.1", "listen_port": socks_port});
+    if let Some((user, pass)) = auth {
+        inbound["users"] = json!([{"username": user, "password": pass}]);
+    }
     json!({
         "log": {"level": "warn"},
         "dns": {"servers": [{"type": "local", "tag": "local"}]},
-        "inbounds": [{"type": "socks", "tag": "in", "listen": "127.0.0.1", "listen_port": socks_port}],
+        "inbounds": [inbound],
         "outbounds": [{"type": "direct", "tag": "direct"}],
         "route": {"final": "direct", "default_domain_resolver": "local"}
     })
 }
 
+/// an account part ProxyDock sends: 8-64 letters and digits (it goes into a JSON file, nothing else)
+fn valid_secret(s: &str) -> bool {
+    (8..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
 fn supervise_singbox(agent: &Agent) {
     let dir = &agent.opts.run_dir;
     let cfg = format!("{dir}/sing-box.json");
-    if let Err(e) = std::fs::write(&cfg, singbox_config(agent.opts.socks_port).to_string()) {
-        fatal(&format!("cannot write {cfg}: {e}"));
-    }
     let mut delay = Duration::from_secs(1);
     loop {
+        let conf = singbox_config(agent.opts.socks_port, agent.auth.lock().unwrap().as_ref());
+        if let Err(e) = std::fs::write(&cfg, conf.to_string()) {
+            fatal(&format!("cannot write {cfg}: {e}"));
+        }
         let started = Instant::now();
         let child: std::io::Result<Child> =
             Command::new(&agent.opts.singbox).args(["run", "-c", &cfg, "-D", dir, "--disable-color"]).spawn();
         match child {
             Ok(mut c) => {
+                *agent.singbox_pid.lock().unwrap() = Some(c.id());
                 agent.singbox_up.store(true, Ordering::SeqCst);
                 let st = c.wait();
                 agent.singbox_up.store(false, Ordering::SeqCst);
+                *agent.singbox_pid.lock().unwrap() = None;
+                if agent.restart.swap(false, Ordering::SeqCst) {
+                    delay = Duration::from_millis(100);
+                    std::thread::sleep(delay);
+                    continue;
+                }
                 log(&format!("sing-box exited ({st:?}), restarting"));
             }
             Err(e) => log(&format!("cannot start sing-box: {e}")),
@@ -221,6 +248,17 @@ pub fn handle(agent: &Agent, req: &Value) -> Value {
     let result: Result<(), String> = match op {
         "status" => Ok(()),
         "net" => net::Mode::from_request(req).and_then(|m| agent.net.lock().unwrap().apply(&m)),
+        "socks_auth" => {
+            let s = |k: &str| req.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+            let (user, pass) = (s("user"), s("pass"));
+            if !valid_secret(&user) || !valid_secret(&pass) {
+                Err("user and pass: 8-64 letters and digits".into())
+            } else {
+                *agent.auth.lock().unwrap() = Some((user, pass));
+                restart_singbox(agent);
+                Ok(())
+            }
+        }
         "poweroff" => {
             std::thread::spawn(|| {
                 std::thread::sleep(Duration::from_millis(200));
@@ -238,12 +276,21 @@ pub fn handle(agent: &Agent, req: &Value) -> Value {
     reply
 }
 
+/// stop sing-box; the supervisor starts it again at once with the current config
+fn restart_singbox(agent: &Agent) {
+    if let Some(pid) = *agent.singbox_pid.lock().unwrap() {
+        agent.restart.store(true, Ordering::SeqCst);
+        unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+    }
+}
+
 fn status(agent: &Agent) -> Value {
     let n = agent.net.lock().unwrap();
     let mut s = n.status();
     s["version"] = json!(VERSION);
     s["uptime_s"] = json!(agent.started.elapsed().as_secs());
     s["singbox"] = json!(agent.singbox_up.load(Ordering::SeqCst));
+    s["auth"] = json!(agent.auth.lock().unwrap().is_some());
     let (total, avail) = meminfo();
     s["mem_total_kb"] = json!(total);
     s["mem_available_kb"] = json!(avail);
@@ -260,4 +307,23 @@ fn meminfo() -> (u64, u64) {
             .unwrap_or(0)
     };
     (get("MemTotal:"), get("MemAvailable:"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_has_the_account_only_when_set() {
+        let c = singbox_config(1080, None);
+        assert!(c["inbounds"][0].get("users").is_none());
+        let a = ("user1234".to_string(), "pass5678".to_string());
+        let c = singbox_config(1080, Some(&a));
+        assert_eq!(c["inbounds"][0]["users"][0]["username"], "user1234");
+        assert_eq!(c["inbounds"][0]["listen"], "127.0.0.1");
+        assert!(valid_secret("abcDEF12"));
+        assert!(!valid_secret("short1"));
+        assert!(!valid_secret("has space 123"));
+        assert!(!valid_secret(&"a".repeat(65)));
+    }
 }

@@ -8,10 +8,11 @@ Steps, each in a throwaway container:
      the few Hyper-V drivers that are modules, GRUB (EFI), and sing-box (the musl build in bin/linux-amd64-musl,
      fetched if missing) on a read-only squashfs partition - it is paged in from the disk instead
      of taking RAM
-  3. raw disk -> VHDX (Hyper-V), and a zstd copy for downloading
+  3. raw disk -> VHDX (Hyper-V), and a zip of it for the release (the app downloads that the first time a VM is
+     prepared, checked against the release's SHA256SUMS.txt)
 
-Output in dist/bypass: proxydock-bypass-x64.vhdx, proxydock-bypass-x64.vhdx.zst, their .sha256 files and
-manifest.json (versions, sizes, hashes). Only x64 for now.
+Output in dist/bypass: proxydock-bypass-x64.vhdx, proxydock-bypass-x64.zip, their .sha256 files and manifest.json
+(versions, sizes, hashes). Only x64 for now.
 """
 import argparse
 import hashlib
@@ -21,6 +22,7 @@ import re
 import shutil
 import subprocess
 import sys
+import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GUEST = os.path.join(ROOT, "native", "bypass-guest")
@@ -94,15 +96,18 @@ def main():
 
     name = f"proxydock-bypass-{ARCH}.vhdx"
     docker(ALPINE, [f"{WORK}:/work", f"{OUT}:/out"],
-           "apk add --no-cache qemu-img zstd > /dev/null && "
-           f"rm -f /out/{name} /out/{name}.zst && "
-           f"qemu-img convert -f raw -O vhdx -o subformat=dynamic /work/disk.img /out/{name} && "
-           f"zstd -q -19 -T0 /out/{name} -o /out/{name}.zst")
+           "apk add --no-cache qemu-img > /dev/null && "
+           f"rm -f /out/{name} && "
+           f"qemu-img convert -f raw -O vhdx -o subformat=dynamic /work/disk.img /out/{name}")
+    zip_name = f"proxydock-bypass-{ARCH}.zip"
+    zip_path = os.path.join(OUT, zip_name)
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+        z.write(os.path.join(OUT, name), name)
 
     env = dict(line.split("=", 1) for line in open(os.path.join(WORK, "manifest.env"), encoding="ascii").read().split())
     cargo_toml = open(os.path.join(GUEST, "Cargo.toml"), encoding="utf-8").read()
     agent_version = re.search(r'^version = "([^"]+)"', cargo_toml, re.M).group(1)
-    vhdx, zst = os.path.join(OUT, name), os.path.join(OUT, name + ".zst")
+    vhdx = os.path.join(OUT, name)
     manifest = {
         "arch": ARCH,
         "agent": agent_version,
@@ -112,7 +117,7 @@ def main():
         "initrd_bytes": int(env["INITRD_BYTES"]),
         "squashfs_bytes": int(env["SQUASHFS_BYTES"]),
         "vhdx": {"name": name, "bytes": os.path.getsize(vhdx), "sha256": write_sha(vhdx)},
-        "vhdx_zst": {"name": name + ".zst", "bytes": os.path.getsize(zst), "sha256": write_sha(zst)},
+        "zip": {"name": zip_name, "bytes": os.path.getsize(zip_path), "sha256": write_sha(zip_path)},
     }
     with open(os.path.join(OUT, "manifest.json"), "w", encoding="utf-8", newline="\n") as f:
         json.dump(manifest, f, indent=2)

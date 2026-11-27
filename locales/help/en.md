@@ -28,6 +28,12 @@
 | ← → | The block before / after along the links |
 | ↑ ↓ | The block above / below (or another choice after ← →) |
 
+## VPN bypass (Windows)
+
+With a VPN on for the whole PC, a block can still leave outside it: set its **Network interface** to **Outside the VPN**. A small Hyper-V virtual machine connected straight to a network card carries that traffic (**Settings > VPN bypass**: network card, memory, address; **Create** asks for your consent first). Needs Windows Pro, Enterprise or Education with Hyper-V on.
+
+That traffic shows your real IP address and the VPN's kill switch and DNS protection do not cover it; with a company or school VPN this may break their rules. You are responsible for what follows from turning it on.
+
 ## Other PCs
 
 Set the inbound address to `0.0.0.0` and turn on a password. On Windows, the firewall rule is under **Settings**.

@@ -122,6 +122,8 @@ struct Running {
     /// what engine_for chose at start (a change of it means a restart)
     engine_choice: (Kind, PathBuf),
     generation: u64,
+    /// the VPN bypass instances it holds (released when it stops)
+    bypass: Vec<String>,
 }
 
 #[derive(Default)]
@@ -439,6 +441,7 @@ impl Worker {
         let all: Vec<Running> = self.shared.lock().unwrap().running.drain().map(|(_, r)| r).collect();
         for mut r in all {
             r.engine.stop();
+            release_bypass(&r.bypass);
         }
     }
 
@@ -513,6 +516,7 @@ impl Worker {
             cert,
             exclude_paths,
             helper,
+            bypass: vec![],
         };
         Ok((env, choice))
     }
@@ -536,7 +540,16 @@ impl Worker {
             self.stop(&id, true);
         }
         self.set(&id, State::Starting);
-        let started = self.prepare(proxy, glob).and_then(|(env, choice)| {
+        let bypass = match self.acquire_bypass(proxy) {
+            Ok(b) => b,
+            Err(msg) => {
+                self.fail(proxy, msg);
+                return false;
+            }
+        };
+        let held: Vec<String> = bypass.iter().map(|(n, _)| n.clone()).collect();
+        let started = self.prepare(proxy, glob).and_then(|(mut env, choice)| {
+            env.bypass = bypass;
             self.generation += 1;
             let generation = self.generation;
             let (tx, log_events, log_proxy) = (self.tx.clone(), self.events.log.clone(), proxy.clone());
@@ -562,7 +575,13 @@ impl Worker {
                 Engine::start(proxy, glob, &env, hooks).map(|e| Card::SingBox(Box::new(e)))
             };
             engine
-                .map(|engine| Running { engine, proxy: proxy.clone(), engine_choice: choice, generation })
+                .map(|engine| Running {
+                    engine,
+                    proxy: proxy.clone(),
+                    engine_choice: choice,
+                    generation,
+                    bypass: held.clone(),
+                })
                 .map_err(|e| start_message(&e, proxy))
         });
         match started {
@@ -579,16 +598,47 @@ impl Worker {
                 true
             }
             Err(msg) => {
-                self.set(&id, State::Error(msg.clone()));
-                let name = proxy["name"].as_str().unwrap_or("");
-                self.log(
-                    Level::Error,
-                    &tr("[{name}] failed to start: {msg}").replace("{name}", name).replace("{msg}", &msg),
-                    None,
-                );
+                release_bypass(&held);
+                self.fail(proxy, msg);
                 false
             }
         }
+    }
+
+    fn fail(&self, proxy: &Value, msg: String) {
+        let id = proxy["id"].as_str().unwrap_or("");
+        self.set(id, State::Error(msg.clone()));
+        let name = proxy["name"].as_str().unwrap_or("");
+        self.log(
+            Level::Error,
+            &tr("[{name}] failed to start: {msg}").replace("{name}", name).replace("{msg}", &msg),
+            None,
+        );
+    }
+
+    /// start (or join) the VPN bypass VMs the card leaves through; all or none
+    fn acquire_bypass(&self, proxy: &Value) -> Result<Vec<(String, crate::bypass::hub::Endpoint)>, String> {
+        let names = crate::bypass::instances_in(proxy);
+        let mut got = vec![];
+        for n in names {
+            let hub = crate::bypass::hub::hub();
+            if hub.lock().unwrap().in_use(&n) == 0 {
+                self.log(
+                    Level::Info,
+                    &tr("Starting the VPN bypass VM ({name})...").replace("{name}", &crate::bypass::label(&n)),
+                    Some(proxy),
+                );
+            }
+            let r = hub.lock().unwrap().acquire(&n);
+            match r {
+                Ok(ep) => got.push((n, ep)),
+                Err(e) => {
+                    release_bypass(&got.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>());
+                    return Err(e);
+                }
+            }
+        }
+        Ok(got)
     }
 
     fn open_proxy_warnings(&self, proxy: &Value) {
@@ -617,8 +667,9 @@ impl Worker {
     /// take a card out of the running set and stop its engine (counters carried over)
     fn take_and_stop(&self, id: &str) -> Option<Value> {
         let r = self.shared.lock().unwrap().running.remove(id)?;
-        let Running { mut engine, proxy, .. } = r;
+        let Running { mut engine, proxy, bypass, .. } = r;
         engine.stop();
+        release_bypass(&bypass);
         let s = engine.stats();
         add(self.shared.lock().unwrap().carried.entry(id.to_string()).or_default(), &s, false);
         Some(proxy)
@@ -658,6 +709,16 @@ impl Worker {
             r.engine.update(proxy, glob);
             r.proxy = proxy.clone();
         }
+    }
+}
+
+fn release_bypass(names: &[String]) {
+    if names.is_empty() {
+        return;
+    }
+    let mut hub = crate::bypass::hub::hub().lock().unwrap();
+    for n in names {
+        hub.release(n);
     }
 }
 

@@ -2106,6 +2106,61 @@ export global Settings {
     callback open-log-dir();
 }
 
+// The VPN bypass VMs (Settings > VPN bypass; proxydock-ui.rs fills them from the core's "settings" -> "bypass")
+export struct BypassItem {
+    name: string,
+    label: string,
+    // index in Bypass.adapters (-1: none / not connected now), its name
+    adapter: int,
+    adapter-name: string,
+    // index in Bypass.memories
+    memory: int,
+    static-ip: bool,
+    address: string,
+    gateway: string,
+    dns: string,
+    // prepared with the user's consent for this network card
+    ready: bool,
+    // running cards that use it
+    in-use: int,
+}
+export struct BypassText {
+    title: string, intro: string, adapter: string, adapter-desc: string, memory: string, memory-desc: string,
+    ip: string, ip-desc: string, dhcp: string, static: string, address: string, gateway: string, dns: string,
+    save-ip: string, prepare: string, reprepare: string, remove: string, ready: string, not-ready: string,
+    in-use: string, keep: string, keep-desc: string, add-title: string, add-desc: string, add: string,
+    name-hint: string, consent-title: string, consent-check: string, consent-create: string,
+}
+export global Bypass {
+    in property <BypassText> text;
+    in property <bool> available;
+    // why not (Windows Home, Hyper-V off, ...)
+    in property <string> reason;
+    in property <[string]> adapters;
+    in property <[string]> memories;
+    in property <[string]> ip-modes;
+    in property <[BypassItem]> items;
+    in property <bool> keep;
+    // a VM is being prepared or removed (one at a time), and what it is doing
+    in property <bool> working;
+    in property <string> progress;
+    // the consent dialog: the instance asking, its text (filled by proxydock-ui.rs)
+    in-out property <bool> consent-open;
+    in property <string> consent-name;
+    in property <string> consent-body;
+    in-out property <bool> consent-agreed;
+    callback set-adapter(string, int);
+    callback set-memory(string, int);
+    callback set-ip(string, bool, string, string, string);
+    // "Create" / "Apply again": asks for consent first when the instance has none for its network card
+    callback prepare(string);
+    callback consent-yes(string);
+    callback remove(string);
+    callback add(string);
+    callback set-keep(bool);
+    callback refresh();
+}
+
 // a theme colour choice: a filled circle (a ring and a check when chosen), an optional icon and a label under it
 component ThemeDot inherits VerticalLayout {
     in property <color> fill;
@@ -2392,6 +2447,165 @@ component SettingsFirewall inherits SettingsSection {
                 text: Settings.text.fw-off;
                 enabled: Settings.fw-state == 1;
                 clicked => { Settings.firewall(false); }
+            }
+        }
+    }
+}
+
+component SettingsBypass inherits VerticalLayout {
+    spacing: 24px;
+    SettingsSection {
+        title: Bypass.text.title;
+        SettingTile {
+            Text {
+                text: Bypass.text.intro;
+                font-size: 14px * Type.scale;
+                color: M3.on-surface-variant;
+                wrap: word-wrap;
+            }
+            if !Bypass.available && Bypass.reason != "": Text {
+                text: "⚠ " + Bypass.reason;
+                font-size: 14px * Type.scale;
+                font-weight: 600;
+                color: M3.error;
+                wrap: word-wrap;
+            }
+            if Bypass.progress != "": Text {
+                text: Bypass.progress;
+                font-size: 14px * Type.scale;
+                color: M3.primary;
+                wrap: word-wrap;
+            }
+        }
+        SettingRow {
+            label: Bypass.text.keep;
+            desc: Bypass.text.keep-desc;
+            AppSwitch {
+                checked: Bypass.keep;
+                toggled => { Bypass.set-keep(self.checked); }
+            }
+        }
+    }
+    for item in Bypass.items: SettingsSection {
+        title: item.label + " · " + (item.ready ? Bypass.text.ready : Bypass.text.not-ready)
+            + (item.in-use > 0 ? " · " + Bypass.text.in-use : "");
+        SettingRow {
+            label: Bypass.text.adapter;
+            desc: item.adapter < 0 && item.adapter-name != "" ? Bypass.text.adapter-desc + " (" + item.adapter-name + ")" : Bypass.text.adapter-desc;
+            AppComboBox {
+                width: 190px;
+                enabled: Bypass.available && !Bypass.working && item.in-use == 0 && Bypass.adapters.length > 0;
+                model: Bypass.adapters;
+                current-index: max(0, item.adapter);
+                selected(_) => { Bypass.set-adapter(item.name, self.current-index); }
+            }
+        }
+        SettingRow {
+            label: Bypass.text.memory;
+            desc: Bypass.text.memory-desc;
+            AppComboBox {
+                width: 150px;
+                enabled: !Bypass.working && item.in-use == 0;
+                model: Bypass.memories;
+                current-index: item.memory;
+                selected(_) => { Bypass.set-memory(item.name, self.current-index); }
+            }
+        }
+        SettingTile {
+            HorizontalLayout {
+                spacing: 16px;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 4px;
+                    alignment: center;
+                    Text {
+                        text: Bypass.text.ip;
+                        font-size: 16px * Type.scale;
+                        color: M3.on-surface;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: Bypass.text.ip-desc;
+                        font-size: 13px * Type.scale;
+                        color: M3.on-surface-variant;
+                        wrap: word-wrap;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    mode := AppComboBox {
+                        width: 150px;
+                        enabled: !Bypass.working && item.in-use == 0;
+                        model: Bypass.ip-modes;
+                        current-index: item.static-ip ? 1 : 0;
+                        selected(_) => {
+                            if self.current-index == 0 {
+                                Bypass.set-ip(item.name, false, item.address, item.gateway, item.dns);
+                            }
+                        }
+                    }
+                }
+            }
+            if mode.current-index == 1: VerticalLayout {
+                spacing: 8px;
+                addr := AppLineEdit {
+                    text: item.address;
+                    placeholder-text: Bypass.text.address + "  (192.168.0.50/24)";
+                }
+                gw := AppLineEdit {
+                    text: item.gateway;
+                    placeholder-text: Bypass.text.gateway + "  (192.168.0.1)";
+                }
+                dns := AppLineEdit {
+                    text: item.dns;
+                    placeholder-text: Bypass.text.dns + "  (1.1.1.1, 8.8.8.8)";
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    AppButton {
+                        text: Bypass.text.save-ip;
+                        enabled: !Bypass.working && item.in-use == 0;
+                        clicked => { Bypass.set-ip(item.name, true, addr.text, gw.text, dns.text); }
+                    }
+                }
+            }
+        }
+        SettingTile {
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                AppButton {
+                    text: Bypass.text.remove;
+                    icon: @image-url("icons/delete.svg");
+                    enabled: !Bypass.working && item.in-use == 0 && (item.name != "" || item.ready);
+                    clicked => { Bypass.remove(item.name); }
+                }
+                AppButton {
+                    text: item.ready ? Bypass.text.reprepare : Bypass.text.prepare;
+                    primary: !item.ready;
+                    enabled: Bypass.available && !Bypass.working && item.in-use == 0 && item.adapter >= 0;
+                    clicked => { Bypass.prepare(item.name); }
+                }
+            }
+        }
+    }
+    SettingsSection {
+        title: Bypass.text.add-title;
+        SettingField {
+            label: Bypass.text.add-title;
+            desc: Bypass.text.add-desc;
+            HorizontalLayout {
+                spacing: 8px;
+                new-name := AppLineEdit { placeholder-text: Bypass.text.name-hint; }
+                AppButton {
+                    text: Bypass.text.add;
+                    icon: @image-url("icons/add.svg");
+                    enabled: new-name.text != "";
+                    clicked => {
+                        Bypass.add(new-name.text);
+                        new-name.text = "";
+                    }
+                }
             }
         }
     }
@@ -4004,6 +4218,7 @@ export component App inherits Window {
         { label: Settings.text.fonts, icon: @image-url("icons/text_fields.svg"), page: 4, cat: 5, show: true },
         { label: Settings.text.engine, icon: @image-url("icons/memory.svg"), page: 4, cat: 6, show: true },
         { label: Settings.text.logs, icon: @image-url("icons/receipt_long.svg"), page: 4, cat: 7, show: true },
+        { label: Bypass.text.title, icon: @image-url("icons/alt_route.svg"), page: 4, cat: 8, show: Settings.windows },
         { label: "ProxyDock", header: true, show: true },
         { label: root.t-help, icon: @image-url("icons/help.svg"), page: 7, show: true },
         { label: root.t-about, icon: @image-url("icons/info.svg"), page: 8, show: true },
@@ -4012,7 +4227,7 @@ export component App inherits Window {
     property <string> page-title: root.page == 0 ? root.t-canvas : root.page == 1 ? root.t-proxy : root.page == 2 ? root.t-logs
         : root.page == 3 ? root.form-title : root.page == 4 ? root.cats[root.settings-cat + 1].label
         : root.page == 5 ? Stats.title : root.page == 6 ? Conn.title
-        : root.page == 7 ? root.cats[10].label : root.page == 8 ? root.cats[11].label : root.page == 9 ? root.cats[12].label : "";
+        : root.page == 7 ? root.cats[11].label : root.page == 8 ? root.cats[12].label : root.page == 9 ? root.cats[13].label : "";
     // the title bar (M3 small top app bar): 64 high, the page's title (Title Large), its actions on the right
     out property <length> bar-h: max(64px, 22px * Type.scale * 2.4);
     // the page title bar's empty part, from the rail to the page's actions (Windows 11: a caption, see `caption`)
@@ -4745,6 +4960,7 @@ export component App inherits Window {
                                         if root.settings-cat == 5: SettingsFonts {}
                                         if root.settings-cat == 6: SettingsEngine {}
                                         if root.settings-cat == 7: SettingsLogs {}
+                                        if root.settings-cat == 8: SettingsBypass {}
                                     }
                                 }
                                 EdgeFade {
@@ -5259,6 +5475,99 @@ export component App inherits Window {
                             clicked => {
                                 root.picker-open = false;
                                 root.picker-done();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // VPN bypass: the warning before a VM is made (the user ticks the box, then "Create")
+    if Bypass.consent-open: Rectangle {
+        background: #00000060;
+        TouchArea { }
+        Rectangle {
+            width: min(parent.width - 80px, 560px);
+            height: min(parent.height - 48px, consent-lay.preferred-height);
+            border-radius: 28px;
+            background: M3.surface-container-high;
+            clip: true;
+            consent-scroll := ScrollView {
+                consent-lay := VerticalLayout {
+                    width: consent-scroll.visible-width;
+                    padding: 24px;
+                    spacing: 16px;
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Image {
+                            width: 24px;
+                            height: 24px;
+                            source: @image-url("icons/shield.svg");
+                            colorize: M3.error;
+                        }
+                        Text {
+                            text: Bypass.text.consent-title;
+                            font-size: 22px * Type.scale;
+                            color: M3.on-surface;
+                            wrap: word-wrap;
+                            horizontal-stretch: 1;
+                        }
+                    }
+                    Text {
+                        text: Bypass.consent-body;
+                        font-size: 14px * Type.scale;
+                        color: M3.on-surface-variant;
+                        wrap: word-wrap;
+                    }
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Rectangle {
+                            width: 22px;
+                            height: 22px;
+                            border-radius: 4px;
+                            border-width: 2px;
+                            border-color: Bypass.consent-agreed ? M3.primary : M3.on-surface-variant;
+                            background: Bypass.consent-agreed ? M3.primary : transparent;
+                            if Bypass.consent-agreed: Image {
+                                width: 16px;
+                                height: 16px;
+                                source: @image-url("icons/check.svg");
+                                colorize: M3.on-primary;
+                            }
+                            TouchArea {
+                                clicked => { Bypass.consent-agreed = !Bypass.consent-agreed; }
+                            }
+                        }
+                        Text {
+                            text: Bypass.text.consent-check;
+                            font-size: 14px * Type.scale;
+                            font-weight: 600;
+                            color: M3.on-surface;
+                            wrap: word-wrap;
+                            horizontal-stretch: 1;
+                            TouchArea {
+                                clicked => { Bypass.consent-agreed = !Bypass.consent-agreed; }
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        alignment: end;
+                        spacing: 8px;
+                        AppButton {
+                            text: root.t-cancel;
+                            clicked => {
+                                Bypass.consent-open = false;
+                                Bypass.consent-agreed = false;
+                            }
+                        }
+                        AppButton {
+                            text: Bypass.text.consent-create;
+                            primary: true;
+                            enabled: Bypass.consent-agreed;
+                            clicked => {
+                                Bypass.consent-open = false;
+                                Bypass.consent-agreed = false;
+                                Bypass.consent-yes(Bypass.consent-name);
                             }
                         }
                     }

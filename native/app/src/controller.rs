@@ -278,6 +278,10 @@ pub fn spawn_with(config_path: PathBuf, hooks: Hooks) -> std::io::Result<Handle>
         pc_card: pc.clone(),
         quick: quick.clone(),
         firewall: None,
+        bypass_reason: Some(String::new()),
+        bypass_adapters: vec![],
+        bypass_working: false,
+        bypass_progress: String::new(),
         fw_busy: false,
         engines: None,
         update: UpdateState { next_check: Some(Instant::now() + UPDATE_FIRST), ..Default::default() },
@@ -353,6 +357,12 @@ struct Controller {
     quick: Arc<Mutex<Quick>>,
     /// the firewall block rule: None while it is being checked or changed
     firewall: Option<bool>,
+    /// VPN bypass (Settings > VPN bypass): why it cannot run here (None = it can), the physical network cards,
+    /// a VM being prepared / removed and what it is doing
+    bypass_reason: Option<String>,
+    bypass_adapters: Vec<String>,
+    bypass_working: bool,
+    bypass_progress: String,
     fw_busy: bool,
     /// the About page's engines: [name, program, version] (None while they are being asked)
     engines: Option<Vec<Value>>,
@@ -569,7 +579,211 @@ impl Controller {
             "startup": {"registered": proxydock_core::platform::startup_state().0, "hidden": proxydock_core::platform::startup_state().1},
             "firewall": self.firewall,
             "log_dir": self.log_dir().display().to_string(),
+            "bypass": self.bypass_json(),
         })
+    }
+
+    /// Settings > VPN bypass: the instances (the shared one always first), the choices and what is going on
+    fn bypass_json(&self) -> Value {
+        use proxydock_core::bypass;
+        let mut store = bypass::Store::load();
+        if store.get("").is_none() {
+            let adapter = self.bypass_adapters.first().cloned().unwrap_or_default();
+            store.put(bypass::Instance::new("", &adapter));
+        }
+        // (the hub is busy while a VM starts: the counts are left out then)
+        let hub = bypass::hub::hub().try_lock().ok();
+        let items: Vec<Value> = store
+            .instances
+            .iter()
+            .map(|i| {
+                json!({
+                    "name": i.name, "label": bypass::label(&i.name), "adapter": i.adapter,
+                    "memory_mb": i.memory_mb, "ip_mode": i.ip_mode, "address": i.address, "gateway": i.gateway,
+                    "dns": i.dns, "ready": i.consented(),
+                    "in_use": hub.as_ref().map_or(0, |h| h.in_use(&i.name)),
+                })
+            })
+            .collect();
+        json!({
+            "available": self.bypass_reason.is_none(),
+            "reason": self.bypass_reason.clone().unwrap_or_default(),
+            "adapters": self.bypass_adapters,
+            "memories": BYPASS_MEMORY,
+            "keep_running": store.keep_running,
+            "working": self.bypass_working,
+            "progress": self.bypass_progress,
+            "items": items,
+        })
+    }
+
+    /// whether Hyper-V is there and the physical network cards, asked in the background
+    fn refresh_bypass(&mut self) {
+        if !proxydock_core::platform::supported() {
+            self.bypass_reason = Some(tr("Only on Windows for now"));
+            return;
+        }
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let reason = proxydock_core::bypass::availability().err();
+            let adapters = proxydock_core::bypass::physical_adapters();
+            let _ = tx.send(Msg::Work(Box::new(move |c: &mut Controller| {
+                c.bypass_reason = reason;
+                c.bypass_adapters = adapters;
+                c.send_settings();
+            })));
+        });
+    }
+
+    /// Settings > VPN bypass actions
+    fn bypass_command(&mut self, v: &Value) {
+        use proxydock_core::bypass::{self, Consent, Instance, Store};
+        let name = v["name"].as_str().unwrap_or("").to_string();
+        if !name.is_empty() && !bypass::valid_name(&name) {
+            self.broadcast(&json!({"ev": "error", "message": tr("A name: up to 24 letters, digits, spaces, - or _")}));
+            return;
+        }
+        let mut store = Store::load();
+        let first_adapter = self.bypass_adapters.first().cloned().unwrap_or_default();
+        let mut inst = store.get(&name).cloned().unwrap_or_else(|| Instance::new(&name, &first_adapter));
+        let cmd = v["cmd"].as_str().unwrap_or("");
+        let error = |c: &mut Controller, m: String| c.broadcast(&json!({"ev": "error", "message": m}));
+        match cmd {
+            "bypass_refresh" => {
+                self.refresh_bypass();
+                return;
+            }
+            "bypass_keep" => {
+                store.keep_running = v["on"] == json!(true);
+            }
+            "bypass_add" => {
+                if name.is_empty() || store.get(&name).is_some() {
+                    return error(self, tr("That name is already used"));
+                }
+                store.put(inst);
+            }
+            "bypass_set" => {
+                if self.bypass_working || bypass::hub::hub().try_lock().map_or(true, |h| h.in_use(&name) > 0) {
+                    return error(self, tr("Stop the cards that use this VPN bypass first"));
+                }
+                if let Some(a) = v["adapter"].as_str() {
+                    inst.adapter = a.to_string();
+                }
+                if let Some(m) = v["memory_mb"].as_u64() {
+                    inst.memory_mb = bypass::clamp_memory(m as u32);
+                }
+                if let Some(mode) = v["ip_mode"].as_str() {
+                    let text = |k: &str| v[k].as_str().unwrap_or("").trim().to_string();
+                    if mode == "static" {
+                        let probe = json!({"op": "net", "mode": "static", "address": text("address"),
+                            "gateway": text("gateway"), "dns": text("dns").split([',', ' ']).filter(|d| !d.is_empty()).collect::<Vec<_>>()});
+                        if let Err(e) = check_static(&probe) {
+                            return error(self, e);
+                        }
+                        inst.address = text("address");
+                        inst.gateway = text("gateway");
+                        inst.dns = text("dns");
+                    }
+                    inst.ip_mode = if mode == "static" { "static".into() } else { "dhcp".into() };
+                }
+                store.put(inst);
+            }
+            "bypass_prepare" => {
+                if self.bypass_working {
+                    return;
+                }
+                if v["consent"] == json!(true) {
+                    inst.consent = Some(Consent { time: unix_now(), adapter: inst.adapter.clone() });
+                    let msg = tr("VPN bypass: consent given for \"{name}\" on {adapter}")
+                        .replace("{name}", &bypass::label(&name))
+                        .replace("{adapter}", &inst.adapter);
+                    self.app_log(Level::Setting, &msg);
+                }
+                if !inst.consented() {
+                    // the window asks first (the warning with its check box)
+                    self.broadcast(&json!({"ev": "bypass_consent", "name": name, "adapter": inst.adapter,
+                        "memory_mb": inst.memory_mb}));
+                    return;
+                }
+                store.put(inst.clone());
+                if let Err(e) = store.save() {
+                    return error(self, format!("{}: {e}", tr("Save failed")));
+                }
+                self.bypass_working = true;
+                self.bypass_progress = tr("Preparing...");
+                self.send_settings();
+                let tx = self.tx.clone();
+                std::thread::spawn(move || {
+                    let ptx = tx.clone();
+                    let progress = move |m: &str| {
+                        let m = m.to_string();
+                        let _ = ptx.send(Msg::Work(Box::new(move |c: &mut Controller| {
+                            c.bypass_progress = m;
+                            c.send_settings();
+                        })));
+                    };
+                    let r = bypass::hub::hub().lock().unwrap().prepare(&inst, &progress);
+                    let _ = tx.send(Msg::Work(Box::new(move |c: &mut Controller| {
+                        c.bypass_working = false;
+                        c.bypass_progress = String::new();
+                        let label = bypass::label(&inst.name);
+                        match r {
+                            Ok(_) => c.app_log(
+                                Level::Setting,
+                                &tr("VPN bypass \"{name}\" is ready").replace("{name}", &label),
+                            ),
+                            Err(e) => {
+                                let m = tr("VPN bypass \"{name}\" could not be prepared: {e}")
+                                    .replace("{name}", &label)
+                                    .replace("{e}", &e);
+                                c.app_log(Level::Error, &m);
+                                c.broadcast(&json!({"ev": "error", "message": m}));
+                            }
+                        }
+                        c.send_settings();
+                    })));
+                });
+                return;
+            }
+            "bypass_remove" => {
+                if self.bypass_working {
+                    return;
+                }
+                let had_vm = inst.consent.is_some();
+                if name.is_empty() {
+                    inst.consent = None;
+                    store.put(inst);
+                } else {
+                    store.remove(&name);
+                }
+                if let Err(e) = store.save() {
+                    return error(self, format!("{}: {e}", tr("Save failed")));
+                }
+                if had_vm {
+                    self.bypass_working = true;
+                    self.bypass_progress = tr("Removing the VM...");
+                    let tx = self.tx.clone();
+                    std::thread::spawn(move || {
+                        let r = bypass::hub::hub().lock().unwrap().remove(&name);
+                        let _ = tx.send(Msg::Work(Box::new(move |c: &mut Controller| {
+                            c.bypass_working = false;
+                            c.bypass_progress = String::new();
+                            if let Err(e) = r {
+                                c.app_log(Level::Error, &format!("{}: {e}", tr("VPN bypass")));
+                            }
+                            c.send_settings();
+                        })));
+                    });
+                }
+                self.send_settings();
+                return;
+            }
+            _ => return,
+        }
+        if let Err(e) = store.save() {
+            return error(self, format!("{}: {e}", tr("Save failed")));
+        }
+        self.send_settings();
     }
 
     fn log_dir(&self) -> PathBuf {
@@ -1360,6 +1574,7 @@ impl Controller {
         self.undo_base = self.snapshot();
         *self.shared_glob.lock().unwrap() = self.glob.clone();
         self.refresh_firewall();
+        self.refresh_bypass();
         self.refresh_engines();
         self.engine_text = engine_text(&self.glob);
         if self.glob["singbox_latest"] == json!(true) {
@@ -2344,6 +2559,9 @@ impl Controller {
             }
             "startup" | "startup_hidden" | "pc_off" | "pc_restore" | "firewall" | "set_switch" | "set_flag"
             | "select_member" => self.platform_command(v),
+            "bypass_refresh" | "bypass_keep" | "bypass_add" | "bypass_set" | "bypass_prepare" | "bypass_remove" => {
+                self.bypass_command(v)
+            }
             // "Restart now" (a new app scale: the window opens again) / the whole app
             "restart" => {
                 let app = v["app"] == json!(true);
@@ -2830,6 +3048,34 @@ fn push_point<T: Default + Clone>(h: &mut VecDeque<T>, v: T) {
 
 fn name_of(p: &Value) -> String {
     p["name"].as_str().unwrap_or("").to_string()
+}
+
+/// the memory choices of a VPN bypass VM (MB; at least bypass::MIN_MEMORY_MB)
+pub const BYPASS_MEMORY: [u32; 7] = [200, 256, 384, 512, 768, 1024, 2048];
+
+/// a fixed address as pd-agent will check it (the same rules, so the VM never gets one it refuses)
+fn check_static(req: &Value) -> Result<(), String> {
+    use std::net::{IpAddr, Ipv4Addr};
+    let s = |k: &str| req[k].as_str().unwrap_or("").to_string();
+    let cidr = s("address");
+    let (ip, prefix) = cidr.split_once('/').ok_or_else(|| tr("Address: like 192.168.0.50/24"))?;
+    let ip: Ipv4Addr = ip.parse().map_err(|_| tr("Address: like 192.168.0.50/24"))?;
+    let prefix: u32 =
+        prefix.parse().ok().filter(|p| (1..=32).contains(p)).ok_or_else(|| tr("Address: like 192.168.0.50/24"))?;
+    let gw: Ipv4Addr = s("gateway").parse().map_err(|_| tr("Gateway: like 192.168.0.1"))?;
+    let mask = u32::MAX << (32 - prefix);
+    if u32::from(ip) & mask != u32::from(gw) & mask {
+        return Err(tr("The gateway must be in the address's network"));
+    }
+    let dns: Vec<&str> = req["dns"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    if dns.is_empty() || dns.iter().any(|d| d.parse::<IpAddr>().is_err()) {
+        return Err(tr("DNS servers: addresses like 1.1.1.1, 8.8.8.8"));
+    }
+    Ok(())
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
 
 #[cfg(test)]

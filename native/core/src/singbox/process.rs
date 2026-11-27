@@ -222,6 +222,8 @@ pub struct EngineEnv {
     pub exclude_paths: Vec<String>,
     /// run sing-box through the administrator helper (a TUN card while ProxyDock is not elevated)
     pub helper: Option<super::helper::Launch>,
+    /// the VPN bypass VMs the card leaves through (started for it by the manager)
+    pub bypass: Vec<(String, crate::bypass::hub::Endpoint)>,
 }
 
 /// sing-box started directly, or by the administrator helper
@@ -409,6 +411,7 @@ impl Engine {
             cert: env.cert.as_ref().map(|(c, k)| (c.as_str(), k.as_str())),
             rulesets: &env.rulesets,
             exclude_paths: &env.exclude_paths,
+            bypass: &env.bypass,
         };
         let (conf, reasons) = match sbc::build(proxy, &cfg, &build_env) {
             Ok(x) => x,

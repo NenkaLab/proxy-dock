@@ -5,6 +5,7 @@
 //   proxydock.exe --version             print the version
 //   proxydock.exe --restart             (internal) wait for the old copy to end, then start
 //   proxydock.exe --tun-helper ...      the elevated TUN helper (started by the app itself through UAC)
+//   proxydock.exe --bypass-helper ...   the elevated VPN bypass helper (Hyper-V VMs; also through UAC)
 //   PROXYDOCK_HOME=<folder>             settings folder instead of %APPDATA%\ProxyDock (tests, portable)
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -580,6 +581,9 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some(proxydock_core::singbox::helper::ARG) {
         std::process::exit(proxydock_core::singbox::helper::main(&args[1..]));
+    }
+    if args.first().map(String::as_str) == Some(proxydock_core::bypass::helper::ARG) {
+        std::process::exit(proxydock_core::bypass::helper::main(&args[1..]));
     }
     if args.iter().any(|a| a == "--version") {
         // (a GUI program: the console it was started from, if any)

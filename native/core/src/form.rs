@@ -34,6 +34,21 @@ pub fn iface_unrouted(name: &str) -> bool {
 /// internet route), and the saved one when it is not up now (Python `_fill_ifaces`)
 fn iface_choices(current: &str) -> Kind {
     let mut o = vec![(String::new(), tr("Automatic"))];
+    // the VPN bypass VMs (Windows: Hyper-V), the shared one always offered
+    if cfg!(windows) {
+        let store = crate::bypass::Store::load();
+        let mut names: Vec<String> = store.instances.iter().map(|i| i.name.clone()).collect();
+        if !names.contains(&String::new()) {
+            names.insert(0, String::new());
+        }
+        for n in names {
+            let mut label = tr("Outside the VPN ({name})").replace("{name}", &crate::bypass::label(&n));
+            if !store.get(&n).is_some_and(|i| i.consented()) {
+                label += &format!(" · ⚠ {}", tr("set up in Settings > VPN bypass"));
+            }
+            o.push((crate::bypass::iface_for(&n), label));
+        }
+    }
     for i in IFACES.lock().unwrap().iter() {
         let mut label = if i.ip.is_empty() { i.name.clone() } else { format!("{} · {}", i.name, i.ip) };
         if !i.routed {
@@ -42,7 +57,11 @@ fn iface_choices(current: &str) -> Kind {
         o.push((i.name.clone(), label));
     }
     if !current.is_empty() && !o.iter().any(|(v, _)| v == current) {
-        o.push((current.to_string(), tr("{name} (not connected)").replace("{name}", current)));
+        let shown = match crate::bypass::instance_of(current) {
+            Some(n) => tr("Outside the VPN ({name})").replace("{name}", &crate::bypass::label(&n)),
+            None => current.to_string(),
+        };
+        o.push((current.to_string(), tr("{name} (not connected)").replace("{name}", &shown)));
     }
     Kind::Choice(o)
 }
@@ -582,6 +601,15 @@ pub fn outbound_form(g: &Obj, node: &Value) -> Vec<Field> {
     let iface_shown = !matches!(ot, "block" | "group") && !has_via;
     b.add("interface", "Network interface", "Leave through this network card, e.g. Tailscale, WireGuard, a VPN app or Wi-Fi, without changing the PC's routes. Needs the sing-box engine.", iface_choices(&st("interface")), iface_shown).rerender = true;
     b.push(field("iface.refresh", "Refresh the list", "", Kind::Button, json!(null), iface_shown));
+    let bypass_note = iface_shown && crate::bypass::instance_of(&st("interface")).is_some();
+    b.push(field(
+        "bypass_note",
+        "Outside the VPN",
+        "",
+        Kind::Info,
+        json!(tr("This exit leaves outside the VPN running on this PC: the sites it reaches and your internet provider see your real IP address, and the VPN's kill switch and DNS protection do not apply to it.")),
+        bypass_note,
+    ));
     let user_shown = matches!(ot, "http" | "https" | "socks4" | "socks5");
     b.add("username", "Upstream proxy account", "", Kind::Text, user_shown);
     b.add(

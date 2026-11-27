@@ -2214,6 +2214,7 @@ fn show_settings(app: &App, v: &Value) {
         .into(),
     );
     st.set_engine(v["engine"].as_str().unwrap_or("").into());
+    show_bypass(app, &v["bypass"]);
     st.set_log_dir(v["log_dir"].as_str().unwrap_or("").into());
     // what applies to this window right away
     app.set_theme(i("theme"));
@@ -2430,6 +2431,7 @@ fn settings_text() -> SettingsText {
 
 fn labels(app: &App) {
     app.global::<Settings>().set_text(settings_text());
+    bypass_labels(app);
     stats_labels(app);
     conn_labels(app);
     info_labels(app, &proxydock_core::i18n::current());
@@ -2896,6 +2898,17 @@ fn main() -> Result<(), slint::PlatformError> {
         app.set_page(p);
     }
     labels(&app);
+    // debug builds (screenshots without clicking): PROXYDOCK_SETTINGS_CAT=<n> picks a settings category,
+    // PROXYDOCK_BYPASS_CONSENT=1 opens the VPN bypass warning
+    if cfg!(debug_assertions) {
+        if let Some(c) = std::env::var("PROXYDOCK_SETTINGS_CAT").ok().and_then(|c| c.parse::<i32>().ok()) {
+            app.set_page(4);
+            app.set_settings_cat(c);
+        }
+        if std::env::var("PROXYDOCK_BYPASS_CONSENT").is_ok_and(|v| v == "1") {
+            open_bypass_consent(&app, &json!({"name": "", "adapter": "Wi-Fi", "memory_mb": 200}));
+        }
+    }
     {
         // the page title bar moves the window (winit: Windows, macOS, Linux alike)
         // (the press starts the system's move, which takes the release: a second press soon after is the
@@ -3528,6 +3541,7 @@ fn main() -> Result<(), slint::PlatformError> {
         st.on_set_hidden(move |on| send_h(json!({"cmd": "startup_hidden", "on": on})));
         let send_f = send.clone();
         st.on_firewall(move |on| send_f(json!({"cmd": "firewall", "on": on})));
+        bypass_callbacks(&app, send.clone());
         // the theme colour: shown at once (the apply bar saves it, Cancel puts the saved one back)
         let presets = proxydock_core::theme::PRESETS;
         st.set_presets(ModelRc::new(VecModel::from(presets.iter().map(|c| hex(c)).collect::<Vec<_>>())));
@@ -3969,6 +3983,7 @@ fn main() -> Result<(), slint::PlatformError> {
                             "latency" => show_latency(&app, &m, &v["latency"]),
                             "route" => show_route(&app, &m, &v),
                             "settings" => show_settings(&app, &v["settings"]),
+                            "bypass_consent" => open_bypass_consent(&app, &v),
                             "language" => {
                                 set_language(v["language"].as_str().unwrap_or("en"));
                                 apply_fonts(&app, v["language"].as_str().unwrap_or("en"));
@@ -5163,4 +5178,141 @@ mod caption {
             }
         }
     }
+}
+
+thread_local! {
+    /// Settings > VPN bypass as the core sent it last (the callbacks look up adapters and memory sizes)
+    static BYPASS: std::cell::RefCell<Value> = const { std::cell::RefCell::new(Value::Null) };
+}
+
+/// Settings > VPN bypass from the core's settings
+fn show_bypass(app: &App, v: &Value) {
+    BYPASS.with(|b| *b.borrow_mut() = v.clone());
+    let bp = app.global::<Bypass>();
+    let strs = |k: &str| -> Vec<String> {
+        v[k].as_array().into_iter().flatten().filter_map(|x| x.as_str().map(String::from)).collect()
+    };
+    let adapters = strs("adapters");
+    let memories: Vec<u64> = v["memories"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect();
+    bp.set_available(v["available"] == json!(true));
+    bp.set_reason(v["reason"].as_str().unwrap_or("").into());
+    bp.set_adapters(ModelRc::new(VecModel::from(
+        adapters.iter().map(|a| SharedString::from(a.as_str())).collect::<Vec<_>>(),
+    )));
+    bp.set_memories(ModelRc::new(VecModel::from(
+        memories.iter().map(|m| SharedString::from(format!("{m} MB"))).collect::<Vec<_>>(),
+    )));
+    bp.set_ip_modes(ModelRc::new(VecModel::from(vec![
+        SharedString::from(tr("Automatic (DHCP)")),
+        SharedString::from(tr("Fixed address")),
+    ])));
+    bp.set_keep(v["keep_running"] == json!(true));
+    bp.set_working(v["working"] == json!(true));
+    bp.set_progress(v["progress"].as_str().unwrap_or("").into());
+    let items: Vec<BypassItem> = v["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|i| {
+            let s = |k: &str| SharedString::from(i[k].as_str().unwrap_or(""));
+            let adapter = i["adapter"].as_str().unwrap_or("");
+            let mem = i["memory_mb"].as_u64().unwrap_or(200);
+            // (the nearest choice at or below)
+            let mem_i = memories.iter().rposition(|m| *m <= mem).unwrap_or(0);
+            BypassItem {
+                name: s("name"),
+                label: s("label"),
+                adapter: adapters.iter().position(|a| a == adapter).map_or(-1, |k| k as i32),
+                adapter_name: s("adapter"),
+                memory: mem_i as i32,
+                static_ip: i["ip_mode"] == json!("static"),
+                address: s("address"),
+                gateway: s("gateway"),
+                dns: s("dns"),
+                ready: i["ready"] == json!(true),
+                in_use: i["in_use"].as_i64().unwrap_or(0) as i32,
+            }
+        })
+        .collect();
+    bp.set_items(ModelRc::new(VecModel::from(items)));
+}
+
+/// the warning before a VM is made (the core asks when an instance has no consent for its network card)
+fn open_bypass_consent(app: &App, v: &Value) {
+    let bp = app.global::<Bypass>();
+    let name = v["name"].as_str().unwrap_or("");
+    let body = tr("ProxyDock will create a small virtual machine on this PC (memory: {memory} MB) and connect it directly to the network card {adapter}.\n\n• The traffic of the blocks that use this exit does not go through the VPN running on this PC: it leaves straight through your real internet line. The sites you reach and your internet provider see your real IP address, and the VPN's kill switch and DNS protection do not apply to it.\n• Your router sees it as a new device (its own MAC and IP address). If your provider gives only one address per line, it may not get one.\n• While it is being set up the network may drop for a moment, and Windows asks for administrator permission.\n• With a company or school VPN, getting around it like this may break their rules.\n\nYou are responsible for what follows from allowing this (your real IP address being seen, breaking a policy, network problems and the like). ProxyDock does not protect the traffic that leaves through this exit.")
+        .replace("{memory}", &v["memory_mb"].as_u64().unwrap_or(200).to_string())
+        .replace("{adapter}", v["adapter"].as_str().unwrap_or("?"));
+    bp.set_consent_name(name.into());
+    bp.set_consent_body(body.into());
+    bp.set_consent_agreed(false);
+    bp.set_consent_open(true);
+}
+
+fn bypass_labels(app: &App) {
+    let t = |s: &str| SharedString::from(tr(s));
+    app.global::<Bypass>().set_text(BypassText {
+        title: t("VPN bypass"),
+        intro: t("Lets chosen blocks leave outside a VPN that runs on the whole PC, without the VPN's split tunnelling: a small virtual machine (Hyper-V) connected straight to a network card carries their traffic. In a block's settings choose \"Outside the VPN\" as its network interface. The shared VM serves every block that picks it; a separate one gets its own address."),
+        adapter: t("Network card"),
+        adapter_desc: t("The physical card the VM is connected to (wired or Wi-Fi)"),
+        memory: t("Memory"),
+        memory_desc: t("More memory keeps many connections at once steadier; it does not make it faster"),
+        ip: t("Address"),
+        ip_desc: t("From your router (DHCP), or a fixed one"),
+        dhcp: t("Automatic (DHCP)"),
+        r#static: t("Fixed address"),
+        address: t("Address"),
+        gateway: t("Gateway"),
+        dns: t("DNS servers"),
+        save_ip: t("Save"),
+        prepare: t("Create"),
+        reprepare: t("Apply again"),
+        remove: t("Remove"),
+        ready: t("ready"),
+        not_ready: t("not set up"),
+        in_use: t("in use"),
+        keep: t("Keep the VMs running"),
+        keep_desc: t("When off, a VM stops when the last card that uses it stops (it starts again in a few seconds)"),
+        add_title: t("Separate VM"),
+        add_desc: t("A VM of its own for some blocks (its own address); choose it by name in a block's network interface"),
+        add: t("Add"),
+        name_hint: t("Name"),
+        consent_title: t("An exit that does not go through the VPN"),
+        consent_check: t("I understand the above and agree that I am responsible for what follows"),
+        consent_create: t("Create"),
+    });
+}
+
+fn bypass_callbacks(app: &App, send: impl Fn(Value) + Clone + 'static) {
+    let bp = app.global::<Bypass>();
+    let adapter_at = |i: i32| -> String {
+        BYPASS.with(|b| b.borrow()["adapters"].get(i as usize).and_then(Value::as_str).unwrap_or("").to_string())
+    };
+    let memory_at = |i: i32| -> u64 {
+        BYPASS.with(|b| b.borrow()["memories"].get(i as usize).and_then(Value::as_u64).unwrap_or(200))
+    };
+    let s = send.clone();
+    bp.on_set_adapter(move |name, i| {
+        s(json!({"cmd": "bypass_set", "name": name.as_str(), "adapter": adapter_at(i)}));
+    });
+    let s = send.clone();
+    bp.on_set_memory(move |name, i| s(json!({"cmd": "bypass_set", "name": name.as_str(), "memory_mb": memory_at(i)})));
+    let s = send.clone();
+    bp.on_set_ip(move |name, fixed, address, gateway, dns| {
+        s(json!({"cmd": "bypass_set", "name": name.as_str(), "ip_mode": if fixed { "static" } else { "dhcp" },
+            "address": address.as_str(), "gateway": gateway.as_str(), "dns": dns.as_str()}))
+    });
+    let s = send.clone();
+    bp.on_prepare(move |name| s(json!({"cmd": "bypass_prepare", "name": name.as_str()})));
+    let s = send.clone();
+    bp.on_consent_yes(move |name| s(json!({"cmd": "bypass_prepare", "name": name.as_str(), "consent": true})));
+    let s = send.clone();
+    bp.on_remove(move |name| s(json!({"cmd": "bypass_remove", "name": name.as_str()})));
+    let s = send.clone();
+    bp.on_add(move |name| s(json!({"cmd": "bypass_add", "name": name.trim()})));
+    let s = send.clone();
+    bp.on_set_keep(move |on| s(json!({"cmd": "bypass_keep", "on": on})));
+    bp.on_refresh(move || send(json!({"cmd": "bypass_refresh"})));
 }

@@ -65,13 +65,23 @@ Needs Docker. Builds the disk of the small Linux VM that lets a block leave outs
 bridged to a physical network card): `pd-agent` (`native/bypass-guest`, static musl, `--test` runs its tests
 first), an Alpine `linux-virt` kernel with a busybox initramfs, GRUB, and the musl build of sing-box (fetched into
 `bin/linux-amd64-musl`) on a read-only squashfs partition. The result is `dist/bypass/proxydock-bypass-x64.vhdx`,
-a `.vhdx.zst` copy for downloading, their `.sha256` files and `manifest.json`. The installer does not include it:
-ProxyDock downloads it the first time the VM is prepared.
+`proxydock-bypass-x64.zip` (the release file), their `.sha256` files and `manifest.json`. The installer does not
+include it: the release workflow builds it on Linux and attaches the zip, and ProxyDock downloads its own version's
+the first time a VM is prepared (checked against `SHA256SUMS.txt`). A development build finds `dist/bypass` above
+the program instead, or the file `PROXYDOCK_BYPASS_IMAGE` names.
 
 Inside the VM, `pd-agent` answers on Hyper-V socket port 20548 (line JSON: `status`, `net` = DHCP or a fixed
-address, `poweroff`) and relays every stream on port 20549 to the VM's sing-box SOCKS5 server (127.0.0.1 only), which
-ProxyDock's sing-box uses with UDP over TCP. Each VM gets a small differencing disk; the image itself is never
-written. The VM needs at least 192 MB of memory (less and the kernel cannot unpack itself).
+address, `socks_auth`, `poweroff`) and relays every stream on port 20549 to the VM's sing-box SOCKS5 server
+(127.0.0.1 only, with a random account ProxyDock sets at each start), which ProxyDock's sing-box uses with UDP over
+TCP. On the host, `proxydock --bypass-helper` (elevated through UAC once per run) creates the switch and the VMs and
+relays a 127.0.0.1 port to each. Each start gives a VM a fresh differencing disk; the image itself is never written.
+The VM needs at least 192 MB of memory (less and the kernel cannot unpack itself); the app offers 200 MB and up.
+
+To try it end to end on a PC with Hyper-V (asks for UAC, creates and then removes a switch and a VM):
+
+```powershell
+$env:PROXYDOCK_BYPASS_ADAPTER = "Wi-Fi"; cargo run -p proxydock-core --example bypass_e2e
+```
 
 ## Releases
 
