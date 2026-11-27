@@ -28,15 +28,15 @@
 | ← → | Bloc précédent / suivant le long des liens |
 | ↑ ↓ | Bloc au-dessus / en dessous (après ← →, l'autre choix s'il y en a plusieurs) |
 
-## Contournement du VPN (Windows)
+## Ligne directe
 
-Même avec un VPN actif sur tout le PC, un bloc peut sortir en dehors : réglez son **Interface réseau** sur **Hors du VPN**. Une petite machine virtuelle Hyper-V reliée directement à une carte réseau transporte ce trafic (**Réglages > Contournement du VPN** : carte réseau, mémoire, adresse ; **Créer** demande d'abord votre accord). Nécessite Windows Pro, Entreprise ou Éducation avec Hyper-V activé.
+Même avec un VPN actif sur tout le PC, un bloc peut sortir en dehors : réglez son **Interface réseau** sur **Ligne directe**. Une petite machine virtuelle Hyper-V reliée directement à une carte réseau transporte ce trafic (**Réglages > Ligne directe** : carte réseau, mémoire, adresse ; **Créer** demande d'abord votre accord). Windows : Hyper-V (Pro, Entreprise ou Éducation). Linux : pas de VM, un espace de noms réseau (`ip` et root via pkexec). macOS (Apple Silicon) : pas encore essayé sur un Mac.
 
 Ce trafic montre votre vraie adresse IP, et le kill switch et la protection DNS du VPN ne s'y appliquent pas ; avec un VPN d'entreprise ou d'école, cela peut enfreindre leurs règles. Vous êtes responsable des conséquences de son activation.
 
-## Contournement du VPN (Windows)
+## Ligne directe (Windows)
 
-Même avec un VPN actif sur tout le PC, un bloc peut sortir en dehors : réglez son **Interface réseau** sur **Hors du VPN**. Une petite machine virtuelle Hyper-V reliée directement à une carte réseau transporte ce trafic (**Réglages > Contournement du VPN** : carte réseau, mémoire, adresse ; **Créer** demande d'abord votre accord). Nécessite Windows Pro, Entreprise ou Éducation avec Hyper-V activé.
+Même avec un VPN actif sur tout le PC, un bloc peut sortir en dehors : réglez son **Interface réseau** sur **Ligne directe**. Une petite machine virtuelle Hyper-V reliée directement à une carte réseau transporte ce trafic (**Réglages > Ligne directe** : carte réseau, mémoire, adresse ; **Créer** demande d'abord votre accord). Nécessite Windows Pro, Entreprise ou Éducation avec Hyper-V activé.
 
 Ce trafic montre votre vraie adresse IP, et le kill switch et la protection DNS du VPN ne s'y appliquent pas ; avec un VPN d'entreprise ou d'école, cela peut enfreindre leurs règles. Vous êtes responsable des conséquences de son activation.
 

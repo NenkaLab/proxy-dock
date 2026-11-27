@@ -47,6 +47,8 @@ enum Cmd {
     Apply(Value, Glob, Option<Sender<()>>),
     ApplyGlobal(Glob, Vec<Value>),
     Died(String, u64, String),
+    /// ProxyDock's own switch (the home page): every running card refuses / lets through at once
+    AppSwitch(bool, Option<Sender<()>>),
     /// the manager is dropped (the worker holds a sender itself, so the channel never closes on its own)
     Quit,
 }
@@ -112,6 +114,12 @@ impl Card {
         match self {
             Card::SingBox(e) => e.stop(),
             Card::Hysteria(e) => e.stop(),
+        }
+    }
+    fn set_app_on(&self, on: bool) -> Result<(), String> {
+        match self {
+            Card::SingBox(e) => e.set_app_on(on),
+            Card::Hysteria(e) => e.set_app_on(on),
         }
     }
 }
@@ -213,7 +221,7 @@ impl Manager {
         guard::set_run_dir(folders.run_dir.clone());
         let (tx, rx) = channel();
         let shared = Arc::new(Mutex::new(Shared::default()));
-        let w = Worker { tx: tx.clone(), shared: shared.clone(), events, folders, generation: 0 };
+        let w = Worker { tx: tx.clone(), shared: shared.clone(), events, folders, generation: 0, app_on: true };
         let worker = std::thread::Builder::new().name("proxy-manager".into()).spawn(move || w.run(rx)).ok();
         Manager { tx, shared, worker }
     }
@@ -232,6 +240,14 @@ impl Manager {
     pub fn stop(&self, id: &str) -> Receiver<()> {
         let (t, r) = channel();
         let _ = self.tx.send(Cmd::Stop(id.to_string(), Some(t)));
+        r
+    }
+
+    /// ProxyDock's own on / off switch: off = every card (running ones and any that start later) refuses all
+    /// connections while staying up, on = back to normal. The cards' own on / off is left as it is.
+    pub fn set_app_on(&self, on: bool) -> Receiver<()> {
+        let (t, r) = channel();
+        let _ = self.tx.send(Cmd::AppSwitch(on, Some(t)));
         r
     }
 
@@ -397,6 +413,8 @@ struct Worker {
     events: Events,
     folders: Folders,
     generation: u64,
+    /// ProxyDock's own switch (cards started while it is off start refusing everything)
+    app_on: bool,
 }
 
 impl Worker {
@@ -434,6 +452,19 @@ impl Worker {
                     }
                 }
                 Cmd::Died(id, generation, text) => self.died(&id, generation, text),
+                Cmd::AppSwitch(on, done) => {
+                    self.app_on = on;
+                    let sh = self.shared.lock().unwrap();
+                    for r in sh.running.values() {
+                        if let Err(e) = r.engine.set_app_on(on) {
+                            self.log(Level::Error, &e, Some(&r.proxy));
+                        }
+                    }
+                    drop(sh);
+                    if let Some(d) = done {
+                        let _ = d.send(());
+                    }
+                }
                 Cmd::Quit => break,
             }
         }
@@ -517,6 +548,7 @@ impl Worker {
             exclude_paths,
             helper,
             bypass: vec![],
+            app_on: self.app_on,
         };
         Ok((env, choice))
     }
@@ -625,7 +657,7 @@ impl Worker {
             if hub.lock().unwrap().in_use(&n) == 0 {
                 self.log(
                     Level::Info,
-                    &tr("Starting the VPN bypass VM ({name})...").replace("{name}", &crate::bypass::label(&n)),
+                    &tr("Starting the direct line VM ({name})...").replace("{name}", &crate::bypass::label(&n)),
                     Some(proxy),
                 );
             }

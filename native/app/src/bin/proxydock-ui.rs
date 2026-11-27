@@ -2215,6 +2215,7 @@ fn show_settings(app: &App, v: &Value) {
     );
     st.set_engine(v["engine"].as_str().unwrap_or("").into());
     show_bypass(app, &v["bypass"]);
+    app.global::<Home>().set_on(v["app_on"] != json!(false));
     st.set_log_dir(v["log_dir"].as_str().unwrap_or("").into());
     // what applies to this window right away
     app.set_theme(i("theme"));
@@ -2865,6 +2866,26 @@ fn main() -> Result<(), slint::PlatformError> {
                 links_g.set_row_data(row, l);
                 PinGrab { pin: start, x: p.x * z + app.get_canvas_pan_x(), y: p.y * z + app.get_canvas_pan_y() }
             });
+            // a link dragged by its line (when several links meet at one pin, the one under the mouse): picked up
+            // the same way, from its source pin
+            let (links_l, ctl_l, weak_l) = (links.clone(), controller.clone(), app.as_weak());
+            app.global::<NodeEditorInternalCallbacks>().on_grab_link(move |id| {
+                let none = PinGrab { pin: 0, x: 0.0, y: 0.0 };
+                let Some(app) = weak_l.upgrade() else { return none };
+                let Some(row) = (0..links_l.row_count()).find(|&i| links_l.row_data(i).is_some_and(|l| l.id == id))
+                else {
+                    return none;
+                };
+                let mut l = links_l.row_data(row).unwrap();
+                let cache = ctl_l.cache();
+                let Some(p) = cache.borrow().get_absolute_pins().find(|p| p.id == l.start_pin_id) else { return none };
+                let z = app.get_canvas_zoom();
+                GRAB.set(Some((l.start_pin_id, l.end_pin_id, row, l.color)));
+                let start = l.start_pin_id;
+                l.color = Color::from_argb_u8(0, 0, 0, 0);
+                links_l.set_row_data(row, l);
+                PinGrab { pin: start, x: p.x * z + app.get_canvas_pan_x(), y: p.y * z + app.get_canvas_pan_y() }
+            });
             let (send_r, cmd_r, back_r) = (send.clone(), link_cmd.clone(), put_back.clone());
             app.on_link_requested(move |a, b| {
                 let grabbed = GRAB.get();
@@ -2895,7 +2916,8 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     }
     if let Some(p) = std::env::var("PROXYDOCK_PAGE").ok().and_then(|p| p.parse::<i32>().ok()) {
-        app.set_page(p);
+        // (0: the window's default page, which is home)
+        app.set_page(if p == 0 { 10 } else { p });
     }
     labels(&app);
     // debug builds (screenshots without clicking): PROXYDOCK_SETTINGS_CAT=<n> picks a settings category,
@@ -3996,11 +4018,13 @@ fn main() -> Result<(), slint::PlatformError> {
                             "card" => {
                                 m.set_card(&v["card"]);
                                 conn_cards(&app, &m);
+                                home_render(&app, &m);
                             }
                             "stats" => {
                                 m.set_stats(&v["stats"]);
                                 stats_push(&v["stats"], &v["point"]);
                                 stats_render(&app, &running_cards(&m));
+                                home_render(&app, &m);
                             }
                             "conn_sites" => conn_sites(&app, &v["conn"]),
                             "about" => show_about(&app, &v["about"]),
@@ -4373,6 +4397,8 @@ fn stats_labels(app: &App) {
     st.set_modes(ModelRc::new(VecModel::from(modes)));
     STATS.with(|s| s.borrow_mut().choice_ids.clear());
     app.set_t_stats(tr("Statistics").into());
+    app.set_t_home(tr("Home").into());
+    home_labels(app);
     app.set_t_conn(tr("Connection test").into());
 }
 
@@ -5231,6 +5257,8 @@ fn show_bypass(app: &App, v: &Value) {
                 dns: s("dns"),
                 ready: i["ready"] == json!(true),
                 in_use: i["in_use"].as_i64().unwrap_or(0) as i32,
+                enabled: i["enabled"] != json!(false),
+                running: i["running"] == json!(true),
             }
         })
         .collect();
@@ -5253,8 +5281,8 @@ fn open_bypass_consent(app: &App, v: &Value) {
 fn bypass_labels(app: &App) {
     let t = |s: &str| SharedString::from(tr(s));
     app.global::<Bypass>().set_text(BypassText {
-        title: t("VPN bypass"),
-        intro: t("Lets chosen blocks leave outside a VPN that runs on the whole PC, without the VPN's split tunnelling: a small virtual machine (Hyper-V) connected straight to a network card carries their traffic. In a block's settings choose \"Outside the VPN\" as its network interface. The shared VM serves every block that picks it; a separate one gets its own address."),
+        title: t("Direct line"),
+        intro: t("Sends chosen blocks straight out through a network card, past a VPN, a TUN or any other app that takes over the whole PC's network, without needing its split tunnelling: a small virtual machine (Hyper-V) connected directly to the card carries their traffic. Make a VM here (as many as you need), then choose it by name as a block's network interface."),
         adapter: t("Network card"),
         adapter_desc: t("The physical card the VM is connected to (wired or Wi-Fi)"),
         memory: t("Memory"),
@@ -5274,11 +5302,14 @@ fn bypass_labels(app: &App) {
         not_ready: t("not set up"),
         in_use: t("in use"),
         keep: t("Keep the VMs running"),
+        vm_on: t("VM on"),
+        vm_on_desc: t("On: the VM starts now and cards can use it. Off: the VM stops, and so do the cards that use it"),
+        running: t("running"),
         keep_desc: t("When off, a VM stops when the last card that uses it stops (it starts again in a few seconds)"),
-        add_title: t("Separate VM"),
-        add_desc: t("A VM of its own for some blocks (its own address); choose it by name in a block's network interface"),
+        add_title: t("Add a VM"),
+        add_desc: t("Give it a name, then choose its network card and memory below and press Create. Each VM gets its own address."),
         add: t("Add"),
-        name_hint: t("Name"),
+        name_hint: t("VM name"),
         consent_title: t("An exit that does not go through the VPN"),
         consent_check: t("I understand the above and agree that I am responsible for what follows"),
         consent_create: t("Create"),
@@ -5314,5 +5345,65 @@ fn bypass_callbacks(app: &App, send: impl Fn(Value) + Clone + 'static) {
     bp.on_add(move |name| s(json!({"cmd": "bypass_add", "name": name.trim()})));
     let s = send.clone();
     bp.on_set_keep(move |on| s(json!({"cmd": "bypass_keep", "on": on})));
+    let s = send.clone();
+    bp.on_set_enabled(move |name, on| s(json!({"cmd": "bypass_enable", "name": name.as_str(), "on": on})));
+    let s = send.clone();
+    app.global::<Home>().on_power(move |on| s(json!({"cmd": "home_power", "on": on})));
     bp.on_refresh(move || send(json!({"cmd": "bypass_refresh"})));
+}
+
+/// the home page: the big switch (any card running), the cards' state, total traffic and the Direct line VMs
+fn home_render(app: &App, m: &Models) {
+    let h = app.global::<Home>();
+    let (mut running, mut errors, mut total) = (0, 0, 0);
+    for c in m.cards.iter() {
+        total += 1;
+        match c.state.as_str() {
+            "running" | "starting" => running += 1,
+            "error" => errors += 1,
+            _ => {}
+        }
+    }
+    h.set_running(running);
+    h.set_errors(errors);
+    h.set_total(total);
+    h.set_status_sub(
+        if errors > 0 { tr("{n} with errors").replace("{n}", &errors.to_string()) } else { tr("running") }.into(),
+    );
+    STATS.with(|s| {
+        let s = s.borrow();
+        let r = &s.point["cards"][""];
+        let (up, down) = (r[0].as_f64().unwrap_or(0.0), r[1].as_f64().unwrap_or(0.0));
+        let all = &s.latest[""];
+        let total = |k: &str| tr("total {fmt_size}").replace("{fmt_size}", &fmt_size(all[k].as_f64().unwrap_or(0.0)));
+        h.set_down_rate(format!("{}/s", fmt_size(down)).into());
+        h.set_up_rate(format!("{}/s", fmt_size(up)).into());
+        h.set_down_total(total("down").into());
+        h.set_up_total(total("up").into());
+    });
+}
+
+fn home_labels(app: &App) {
+    let t = |s: &str| SharedString::from(tr(s));
+    app.global::<Home>().set_text(HomeText {
+        title_on: t("ProxyDock is on"),
+        title_off: t("ProxyDock is off"),
+        sub_on: t("Each proxy runs as you set it"),
+        sub_off: t("Every connection is refused (a kill switch). Each proxy keeps its own on / off"),
+        status: t("Proxies"),
+        running: t("running"),
+        errors: t("errors"),
+        cards: t("cards"),
+        used_by: t("cards using it:"),
+        traffic: t("Traffic"),
+        down: t("Download"),
+        up: t("Upload"),
+        vms: t("Direct line VMs"),
+        vms_none: t("No VM yet"),
+        vms_open: t("Make one"),
+        vm_running: t("running"),
+        vm_idle: t("on · starts when a card needs it"),
+        vm_off: t("off"),
+        vm_not_ready: t("not set up"),
+    });
 }

@@ -34,6 +34,11 @@ turn each card on or off.
 - **Chains**: send one outbound through another, or through Tailscale, a VPN app or Wi-Fi
 - **System proxy**: use a card as the Windows system proxy while it runs
 - **Everyday tools**: share links, connection tests, logs and live statistics, 8 languages, tray
+- **Direct line**: chosen blocks go straight out through a network card, past a VPN, a TUN or any app that
+  holds the whole PC's network, without its split tunnelling (Windows: a small Hyper-V VM; Linux: a network
+  namespace; macOS: a small VM, not tried yet)
+- **Home page**: one switch for the whole app (off refuses every connection, a kill switch; each card keeps its
+  own on / off), the cards' state, live traffic and the Direct line VMs
 
 Proxies run on [sing-box](https://github.com/SagerNet/sing-box), bundled in the release.
 
@@ -65,6 +70,21 @@ release: [TESTING.md](TESTING.md).
 - Linux: the system proxy (PC block) is set for GNOME and KDE only; notifications need `notify-send`.
 - TUN has not been tried on real setups yet.
 - SOCKS4 has no password: use it only on this PC.
+- Direct line: on Windows it needs Hyper-V (Pro, Enterprise or Education) and administrator permission; each VM
+  shows up on your router as a new device (its own MAC and IP address), and a provider that gives one address per
+  line may not give it one. Its traffic shows your real IP address and no VPN protects it: you are responsible for
+  using it (the app asks before making a VM).
+- Direct line on Linux: tried in a container only (a network namespace with macvlan; Wi-Fi uses ipvlan, where
+  DHCP may not work: use a fixed address). Needs `ip` (iproute2) and root through pkexec.
+- Direct line on macOS (Apple Silicon): written and type-checked, but **not tried on any Mac yet**
+  (Virtualization.framework with a bridged vmnet interface, which needs the helper to run as root).
+
+## Contributing
+
+If you fixed or improved something - a bug, a platform not tried yet (macOS, Linux), a translation - please send a
+pull request. Write it yourself or with an AI tool, either is fine, but check it before you send it: build it,
+run the tests (`cargo test --workspace` in `native/`) and try the change in the app, on a real machine where it
+matters. Say in the pull request what you checked and how.
 
 ## License
 

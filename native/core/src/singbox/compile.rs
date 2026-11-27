@@ -56,6 +56,8 @@ pub enum Reason {
     Private,
     /// a router rule (or the router default) that sends traffic to the Block outbound
     Rule(String),
+    /// ProxyDock is switched off (the home page's switch): every connection is refused
+    Off,
 }
 
 impl Reason {
@@ -68,6 +70,7 @@ impl Reason {
             Some(Reason::Allow) => json!("allow"),
             Some(Reason::Private) => json!("private"),
             Some(Reason::Rule(n)) => json!(["rule", n]),
+            Some(Reason::Off) => json!("off"),
         }
     }
 }
@@ -921,6 +924,10 @@ pub fn route(
     Ok((r, reasons))
 }
 
+/// the Clash modes of ProxyDock's on / off switch
+pub const APP_ON: &str = "on";
+pub const APP_OFF: &str = "kill";
+
 /// Inputs of a card's sing-box config that come from outside the graph.
 pub struct BuildEnv<'a> {
     pub bans_path: &'a str,
@@ -931,6 +938,10 @@ pub struct BuildEnv<'a> {
     pub rulesets: &'a [(String, String)],
     /// ProxyDock's own engines: a TUN card routes them around itself
     pub exclude_paths: &'a [String],
+    /// ProxyDock's own on / off switch (None: no such rules, as the Python app's configs): Some(on) adds a first
+    /// rule that refuses everything in Clash mode "kill" and a marker rule for mode "on"; the engine switches the
+    /// mode at run time, without a restart
+    pub app_switch: Option<bool>,
     /// VPN bypass instance -> where its VM is reached (the card started them)
     pub bypass: &'a [(String, crate::bypass::hub::Endpoint)],
 }
@@ -966,7 +977,17 @@ pub fn build(proxy: &Value, cfg: &Value, env: &BuildEnv) -> R<(Value, Vec<Option
     if tun {
         obs.push(json!({"type": "direct", "tag": TUN_DIRECT}));
     }
-    let (r, reasons) = route(proxy, cfg, env.bans_path, env.rulesets, &route_tags, env.exclude_paths)?;
+    let (mut r, mut reasons) = route(proxy, cfg, env.bans_path, env.rulesets, &route_tags, env.exclude_paths)?;
+    if env.app_switch.is_some()
+        && let Some(rules) = r["rules"].as_array_mut()
+    {
+        // (sing-box only takes the modes its rules name: "on" needs a rule of its own, which changes nothing)
+        let timeout = format!("{}s", py_str(get(cfg, "timeout")?));
+        rules.insert(0, json!({"clash_mode": APP_ON, "action": "route-options", "udp_timeout": timeout}));
+        rules.insert(0, json!({"clash_mode": APP_OFF, "action": "reject"}));
+        reasons.insert(0, None);
+        reasons.insert(0, Some(Reason::Off));
+    }
     let mut endpoints: Vec<Value> = obs.iter().filter(|o| o["type"] == json!("wireguard")).cloned().collect();
     let ib_conf = inbound(&proxy["inbound"], env.cert)?;
     let ib_is_wg = ib_conf["type"] == json!("wireguard");
@@ -987,6 +1008,9 @@ pub fn build(proxy: &Value, cfg: &Value, env: &BuildEnv) -> R<(Value, Vec<Option
             json!({"clash_api": {"external_controller": format!("127.0.0.1:{}", env.api_port), "secret": env.api_secret}}),
         ),
     ]);
+    if let Some(on) = env.app_switch {
+        conf["experimental"]["clash_api"]["default_mode"] = json!(if on { APP_ON } else { APP_OFF });
+    }
     if !endpoints.is_empty() {
         conf["endpoints"] = Value::Array(endpoints);
     }
@@ -1027,6 +1051,7 @@ mod tests {
             rulesets: &[],
             exclude_paths: &[],
             bypass: &eps,
+            app_switch: None,
         };
         let (conf, _) = build(&proxy, &cfg, &env).unwrap();
         let obs = conf["outbounds"].as_array().unwrap();
@@ -1039,6 +1064,16 @@ mod tests {
         assert_eq!((vm["type"].clone(), vm["server_port"].clone()), (json!("socks"), json!(5001)));
         assert_eq!(vm["udp_over_tcp"]["enabled"], json!(true));
         assert_eq!(by_tag("bypass:game")["username"], json!("u"));
+        // ProxyDock's own switch: two rules first, the starting mode in the Clash API settings
+        let env_off = BuildEnv { app_switch: Some(false), ..env };
+        let (conf_off, reasons_off) = build(&proxy, &cfg, &env_off).unwrap();
+        let rules = conf_off["route"]["rules"].as_array().unwrap();
+        assert_eq!(rules[0], json!({"clash_mode": "kill", "action": "reject"}));
+        assert_eq!(rules[1]["clash_mode"], json!("on"));
+        assert_eq!((reasons_off[0].clone(), reasons_off[1].clone()), (Some(Reason::Off), None));
+        assert_eq!(rules.len(), reasons_off.len());
+        assert_eq!(conf_off["experimental"]["clash_api"]["default_mode"], json!("kill"));
+        assert!(conf["experimental"]["clash_api"].get("default_mode").is_none(), "None: as the Python app");
         // a card whose VM is not running cannot be built
         let env = BuildEnv { bypass: &eps[..1], ..env };
         assert!(build(&proxy, &cfg, &env).is_err());

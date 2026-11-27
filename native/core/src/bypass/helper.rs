@@ -73,7 +73,10 @@ pub fn base_path(dir: &Path) -> PathBuf {
 
 /// The helper side (runs elevated): `args` = port, token, dir.
 pub fn main(args: &[String]) -> i32 {
-    let [port, token, dir, ..] = args else { return 2 };
+    let [port, token, dir, rest @ ..] = args else { return 2 };
+    if let Some(lang) = rest.first() {
+        crate::i18n::set_language(lang);
+    }
     let Ok(port) = port.parse::<u16>() else { return 2 };
     let Ok(mut sock) = TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), Duration::from_secs(10)) else {
         return 1;
@@ -85,18 +88,23 @@ pub fn main(args: &[String]) -> i32 {
     0
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 fn serve(mut sock: TcpStream, _dir: PathBuf) {
     let _ = sock.write_all(b"{\"ok\":false,\"error\":\"not on Windows\"}\n");
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 fn serve(sock: TcpStream, dir: PathBuf) {
     let mut w = match sock.try_clone() {
         Ok(w) => w,
         Err(_) => return,
     };
+    #[cfg(windows)]
     let mut h = imp::Helper::new(dir);
+    #[cfg(target_os = "linux")]
+    let mut h = super::linux::Helper::new(dir);
+    #[cfg(target_os = "macos")]
+    let mut h = super::macos::Helper::new(dir);
     for line in BufReader::new(sock).lines() {
         let Ok(line) = line else { break };
         let req: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
@@ -240,7 +248,7 @@ Write-Output $sw.Name
 
         fn start(&mut self, name: &str, net: &Value) -> Result<Value, String> {
             let Some((id, state)) = self.vm(name)? else {
-                return Err(tr("The VPN bypass VM is not prepared yet (Settings > VPN bypass)"));
+                return Err(tr("The direct line VM is not prepared yet (Settings > Direct line)"));
             };
             if state != "Running" {
                 if state != "Off" {
@@ -271,7 +279,7 @@ Start-VM -VM $vm
                     Err(e) => e,
                 };
                 if Instant::now() > until {
-                    return Err(tr("The VPN bypass VM did not answer: {e}").replace("{e}", &e));
+                    return Err(tr("The direct line VM did not answer: {e}").replace("{e}", &e));
                 }
                 std::thread::sleep(Duration::from_millis(500));
             }
@@ -299,7 +307,7 @@ Start-VM -VM $vm
                             tr("no address from DHCP")
                         }
                     });
-                    return Err(tr("The VPN bypass VM got no network: {e}").replace("{e}", &why));
+                    return Err(tr("The direct line VM got no network: {e}").replace("{e}", &why));
                 }
                 std::thread::sleep(Duration::from_millis(500));
             };

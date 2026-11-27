@@ -32,8 +32,10 @@ struct Conn {
 #[derive(Default)]
 pub struct Hub {
     conn: Option<Conn>,
-    /// instance -> (cards using it, its endpoint)
+    /// instance -> (users: cards and the user's switch, its endpoint)
     used: HashMap<String, (usize, Endpoint)>,
+    /// instances the user switched on (held running without a card)
+    manual: std::collections::HashSet<String>,
     /// tests: how to start the helper (default: this program through UAC, or directly when elevated)
     pub launch: Option<Launch>,
     /// tests: the data folder (default `super::data_dir()`)
@@ -65,7 +67,8 @@ impl Hub {
         let port = listener.local_addr().map_err(|e| e.to_string())?.port();
         let token = crate::singbox::process::random_hex(16);
         let mut args = how.args.clone();
-        args.extend([port.to_string(), token.clone(), dir.display().to_string()]);
+        // (the language last: the helper's messages come back in it)
+        args.extend([port.to_string(), token.clone(), dir.display().to_string(), crate::i18n::current()]);
         if how.elevate {
             crate::singbox::helper::runas(&how.program, &args)?;
         } else {
@@ -132,6 +135,7 @@ impl Hub {
                     // the helper is gone (it was killed, or the PC slept): every VM it ran is stopped
                     self.conn = None;
                     self.used.clear();
+                    self.manual.clear();
                     if attempt == 1 {
                         return Err(tr("The administrator helper stopped"));
                     }
@@ -151,14 +155,22 @@ impl Hub {
         let store = Store::load();
         let label = super::label(name);
         let Some(inst) = store.get(name) else {
-            return Err(tr("The VPN bypass \"{name}\" is not set up (Settings > VPN bypass)").replace("{name}", &label));
+            return Err(
+                tr("The direct line \"{name}\" is not set up (Settings > Direct line)").replace("{name}", &label)
+            );
         };
         if !inst.consented() {
             return Err(
-                tr("The VPN bypass \"{name}\" is not prepared (Settings > VPN bypass)").replace("{name}", &label)
+                tr("The direct line \"{name}\" is not prepared (Settings > Direct line)").replace("{name}", &label)
             );
         }
-        let r = self.request(json!({"op": "start", "name": name, "net": inst.net_request()}))?;
+        if !inst.enabled {
+            return Err(
+                tr("The direct line VM \"{name}\" is switched off (Settings > Direct line)").replace("{name}", &label)
+            );
+        }
+        let r = self.request(json!({"op": "start", "name": name, "adapter": inst.adapter,
+            "memory_mb": inst.memory_mb, "net": inst.net_request()}))?;
         let ep = Endpoint {
             port: r["port"].as_u64().unwrap_or(0) as u16,
             user: r["user"].as_str().unwrap_or("").into(),
@@ -184,18 +196,50 @@ impl Hub {
         }
     }
 
+    /// cards using it (the user's switch not counted)
     pub fn in_use(&self, name: &str) -> usize {
-        self.used.get(name).map_or(0, |(n, _)| *n)
+        self.used.get(name).map_or(0, |(n, _)| *n).saturating_sub(usize::from(self.manual.contains(name)))
+    }
+
+    /// the VM runs for ProxyDock now (a card or the switch holds it)
+    pub fn running(&self, name: &str) -> bool {
+        self.used.contains_key(name)
+    }
+
+    /// The user switched it on: started now and kept running without a card.
+    pub fn hold(&mut self, name: &str) -> Result<(), String> {
+        if self.manual.contains(name) {
+            return Ok(());
+        }
+        self.acquire(name)?;
+        self.manual.insert(name.to_string());
+        Ok(())
+    }
+
+    /// The user switched it off (its cards were stopped first): the VM stops, "keep running" or not.
+    pub fn force_stop(&mut self, name: &str) {
+        self.manual.remove(name);
+        self.used.remove(name);
+        if self.conn.is_some() {
+            let _ = self.request(json!({"op": "stop", "name": name}));
+        }
     }
 
     /// Set up (or update) an instance: the image in place, then the switch and the VM. The caller saved the consent.
     pub fn prepare(&mut self, inst: &Instance, progress: &dyn Fn(&str)) -> Result<Value, String> {
         super::availability()?;
         if self.in_use(&inst.name) > 0 {
-            return Err(tr("Stop the cards that use this VPN bypass first"));
+            return Err(tr("Stop the cards that use this direct line first"));
         }
-        progress(&tr("Getting the VM image..."));
-        self.ensure_image(progress)?;
+        // (switched on by hand: preparing stops it)
+        if self.running(&inst.name) {
+            self.force_stop(&inst.name);
+        }
+        // (Linux needs no VM, so no image)
+        if !cfg!(target_os = "linux") {
+            progress(&tr("Getting the VM image..."));
+            self.ensure_image(progress)?;
+        }
         progress(&tr("Creating the VM (the network may drop for a moment)..."));
         self.request(json!({"op": "prepare", "name": inst.name, "adapter": inst.adapter, "memory_mb": inst.memory_mb}))
     }
@@ -206,55 +250,101 @@ impl Hub {
 
     pub fn remove(&mut self, name: &str) -> Result<(), String> {
         if self.in_use(name) > 0 {
-            return Err(tr("Stop the cards that use this VPN bypass first"));
+            return Err(tr("Stop the cards that use this direct line first"));
         }
         self.request(json!({"op": "remove", "name": name})).map(|_| ())
     }
 
-    /// Put the image at `<dir>/base.vhdx`: from PROXYDOCK_BYPASS_IMAGE or a build next to the program
-    /// (`dist/bypass`), else downloaded from this version's GitHub release (checked against its SHA256SUMS.txt).
-    /// Every VM must be off: a running VM's disk depends on it.
+    /// Put this system's guest in place: Windows `<dir>/base.vhdx`, macOS `<dir>/mac/{vmlinux,initrd,opt.sqfs}` -
+    /// from PROXYDOCK_BYPASS_IMAGE or a build next to the program (`dist/bypass`), else downloaded from this
+    /// version's GitHub release (checked against its SHA256SUMS.txt). Every VM must be off: a running one uses it.
     fn ensure_image(&mut self, progress: &dyn Fn(&str)) -> Result<(), String> {
         let dir = self.dir();
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let base = helper::base_path(&dir);
         let stamp = dir.join("base.version");
         let want = crate::update::current_version().to_string();
         let have = std::fs::read_to_string(&stamp).unwrap_or_default();
-        if base.is_file() && have.trim() == want {
+        if image_ready(&dir) && have.trim() == want {
             return Ok(());
         }
         if !self.used.is_empty() {
-            return Err(tr("Stop the cards that use the VPN bypass first"));
+            return Err(tr("Stop the cards that use the direct line first"));
         }
-        let tmp = dir.join("base.vhdx.part");
-        if let Some(local) = local_image() {
-            std::fs::copy(&local, &tmp).map_err(|e| e.to_string())?;
-        } else {
-            download_image(&dir, &tmp, progress)?;
+        let zip = match local_image() {
+            Some(p) => p,
+            None => download_image(&dir, progress)?,
+        };
+        unpack_image(&zip, &dir)?;
+        if zip.starts_with(&dir) {
+            let _ = std::fs::remove_file(&zip);
         }
-        // (a VM still off with a disk on the old image keeps nothing: each start makes a new disk)
-        let _ = std::fs::remove_file(&base);
-        std::fs::rename(&tmp, &base).map_err(|e| e.to_string())?;
         std::fs::write(&stamp, want).map_err(|e| e.to_string())?;
         Ok(())
     }
 }
 
-/// an image built on this PC: PROXYDOCK_BYPASS_IMAGE, or dist/bypass/ above the program (development)
+/// this system's guest is unpacked in `dir`
+fn image_ready(dir: &Path) -> bool {
+    if cfg!(target_os = "macos") {
+        ["vmlinux", "initrd", "opt.sqfs"].iter().all(|f| dir.join("mac").join(f).is_file())
+    } else {
+        helper::base_path(dir).is_file()
+    }
+}
+
+/// an image built on this PC: PROXYDOCK_BYPASS_IMAGE (a zip, or Windows' .vhdx itself), or dist/bypass/ above the
+/// program (development)
 fn local_image() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("PROXYDOCK_BYPASS_IMAGE").map(PathBuf::from).filter(|p| p.is_file()) {
         return Some(p);
     }
     let exe = std::env::current_exe().ok()?;
-    exe.ancestors().skip(1).take(6).map(|d| d.join("dist").join("bypass").join(IMAGE_NAME)).find(|p| p.is_file())
+    let names: &[&str] = if cfg!(target_os = "macos") { &[IMAGE_ZIP] } else { &[IMAGE_NAME, IMAGE_ZIP] };
+    exe.ancestors()
+        .skip(1)
+        .take(6)
+        .flat_map(|d| names.iter().map(move |n| d.join("dist").join("bypass").join(n)))
+        .find(|p| p.is_file())
 }
 
-fn download_image(dir: &Path, to: &Path, progress: &dyn Fn(&str)) -> Result<(), String> {
+/// the zip (or Windows' bare .vhdx) -> `dir`: Windows base.vhdx, macOS mac/{vmlinux,initrd,opt.sqfs}
+fn unpack_image(src: &Path, dir: &Path) -> Result<(), String> {
+    let part = |p: PathBuf| p.with_extension("part");
+    if src.extension().is_some_and(|e| e.eq_ignore_ascii_case("vhdx")) {
+        let base = helper::base_path(dir);
+        std::fs::copy(src, part(base.clone())).map_err(|e| e.to_string())?;
+        let _ = std::fs::remove_file(&base);
+        return std::fs::rename(part(base.clone()), &base).map_err(|e| e.to_string());
+    }
+    let file = std::fs::File::open(src).map_err(|e| e.to_string())?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+    let wanted: Vec<(&str, PathBuf)> = if cfg!(target_os = "macos") {
+        ["vmlinux", "initrd", "opt.sqfs"].iter().map(|f| (*f, dir.join("mac").join(f))).collect()
+    } else {
+        vec![(IMAGE_NAME, helper::base_path(dir))]
+    };
+    for (name, to) in wanted {
+        if let Some(d) = to.parent() {
+            std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+        }
+        let mut entry = archive.by_name(name).map_err(|e| format!("{name}: {e}"))?;
+        let tmp = part(to.clone());
+        let mut out = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+        std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
+        drop(out);
+        // (a VM still off with a disk on the old image keeps nothing: each start makes a new disk)
+        let _ = std::fs::remove_file(&to);
+        std::fs::rename(&tmp, &to).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// this version's release zip for this system, downloaded into `dir` and checked against SHA256SUMS.txt
+fn download_image(dir: &Path, progress: &dyn Fn(&str)) -> Result<PathBuf, String> {
     let tag = format!("v{}", crate::update::current_version());
     let rel = crate::update::release_for_tag(&tag)?;
     let last = Mutex::new(Instant::now());
-    let zip = crate::update::fetch_verified(
+    crate::update::fetch_verified(
         &rel,
         IMAGE_ZIP,
         dir,
@@ -270,13 +360,5 @@ fn download_image(dir: &Path, to: &Path, progress: &dyn Fn(&str)) -> Result<(), 
     .map_err(|e| match e {
         crate::update::FetchError::Failed(m) => m,
         crate::update::FetchError::Cancelled => tr("Cancelled"),
-    })?;
-    let file = std::fs::File::open(&zip).map_err(|e| e.to_string())?;
-    let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
-    let mut entry = archive.by_name(IMAGE_NAME).map_err(|e| e.to_string())?;
-    let mut out = std::fs::File::create(to).map_err(|e| e.to_string())?;
-    std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
-    drop(entry);
-    let _ = std::fs::remove_file(&zip);
-    Ok(())
+    })
 }

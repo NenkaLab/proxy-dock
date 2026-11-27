@@ -73,6 +73,17 @@ INFO_PLIST = """<?xml version="1.0" encoding="UTF-8"?>
 </plist>
 """
 
+# the Direct line on macOS runs a small Linux VM with Virtualization.framework, which needs this entitlement on the
+# program that starts it (proxydock, whose helper mode runs as root); an ad-hoc signature carries it
+ENTITLEMENTS = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.virtualization</key><true/>
+</dict>
+</plist>
+"""
+
 
 def say(step, msg):
     print(f"[rust {step}] {msg}", flush=True)
@@ -170,6 +181,12 @@ def folder(version):
         for n in (16, 32, 64, 128, 256, 512, 1024):
             os.remove(os.path.join(iconset, f"{n}.png"))
         run(["iconutil", "-c", "icns", iconset, "-o", os.path.join(contents, "Resources", "ProxyDock.icns")])
+        # ad-hoc signature: the bundle (and its main program, proxydock) with the Virtualization entitlement
+        ent = os.path.join(ROOT, "build", "rust", "entitlements.plist")
+        with open(ent, "w", encoding="utf-8") as f:
+            f.write(ENTITLEMENTS)
+        run(["codesign", "--force", "--sign", "-", "--entitlements", ent, os.path.join(contents, "MacOS", "proxydock")])
+        run(["codesign", "--force", "--sign", "-", "--entitlements", ent, app])
         return app
     app = os.path.join(DIST, "ProxyDock")
     say("2/4", f"program folder -> {os.path.relpath(app, ROOT)}")

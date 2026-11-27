@@ -416,3 +416,39 @@ fn running(name: &str) -> usize {
         String::from_utf8_lossy(&out.stdout).lines().count()
     }
 }
+
+#[test]
+fn app_switch_refuses_everything_and_lets_through_again() {
+    if exe().is_none() {
+        return;
+    }
+    let (m, seen) = manager();
+    let dest = echo_server();
+    let socks_card = |id: &str, port: u16| {
+        let g = graph::validate(&json!({
+            "inbounds": [{"id": id, "name": id, "inbound": {"type": "socks5", "host": "127.0.0.1", "port": port}, "target": "o"}],
+            "outbounds": [{"id": "o", "outbound": {"type": "direct"}}],
+        }));
+        Value::Object(graph::compile(&g).remove(0))
+    };
+    let (p1, p2) = (free_port(), free_port());
+    let g = glob(json!({}));
+    assert!(m.start(&socks_card("k1", p1), &g).recv().unwrap());
+    assert!(through_socks(p1, dest).is_ok());
+    // off: the card keeps running (its own state untouched) but refuses everything
+    m.set_app_on(false).recv().unwrap();
+    assert_eq!(m.state("k1"), State::Running);
+    assert!(listening(p1));
+    assert!(through_socks(p1, dest).is_err());
+    assert!(wait(|| seen.logged(|e| e.proxy_id == "k1" && e.message.contains("switched off")), 5));
+    // a card started while off starts refusing too
+    assert!(m.start(&socks_card("k2", p2), &g).recv().unwrap());
+    assert!(through_socks(p2, dest).is_err());
+    // on: both let traffic through again, without a restart
+    m.set_app_on(true).recv().unwrap();
+    assert!(through_socks(p1, dest).is_ok());
+    assert!(through_socks(p2, dest).is_ok());
+    assert_eq!(seen.states_of("k1"), [State::Starting, State::Running]);
+    m.stop("k1").recv().unwrap();
+    m.stop("k2").recv().unwrap();
+}

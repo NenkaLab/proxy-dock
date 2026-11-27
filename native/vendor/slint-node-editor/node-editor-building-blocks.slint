@@ -201,6 +201,9 @@ export global NodeEditorInternalCallbacks {
     /// (ProxyDock) an input pin pressed: a link into it is picked up from its far end (the host hides it and
     /// says where that end is); pin 0 = start a new link from this pin as usual
     callback grab-input-link(/* pin-id */ int) -> PinGrab;
+    /// (ProxyDock) a link dragged by its line: that link is picked up from its far end, like grab-input-link
+    /// (pin 0: it cannot be moved)
+    callback grab-link(/* link-id */ int) -> PinGrab;
     /// Give the editor keyboard focus inside a pointer press. TouchAreas accept
     /// presses before the ancestor FocusScope can apply focus-on-click.
     /// This must be synchronous: a deferred changed watcher could steal focus

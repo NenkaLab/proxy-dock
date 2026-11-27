@@ -732,6 +732,10 @@ export component NodeEditor inherits FocusScope {
 
             // Cached link hit-test result to avoid redundant compute-link-at calls
             property <int> link-at-cursor: -1;
+            // (ProxyDock) a link pressed on its line: a click selects it, a drag picks it up (moves it)
+            property <int> pressed-link: -1;
+            property <length> press-x;
+            property <length> press-y;
             // Shift state captured at marquee start — the release event that
             // commits the box carries no modifiers of its own.
             property <bool> box-select-extends: false;
@@ -800,8 +804,10 @@ export component NodeEditor inherits FocusScope {
                                 event.modifiers.shift,
                                 modifier-forces-box-select);
                         } else if link-at-cursor >= 0 {
-                            // Clicked on a link - select it
-                            root.select-link(link-at-cursor, event.modifiers.shift);
+                            // (ProxyDock) selected on release when it was not dragged
+                            pressed-link = link-at-cursor;
+                            press-x = self.mouse-x;
+                            press-y = self.mouse-y;
                         }
                     } else if event.button == PointerEventButton.right {
                         root.context-menu-x = self.mouse-x;
@@ -823,6 +829,12 @@ export component NodeEditor inherits FocusScope {
                     }
                     if root.internal-is-creating-link && event.button == PointerEventButton.left {
                         root.complete-link-creation();
+                    } else if pressed-link >= 0 && event.button == PointerEventButton.left {
+                        // Clicked on a link - select it
+                        root.select-link(pressed-link, event.modifiers.shift);
+                    }
+                    if event.button == PointerEventButton.left {
+                        pressed-link = -1;
                     }
                 }
                 if event.kind == PointerEventKind.cancel {
@@ -846,6 +858,15 @@ export component NodeEditor inherits FocusScope {
                 }
                 if root.internal-is-box-selecting {
                     root.update-box-selection(self.mouse-x, self.mouse-y);
+                }
+                // (ProxyDock) a pressed link dragged a few pixels: picked up from its far end
+                if pressed-link >= 0 && !root.internal-is-creating-link
+                    && (abs(self.mouse-x - press-x) > 6px || abs(self.mouse-y - press-y) > 6px) {
+                    let grab = NodeEditorInternalCallbacks.grab-link(pressed-link);
+                    pressed-link = -1;
+                    if grab.pin != 0 {
+                        root.start-link-from-pin(grab.pin, grab.x, grab.y);
+                    }
                 }
                 if root.internal-is-creating-link {
                     root.update-link-end(self.mouse-x, self.mouse-y);

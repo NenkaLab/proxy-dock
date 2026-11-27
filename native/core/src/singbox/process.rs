@@ -224,6 +224,8 @@ pub struct EngineEnv {
     pub helper: Option<super::helper::Launch>,
     /// the VPN bypass VMs the card leaves through (started for it by the manager)
     pub bypass: Vec<(String, crate::bypass::hub::Endpoint)>,
+    /// ProxyDock's own switch: off = the card starts refusing every connection
+    pub app_on: bool,
 }
 
 /// sing-box started directly, or by the administrator helper
@@ -319,10 +321,26 @@ pub(crate) fn attach_to_job(child: &Child) {
 
 /// the Clash API: one request, the JSON body (None when empty)
 fn api(port: u16, secret: &str, method: &str, path: &str) -> std::io::Result<Option<Value>> {
+    api_with(port, secret, method, path, None)
+}
+
+/// the Clash API with a JSON body
+fn api_with(port: u16, secret: &str, method: &str, path: &str, body: Option<&Value>) -> std::io::Result<Option<Value>> {
     let addr: SocketAddr = ([127, 0, 0, 1], port).into();
     let mut s = TcpStream::connect_timeout(&addr, Duration::from_secs(3))?;
     s.set_read_timeout(Some(Duration::from_secs(5)))?;
-    write!(s, "{method} {path} HTTP/1.0\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {secret}\r\n\r\n")?;
+    match body {
+        None => write!(s, "{method} {path} HTTP/1.0\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {secret}\r\n\r\n")?,
+        Some(b) => {
+            let b = b.to_string();
+            write!(
+                s,
+                "{method} {path} HTTP/1.0\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {secret}\r\n\
+                 Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{b}",
+                b.len()
+            )?
+        }
+    }
     let mut data = vec![];
     s.read_to_end(&mut data)?;
     let body = match data.windows(4).position(|w| w == b"\r\n\r\n") {
@@ -412,6 +430,7 @@ impl Engine {
             rulesets: &env.rulesets,
             exclude_paths: &env.exclude_paths,
             bypass: &env.bypass,
+            app_switch: Some(env.app_on),
         };
         let (conf, reasons) = match sbc::build(proxy, &cfg, &build_env) {
             Ok(x) => x,
@@ -533,6 +552,18 @@ impl Engine {
 
     pub fn id(&self) -> &str {
         &self.shared.id
+    }
+
+    /// ProxyDock's switch at run time: off refuses every new connection and closes the open ones; on lets them
+    /// through again (the Clash mode, no restart)
+    pub fn set_app_on(&self, on: bool) -> Result<(), String> {
+        let (port, secret) = (&self.api.0, &self.api.1);
+        let mode = json!({"mode": if on { sbc::APP_ON } else { sbc::APP_OFF }});
+        api_with(*port, secret, "PATCH", "/configs", Some(&mode)).map_err(|e| e.to_string())?;
+        if !on {
+            let _ = api(*port, secret, "DELETE", "/connections");
+        }
+        Ok(())
     }
 
     pub fn stats(&self) -> Stats {
@@ -778,6 +809,7 @@ fn handle(shared: &Shared, level: &str, cid: Option<String>, msg: &str) {
             }
             Some(Reason::Banned) => Some(format!("{who} -> {target} {}", tr("blocked (temporarily banned IP)"))),
             Some(Reason::SelfPort) => Some(format!("{who} -> {target} {}", tr("blocked (this proxy's own port)"))),
+            Some(Reason::Off) => Some(format!("{who} -> {target} {}", tr("blocked (ProxyDock is switched off)"))),
             Some(Reason::Rule(name)) => {
                 let name = if name == "default" { tr("default") } else { name };
                 Some(format!("{who} -> {target} {}", tr("blocked by router rule '{name}'").replace("{name}", &name)))

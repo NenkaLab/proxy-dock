@@ -48,22 +48,35 @@ fn main() {
     unsafe {
         std::env::set_var("PROXYDOCK_HOME", tmp.join("home"));
         if std::env::var_os("PROXYDOCK_BYPASS_DIR").is_none() {
-            std::env::set_var("PROXYDOCK_BYPASS_DIR", r"C:\ProgramData\ProxyDockBypassE2E");
+            let dir =
+                if cfg!(windows) { PathBuf::from(r"C:\ProgramData\ProxyDockBypassE2E") } else { tmp.join("bypass") };
+            std::env::set_var("PROXYDOCK_BYPASS_DIR", dir);
         }
         std::env::set_var("PROXYDOCK_BYPASS_IMAGE", root().join("dist").join("bypass").join(bypass::IMAGE_NAME));
     }
     println!("available: {:?}", bypass::availability());
     println!("physical adapters: {:?}", bypass::physical_adapters());
     let mut inst = Instance::new("", &adapter);
+    // PROXYDOCK_BYPASS_STATIC=<address/prefix>,<gateway>,<dns>: a fixed address instead of DHCP
+    if let Ok(st) = std::env::var("PROXYDOCK_BYPASS_STATIC") {
+        let p: Vec<&str> = st.split(',').collect();
+        inst.ip_mode = "static".into();
+        inst.address = p[0].into();
+        inst.gateway = p.get(1).copied().unwrap_or("").into();
+        inst.dns = p.get(2).copied().unwrap_or("1.1.1.1").into();
+    }
     inst.consent = Some(Consent { time: 0, adapter: adapter.clone() });
     let mut store = Store::default();
     store.put(inst.clone());
     store.save().unwrap();
     {
         let mut h = hub::hub().lock().unwrap();
+        // (the helper next to this example: target/<profile>/examples/.. ; as root already: no prompt)
+        let exe = std::env::current_exe().unwrap();
         let program =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("target").join("debug").join("bypass_helper.exe");
-        h.launch = Some(Launch { program, args: vec![bypass::helper::ARG.into()], elevate: true });
+            exe.parent().unwrap().parent().unwrap().join(format!("bypass_helper{}", std::env::consts::EXE_SUFFIX));
+        let elevate = !proxydock_core::manager::is_admin();
+        h.launch = Some(Launch { program, args: vec![bypass::helper::ARG.into()], elevate });
         let t = Instant::now();
         let r = h.prepare(&inst, &|m| println!("  {m}"));
         println!("prepare: {r:?} ({:.1}s)", t.elapsed().as_secs_f64());
@@ -71,7 +84,7 @@ fn main() {
             return;
         }
     }
-    let exe = singbox::find(singbox::EXE, "", &[root()]).expect("bin/windows-amd64/sing-box.exe");
+    let exe = singbox::find(singbox::EXE, "", &[root()]).expect("bin/<platform>/sing-box");
     let g = config::validate_global(&json!({"singbox_path": exe.display().to_string()}));
     let events = Events {
         status: Arc::new(|id, st| println!("  [{id}] {st:?}")),
@@ -99,7 +112,7 @@ fn main() {
     let t = Instant::now();
     println!("start dns card (same VM): {} ({:.1}s)", m.start(&dns, &g).recv().unwrap(), t.elapsed().as_secs_f64());
     let curl = |args: &[&str]| {
-        std::process::Command::new("curl.exe")
+        std::process::Command::new(if cfg!(windows) { "curl.exe" } else { "curl" })
             .args(args)
             .output()
             .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
@@ -110,7 +123,7 @@ fn main() {
         curl(&["-s", "-m", "15", "https://am.i.mullvad.net/json"]).chars().take(120).collect::<String>()
     );
     for _ in 0..3 {
-        let o = std::process::Command::new("curl.exe")
+        let o = std::process::Command::new(if cfg!(windows) { "curl.exe" } else { "curl" })
             .args(["-sS", "-m", "15", "-x", "socks5h://127.0.0.1:27180", "https://am.i.mullvad.net/json"])
             .output()
             .unwrap();
@@ -126,7 +139,7 @@ fn main() {
         curl(&[
             "-s",
             "-o",
-            "NUL",
+            if cfg!(windows) { "NUL" } else { "/dev/null" },
             "-m",
             "60",
             "-w",

@@ -35,6 +35,11 @@ p. ex. un serveur Shadowsocks), et chaque carte s'allume ou s'éteint.
 - **Proxy système** : utiliser une carte comme proxy système Windows tant qu'elle tourne
 - **Outils du quotidien** : liens de partage, tests de connexion, journaux et statistiques en direct, 8 langues,
   zone de notification
+- **Ligne directe** : les blocs choisis sortent directement par une carte réseau, en passant outre un VPN, un TUN ou
+  toute app qui prend en charge le réseau de tout le PC, sans son split tunneling (Windows : une petite VM Hyper-V ;
+  Linux : un espace de noms réseau ; macOS : une petite VM, pas encore essayée)
+- **Page d'accueil** : un interrupteur pour toute l'app (désactivé, il refuse toute connexion, un kill switch ; chaque
+  carte garde son propre état), l'état des cartes, le trafic en direct et les VM de ligne directe
 
 Les proxys tournent sur [sing-box](https://github.com/SagerNet/sing-box), fourni avec la version publiée.
 
@@ -68,6 +73,21 @@ Vérifications avant une version : [TESTING.md](../TESTING.md) (en coréen).
 - Linux : le proxy système (bloc PC) n'est réglé que sous GNOME et KDE ; les notifications ont besoin de `notify-send`.
 - TUN n'a pas encore été essayé en conditions réelles.
 - SOCKS4 n'a pas de mot de passe : ne l'utilisez que sur ce PC.
+- Ligne directe : sous Windows elle demande Hyper-V (Pro, Entreprise ou Éducation) et les droits d'administrateur ;
+  chaque VM apparaît sur votre routeur comme un nouvel appareil (ses propres adresses MAC et IP), et un fournisseur
+  qui ne donne qu'une adresse par ligne risque de ne pas lui en donner. Son trafic montre votre vraie adresse IP et
+  aucun VPN ne le protège : vous êtes responsable de son usage (l'app demande votre accord avant de créer une VM).
+- Ligne directe sous Linux : essayée en conteneur seulement (un espace de noms réseau avec macvlan ; le Wi-Fi utilise
+  ipvlan, où le DHCP peut ne pas marcher : utilisez une adresse fixe). Demande `ip` (iproute2) et root via pkexec.
+- Ligne directe sous macOS (Apple Silicon) : écrite et vérifiée au typage, mais **encore jamais essayée sur un Mac**
+  (Virtualization.framework avec une interface vmnet pontée ; l'assistant doit tourner en root).
+
+## Contribuer
+
+Si vous avez corrigé ou amélioré quelque chose – un bug, une plateforme pas encore essayée (macOS, Linux), une
+traduction –, envoyez une pull request. À la main ou avec un outil d'IA, peu importe, mais vérifiez avant d'envoyer :
+compilez, lancez les tests (`cargo test --workspace` dans `native/`) et essayez le changement dans l'app, sur une
+vraie machine quand cela compte. Indiquez dans la pull request ce que vous avez vérifié et comment.
 
 ## Licence
 

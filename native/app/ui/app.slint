@@ -1,4 +1,4 @@
-// ProxyDock window (proxydock-ui.exe): Material 3 Expressive on Slint's "material" style (build.rs), same look as
+﻿// ProxyDock window (proxydock-ui.exe): Material 3 Expressive on Slint's "material" style (build.rs), same look as
 // the prototype. Pages so far: the proxy cards and the log; everything comes from the core process over ipc.
 import { ListView, Palette, ScrollView } from "std-widgets.slint";
 import {
@@ -2123,12 +2123,15 @@ export struct BypassItem {
     ready: bool,
     // running cards that use it
     in-use: int,
+    // the user's switch (off: stopped, no card may use it) and whether it runs now
+    enabled: bool,
+    running: bool,
 }
 export struct BypassText {
     title: string, intro: string, adapter: string, adapter-desc: string, memory: string, memory-desc: string,
     ip: string, ip-desc: string, dhcp: string, static: string, address: string, gateway: string, dns: string,
     save-ip: string, prepare: string, reprepare: string, remove: string, ready: string, not-ready: string,
-    in-use: string, keep: string, keep-desc: string, add-title: string, add-desc: string, add: string,
+    in-use: string, keep: string, keep-desc: string, vm-on: string, vm-on-desc: string, running: string, add-title: string, add-desc: string, add: string,
     name-hint: string, consent-title: string, consent-check: string, consent-create: string,
 }
 export global Bypass {
@@ -2158,6 +2161,7 @@ export global Bypass {
     callback remove(string);
     callback add(string);
     callback set-keep(bool);
+    callback set-enabled(string, bool);
     callback refresh();
 }
 
@@ -2486,9 +2490,38 @@ component SettingsBypass inherits VerticalLayout {
             }
         }
     }
+    SettingsSection {
+        title: Bypass.text.add-title;
+        SettingField {
+            label: Bypass.text.name-hint;
+            desc: Bypass.text.add-desc;
+            HorizontalLayout {
+                spacing: 8px;
+                new-name := AppLineEdit { placeholder-text: Bypass.text.name-hint; }
+                AppButton {
+                    text: Bypass.text.add;
+                    icon: @image-url("icons/add.svg");
+                    enabled: new-name.text != "";
+                    clicked => {
+                        Bypass.add(new-name.text);
+                        new-name.text = "";
+                    }
+                }
+            }
+        }
+    }
     for item in Bypass.items: SettingsSection {
-        title: item.label + " · " + (item.ready ? Bypass.text.ready : Bypass.text.not-ready)
+        title: item.label + " · " + (!item.ready ? Bypass.text.not-ready : item.running ? Bypass.text.running : Bypass.text.ready)
             + (item.in-use > 0 ? " · " + Bypass.text.in-use : "");
+        SettingRow {
+            label: Bypass.text.vm-on;
+            desc: Bypass.text.vm-on-desc;
+            AppSwitch {
+                enabled: item.ready && Bypass.available && !Bypass.working;
+                checked: item.enabled && item.ready;
+                toggled => { Bypass.set-enabled(item.name, self.checked); }
+            }
+        }
         SettingRow {
             label: Bypass.text.adapter;
             desc: item.adapter < 0 && item.adapter-name != "" ? Bypass.text.adapter-desc + " (" + item.adapter-name + ")" : Bypass.text.adapter-desc;
@@ -2577,7 +2610,7 @@ component SettingsBypass inherits VerticalLayout {
                 AppButton {
                     text: Bypass.text.remove;
                     icon: @image-url("icons/delete.svg");
-                    enabled: !Bypass.working && item.in-use == 0 && (item.name != "" || item.ready);
+                    enabled: !Bypass.working && item.in-use == 0;
                     clicked => { Bypass.remove(item.name); }
                 }
                 AppButton {
@@ -2589,23 +2622,168 @@ component SettingsBypass inherits VerticalLayout {
             }
         }
     }
+}
+
+// The home page (proxydock-ui.rs fills it from the cards and the statistics)
+export struct HomeText {
+    title-on: string, title-off: string, sub-on: string, sub-off: string, status: string, running: string,
+    errors: string, cards: string, used-by: string, traffic: string, down: string, up: string, vms: string, vms-none: string,
+    vms-open: string, vm-running: string, vm-idle: string, vm-off: string, vm-not-ready: string,
+}
+export global Home {
+    in property <HomeText> text;
+    // any card running
+    in property <bool> on;
+    in property <int> running;
+    in property <int> errors;
+    in property <int> total;
+    // under the count: the errors, or "running"
+    in property <string> status-sub;
+    in property <string> down-rate;
+    in property <string> up-rate;
+    in property <string> down-total;
+    in property <string> up-total;
+    callback power(bool);
+}
+
+// the big switch of the home page (AdGuard-like): a wide track and a round knob with a mark
+component PowerSwitch inherits Rectangle {
+    in property <bool> on;
+    callback toggled(bool);
+    width: 128px;
+    height: 64px;
+    Rectangle {
+        y: 12px;
+        height: 40px;
+        border-radius: 20px;
+        background: root.on ? M3.primary : M3.surface-container-highest;
+        animate background { duration: 200ms; }
+    }
+    Rectangle {
+        x: root.on ? root.width - self.width : 0px;
+        width: 64px;
+        height: 64px;
+        border-radius: 32px;
+        background: root.on ? #ffffff : M3.surface-container-high;
+        drop-shadow-blur: 8px;
+        drop-shadow-color: #00000040;
+        animate x { duration: 220ms; easing: cubic-bezier(0.2, 0, 0, 1); }
+        Image {
+            width: 28px;
+            height: 28px;
+            source: root.on ? @image-url("icons/check.svg") : @image-url("icons/power_settings_new.svg");
+            colorize: root.on ? M3.primary : M3.on-surface-variant;
+        }
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.toggled(!root.on); }
+    }
+    accessible-role: switch;
+    accessible-checked: root.on;
+}
+
+component HomeCard inherits Rectangle {
+    in property <string> title;
+    in property <string> value;
+    in property <string> sub;
+    in property <bool> link;
+    callback clicked();
+    border-radius: 20px;
+    background: ta.has-hover && root.link ? M3.surface-container : M3.surface-container-low;
+    min-height: 92px;
+    preferred-width: 100px;
+    horizontal-stretch: 1;
+    VerticalLayout {
+        padding: 16px;
+        padding-left: 20px;
+        spacing: 2px;
+        alignment: center;
+        Text { text: root.title; font-size: 12px * Type.scale; color: M3.on-surface-variant; overflow: elide; }
+        Text { text: root.value; font-size: 22px * Type.scale; font-weight: 700; color: M3.on-surface; overflow: elide; }
+        if root.sub != "": Text { text: root.sub; font-size: 12px * Type.scale; color: M3.on-surface-variant; overflow: elide; }
+    }
+    ta := TouchArea {
+        enabled: root.link;
+        mouse-cursor: root.link ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+}
+
+component HomePage inherits VerticalLayout {
+    callback open-page(int);
+    callback open-vms();
+    spacing: 16px;
+    alignment: start;
+    Rectangle { height: 24px; }
+    VerticalLayout {
+        spacing: 10px;
+        alignment: center;
+        HorizontalLayout {
+            alignment: center;
+            PowerSwitch {
+                on: Home.on;
+                toggled(v) => { Home.power(v); }
+            }
+        }
+        Text {
+            text: Home.on ? Home.text.title-on : Home.text.title-off;
+            font-size: 32px * Type.scale;
+            font-weight: 700;
+            color: M3.on-surface;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: Home.on ? Home.text.sub-on : Home.text.sub-off;
+            font-size: 14px * Type.scale;
+            color: M3.on-surface-variant;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+    }
+    Rectangle { height: 8px; }
+    HorizontalLayout {
+        spacing: 12px;
+        HomeCard {
+            title: Home.text.status;
+            value: Home.running + " / " + Home.total;
+            sub: Home.status-sub;
+            link: true;
+            clicked => { root.open-page(1); }
+        }
+        HomeCard {
+            title: Home.text.down;
+            value: Home.down-rate;
+            sub: Home.down-total;
+            link: true;
+            clicked => { root.open-page(5); }
+        }
+        HomeCard {
+            title: Home.text.up;
+            value: Home.up-rate;
+            sub: Home.up-total;
+            link: true;
+            clicked => { root.open-page(5); }
+        }
+    }
     SettingsSection {
-        title: Bypass.text.add-title;
-        SettingField {
-            label: Bypass.text.add-title;
-            desc: Bypass.text.add-desc;
-            HorizontalLayout {
-                spacing: 8px;
-                new-name := AppLineEdit { placeholder-text: Bypass.text.name-hint; }
-                AppButton {
-                    text: Bypass.text.add;
-                    icon: @image-url("icons/add.svg");
-                    enabled: new-name.text != "";
-                    clicked => {
-                        Bypass.add(new-name.text);
-                        new-name.text = "";
-                    }
-                }
+        title: Home.text.vms;
+        if Bypass.items.length == 0: SettingRow {
+            label: Home.text.vms-none;
+            AppButton {
+                text: Home.text.vms-open;
+                clicked => { root.open-vms(); }
+            }
+        }
+        for item in Bypass.items: SettingRow {
+            label: item.label;
+            desc: !item.ready ? Home.text.vm-not-ready : !item.enabled ? Home.text.vm-off
+                : item.running ? Home.text.vm-running + (item.in-use > 0 ? " · " + Home.text.used-by + " " + item.in-use : "")
+                : Home.text.vm-idle;
+            AppSwitch {
+                enabled: item.ready && Bypass.available && !Bypass.working;
+                checked: item.enabled && item.ready;
+                toggled => { Bypass.set-enabled(item.name, self.checked); }
             }
         }
     }
@@ -4163,6 +4341,7 @@ export component App inherits Window {
     in property <string> t-proxy: "Proxy";
     in property <string> t-logs: "Logs";
     in property <string> t-stats: "Statistics";
+    in property <string> t-home: "Home";
     in property <string> t-help: "How to use";
     in property <string> t-about: "About";
     in property <string> t-conn: "Connection test";
@@ -4206,7 +4385,7 @@ export component App inherits Window {
     callback log-clear();
 
     // settings and the app's help, about and licences: one page, a category list on the left
-    property <bool> in-settings: root.page == 4 || root.page >= 7;
+    property <bool> in-settings: root.page == 4 || (root.page >= 7 && root.page <= 9);
     in-out property <int> settings-cat: 0;
     property <[SettingsCat]> cats: [
         { label: Settings.text.title, header: true, show: true },
@@ -4218,7 +4397,7 @@ export component App inherits Window {
         { label: Settings.text.fonts, icon: @image-url("icons/text_fields.svg"), page: 4, cat: 5, show: true },
         { label: Settings.text.engine, icon: @image-url("icons/memory.svg"), page: 4, cat: 6, show: true },
         { label: Settings.text.logs, icon: @image-url("icons/receipt_long.svg"), page: 4, cat: 7, show: true },
-        { label: Bypass.text.title, icon: @image-url("icons/alt_route.svg"), page: 4, cat: 8, show: Settings.windows },
+        { label: Bypass.text.title, icon: @image-url("icons/alt_route.svg"), page: 4, cat: 8, show: true },
         { label: "ProxyDock", header: true, show: true },
         { label: root.t-help, icon: @image-url("icons/help.svg"), page: 7, show: true },
         { label: root.t-about, icon: @image-url("icons/info.svg"), page: 8, show: true },
@@ -4226,7 +4405,7 @@ export component App inherits Window {
     ];
     property <string> page-title: root.page == 0 ? root.t-canvas : root.page == 1 ? root.t-proxy : root.page == 2 ? root.t-logs
         : root.page == 3 ? root.form-title : root.page == 4 ? root.cats[root.settings-cat + 1].label
-        : root.page == 5 ? Stats.title : root.page == 6 ? Conn.title
+        : root.page == 5 ? Stats.title : root.page == 6 ? Conn.title : root.page == 10 ? root.t-home
         : root.page == 7 ? root.cats[11].label : root.page == 8 ? root.cats[12].label : root.page == 9 ? root.cats[13].label : "";
     // the title bar (M3 small top app bar): 64 high, the page's title (Title Large), its actions on the right
     out property <length> bar-h: max(64px, 22px * Type.scale * 2.4);
@@ -4287,6 +4466,12 @@ export component App inherits Window {
             padding-top: 12px;
             padding-bottom: 12px;
             spacing: 4px;
+            RailItem {
+                icon: @image-url("icons/home.svg");
+                label: root.t-home;
+                active: root.page == 10;
+                clicked => { root.page = 10; }
+            }
             RailItem {
                 icon: @image-url("icons/account_tree.svg");
                 label: root.t-canvas;
@@ -4891,6 +5076,19 @@ export component App inherits Window {
                                 content: form-scroll.content-height;
                                 view: form-scroll.visible-height;
                                 fade-color: M3.surface;
+                            }
+                        }
+                    }
+                    home-scroll := ScrollView {
+                        visible: root.page == 10;
+                        width: min(parent.width, root.content-max);
+                        x: (parent.width - self.width) / 2;
+                        HomePage {
+                            width: home-scroll.visible-width - 16px;
+                            open-page(p) => { root.page = p; }
+                            open-vms => {
+                                root.page = 4;
+                                root.settings-cat = 8;
                             }
                         }
                     }

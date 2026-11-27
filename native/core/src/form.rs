@@ -34,17 +34,13 @@ pub fn iface_unrouted(name: &str) -> bool {
 /// internet route), and the saved one when it is not up now (Python `_fill_ifaces`)
 fn iface_choices(current: &str) -> Kind {
     let mut o = vec![(String::new(), tr("Automatic"))];
-    // the VPN bypass VMs (Windows: Hyper-V), the shared one always offered
-    if cfg!(windows) {
+    // the Direct line VMs the user made (Windows: Hyper-V, Linux: a network namespace, macOS: a small VM)
+    {
         let store = crate::bypass::Store::load();
-        let mut names: Vec<String> = store.instances.iter().map(|i| i.name.clone()).collect();
-        if !names.contains(&String::new()) {
-            names.insert(0, String::new());
-        }
-        for n in names {
-            let mut label = tr("Outside the VPN ({name})").replace("{name}", &crate::bypass::label(&n));
+        for n in store.instances.iter().map(|i| i.name.clone()) {
+            let mut label = tr("Direct line ({name})").replace("{name}", &crate::bypass::label(&n));
             if !store.get(&n).is_some_and(|i| i.consented()) {
-                label += &format!(" · ⚠ {}", tr("set up in Settings > VPN bypass"));
+                label += &format!(" · ⚠ {}", tr("set up in Settings > Direct line"));
             }
             o.push((crate::bypass::iface_for(&n), label));
         }
@@ -58,7 +54,7 @@ fn iface_choices(current: &str) -> Kind {
     }
     if !current.is_empty() && !o.iter().any(|(v, _)| v == current) {
         let shown = match crate::bypass::instance_of(current) {
-            Some(n) => tr("Outside the VPN ({name})").replace("{name}", &crate::bypass::label(&n)),
+            Some(n) => tr("Direct line ({name})").replace("{name}", &crate::bypass::label(&n)),
             None => current.to_string(),
         };
         o.push((current.to_string(), tr("{name} (not connected)").replace("{name}", &shown)));
@@ -599,17 +595,31 @@ pub fn outbound_form(g: &Obj, node: &Value) -> Vec<Field> {
         ot == "direct",
     );
     let iface_shown = !matches!(ot, "block" | "group") && !has_via;
-    b.add("interface", "Network interface", "Leave through this network card, e.g. Tailscale, WireGuard, a VPN app or Wi-Fi, without changing the PC's routes. Needs the sing-box engine.", iface_choices(&st("interface")), iface_shown).rerender = true;
+    let iface_desc = "Leave through this network card, e.g. Tailscale, WireGuard, a VPN app or Wi-Fi, without changing the PC's routes. Needs the sing-box engine.";
+    let f = b.add("interface", "Network interface", iface_desc, iface_choices(&st("interface")), iface_shown);
+    f.rerender = true;
+    // a Direct line VM: the warning under the field's description (wrapped, not in a box)
+    if crate::bypass::Store::load().instances.is_empty() {
+        f.desc = format!(
+            "{}
+
+{}",
+            tr(iface_desc),
+            tr("Direct line: make a VM in Settings > Direct line, then pick it here.")
+        );
+    }
+    if crate::bypass::instance_of(&st("interface")).is_some() {
+        f.desc = format!(
+            "{}
+
+⚠ {}",
+            tr(iface_desc),
+            tr(
+                "This exit goes straight out through the network card, past any VPN, TUN or other app holding this PC's network: the sites it reaches and your internet provider see your real IP address, and a VPN's kill switch and DNS protection do not apply to it."
+            )
+        );
+    }
     b.push(field("iface.refresh", "Refresh the list", "", Kind::Button, json!(null), iface_shown));
-    let bypass_note = iface_shown && crate::bypass::instance_of(&st("interface")).is_some();
-    b.push(field(
-        "bypass_note",
-        "Outside the VPN",
-        "",
-        Kind::Info,
-        json!(tr("This exit leaves outside the VPN running on this PC: the sites it reaches and your internet provider see your real IP address, and the VPN's kill switch and DNS protection do not apply to it.")),
-        bypass_note,
-    ));
     let user_shown = matches!(ot, "http" | "https" | "socks4" | "socks5");
     b.add("username", "Upstream proxy account", "", Kind::Text, user_shown);
     b.add(

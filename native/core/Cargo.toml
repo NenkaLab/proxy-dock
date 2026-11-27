@@ -33,7 +33,16 @@ windows-sys = { version = "0.61", features = [
     "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_System_Diagnostics_ToolHelp",
 ] }
 
+# the Direct line on macOS: Virtualization.framework (vmnet and xpc are plain C, declared in bypass/macos.rs)
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-virtualization = "0.3"
+block2 = "0.6"
+dispatch2 = "0.3"
+
 [target."cfg(not(windows))".dependencies]
 flate2 = "1.1.11"
 tar = "0.4.46"
+libc = "0.2"
 

@@ -74,6 +74,7 @@ fn env(dir: &std::path::Path) -> EngineEnv {
         exclude_paths: vec![],
         helper: None,
         bypass: vec![],
+        app_on: true,
     }
 }
 

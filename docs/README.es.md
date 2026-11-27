@@ -35,6 +35,11 @@ p. ej. un servidor Shadowsocks), y cada tarjeta se enciende o se apaga.
 - **Proxy del sistema**: usar una tarjeta como proxy del sistema de Windows mientras funciona
 - **Herramientas de uso diario**: enlaces para compartir, pruebas de conexión, registros y estadísticas en vivo,
   8 idiomas, bandeja
+- **Línea directa**: los bloques elegidos salen directamente por una tarjeta de red, saltándose una VPN, un TUN o
+  cualquier app que tome la red de todo el PC, sin su túnel dividido (Windows: una pequeña VM de Hyper-V; Linux: un
+  espacio de nombres de red; macOS: una pequeña VM, aún sin probar)
+- **Inicio**: un interruptor para toda la app (apagado rechaza toda conexión, un kill switch; cada tarjeta mantiene
+  su propio encendido / apagado), el estado de las tarjetas, el tráfico en vivo y las VM de línea directa
 
 Los proxies funcionan con [sing-box](https://github.com/SagerNet/sing-box), incluido en la versión publicada.
 
@@ -67,6 +72,21 @@ Comprobaciones antes de publicar: [TESTING.md](../TESTING.md) (en coreano).
 - Linux: el proxy del sistema (bloque PC) solo se configura en GNOME y KDE; las notificaciones necesitan `notify-send`.
 - TUN todavía no se ha probado en equipos reales.
 - SOCKS4 no tiene contraseña: úsalo solo en este PC.
+- Línea directa: en Windows necesita Hyper-V (Pro, Enterprise o Education) y permisos de administrador; cada VM
+  aparece en tu router como un dispositivo nuevo (sus propias direcciones MAC e IP), y un proveedor que da una sola
+  dirección por línea puede no darle ninguna. Su tráfico muestra tu IP real y ninguna VPN lo protege: eres
+  responsable de usarla (la app pide tu consentimiento antes de crear una VM).
+- Línea directa en Linux: probada solo en un contenedor (un espacio de nombres de red con macvlan; el Wi-Fi usa
+  ipvlan, donde DHCP puede no funcionar: usa una dirección fija). Necesita `ip` (iproute2) y root mediante pkexec.
+- Línea directa en macOS (Apple Silicon): escrita y comprobada en tipos, pero **aún sin probar en ningún Mac**
+  (Virtualization.framework con una interfaz vmnet en puente; el asistente debe ejecutarse como root).
+
+## Contribuir
+
+Si corregiste o mejoraste algo – un error, una plataforma aún sin probar (macOS, Linux), una traducción –, envía un
+pull request. Hecho a mano o con una herramienta de IA, da igual, pero compruébalo antes de enviarlo: compílalo,
+ejecuta las pruebas (`cargo test --workspace` en `native/`) y prueba el cambio en la app, en una máquina real cuando
+importe. Indica en el pull request qué comprobaste y cómo.
 
 ## Licencia
 

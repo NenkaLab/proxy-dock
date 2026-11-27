@@ -373,6 +373,11 @@ impl HyEngine {
         Ok(hy)
     }
 
+    /// ProxyDock's switch: the inner sing-box refuses what the Hysteria2 core hands it
+    pub fn set_app_on(&self, on: bool) -> Result<(), String> {
+        self.inner.set_app_on(on)
+    }
+
     pub fn stats(&self) -> Stats {
         let mut s = self.inner.stats();
         s.blocked += self.shared.blocked.load(Ordering::Relaxed);

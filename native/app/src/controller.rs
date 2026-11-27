@@ -113,6 +113,8 @@ pub struct Quick {
     pub switches: Vec<(String, String, bool)>,
     /// groups that use the member picked by hand: (id, name, [(member id, name)], the member in use)
     pub groups: Vec<QuickGroup>,
+    /// ProxyDock's own switch (home page)
+    pub app_on: bool,
 }
 
 /// a card as the tray menu shows it
@@ -279,6 +281,8 @@ pub fn spawn_with(config_path: PathBuf, hooks: Hooks) -> std::io::Result<Handle>
         quick: quick.clone(),
         firewall: None,
         bypass_reason: Some(String::new()),
+        bypass_checked: false,
+        app_on: true,
         bypass_adapters: vec![],
         bypass_working: false,
         bypass_progress: String::new(),
@@ -360,6 +364,10 @@ struct Controller {
     /// VPN bypass (Settings > VPN bypass): why it cannot run here (None = it can), the physical network cards,
     /// a VM being prepared / removed and what it is doing
     bypass_reason: Option<String>,
+    /// the first check after startup is done (kept-on VMs start once)
+    bypass_checked: bool,
+    /// ProxyDock's own switch (home page): off = every card refuses all connections
+    app_on: bool,
     bypass_adapters: Vec<String>,
     bypass_working: bool,
     bypass_progress: String,
@@ -580,17 +588,14 @@ impl Controller {
             "firewall": self.firewall,
             "log_dir": self.log_dir().display().to_string(),
             "bypass": self.bypass_json(),
+            "app_on": self.app_on,
         })
     }
 
-    /// Settings > VPN bypass: the instances (the shared one always first), the choices and what is going on
+    /// Settings > Direct line: the VMs the user made, the choices and what is going on
     fn bypass_json(&self) -> Value {
         use proxydock_core::bypass;
-        let mut store = bypass::Store::load();
-        if store.get("").is_none() {
-            let adapter = self.bypass_adapters.first().cloned().unwrap_or_default();
-            store.put(bypass::Instance::new("", &adapter));
-        }
+        let store = bypass::Store::load();
         // (the hub is busy while a VM starts: the counts are left out then)
         let hub = bypass::hub::hub().try_lock().ok();
         let items: Vec<Value> = store
@@ -600,8 +605,9 @@ impl Controller {
                 json!({
                     "name": i.name, "label": bypass::label(&i.name), "adapter": i.adapter,
                     "memory_mb": i.memory_mb, "ip_mode": i.ip_mode, "address": i.address, "gateway": i.gateway,
-                    "dns": i.dns, "ready": i.consented(),
+                    "dns": i.dns, "ready": i.consented(), "enabled": i.enabled,
                     "in_use": hub.as_ref().map_or(0, |h| h.in_use(&i.name)),
+                    "running": hub.as_ref().is_some_and(|h| h.running(&i.name)),
                 })
             })
             .collect();
@@ -619,19 +625,48 @@ impl Controller {
 
     /// whether Hyper-V is there and the physical network cards, asked in the background
     fn refresh_bypass(&mut self) {
-        if !proxydock_core::platform::supported() {
-            self.bypass_reason = Some(tr("Only on Windows for now"));
-            return;
-        }
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let reason = proxydock_core::bypass::availability().err();
             let adapters = proxydock_core::bypass::physical_adapters();
             let _ = tx.send(Msg::Work(Box::new(move |c: &mut Controller| {
+                let first = !c.bypass_checked;
+                c.bypass_checked = true;
+                let ok = reason.is_none();
                 c.bypass_reason = reason;
                 c.bypass_adapters = adapters;
                 c.send_settings();
+                if first && ok {
+                    c.start_kept_vms();
+                }
             })));
+        });
+    }
+
+    /// At startup, with "Keep the VMs running" on: the VMs that are switched on start (they would otherwise wait
+    /// for a card; off, no administrator prompt comes at startup)
+    fn start_kept_vms(&mut self) {
+        use proxydock_core::bypass;
+        let store = bypass::Store::load();
+        if !store.keep_running {
+            return;
+        }
+        let names: Vec<String> =
+            store.instances.iter().filter(|i| i.enabled && i.consented()).map(|i| i.name.clone()).collect();
+        if names.is_empty() {
+            return;
+        }
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            for n in names {
+                let r = bypass::hub::hub().lock().unwrap().hold(&n);
+                let _ = tx.send(Msg::Work(Box::new(move |c: &mut Controller| {
+                    if let Err(e) = r {
+                        c.app_log(Level::Error, &format!("{}: {e}", bypass::label(&n)));
+                    }
+                    c.send_settings();
+                })));
+            }
         });
     }
 
@@ -653,18 +688,90 @@ impl Controller {
                 self.refresh_bypass();
                 return;
             }
+            // the VM's own switch: on = started now and usable; off = its cards stop, then the VM
+            "bypass_enable" => {
+                let on = v["on"] == json!(true);
+                if self.bypass_working || store.get(&name).is_none() {
+                    return;
+                }
+                inst.enabled = on;
+                store.put(inst.clone());
+                if let Err(e) = store.save() {
+                    return error(self, format!("{}: {e}", tr("Save failed")));
+                }
+                let label = bypass::label(&name);
+                let users: Vec<String> = self
+                    .proxies
+                    .iter()
+                    .filter(|p| bypass::instances_in(p).contains(&name))
+                    .filter_map(|p| p["id"].as_str().map(String::from))
+                    .filter(|id| matches!(self.manager.state(id), State::Running | State::Starting))
+                    .collect();
+                if !on {
+                    for id in &users {
+                        self.restart_at.remove(id);
+                    }
+                }
+                self.bypass_working = true;
+                self.bypass_progress =
+                    tr(if on { "Starting the VM \"{name}\"..." } else { "Stopping the VM \"{name}\"..." })
+                        .replace("{name}", &label);
+                self.send_settings();
+                let remote = self.manager.remote();
+                let tx = self.tx.clone();
+                std::thread::spawn(move || {
+                    let r = if on {
+                        bypass::hub::hub().lock().unwrap().hold(&name)
+                    } else {
+                        for id in &users {
+                            let _ = remote.stop(id).recv();
+                        }
+                        bypass::hub::hub().lock().unwrap().force_stop(&name);
+                        Ok(())
+                    };
+                    let _ = tx.send(Msg::Work(Box::new(move |c: &mut Controller| {
+                        c.bypass_working = false;
+                        c.bypass_progress = String::new();
+                        match r {
+                            Ok(()) => {
+                                let m = tr(if on {
+                                    "Direct line VM \"{name}\" switched on"
+                                } else {
+                                    "Direct line VM \"{name}\" switched off"
+                                })
+                                .replace("{name}", &label);
+                                c.app_log(Level::Setting, &m);
+                                if !on && !users.is_empty() {
+                                    let m =
+                                        tr("Stopped {n} cards that use it").replace("{n}", &users.len().to_string());
+                                    c.app_log(Level::Setting, &m);
+                                }
+                            }
+                            Err(e) => {
+                                c.app_log(Level::Error, &format!("{label}: {e}"));
+                                c.broadcast(&json!({"ev": "error", "message": e}));
+                            }
+                        }
+                        c.send_settings();
+                    })));
+                });
+                return;
+            }
             "bypass_keep" => {
                 store.keep_running = v["on"] == json!(true);
             }
             "bypass_add" => {
-                if name.is_empty() || store.get(&name).is_some() {
+                if name.is_empty() {
+                    return error(self, tr("A name: up to 24 letters, digits, spaces, - or _"));
+                }
+                if store.get(&name).is_some() {
                     return error(self, tr("That name is already used"));
                 }
                 store.put(inst);
             }
             "bypass_set" => {
                 if self.bypass_working || bypass::hub::hub().try_lock().map_or(true, |h| h.in_use(&name) > 0) {
-                    return error(self, tr("Stop the cards that use this VPN bypass first"));
+                    return error(self, tr("Stop the cards that use this direct line first"));
                 }
                 if let Some(a) = v["adapter"].as_str() {
                     inst.adapter = a.to_string();
@@ -692,9 +799,12 @@ impl Controller {
                 if self.bypass_working {
                     return;
                 }
+                if store.get(&name).is_none() {
+                    return error(self, tr("Add the VM first"));
+                }
                 if v["consent"] == json!(true) {
                     inst.consent = Some(Consent { time: unix_now(), adapter: inst.adapter.clone() });
-                    let msg = tr("VPN bypass: consent given for \"{name}\" on {adapter}")
+                    let msg = tr("Direct line: consent given for \"{name}\" on {adapter}")
                         .replace("{name}", &bypass::label(&name))
                         .replace("{adapter}", &inst.adapter);
                     self.app_log(Level::Setting, &msg);
@@ -730,10 +840,10 @@ impl Controller {
                         match r {
                             Ok(_) => c.app_log(
                                 Level::Setting,
-                                &tr("VPN bypass \"{name}\" is ready").replace("{name}", &label),
+                                &tr("Direct line \"{name}\" is ready").replace("{name}", &label),
                             ),
                             Err(e) => {
-                                let m = tr("VPN bypass \"{name}\" could not be prepared: {e}")
+                                let m = tr("Direct line \"{name}\" could not be prepared: {e}")
                                     .replace("{name}", &label)
                                     .replace("{e}", &e);
                                 c.app_log(Level::Error, &m);
@@ -750,12 +860,7 @@ impl Controller {
                     return;
                 }
                 let had_vm = inst.consent.is_some();
-                if name.is_empty() {
-                    inst.consent = None;
-                    store.put(inst);
-                } else {
-                    store.remove(&name);
-                }
+                store.remove(&name);
                 if let Err(e) = store.save() {
                     return error(self, format!("{}: {e}", tr("Save failed")));
                 }
@@ -769,7 +874,7 @@ impl Controller {
                             c.bypass_working = false;
                             c.bypass_progress = String::new();
                             if let Err(e) = r {
-                                c.app_log(Level::Error, &format!("{}: {e}", tr("VPN bypass")));
+                                c.app_log(Level::Error, &format!("{}: {e}", tr("Direct line")));
                             }
                             c.send_settings();
                         })));
@@ -1248,6 +1353,8 @@ impl Controller {
                 self.app_log(Level::Setting, &msg);
                 self.graph_changed();
             }
+            // ProxyDock's own switch, from the tray menu
+            "home_power" => self.home_power(on),
             // Python `firewall`: the rule changes through UAC, in the background
             "firewall" => {
                 if self.fw_busy || !platform::supported() {
@@ -1580,6 +1687,8 @@ impl Controller {
         if self.glob["singbox_latest"] == json!(true) {
             self.update_latest_singbox();
         }
+        // (before the cards start: off, they start refusing)
+        self.load_app_on();
         let auto: Vec<Value> = self.proxies.iter().filter(|p| p["autostart"] == json!(true)).cloned().collect();
         for p in auto {
             let _ = self.manager.start(&p, &self.glob);
@@ -2399,7 +2508,7 @@ impl Controller {
                 Some((st(&n["id"]), st(&n["name"]), members, cur))
             })
             .collect();
-        *self.quick.lock().unwrap() = Quick { switches, groups };
+        *self.quick.lock().unwrap() = Quick { switches, groups, app_on: self.app_on };
         *self.cards.lock().unwrap() = self
             .proxies
             .iter()
@@ -2559,9 +2668,9 @@ impl Controller {
             }
             "startup" | "startup_hidden" | "pc_off" | "pc_restore" | "firewall" | "set_switch" | "set_flag"
             | "select_member" => self.platform_command(v),
-            "bypass_refresh" | "bypass_keep" | "bypass_add" | "bypass_set" | "bypass_prepare" | "bypass_remove" => {
-                self.bypass_command(v)
-            }
+            "bypass_refresh" | "bypass_keep" | "bypass_add" | "bypass_set" | "bypass_prepare" | "bypass_remove"
+            | "bypass_enable" => self.bypass_command(v),
+            "home_power" => self.home_power(v["on"] == json!(true)),
             // "Restart now" (a new app scale: the window opens again) / the whole app
             "restart" => {
                 let app = v["app"] == json!(true);
@@ -2609,6 +2718,38 @@ impl Controller {
             _ => {
                 let _ = self.manager.start(&p, &self.glob);
             }
+        }
+    }
+
+    /// ProxyDock's own switch (the home page): off = every card refuses all connections while keeping its own
+    /// on / off (a kill switch for the whole app), on = back to normal. Kept in home.json for the next start.
+    fn home_power(&mut self, on: bool) {
+        if self.app_on == on {
+            return;
+        }
+        self.app_on = on;
+        self.quick.lock().unwrap().app_on = on;
+        let path = self.config_path.with_file_name("home.json");
+        let _ = std::fs::write(&path, json!({"app_on": on}).to_string());
+        let _ = self.manager.set_app_on(on);
+        self.app_log(
+            Level::Setting,
+            &tr(if on { "ProxyDock switched on" } else { "ProxyDock switched off: every connection is refused" }),
+        );
+        self.send_settings();
+    }
+
+    /// the switch as home.json says (on when there is none)
+    fn load_app_on(&mut self) {
+        let path = self.config_path.with_file_name("home.json");
+        self.app_on = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .and_then(|v| v["app_on"].as_bool())
+            .unwrap_or(true);
+        self.quick.lock().unwrap().app_on = self.app_on;
+        if !self.app_on {
+            let _ = self.manager.set_app_on(false);
         }
     }
 
@@ -2964,6 +3105,15 @@ impl Controller {
             .replace("{fmt_rate2}", &format!("{}/s", proxydock_core::log::fmt_size(up)))
             .replace("{fmt_rate}", &format!("{}/s", proxydock_core::log::fmt_size(down)))
             .replace("{value}", &conns.to_string());
+        let tip = if self.app_on {
+            tip
+        } else {
+            format!(
+                "{tip}
+{}",
+                tr("ProxyDock is off")
+            )
+        };
         if tip != self.tooltip {
             (self.hooks.tooltip)(&tip);
             self.tooltip = tip;

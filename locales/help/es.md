@@ -28,15 +28,15 @@
 | ← → | Bloque anterior / siguiente por las líneas |
 | ↑ ↓ | Bloque de arriba / abajo (tras ← →, la otra opción si hay varias) |
 
-## Evitar la VPN (Windows)
+## Línea directa
 
-Aunque haya una VPN activa en todo el PC, un bloque puede salir fuera de ella: pon su **Interfaz de red** en **Fuera de la VPN**. Una pequeña máquina virtual Hyper-V conectada directamente a una tarjeta de red lleva ese tráfico (**Ajustes > Evitar la VPN**: tarjeta de red, memoria, dirección; **Crear** pide primero tu consentimiento). Requiere Windows Pro, Enterprise o Education con Hyper-V activado.
+Aunque haya una VPN activa en todo el PC, un bloque puede salir fuera de ella: pon su **Interfaz de red** en **Línea directa**. Una pequeña máquina virtual Hyper-V conectada directamente a una tarjeta de red lleva ese tráfico (**Ajustes > Línea directa**: tarjeta de red, memoria, dirección; **Crear** pide primero tu consentimiento). Windows: Hyper-V (Pro, Enterprise o Education). Linux: sin VM, un espacio de nombres de red (`ip` y root mediante pkexec). macOS (Apple Silicon): aún sin probar en un Mac.
 
 Ese tráfico muestra tu IP real, y el kill switch y la protección DNS de la VPN no se aplican; con una VPN de empresa o centro educativo puede incumplir sus normas. Eres responsable de lo que resulte de activarlo.
 
-## Evitar la VPN (Windows)
+## Línea directa (Windows)
 
-Aunque haya una VPN activa en todo el PC, un bloque puede salir fuera de ella: pon su **Interfaz de red** en **Fuera de la VPN**. Una pequeña máquina virtual Hyper-V conectada directamente a una tarjeta de red lleva ese tráfico (**Ajustes > Evitar la VPN**: tarjeta de red, memoria, dirección; **Crear** pide primero tu consentimiento). Requiere Windows Pro, Enterprise o Education con Hyper-V activado.
+Aunque haya una VPN activa en todo el PC, un bloque puede salir fuera de ella: pon su **Interfaz de red** en **Línea directa**. Una pequeña máquina virtual Hyper-V conectada directamente a una tarjeta de red lleva ese tráfico (**Ajustes > Línea directa**: tarjeta de red, memoria, dirección; **Crear** pide primero tu consentimiento). Requiere Windows Pro, Enterprise o Education con Hyper-V activado.
 
 Ese tráfico muestra tu IP real, y el kill switch y la protección DNS de la VPN no se aplican; con una VPN de empresa o centro educativo puede incumplir sus normas. Eres responsable de lo que resulte de activarlo.
 

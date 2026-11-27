@@ -1,18 +1,24 @@
 #!/bin/sh
-# /init of the VPN-bypass VM (initramfs). Loads the few drivers that are modules, mounts the read-only squashfs
-# with sing-box from the second partition and keeps pd-agent running.
+# /init of the Direct line VM (initramfs). Loads the few drivers that are modules, mounts the read-only squashfs
+# with sing-box (Hyper-V: the disk's second partition; macOS Virtualization.framework: a disk of its own) and
+# keeps pd-agent running.
 export PATH=/sbin:/bin:/usr/sbin:/usr/bin
 mkdir -p /proc /sys /dev
 mount -t proc proc /proc
 mount -t sysfs sys /sys
 mount -t devtmpfs dev /dev
 mkdir -p /tmp /run/proxydock /opt
-for m in hv_utils af_packet vsock hv_sock hv_storvsc sd_mod squashfs; do modprobe -q "$m"; done
+# (the ones a build does not have are skipped: Hyper-V's on arm64, virtio's on x64)
+for m in hv_utils af_packet vsock hv_sock hv_storvsc sd_mod virtio_net virtio_blk vmw_vsock_virtio_transport squashfs; do
+    modprobe -q "$m"
+done
 ip link set lo up
 # the disk shows up asynchronously
 i=0
-while [ ! -b /dev/sda2 ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
-mount -t squashfs -o ro /dev/sda2 /opt || echo "pd-init: cannot mount /dev/sda2" > /dev/console
+while [ ! -b /dev/sda2 ] && [ ! -b /dev/vda ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+OPT=/dev/sda2
+[ -b /dev/sda2 ] || OPT=/dev/vda
+mount -t squashfs -o ro "$OPT" /opt || echo "pd-init: cannot mount $OPT" > /dev/console
 export PD_SINGBOX=/opt/sing-box
 while true; do
     /sbin/pd-agent 2> /dev/console

@@ -4,8 +4,8 @@ name: Release
 # with the Windows installer and zip, the Linux AppImage and tar.gz, the macOS .dmg and zip, and SHA-256 checksums
 # (tools/build_rust.py; the same file names as the Python app's). The version is native/Cargo.toml's
 # ([workspace.package]); the tag must match it. "Run workflow" builds without releasing.
-# The VPN bypass VM image (tools/build_bypass_image.py, Docker) goes into the same release: the app downloads it
-# the first time a VM is prepared.
+# The Direct line VM images (tools/build_bypass_image.py, Docker: x64 for Windows Hyper-V, arm64 for macOS) go into
+# the same release: the app downloads its own the first time a VM is prepared. (Linux needs none.)
 # (The Python app up to 2.6.0 is on the `old` branch, with its own release workflow.)
 on:
   push:
@@ -107,15 +107,22 @@ jobs:
         with:
           python-version: "3.14"
 
-      - name: Image (pd-agent tests first)
-        run: python tools/build_bypass_image.py --test
+      # (arm64 for macOS is built under emulation)
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Images (pd-agent tests first)
+        run: |
+          python tools/build_bypass_image.py --arch x64 --test
+          python tools/build_bypass_image.py --arch arm64
 
       - uses: actions/upload-artifact@v4
         with:
           name: proxydock-bypass
           path: |
-            dist/bypass/proxydock-bypass-x64.zip
-            dist/bypass/proxydock-bypass-x64.zip.sha256
+            dist/bypass/proxydock-bypass-*.zip
+            dist/bypass/proxydock-bypass-*.zip.sha256
           retention-days: 1
           if-no-files-found: error
 

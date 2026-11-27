@@ -92,6 +92,7 @@ fn main() {
             rulesets: &rulesets,
             exclude_paths: &exclude,
             bypass: &[],
+            app_switch: None,
         };
         let entry = match sb::build(&p, &cfg, &env) {
             Ok((mut conf, reasons)) => {

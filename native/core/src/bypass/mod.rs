@@ -16,6 +16,10 @@ pub mod helper;
 pub mod hub;
 #[cfg(windows)]
 pub mod hvsock;
+#[cfg(target_os = "linux")]
+pub mod linux;
+#[cfg(target_os = "macos")]
+pub mod macos;
 
 use crate::i18n::tr;
 use serde_json::{Value, json};
@@ -29,9 +33,11 @@ pub const DEFAULT_MEMORY_MB: u32 = 200;
 /// Hyper-V socket ports of pd-agent in the VM
 pub const CONTROL_PORT: u32 = 20548;
 pub const DATA_PORT: u32 = 20549;
-/// the image of this ProxyDock's release (`tools/build_bypass_image.py`)
+/// the guest of this ProxyDock's release (`tools/build_bypass_image.py`): Windows a Hyper-V disk in a zip, macOS
+/// (Apple silicon) kernel + initramfs + squashfs in a zip; Linux needs none
 pub const IMAGE_NAME: &str = "proxydock-bypass-x64.vhdx";
-pub const IMAGE_ZIP: &str = "proxydock-bypass-x64.zip";
+pub const IMAGE_ZIP: &str =
+    if cfg!(target_os = "macos") { "proxydock-bypass-arm64.zip" } else { "proxydock-bypass-x64.zip" };
 
 /// the instance an `interface` value names: "" = the shared VM, None = not a bypass
 pub fn instance_of(iface: &str) -> Option<String> {
@@ -115,6 +121,8 @@ pub struct Instance {
     pub gateway: String,
     pub dns: String,
     pub consent: Option<Consent>,
+    /// the user's on/off switch: off = the VM is stopped and no card may use it
+    pub enabled: bool,
 }
 
 impl Instance {
@@ -128,6 +136,7 @@ impl Instance {
             gateway: String::new(),
             dns: String::new(),
             consent: None,
+            enabled: true,
         }
     }
 
@@ -149,7 +158,7 @@ impl Instance {
     fn to_json(&self) -> Value {
         let mut v = json!({
             "name": self.name, "adapter": self.adapter, "memory_mb": self.memory_mb, "ip_mode": self.ip_mode,
-            "address": self.address, "gateway": self.gateway, "dns": self.dns,
+            "address": self.address, "gateway": self.gateway, "dns": self.dns, "enabled": self.enabled,
         });
         if let Some(c) = &self.consent {
             v["consent"] = json!({"time": c.time, "adapter": c.adapter});
@@ -176,6 +185,7 @@ impl Instance {
             gateway: s("gateway"),
             dns: s("dns"),
             consent,
+            enabled: v.get("enabled").and_then(Value::as_bool).unwrap_or(true),
         })
     }
 }
@@ -284,9 +294,28 @@ pub fn availability() -> Result<(), String> {
         }
         Ok(())
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
     {
-        Err(tr("Only on Windows for now"))
+        // network namespaces need `ip` (iproute2); the helper runs as root through pkexec
+        if std::process::Command::new("ip").arg("-V").output().is_err() {
+            return Err(tr("The ip command (iproute2) was not found"));
+        }
+        if crate::singbox::find_bundled(crate::singbox::EXE).is_none() {
+            return Err(tr("sing-box was not found"));
+        }
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // Virtualization.framework with a Linux guest: Apple silicon (the guest is built for arm64)
+        if !cfg!(target_arch = "aarch64") {
+            return Err(tr("Only on Macs with Apple silicon"));
+        }
+        Ok(())
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+    {
+        Err(tr("Not on this system"))
     }
 }
 
@@ -314,7 +343,15 @@ pub fn physical_adapters() -> Vec<String> {
         let Ok(out) = helper::powershell(script) else { return vec![] };
         out.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        linux::physical_adapters()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos::physical_adapters()
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     {
         vec![]
     }

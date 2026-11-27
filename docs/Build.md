@@ -55,33 +55,48 @@ libxkbcommon-dev libwayland-dev libgtk-3-dev libayatana-appindicator3-dev libxdo
 The Windows installer installs for the current user (no administrator needed), over a 2.x install, and keeps the
 settings in `%APPDATA%\ProxyDock`.
 
-## VPN-bypass VM image
+## Direct line (VM images and checks)
 
 ```powershell
-python tools\build_bypass_image.py --test
+python toolsuild_bypass_image.py --arch x64 --test
+python toolsuild_bypass_image.py --arch arm64
 ```
 
-Needs Docker. Builds the disk of the small Linux VM that lets a block leave outside a running VPN (Hyper-V,
-bridged to a physical network card): `pd-agent` (`native/bypass-guest`, static musl, `--test` runs its tests
-first), an Alpine `linux-virt` kernel with a busybox initramfs, GRUB, and the musl build of sing-box (fetched into
-`bin/linux-amd64-musl`) on a read-only squashfs partition. The result is `dist/bypass/proxydock-bypass-x64.vhdx`,
-`proxydock-bypass-x64.zip` (the release file), their `.sha256` files and `manifest.json`. The installer does not
-include it: the release workflow builds it on Linux and attaches the zip, and ProxyDock downloads its own version's
-the first time a VM is prepared (checked against `SHA256SUMS.txt`). A development build finds `dist/bypass` above
-the program instead, or the file `PROXYDOCK_BYPASS_IMAGE` names.
+Needs Docker (arm64 runs emulated on an x64 PC). Builds the small Linux guest that lets a block go straight out
+through a network card past a VPN: `pd-agent` (`native/bypass-guest`, static musl, `--test` runs its tests first), an
+Alpine `linux-virt` kernel with a busybox initramfs and the musl build of sing-box (fetched into
+`bin/linux-<arch>-musl`) on a read-only squashfs.
 
-Inside the VM, `pd-agent` answers on Hyper-V socket port 20548 (line JSON: `status`, `net` = DHCP or a fixed
-address, `socks_auth`, `poweroff`) and relays every stream on port 20549 to the VM's sing-box SOCKS5 server
-(127.0.0.1 only, with a random account ProxyDock sets at each start), which ProxyDock's sing-box uses with UDP over
-TCP. On the host, `proxydock --bypass-helper` (elevated through UAC once per run) creates the switch and the VMs and
-relays a 127.0.0.1 port to each. Each start gives a VM a fresh differencing disk; the image itself is never written.
-The VM needs at least 192 MB of memory (less and the kernel cannot unpack itself); the app offers 200 MB and up.
+- **x64** (Windows Hyper-V, bridged to a physical card through an External switch): a disk with GRUB on an EFI
+  partition -> `dist/bypass/proxydock-bypass-x64.vhdx` and `proxydock-bypass-x64.zip`.
+- **arm64** (macOS Virtualization.framework on Apple Silicon, which boots Linux itself): the uncompressed kernel
+  Image, the initramfs and the squashfs -> `dist/bypass/proxydock-bypass-arm64.zip`. The app bundle is signed
+  (ad hoc) with the `com.apple.security.virtualization` entitlement (`tools/build_rust.py`). Not tried on a Mac
+  yet; the guest itself boots in QEMU (`qemu-system-aarch64 -M virt`).
+- **Linux** needs no image: the helper makes a network namespace with a macvlan (Wi-Fi: ipvlan) copy of the card
+  and runs sing-box in it.
 
-To try it end to end on a PC with Hyper-V (asks for UAC, creates and then removes a switch and a VM):
+Each file gets a `.sha256` and `manifest-<arch>.json`. The installers do not include them: the release workflow
+builds both on Linux and attaches the zips, and ProxyDock downloads its own version's the first time a VM is
+prepared (checked against `SHA256SUMS.txt`). A development build finds `dist/bypass` above the program instead, or
+the file `PROXYDOCK_BYPASS_IMAGE` names.
+
+Inside the VM, `pd-agent` answers on vsock port 20548 (Hyper-V sockets / virtio-vsock; line JSON: `status`,
+`net` = DHCP or a fixed address, `socks_auth`, `poweroff`) and relays every stream on port 20549 to the VM's sing-box
+SOCKS5 server (127.0.0.1 only, with a random account ProxyDock sets at each start), which ProxyDock's sing-box uses
+with UDP over TCP. On the host, `proxydock --bypass-helper` (elevated once per run: UAC, pkexec or the macOS
+password prompt) creates the VMs (or namespaces) and relays a 127.0.0.1 port to each. A Hyper-V VM starts on a fresh
+differencing disk each time; the image itself is never written. A VM needs at least 192 MB of memory (less and the
+kernel cannot unpack itself); the app offers 200 MB and up.
+
+End to end on a PC with Hyper-V (asks for UAC, creates and then removes a switch and a VM):
 
 ```powershell
 $env:PROXYDOCK_BYPASS_ADAPTER = "Wi-Fi"; cargo run -p proxydock-core --example bypass_e2e
 ```
+
+Linux, in a privileged container (a firewall rule blocks the container's own namespace, as a VPN's kill switch
+would; the Direct line must still get out): see the top of `tools/docker_linux_bypass_check.sh`.
 
 ## Releases
 

@@ -339,6 +339,7 @@ const ID_STARTUP: u32 = 6;
 const ID_STARTUP_HIDDEN: u32 = 7;
 const ID_RESTART: u32 = 8;
 const ID_CLOSE: u32 = 9;
+const ID_APP_POWER: u32 = 10;
 const ID_CARD: u32 = 100;
 /// the IF switches' and groups' choices
 const ID_QUICK: u32 = 1000;
@@ -376,6 +377,13 @@ fn menu_entries() -> (Vec<Entry>, Box<dyn Fn(u32)>) {
         },
         Entry::Item { label: tr("Logs"), id: ID_LOG },
     ];
+    // ProxyDock's own switch (the home page's): off refuses every connection
+    let app_on = core.quick().app_on;
+    entries.push(Entry::Divider);
+    entries.push(Entry::Item {
+        label: tr(if app_on { "ProxyDock is on - turn off" } else { "ProxyDock is off - turn on" }),
+        id: ID_APP_POWER,
+    });
     if !cards.is_empty() {
         entries.push(Entry::Divider);
         for (i, c) in cards.iter().take(MENU_CARDS).enumerate() {
@@ -441,6 +449,7 @@ fn menu_entries() -> (Vec<Entry>, Box<dyn Fn(u32)>) {
         ID_STOP_ALL => core.stop_all(),
         ID_QUIT => quit(),
         ID_PC_OFF => core.tray(serde_json::json!({"cmd": "pc_off"})),
+        ID_APP_POWER => core.tray(serde_json::json!({"cmd": "home_power", "on": !app_on})),
         ID_STARTUP => core.tray(serde_json::json!({"cmd": "startup", "on": !registered})),
         ID_STARTUP_HIDDEN => core.tray(serde_json::json!({"cmd": "startup_hidden", "on": !hidden})),
         id if id >= ID_QUICK => {
