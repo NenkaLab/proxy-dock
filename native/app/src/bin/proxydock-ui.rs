@@ -585,6 +585,33 @@ fn drop_preview(app: &App, models: &Models) {
     }
 }
 
+/// After a new canvas: every block asks again whether its group hides it, and every block and pin reports
+/// itself again. A collapsed group's sheet is not drawn, so its own "collapsed changed" may never reach the
+/// blocks: without this, blocks of a group just expanded stay hidden to the links (no wires drawn to them).
+fn reproject(app: &App, models: &Models) {
+    // (a block of a group just expanded is not told it is visible again: the links' hidden set is set here, from
+    // the rows, for every block)
+    let collapsed: Vec<bool> = GROUPS.with(|g| g.borrow().iter().map(|x| x.2).collect());
+    EDITOR_CTRL.with(|c| {
+        if let Some(ctrl) = c.borrow().as_ref() {
+            for n in models.nodes.iter() {
+                let hidden = n.group_id > 0 && collapsed.get(n.group_id as usize - 1).copied().unwrap_or(false);
+                ctrl.set_node_hidden(n.id, hidden);
+            }
+        }
+    });
+    let v = app.global::<GroupVisibility>();
+    v.set_version(v.get_version() + 1);
+    let g = app.global::<GeometryVersion>();
+    g.set_projection_version(g.get_projection_version() + 1);
+    g.set_request_version(g.get_request_version() + 1);
+}
+
+thread_local! {
+    /// the canvas's node editor controller (its geometry cache), for `reproject`
+    static EDITOR_CTRL: std::cell::RefCell<Option<slint_node_editor::NodeEditorController>> = const { std::cell::RefCell::new(None) };
+}
+
 /// the core's id of group row `gid`
 fn group_key(gid: i32) -> String {
     GROUPS.with(|g| g.borrow().get((gid - 1).max(0) as usize).map(|x| x.0.clone()).unwrap_or_default())
@@ -2752,6 +2779,7 @@ fn main() -> Result<(), slint::PlatformError> {
             }
         });
         let controller = setup.controller().clone();
+        EDITOR_CTRL.with(|c| *c.borrow_mut() = Some((*controller).clone()));
         {
             // fit: every block in view, from the rectangles the editor measured
             let (controller, weak) = (controller.clone(), app.as_weak());
@@ -3999,6 +4027,7 @@ fn main() -> Result<(), slint::PlatformError> {
                                 m.set_stats(&v["stats"]);
                                 show_latency(&app, &m, &v["latency"]);
                                 m.set_canvas(&v["canvas"]);
+                                reproject(&app, &m);
                                 app.set_pc_state(v["canvas"]["pc_status"][0].as_str().unwrap_or("off").into());
                                 app.set_pc_text(v["canvas"]["pc_status"][1].as_str().unwrap_or("").into());
                                 show_settings(&app, &v["settings"]);
@@ -4027,6 +4056,7 @@ fn main() -> Result<(), slint::PlatformError> {
                                     v["cards"].as_array().into_iter().flatten().map(card_row).collect::<Vec<_>>(),
                                 );
                                 m.set_canvas(&v["canvas"]);
+                                reproject(&app, &m);
                                 app.set_pc_state(v["canvas"]["pc_status"][0].as_str().unwrap_or("off").into());
                                 app.set_pc_text(v["canvas"]["pc_status"][1].as_str().unwrap_or("").into());
                                 log_sources(

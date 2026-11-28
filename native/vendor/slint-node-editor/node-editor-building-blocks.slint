@@ -1700,6 +1700,7 @@ export component GroupSheet inherits BaseGroup {
         border-bottom-right-radius: root.collapsed ? GroupStyleDefaults.border-radius : 0px;
 
         actions := HorizontalLayout {
+            width: self.preferred-width;
             x: parent.width - root.header-height - self.width;
             y: 4px;
             height: root.header-height - 8px;

@@ -2565,10 +2565,20 @@ impl Controller {
             .map(|(to, srcs)| ("in", to.clone(), srcs, to))
             .chain(outgoing.into_iter().map(|(from, to)| ("out", from.clone(), vec![from], to)))
             .collect();
+        // the input ports take the blocks' place on the left (the blocks move right to make room), so the group's
+        // box does not grow over what feeds it; the output ports go right of the blocks
+        let positions: Vec<(String, f64, f64)> = inner.iter().map(|n| (n.key.clone(), n.x, n.y)).collect();
+        let mut shift = 0.0;
         for (side, (key, k), srcs, (to, inp)) in todo {
             let name = label(&key, k, side == "in");
             let y = node(&key).map_or(0.0, |n| n.y) + 56.0 + k as f64 * 28.0;
-            let x = if side == "in" { x0 - 220.0 } else { x1 + 60.0 };
+            let x = if side == "in" { x0 } else { x1 + shift + 60.0 };
+            if side == "in" && shift == 0.0 {
+                shift = 240.0;
+                for (key, x, y) in &positions {
+                    edit::move_block(&mut self.graph, key, x + shift, *y);
+                }
+            }
             let before = self.graph.clone();
             let Some(p) = edit::add_group_port(&mut self.graph, gid, side, x, y) else { continue };
             if !name.is_empty() {
