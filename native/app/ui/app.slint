@@ -4804,6 +4804,9 @@ export component App inherits Window {
                             groups: root.groups;
                             // the software renderer keeps rectangle sizes in i16: a smaller world than the default
                             world-content-size: 8000px;
+                            // the canvas in the theme's colours: a dark board in dark mode, a light one in light mode
+                            background-color: M3.dark ? #1a1a1a : M3.surface-container-low;
+                            grid-color: M3.dark ? #404040 : M3.outline-variant.with-alpha(0.7);
                             max-zoom: 2.0;
                             // over the links, under the blocks
                             for d in root.flow-dots: Rectangle {
