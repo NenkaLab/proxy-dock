@@ -45,8 +45,12 @@
 
 - **Windows 10 / 11**: `ProxyDock-<버전>-windows-x64-setup.exe`가 현재 사용자에게 설치합니다(관리자 권한 필요 없음).
   `.zip`은 같은 앱을 폴더로 담은 것입니다.
-- **macOS**(Apple Silicon): `.dmg`를 열어 ProxyDock을 응용 프로그램 폴더로 끌어 넣습니다. Apple 서명이 없어서 처음
-  한 번은 오른쪽 클릭 → 열기로 엽니다.
+- **macOS**(Apple Silicon): `.dmg`를 열어 ProxyDock을 응용 프로그램 폴더로 끌어 넣습니다. Apple 공증이 없어서 처음
+  실행이 막힙니다. 시스템 설정 → 개인정보 보호 및 보안에서 **그래도 열기**를 누르거나(macOS 15부터는 오른쪽 클릭 →
+  열기로는 열리지 않습니다), 터미널에서 다운로드 표시를 지웁니다:
+  ```
+  xattr -dr com.apple.quarantine /Applications/ProxyDock.app
+  ```
 - **Linux**(x64): `.AppImage`를 그대로 실행합니다(먼저 `chmod +x`). `.tar.gz`는 같은 앱을 폴더로 담은 것입니다.
 
 설정은 `%APPDATA%\ProxyDock`(Windows), `~/Library/Application Support/ProxyDock`(macOS),

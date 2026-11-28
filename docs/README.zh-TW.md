@@ -45,7 +45,11 @@
 
 - **Windows 10 / 11**：`ProxyDock-<版本>-windows-x64-setup.exe` 會為目前使用者安裝 (不需要系統管理員權限)；`.zip` 是同一個
   應用程式的資料夾版本。
-- **macOS** (Apple Silicon)：開啟 `.dmg`，把 ProxyDock 拖到「應用程式」資料夾。沒有 Apple 簽署，第一次請按右鍵 → 打開。
+- **macOS** (Apple Silicon)：開啟 `.dmg`，把 ProxyDock 拖到「應用程式」資料夾。沒有經過 Apple 公證，第一次啟動會被阻擋：
+  開啟「系統設定 → 隱私權與安全性」，按**強制打開** (從 macOS 15 起，按右鍵 → 打開已無法略過)；或在終端機清除下載標記：
+  ```
+  xattr -dr com.apple.quarantine /Applications/ProxyDock.app
+  ```
 - **Linux** (x64)：`.AppImage` 可直接執行 (先 `chmod +x`)；`.tar.gz` 是同一個應用程式的資料夾版本。
 
 設定儲存在 `%APPDATA%\ProxyDock` (Windows)、`~/Library/Application Support/ProxyDock` (macOS) 或 `~/.config/ProxyDock`

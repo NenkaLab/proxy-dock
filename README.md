@@ -48,8 +48,12 @@ From [Releases](https://github.com/NenkaLab/proxy-dock/releases):
 
 - **Windows 10 / 11**: `ProxyDock-<version>-windows-x64-setup.exe` installs it for your user (no administrator
   needed); the `.zip` is the same app as a folder.
-- **macOS** (Apple Silicon): open the `.dmg` and drag ProxyDock into Applications. It is not signed by Apple: the
-  first time, right-click it and choose Open.
+- **macOS** (Apple Silicon): open the `.dmg` and drag ProxyDock into Applications. It is not notarized by Apple, so
+  macOS blocks the first start: open System Settings → Privacy & Security and click **Open Anyway** (right-click →
+  Open no longer works on macOS 15 and later), or clear the download mark in Terminal:
+  ```
+  xattr -dr com.apple.quarantine /Applications/ProxyDock.app
+  ```
 - **Linux** (x64): the `.AppImage` runs as it is (`chmod +x` it first); the `.tar.gz` is the same app as a folder.
 
 Settings are saved in `%APPDATA%\ProxyDock` (Windows), `~/Library/Application Support/ProxyDock` (macOS) or

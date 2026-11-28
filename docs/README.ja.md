@@ -46,8 +46,12 @@
 
 - **Windows 10 / 11**: `ProxyDock-<バージョン>-windows-x64-setup.exe` が現在のユーザーにインストールします (管理者権限
   は不要)。`.zip` は同じアプリをフォルダーにしたものです。
-- **macOS** (Apple Silicon): `.dmg` を開いて ProxyDock をアプリケーションフォルダーへドラッグします。Apple の署名が
-  ないため、初回は右クリック → 開く で開いてください。
+- **macOS** (Apple Silicon): `.dmg` を開いて ProxyDock をアプリケーションフォルダーへドラッグします。Apple の公証が
+  ないため初回の起動がブロックされます。システム設定 → プライバシーとセキュリティ → **このまま開く** を押すか
+  (macOS 15 以降は右クリック → 開く では開けません)、ターミナルでダウンロードの印を消してください:
+  ```
+  xattr -dr com.apple.quarantine /Applications/ProxyDock.app
+  ```
 - **Linux** (x64): `.AppImage` をそのまま実行します (先に `chmod +x`)。`.tar.gz` は同じアプリをフォルダーにしたものです。
 
 設定は `%APPDATA%\ProxyDock` (Windows)、`~/Library/Application Support/ProxyDock` (macOS)、`~/.config/ProxyDock`
