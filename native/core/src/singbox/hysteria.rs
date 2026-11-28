@@ -414,8 +414,8 @@ impl HyEngine {
         self.inner.exit_totals()
     }
 
-    pub fn exit_conns(&self) -> HashMap<String, u64> {
-        self.inner.exit_conns()
+    pub fn way_totals(&self) -> HashMap<(String, bool), [f64; 3]> {
+        self.inner.way_totals()
     }
 
     pub fn stop(&mut self) {

@@ -179,8 +179,8 @@ fn socks5_card_relays_counts_and_logs() {
     while engine.route_of(&who, Some(&target)).is_none() && Instant::now() < until {
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert_eq!(engine.route_of(&who, Some(&target)).as_deref(), Some("out1"));
-    assert_eq!(engine.route_of(&who, None).as_deref(), Some("out1"));
+    assert_eq!(engine.route_of(&who, Some(&target)).map(|w| w.0).as_deref(), Some("out1"));
+    assert_eq!(engine.route_of(&who, None).map(|w| w.0).as_deref(), Some("out1"));
     assert_eq!(engine.route_of("10.9.9.9:1", None), None);
 
     // traffic counted from the Clash API (polled once a second)

@@ -606,18 +606,18 @@ impl Engine {
         st.cfg = Value::Object(config::resolve(proxy, glob));
     }
 
-    /// {outbound block id: (up, down) bytes so far} from this card's connections
-    /// The exit block a recent connection from `who` (client "ip:port") to `target` ("host:port", None = any)
-    /// left through, from the outbound sing-box chose for it (newest match first).
-    pub fn route_of(&self, who: &str, target: Option<&str>) -> Option<String> {
+    /// The way (`sbc::way_of_tag`: exit block, by a rule) a recent connection from `who` (client "ip:port") to
+    /// `target` ("host:port", None = any) took, from the outbound sing-box chose for it (newest match first).
+    pub fn route_of(&self, who: &str, target: Option<&str>) -> Option<(String, bool)> {
         let st = self.shared.state.lock().unwrap();
         st.routes
             .iter()
             .rev()
             .find(|(w, t, _)| w == who && target.is_none_or(|x| t == x))
-            .and_then(|(_, _, tag)| sbc::exit_of_tag(&st.proxy, tag))
+            .and_then(|(_, _, tag)| sbc::way_of_tag(&st.proxy, tag))
     }
 
+    /// {outbound block id: (up, down) bytes so far} from this card's connections
     pub fn exit_totals(&self) -> HashMap<String, (f64, f64)> {
         let st = self.shared.state.lock().unwrap();
         let mut out: HashMap<String, (f64, f64)> = HashMap::new();
@@ -631,13 +631,21 @@ impl Engine {
         out
     }
 
-    /// {outbound block id: connections opened so far} from this card's connections (those seen open at a poll)
-    pub fn exit_conns(&self) -> HashMap<String, u64> {
+    /// {(outbound block id, by a router rule): [up, down, connections opened] so far} from this card's connections
+    /// (connections counted when seen open at a poll): what the canvas draws on each way's links
+    pub fn way_totals(&self) -> HashMap<(String, bool), [f64; 3]> {
         let st = self.shared.state.lock().unwrap();
-        let mut out: HashMap<String, u64> = HashMap::new();
+        let mut out: HashMap<(String, bool), [f64; 3]> = HashMap::new();
+        for (tag, (up, down)) in &st.tag_bytes {
+            if let Some(way) = sbc::way_of_tag(&st.proxy, tag) {
+                let e = out.entry(way).or_default();
+                e[0] += up;
+                e[1] += down;
+            }
+        }
         for (tag, n) in &st.tag_conns {
-            if let Some(block) = sbc::exit_of_tag(&st.proxy, tag) {
-                *out.entry(block).or_default() += n;
+            if let Some(way) = sbc::way_of_tag(&st.proxy, tag) {
+                out.entry(way).or_default()[2] += *n as f64;
             }
         }
         out

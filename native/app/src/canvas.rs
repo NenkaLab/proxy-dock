@@ -13,6 +13,9 @@ use std::collections::{HashMap, HashSet};
 
 type Obj = Map<String, Value>;
 
+/// (card id, exit block id, by a router rule)
+pub type Way = (String, String, bool);
+
 /// the window's default link colour (proxydock-ui.rs `WIRE`)
 const DEFAULT_WIRE: &str = "#5aa0f0";
 
@@ -49,6 +52,10 @@ pub struct Node {
     pub swatch: String,
     /// a router / IF: each output's key (rule id / "default"), own colour and the colour its link has
     pub out_colors: Vec<(String, String, String)>,
+    /// a router / IF: a manual switch's position (None = not a switch: its rules decide)
+    pub switch: Option<bool>,
+    /// a router / IF: which rule outputs have a condition (the engine skips the others)
+    pub conds: Vec<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -66,8 +73,9 @@ pub struct Link {
 pub struct View {
     pub nodes: Vec<Node>,
     pub links: Vec<Link>,
-    /// (card id, exit block id) -> indexes into links that this card's traffic to that exit runs along
-    pub paths: HashMap<(String, String), Vec<usize>>,
+    /// (card id, exit block id, sent there by a router rule) -> indexes into links that this card's traffic going
+    /// that way runs along (a rule and the default can both lead to one exit, on different links)
+    pub paths: HashMap<Way, Vec<usize>>,
 }
 
 fn list<'a>(g: &'a Obj, k: &str) -> impl Iterator<Item = &'a Obj> {
@@ -104,6 +112,8 @@ fn node(key: &str, kind: i32, title: &str, detail: String, p: (f64, f64)) -> Nod
         lines: vec![],
         swatch: String::new(),
         out_colors: vec![],
+        switch: None,
+        conds: vec![],
     }
 }
 
@@ -383,6 +393,9 @@ pub fn build(g: &Obj, summary: &dyn Fn(&str) -> String, unlinked: &dyn Fn(&str) 
             rules.iter().map(|r| s(r, "name").to_string()).chain([tr("Default")]).collect()
         };
         n.detail = if is_if { "IF".into() } else { "Router".into() };
+        n.switch = (b.get("switch") == Some(&json!(true))).then(|| b.get("switch_on") == Some(&json!(true)));
+        n.conds =
+            rules.iter().map(|r| r.get("match").and_then(Value::as_object).is_some_and(|m| !m.is_empty())).collect();
         n.in_labels = vec![tr("Input")];
         n.lines = router_lines(g, &idx, b);
         n.color = s(b, "color").into();
@@ -546,9 +559,11 @@ pub fn build(g: &Obj, summary: &dyn Fn(&str) -> String, unlinked: &dyn Fn(&str) 
     v
 }
 
-/// For every card and every exit block its traffic can reach: the links on the way (the first way found, through
-/// routers and pass-through lanes as wired), then the exit's own "via" chain.
-fn paths(v: &View) -> HashMap<(String, String), Vec<usize>> {
+/// For every card and every exit block its traffic can reach, by its routers' defaults and by a rule: the links
+/// on the way (the first way found, through routers and pass-through lanes as wired), then the exit's own "via"
+/// chain. As the engine flattens routers: a switch sends everything one side, a rule without a condition is
+/// skipped, and traffic that took a rule output anywhere counts as sent by a rule.
+fn paths(v: &View) -> HashMap<Way, Vec<usize>> {
     let kind: HashMap<&str, i32> = v.nodes.iter().map(|n| (n.key.as_str(), n.kind)).collect();
     let wires: HashMap<&str, &Vec<(usize, usize)>> = v.nodes.iter().map(|n| (n.key.as_str(), &n.wires)).collect();
     // links leaving (block, output lane)
@@ -575,47 +590,64 @@ fn paths(v: &View) -> HashMap<(String, String), Vec<usize>> {
     };
     let mut result = HashMap::new();
     for card in v.nodes.iter().filter(|n| n.kind == 0) {
-        // depth-first over (block, lane it came in on), remembering the links taken
-        let mut stack: Vec<(String, usize, Vec<usize>)> = vec![(card.key.clone(), 0, vec![])];
+        // depth-first over (block, lane it came in on, by a rule so far), remembering the links taken
+        let mut stack: Vec<(String, usize, bool, Vec<usize>)> = vec![(card.key.clone(), 0, false, vec![])];
         let mut seen = HashSet::new();
-        while let Some((key, lane, taken)) = stack.pop() {
-            if !seen.insert((key.clone(), lane)) {
+        while let Some((key, lane, rule, taken)) = stack.pop() {
+            if !seen.insert((key.clone(), lane, rule)) {
                 continue;
             }
-            let outs: Vec<usize> = match kind.get(key.as_str()) {
+            // (output lane, whether it is a rule's)
+            let outs: Vec<(usize, bool)> = match kind.get(key.as_str()) {
                 Some(0) if key != card.key => {
                     // into another card's local inbound: that card takes it from here
-                    result.entry((card.key.clone(), key.clone())).or_insert(taken);
+                    result.entry((card.key.clone(), key.clone(), rule)).or_insert(taken);
                     continue;
                 }
                 Some(2) => {
                     let mut p = taken.clone();
                     p.extend(via_chain(&key));
-                    result.entry((card.key.clone(), key.clone())).or_insert(p);
+                    result.entry((card.key.clone(), key.clone(), rule)).or_insert(p);
                     continue;
                 }
                 Some(3) => {
                     if v.nodes.iter().any(|n| n.key == wireless_out(&key)) {
-                        vec![0] // a wireless pair: on from the other half
+                        vec![(0, false)] // a wireless pair: on from the other half
                     } else {
                         wires
                             .get(key.as_str())
-                            .map(|w| w.iter().filter(|(i, _)| *i == lane).map(|(_, o)| *o).collect())
+                            .map(|w| w.iter().filter(|(i, _)| *i == lane).map(|(_, o)| (*o, false)).collect())
                             .unwrap_or_default()
                     }
                 }
-                Some(1) => (0..v.nodes.iter().find(|n| n.key == key).map_or(0, |n| n.outs)).collect(),
-                Some(0) => vec![0],
+                Some(1) => match v.nodes.iter().find(|n| n.key == key) {
+                    // a switch: its side (then = output 0, else = the default, the last)
+                    Some(n) if n.switch.is_some() => {
+                        vec![(if n.switch == Some(true) { 0 } else { n.outs.saturating_sub(1) }, false)]
+                    }
+                    // the rules with a condition, then the default
+                    Some(n) => (0..n.outs)
+                        .filter_map(|o| {
+                            if o + 1 == n.outs {
+                                Some((o, false))
+                            } else {
+                                n.conds.get(o).copied().unwrap_or(false).then_some((o, true))
+                            }
+                        })
+                        .collect(),
+                    None => vec![],
+                },
+                Some(0) => vec![(0, false)],
                 _ => vec![],
             };
             let from =
                 if v.nodes.iter().any(|n| n.key == wireless_out(&key)) { wireless_out(&key) } else { key.clone() };
-            for o in outs.into_iter().rev() {
+            for (o, by_rule) in outs.into_iter().rev() {
                 for li in leaving.get(&(from.as_str(), o)).into_iter().flatten() {
                     let l = &v.links[*li];
                     let mut t = taken.clone();
                     t.push(*li);
-                    stack.push((l.to.clone(), l.inp, t));
+                    stack.push((l.to.clone(), l.inp, rule || by_rule, t));
                 }
             }
         }
@@ -706,7 +738,34 @@ mod tests {
             has("rl", 0, "s", 0).unwrap(),
             has("s", 0, "hp", 0).unwrap(),
         );
-        assert_eq!(v.paths[&("in1".to_string(), "d".to_string())], vec![a, b]);
-        assert_eq!(v.paths[&("in1".to_string(), "s".to_string())], vec![a, c, d, e]);
+        let way = |exit: &str, rule: bool| v.paths.get(&("in1".to_string(), exit.to_string(), rule)).cloned();
+        assert_eq!(way("d", true), Some(vec![a, b]));
+        assert_eq!(way("s", false), Some(vec![a, c, d, e]));
+        assert_eq!(way("d", false), None);
+    }
+
+    #[test]
+    fn a_rule_and_the_default_to_one_exit_are_apart() {
+        // IF cn -> a switch (on: then) -> the exit; else -> the same exit straight
+        let g = proxydock_core::graph::validate(&json!({
+            "inbounds": [{"id": "in1", "name": "card", "inbound": {"type": "socks5", "port": 1080}, "target": "r"}],
+            "outbounds": [
+                {"id": "x", "name": "Exit", "outbound": {"type": "direct"}},
+                {"id": "b", "name": "Block", "outbound": {"type": "block"}},
+            ],
+            "routers": [
+                {"id": "r", "name": "CN", "style": "if", "rules": [{"id": "c1", "name": "IF", "match": {"geoip": ["cn"]}, "target": "s"}], "default": "x"},
+                {"id": "s", "name": "Switch", "style": "if", "switch": true, "switch_on": true, "rules": [{"id": "c2", "name": "IF", "match": {}, "target": "x"}], "default": "b"},
+            ],
+        }));
+        let v = build(&g, &|_| String::new(), &|_| false);
+        let has = |from: &str, out: usize| v.links.iter().position(|l| l.from == from && l.out == out).unwrap();
+        let way = |exit: &str, rule: bool| v.paths.get(&("in1".to_string(), exit.to_string(), rule)).cloned();
+        let into = has("in1", 0);
+        assert_eq!(way("x", false), Some(vec![into, has("r", 1)]));
+        assert_eq!(way("x", true), Some(vec![into, has("r", 0), has("s", 0)]));
+        // the switch's other side carries nothing
+        assert_eq!(way("b", true), None);
+        assert_eq!(way("b", false), None);
     }
 }

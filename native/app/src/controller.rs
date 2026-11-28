@@ -345,8 +345,9 @@ struct Controller {
     tooltip: String,
     /// the block each window is editing: (kind, draft)
     drafts: HashMap<u64, (&'static str, Value)>,
-    /// per (card, exit block): up bytes, down bytes and connections opened, at the last tick (for the per-link rates)
-    flow_last: HashMap<(String, String), [f64; 3]>,
+    /// per way (card, exit block, by a rule): up bytes, down bytes and connections opened, at the last tick (for the
+    /// per-link rates)
+    flow_last: HashMap<crate::canvas::Way, [f64; 3]>,
     /// the per-link up + down rates and new connections last sent (all zero = nothing flowing)
     flow_sent: Vec<f64>,
     /// editor buttons whose work is running: (window, action)
@@ -3272,12 +3273,18 @@ impl Controller {
     /// The canvas links a logged connection of card `id` went along (answered to the asking window only):
     /// the exit from the engine's recent connections, or the card's only exit.
     fn route_of(&mut self, client: u64, id: &str, message: &str) {
-        let exits: Vec<&String> = self.view.paths.keys().filter(|(card, _)| card == id).map(|(_, exit)| exit).collect();
-        let exit = conn_of_line(message)
+        let ways: Vec<(String, bool)> = self
+            .view
+            .paths
+            .keys()
+            .filter(|(card, ..)| card == id)
+            .map(|(_, exit, rule)| (exit.clone(), *rule))
+            .collect();
+        let way = conn_of_line(message)
             .and_then(|(who, target)| self.manager.route_of(id, &who, target.as_deref()))
-            .or_else(|| (exits.len() == 1).then(|| exits[0].clone()));
+            .or_else(|| (ways.len() == 1).then(|| ways[0].clone()));
         let links: Vec<usize> =
-            exit.and_then(|e| self.view.paths.get(&(id.to_string(), e)).cloned()).unwrap_or_default();
+            way.and_then(|(e, rule)| self.view.paths.get(&(id.to_string(), e, rule)).cloned()).unwrap_or_default();
         let error = if links.is_empty() {
             tr("This connection's way is no longer known (only recent connections of running cards are)")
         } else {
@@ -3287,19 +3294,16 @@ impl Controller {
     }
 
     /// bytes per second going up (toward the exit) and down (back to the card), and connections opened, on each
-    /// canvas link over the last tick: each running card's traffic to each exit block (from its sing-box
-    /// connections) counted on the links of that card's way to the exit
+    /// canvas link over the last tick: each running card's traffic on each way (exit block, by a router rule or
+    /// not; from its sing-box connections) counted on the links of that way
     fn send_flow(&mut self) {
         let n = self.view.links.len();
         let (mut up, mut down, mut conns) = (vec![0.0f64; n], vec![0.0f64; n], vec![0.0f64; n]);
-        let mut now: HashMap<(String, String), [f64; 3]> = HashMap::new();
+        let mut now: HashMap<crate::canvas::Way, [f64; 3]> = HashMap::new();
         for p in &self.proxies {
             let id = p["id"].as_str().unwrap_or("");
-            for (exit, (u, d)) in self.manager.exit_totals(id) {
-                now.entry((id.to_string(), exit)).or_default()[..2].copy_from_slice(&[u, d]);
-            }
-            for (exit, c) in self.manager.exit_conns(id) {
-                now.entry((id.to_string(), exit)).or_default()[2] = c as f64;
+            for ((exit, rule), t) in self.manager.way_totals(id) {
+                now.insert((id.to_string(), exit, rule), t);
             }
         }
         for (key, total) in &now {

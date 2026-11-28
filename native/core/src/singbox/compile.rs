@@ -818,6 +818,22 @@ pub fn exit_of_tag(proxy: &Value, tag: &str) -> Option<String> {
     if tag.starts_with("out") { proxy.get("exit").and_then(Value::as_str).map(String::from) } else { None }
 }
 
+/// The way a connection whose route picked outbound `tag` went: (outbound block id, whether a router rule sent it
+/// there). Several ways can end at one block (a rule and the default both leading to it); the canvas draws each
+/// on its own links.
+pub fn way_of_tag(proxy: &Value, tag: &str) -> Option<(String, bool)> {
+    for (block, prefix) in route_exit_tags(proxy) {
+        if tag.starts_with(&prefix) {
+            return Some((block, true));
+        }
+    }
+    if tag.starts_with("out") {
+        proxy.get("exit").and_then(Value::as_str).map(|e| (e.to_string(), false))
+    } else {
+        None
+    }
+}
+
 /// (route section, reasons): reasons[i] says what rule i blocks.
 pub fn route(
     proxy: &Value,

@@ -86,7 +86,7 @@ impl Card {
         }
     }
     /// (a Hysteria server card has one exit: the caller falls back to it)
-    fn route_of(&self, who: &str, target: Option<&str>) -> Option<String> {
+    fn route_of(&self, who: &str, target: Option<&str>) -> Option<(String, bool)> {
         match self {
             Card::SingBox(e) => e.route_of(who, target),
             Card::Hysteria(_) => None,
@@ -98,10 +98,10 @@ impl Card {
             Card::Hysteria(e) => e.exit_totals(),
         }
     }
-    fn exit_conns(&self) -> HashMap<String, u64> {
+    fn way_totals(&self) -> HashMap<(String, bool), [f64; 3]> {
         match self {
-            Card::SingBox(e) => e.exit_conns(),
-            Card::Hysteria(e) => e.exit_conns(),
+            Card::SingBox(e) => e.way_totals(),
+            Card::Hysteria(e) => e.way_totals(),
         }
     }
     fn needs_restart(&self, proxy: &Value, glob: &Glob) -> bool {
@@ -305,8 +305,8 @@ impl Manager {
         self.shared.lock().unwrap().running.get(id).map(|r| r.engine.last_reason()).unwrap_or_default()
     }
 
-    /// the exit block a recent connection of a running card took (`Engine::route_of`)
-    pub fn route_of(&self, id: &str, who: &str, target: Option<&str>) -> Option<String> {
+    /// the way (exit block, by a router rule) a recent connection of a running card took (`Engine::route_of`)
+    pub fn route_of(&self, id: &str, who: &str, target: Option<&str>) -> Option<(String, bool)> {
         self.shared.lock().unwrap().running.get(id).and_then(|r| r.engine.route_of(who, target))
     }
 
@@ -315,9 +315,9 @@ impl Manager {
         self.shared.lock().unwrap().running.get(id).map(|r| r.engine.exit_totals()).unwrap_or_default()
     }
 
-    /// {outbound block id: connections opened so far} of a running card
-    pub fn exit_conns(&self, id: &str) -> HashMap<String, u64> {
-        self.shared.lock().unwrap().running.get(id).map(|r| r.engine.exit_conns()).unwrap_or_default()
+    /// {(outbound block id, by a router rule): [up, down, connections opened]} of a running card
+    pub fn way_totals(&self, id: &str) -> HashMap<(String, bool), [f64; 3]> {
+        self.shared.lock().unwrap().running.get(id).map(|r| r.engine.way_totals()).unwrap_or_default()
     }
 }
 
