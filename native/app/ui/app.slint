@@ -89,7 +89,7 @@ export struct OutColor { key: string, own: bool, color: color }
 export struct InfoLine { text: string, tone: int }
 
 // an entry of a right-click menu (`action` goes back to the core)
-export struct MenuLeaf { action: string, title: string }
+export struct MenuLeaf { action: string, title: string, checked: bool }
 // a program in the program picker (Python `ProgramPicker`)
 export struct PickItem { name: string, checked: bool }
 
@@ -211,8 +211,10 @@ export struct FieldRow {
     options: [string],
     index: int,
     visible: bool,
-    // "item": the buttons' labels (their actions stay in the Rust side)
+    // "item": the buttons' labels (their actions stay in the Rust side), and an icon that stands for a label
+    // ("up" / "down" move the item; "" = the label)
     buttons: [string],
+    button-icons: [string],
     // a button whose work runs (a download, a network check)
     busy: bool,
     // the description's colour: 0 normal, 1 success, 2 failure
@@ -520,11 +522,18 @@ component ProxyNode inherits BaseNode {
             visible: root.badge != "";
             x: root.node-width - self.width - (root.state != "" ? 82px : root.kind <= 3 ? 50px : 12px) - (root.kind <= 2 ? 28px : 0px);
             y: 15px;
-            width: badge-text.preferred-width + 14px;
+            width: root.badge == "✕" ? 28px : badge-text.preferred-width + 14px;
             height: 20px;
             border-radius: 10px;
             background: root.badge-tone == 1 ? #3fa34d : root.badge-tone == 2 ? #d9a21b : root.badge-tone == 3 ? #e5534b : #9aa0a6;
+            if root.badge == "✕": Image {
+                width: 14px;
+                height: 14px;
+                source: @image-url("icons/close.svg");
+                colorize: #ffffff;
+            }
             badge-text := Text {
+                visible: root.badge != "✕";
                 text: root.badge;
                 font-size: 11px * Type.scale;
                 font-weight: 700;
@@ -532,20 +541,37 @@ component ProxyNode inherits BaseNode {
             }
         }
         // the info lines (a block without any shows its detail)
-        for line[i] in root.lines: Text {
+        for line[i] in root.lines: Image {
+            visible: line.tone == 1;
             x: 20px;
+            y: root.top + i * root.line-h + (root.line-h - self.height) / 2;
+            width: 12px * Type.scale;
+            height: 12px * Type.scale;
+            source: @image-url("icons/warning.svg");
+            colorize: root.tone-color(1);
+        }
+        for line[i] in root.lines: Text {
+            x: line.tone == 1 ? 24px + 12px * Type.scale : 20px;
             y: root.top + i * root.line-h;
-            width: root.node-width - 34px;
+            width: root.node-width - 14px - self.x;
             text: line.text;
             font-size: 12px * Type.scale;
             color: root.tone-color(line.tone);
             overflow: elide;
         }
+        if root.state != "": Rectangle {
+            x: 21px;
+            y: root.top + root.lines.length * root.line-h + (root.line-h - self.height) / 2;
+            width: 7px; height: 7px; border-radius: 3.5px;
+            background: root.state == "running" ? (M3.dark ? #6ccb5f : #107c10) : transparent;
+            border-width: root.state == "running" ? 0px : 1.5px;
+            border-color: root.state == "starting" ? (M3.dark ? #e8b339 : #9a6700) : root.state == "error" ? M3.error : root.on-container.with-alpha(0.6);
+        }
         if root.state != "": Text {
-            x: 20px;
+            x: 34px;
             y: root.top + root.lines.length * root.line-h;
-            width: root.node-width - 34px;
-            text: (root.state == "running" ? "● " : "○ ") + root.state-text;
+            width: root.node-width - 48px;
+            text: root.state-text;
             font-size: 12px * Type.scale;
             color: root.state == "running" ? (M3.dark ? #6ccb5f : #107c10) : root.state == "starting" ? (M3.dark ? #e8b339 : #9a6700)
                 : root.state == "error" ? M3.error : root.on-container.with-alpha(0.6);
@@ -692,10 +718,11 @@ component ProxyNode inherits BaseNode {
             x: root.node-width - 44px; y: 8px;
             width: 32px; height: 32px; border-radius: 16px;
             background: run-ta.has-hover ? root.on-container.with-alpha(0.14) : transparent;
-            Text {
-                text: root.state == "running" || root.state == "starting" ? "■" : "▶";
-                font-size: 13px * Type.scale;
-                color: root.on-container;
+            Image {
+                width: 20px;
+                height: 20px;
+                source: root.state == "running" || root.state == "starting" ? @image-url("icons/stop_circle.svg") : @image-url("icons/play_arrow.svg");
+                colorize: root.on-container;
             }
             run-ta := TouchArea { clicked => { root.toggle(); } }
         }
@@ -920,6 +947,8 @@ component ProxyNode inherits BaseNode {
             if root.menu-sub-title != "": Menu {
                 title: root.menu-sub-title;
                 for e in root.menu-sub: MenuItem {
+                    checkable: e.checked;
+                    checked: e.checked;
                     title: e.title;
                     activated => { root.menu-action(e.action); }
                 }
@@ -1453,6 +1482,9 @@ component FormRow inherits Rectangle {
                         // an item's buttons, or the buttons that belong to this field (Browse, Refresh, Add...)
                         for b[i] in f.buttons: AppButton {
                             text: b;
+                            icon: f.button-icons[i] == "up" ? @image-url("icons/arrow_upward.svg")
+                                : f.button-icons[i] == "down" ? @image-url("icons/arrow_downward.svg") : @image-url("");
+                            icon-only: f.button-icons[i] != "";
                             clicked => { root.pressed(f.key, i); }
                         }
                       }
@@ -1953,6 +1985,8 @@ component Card inherits Rectangle {
             if root.card.menu-sub-title != "": Menu {
                 title: root.card.menu-sub-title;
                 for e in root.card.menu-sub: MenuItem {
+                    checkable: e.checked;
+                    checked: e.checked;
                     title: e.title;
                     activated => { root.menu-action(root.card.id, e.action); }
                 }
@@ -2057,6 +2091,8 @@ component BlockCard inherits Rectangle {
             if root.block.menu-sub-title != "": Menu {
                 title: root.block.menu-sub-title;
                 for e in root.block.menu-sub: MenuItem {
+                    checkable: e.checked;
+                    checked: e.checked;
                     title: e.title;
                     activated => { root.menu-action(root.block.key, e.action); }
                 }
@@ -2549,12 +2585,21 @@ component SettingsBypass inherits VerticalLayout {
                 color: M3.on-surface-variant;
                 wrap: word-wrap;
             }
-            if !Bypass.available && Bypass.reason != "": Text {
-                text: "⚠ " + Bypass.reason;
-                font-size: 14px * Type.scale;
-                font-weight: 600;
-                color: M3.error;
-                wrap: word-wrap;
+            if !Bypass.available && Bypass.reason != "": HorizontalLayout {
+                spacing: 8px;
+                Image {
+                    width: 18px;
+                    height: 18px;
+                    source: @image-url("icons/warning.svg");
+                    colorize: M3.error;
+                }
+                Text {
+                    text: Bypass.reason;
+                    font-size: 14px * Type.scale;
+                    font-weight: 600;
+                    color: M3.error;
+                    wrap: word-wrap;
+                }
             }
             if Bypass.progress != "": Text {
                 text: Bypass.progress;
@@ -3338,11 +3383,12 @@ component ConnHead inherits Rectangle {
             vertical-alignment: center;
             overflow: elide;
         }
-        if root.on: Text {
-            text: Conn.sort-desc ? "▼" : "▲";
-            font-size: 10px * Type.scale;
-            color: M3.primary;
-            vertical-alignment: center;
+        if root.on: Image {
+            width: 16px;
+            height: 16px;
+            y: (parent.height - self.height) / 2;
+            source: Conn.sort-desc ? @image-url("icons/arrow_drop_down.svg") : @image-url("icons/arrow_drop_up.svg");
+            colorize: M3.primary;
         }
     }
     ta := TouchArea {

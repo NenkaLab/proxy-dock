@@ -223,6 +223,7 @@ fn leaves(v: &Value) -> ModelRc<MenuLeaf> {
         .map(|e| MenuLeaf {
             action: e["action"].as_str().unwrap_or("").into(),
             title: e["title"].as_str().unwrap_or("").into(),
+            checked: e["checked"] == json!(true),
         })
         .collect();
     ModelRc::new(VecModel::from(items))
@@ -234,7 +235,11 @@ fn type_leaves(v: &Value) -> ModelRc<MenuLeaf> {
         .as_array()
         .into_iter()
         .flatten()
-        .map(|e| MenuLeaf { action: e[0].as_str().unwrap_or("").into(), title: e[1].as_str().unwrap_or("").into() })
+        .map(|e| MenuLeaf {
+            action: e[0].as_str().unwrap_or("").into(),
+            title: e[1].as_str().unwrap_or("").into(),
+            checked: false,
+        })
         .collect();
     ModelRc::new(VecModel::from(items))
 }
@@ -1488,6 +1493,22 @@ fn field_rows(fields: &[Value]) -> Vec<FieldRow> {
                 } else {
                     vec![]
                 };
+                // (moving an item up / down: an arrow icon, its label the accessible name)
+                let button_icons: Vec<SharedString> = if kind == "item" {
+                    opts.iter()
+                        .map(|(a, _)| {
+                            SharedString::from(if a.contains(".up.") {
+                                "up"
+                            } else if a.contains(".down.") {
+                                "down"
+                            } else {
+                                ""
+                            })
+                        })
+                        .collect()
+                } else {
+                    vec![]
+                };
                 if f["rerender"] == json!(true) {
                     e.rerender.insert(key.clone());
                 }
@@ -1509,6 +1530,7 @@ fn field_rows(fields: &[Value]) -> Vec<FieldRow> {
                     index,
                     visible: f["visible"] == json!(true),
                     buttons: ModelRc::new(VecModel::from(buttons)),
+                    button_icons: ModelRc::new(VecModel::from(button_icons)),
                     busy: f["busy"] == json!(true),
                     tone: f["tone"].as_i64().unwrap_or(0) as i32,
                     first: false,
@@ -3950,6 +3972,7 @@ fn main() -> Result<(), slint::PlatformError> {
                                         .flatten()
                                         .enumerate()
                                         .map(|(i, x)| MenuLeaf {
+                                            checked: false,
                                             action: i.to_string().into(),
                                             title: format!(
                                                 "{}  —  {}",

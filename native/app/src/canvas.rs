@@ -241,7 +241,7 @@ fn inbound_lines(b: &Obj, unlinked: bool) -> Vec<(String, i32)> {
     };
     let mut lines = vec![(format!("{} · {where_}", proxydock_core::edit::inbound_label(t)), NORMAL)];
     if unlinked {
-        lines.push((format!("⚠ {}", tr("not connected")), WARN));
+        lines.push((tr("not connected"), WARN));
     }
     lines
 }
@@ -271,7 +271,7 @@ fn outbound_lines(g: &Obj, idx: &LaneIndex, b: &Obj) -> Vec<(String, i32)> {
             NORMAL,
         ));
         if members.is_empty() {
-            lines.push((format!("⚠ {}", tr("no members")), WARN));
+            lines.push((tr("no members"), WARN));
         }
     } else {
         lines.push((outbound_summary(&ob), NORMAL));
@@ -302,7 +302,7 @@ fn router_lines(g: &Obj, idx: &LaneIndex, r: &Obj) -> Vec<(String, i32)> {
         lines.push((format!("{count} · {default}"), NORMAL));
     }
     if d.is_none() {
-        lines.push((format!("⚠ {}", tr("no default target")), WARN));
+        lines.push((tr("no default target"), WARN));
     }
     lines.push(used_line(&users(g, idx, id)));
     lines
@@ -412,7 +412,7 @@ pub fn build(g: &Obj, summary: &dyn Fn(&str) -> String, unlinked: &dyn Fn(&str) 
                 z.lines =
                     vec![(format!("← {}", if src.is_empty() { "-".to_string() } else { src.join(", ") }), NORMAL)];
             } else {
-                let text = format!("⚠ {}", tr("partner deleted"));
+                let text = tr("partner deleted");
                 a.lines = vec![(text.clone(), WARN)];
                 z.lines = vec![(text, WARN)];
             }

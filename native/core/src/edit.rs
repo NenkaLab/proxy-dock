@@ -1212,10 +1212,11 @@ pub fn block_menu(g: &Obj, key: &str) -> Value {
                 for mid in &members {
                     if let Some((_, n)) = graph::find(g, mid) {
                         let name = n["name"].as_str().unwrap_or("");
-                        sub.push(item(
-                            &format!("member.{mid}"),
-                            if *mid == cur { format!("✓  {name}") } else { name.to_string() },
-                        ));
+                        let mut e = item(&format!("member.{mid}"), name.to_string());
+                        if *mid == cur {
+                            e["checked"] = json!(true);
+                        }
+                        sub.push(e);
                     }
                 }
                 if !sub.is_empty() {

@@ -40,7 +40,7 @@ fn iface_choices(current: &str) -> Kind {
         for n in store.instances.iter().map(|i| i.name.clone()) {
             let mut label = tr("Direct line ({name})").replace("{name}", &crate::bypass::label(&n));
             if !store.get(&n).is_some_and(|i| i.consented()) {
-                label += &format!(" · ⚠ {}", tr("set up in Settings > Direct line"));
+                label += &format!(" · {}", tr("set up in Settings > Direct line"));
             }
             o.push((crate::bypass::iface_for(&n), label));
         }
@@ -48,7 +48,7 @@ fn iface_choices(current: &str) -> Kind {
     for i in IFACES.lock().unwrap().iter() {
         let mut label = if i.ip.is_empty() { i.name.clone() } else { format!("{} · {}", i.name, i.ip) };
         if !i.routed {
-            label += &format!(" · ⚠ {}", tr("no internet route"));
+            label += &format!(" · {}", tr("no internet route"));
         }
         o.push((i.name.clone(), label));
     }
@@ -612,7 +612,7 @@ pub fn outbound_form(g: &Obj, node: &Value) -> Vec<Field> {
         f.desc = format!(
             "{}
 
-⚠ {}",
+{}",
             tr(iface_desc),
             tr(
                 "This exit goes straight out through the network card, past any VPN, TUN or other app holding this PC's network: the sites it reaches and your internet provider see your real IP address, and a VPN's kill switch and DNS protection do not apply to it."
@@ -673,8 +673,8 @@ pub fn outbound_form(g: &Obj, node: &Value) -> Vec<Field> {
     b.push(field("", "Members", "Outbound blocks this group uses, first one on top. You can also connect them on the canvas from the group's 'members' output.", Kind::Heading, json!(null), grp));
     for (i, m) in members.iter().enumerate() {
         let buttons = vec![
-            (format!("member.up.{i}"), "↑".into()),
-            (format!("member.down.{i}"), "↓".into()),
+            (format!("member.up.{i}"), tr("Move up")),
+            (format!("member.down.{i}"), tr("Move down")),
             (format!("member.del.{i}"), tr("Remove")),
         ];
         b.push(Field {
@@ -927,8 +927,8 @@ pub fn router_form(g: &Obj, node: &Value) -> Vec<Field> {
             vec![]
         } else {
             vec![
-                (format!("rule.up.{i}"), "↑".into()),
-                (format!("rule.down.{i}"), "↓".into()),
+                (format!("rule.up.{i}"), tr("Move up")),
+                (format!("rule.down.{i}"), tr("Move down")),
                 (format!("rule.del.{i}"), tr("Remove")),
             ]
         };
