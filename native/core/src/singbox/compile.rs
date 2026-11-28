@@ -808,7 +808,7 @@ pub fn route_exit_tags(proxy: &Value) -> Vec<(String, String)> {
     tags
 }
 
-/// outbound block id a connection leaving through outbound `tag` (sing-box chains[0]) belongs to
+/// outbound block id a connection whose route picked outbound `tag` (the last of sing-box's chains) belongs to
 pub fn exit_of_tag(proxy: &Value, tag: &str) -> Option<String> {
     for (block, prefix) in route_exit_tags(proxy) {
         if tag.starts_with(&prefix) {

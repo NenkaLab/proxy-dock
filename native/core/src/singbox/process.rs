@@ -174,7 +174,7 @@ struct State {
     targets: HashMap<String, String>,
     last_totals: (u64, u64),
     live: HashMap<String, Live>,
-    /// outbound tag a connection left through (chains[0]) -> [up, down] so far / in this poll only
+    /// outbound tag the route chose for a connection (`route_tag`) -> [up, down] so far / in this poll only
     tag_bytes: HashMap<String, (f64, f64)>,
     tick_tags: HashMap<String, (f64, f64)>,
     /// outbound tag -> connections seen opening through it so far (the canvas's request dots)
@@ -936,7 +936,7 @@ fn track(st: &mut State, conns: &[Value], shared: &Shared) -> Vec<String> {
         seen.insert(cid.to_string());
         let up = c["upload"].as_u64().unwrap_or(0);
         let down = c["download"].as_u64().unwrap_or(0);
-        let tag = c["chains"].as_array().and_then(|a| a.first()).and_then(Value::as_str).unwrap_or("").to_string();
+        let tag = route_tag(c);
         let (pu, pd) = st.live.get(cid).map(|e| (e.up, e.down)).unwrap_or((0, 0));
         if !st.live.contains_key(cid) {
             *st.tag_conns.entry(tag.clone()).or_default() += 1;
@@ -1025,6 +1025,14 @@ fn closed(st: &State, e: &Live, shared: &Shared) {
     }
 }
 
+/// The outbound tag the route chose for a Clash API connection: the last of its `chains`. sing-box lists the
+/// chain from the outbound that dialled to the one the rule picked (through groups and selectors), so the first
+/// can be an outbound of no block: a Direct block that leaves through a VPN bypass VM is a selector "r0_0" whose
+/// connections dial through "bypass:<name>" (chains ["bypass:<name>", "r0_0"]).
+fn route_tag(c: &Value) -> String {
+    c["chains"].as_array().and_then(|a| a.last()).and_then(Value::as_str).unwrap_or("").to_string()
+}
+
 /// Add this poll's bytes (the card's exact totals du / dd) to tag_bytes. The Clash API lists only open
 /// connections: a card without router rules has one exit and gets the whole amount; with rules, the unseen rest is
 /// split like the seen bytes of this poll (or goes to the default exit when none was seen).
@@ -1061,6 +1069,20 @@ fn attribute(st: &mut State, du: f64, dd: f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn route_tag_is_the_one_the_rule_picked() {
+        // a Direct block through a bypass VM (a selector), a group's member, a plain outbound
+        assert_eq!(route_tag(&json!({"chains": ["bypass:DirectLink", "r0_0"]})), "r0_0");
+        assert_eq!(route_tag(&json!({"chains": ["r1_m2", "r1_"]})), "r1_");
+        assert_eq!(route_tag(&json!({"chains": ["out0"]})), "out0");
+        assert_eq!(route_tag(&json!({})), "");
+        let proxy = json!({"exit": "x", "routes": [{"block": "d", "outbound": {"type": "direct"}}]});
+        assert_eq!(
+            sbc::exit_of_tag(&proxy, &route_tag(&json!({"chains": ["bypass:DirectLink", "r0_0"]}))).as_deref(),
+            Some("d")
+        );
+    }
 
     #[test]
     fn line_patterns() {
