@@ -36,6 +36,8 @@ pub struct Node {
     pub wires: Vec<(usize, usize)>,
     /// pass-through: wired freely (its two sides added to apart)
     pub routed: bool,
+    /// pass-through: open as a box (named lanes, wiring edited inside); folded = the small block
+    pub open: bool,
     /// "#rrggbb" or "" (automatic)
     pub color: String,
     /// the card this block is (inbound blocks)
@@ -96,6 +98,7 @@ fn node(key: &str, kind: i32, title: &str, detail: String, p: (f64, f64)) -> Nod
         out_labels: vec![],
         wires: vec![],
         routed: false,
+        open: false,
         color: String::new(),
         card: String::new(),
         lines: vec![],
@@ -436,8 +439,16 @@ pub fn build(g: &Obj, summary: &dyn Fn(&str) -> String, unlinked: &dyn Fn(&str) 
         n.ins = ins.len();
         n.outs = outs.len();
         n.routed = b["routed"] == json!(true);
-        n.in_labels = (1..=ins.len()).map(|k| k.to_string()).collect();
-        n.out_labels = (1..=outs.len()).map(|k| k.to_string()).collect();
+        n.open = !g.get("relays_folded").and_then(Value::as_array).is_some_and(|f| f.iter().any(|x| x == id));
+        // a lane's own name, else its number
+        let lane_name = |l: &Obj, k: usize| {
+            g.get("lane_names")
+                .and_then(|m| m.get(s(l, "id")))
+                .and_then(Value::as_str)
+                .map_or_else(|| k.to_string(), String::from)
+        };
+        n.in_labels = ins.iter().enumerate().map(|(k, l)| lane_name(l, k + 1)).collect();
+        n.out_labels = outs.iter().enumerate().map(|(k, l)| lane_name(l, k + 1)).collect();
         let out_index: HashMap<&str, usize> = outs.iter().enumerate().map(|(k, o)| (s(o, "id"), k)).collect();
         for (i, l) in ins.iter().enumerate() {
             in_lanes.insert(s(l, "id").into(), (id.into(), i));
@@ -621,7 +632,7 @@ pub fn to_json(v: &View, states: &dyn Fn(&str) -> &'static str) -> Value {
             json!({
                 "key": n.key, "kind": n.kind, "title": n.title, "detail": n.detail, "x": n.x, "y": n.y,
                 "ins": n.ins, "outs": n.outs, "in_labels": n.in_labels, "out_labels": n.out_labels,
-                "wires": n.wires.iter().map(|(i, o)| json!([i, o])).collect::<Vec<_>>(), "routed": n.routed, "color": n.color,
+                "wires": n.wires.iter().map(|(i, o)| json!([i, o])).collect::<Vec<_>>(), "routed": n.routed, "open": n.open, "color": n.color,
                 "card": n.card, "state": if n.card.is_empty() { "" } else { states(&n.card) },
                 "lines": n.lines.iter().map(|(t, tone)| json!([t, tone])).collect::<Vec<_>>(),
                 "swatch": n.swatch,

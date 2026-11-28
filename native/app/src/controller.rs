@@ -8,7 +8,7 @@ use proxydock_core::log::{Entry, Level};
 use proxydock_core::manager::{self, Events, Manager, State};
 use proxydock_core::{config, edit, form, graph, log};
 use serde_json::{Map, Value, json};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -1733,6 +1733,8 @@ impl Controller {
         let old: HashMap<String, Value> =
             self.proxies.iter().map(|p| (p["id"].as_str().unwrap_or("").to_string(), p.clone())).collect();
         graph::clean_groups(&mut self.graph);
+        graph::clean_fills(&mut self.graph);
+        graph::clean_relay_ui(&mut self.graph);
         self.rebuild();
         let mut alive = std::collections::HashSet::new();
         for p in self.proxies.clone() {
@@ -1767,6 +1769,7 @@ impl Controller {
     fn canvas_json(&self) -> Value {
         let mut canvas = canvas::to_json(&self.view, &|id| state_name(&self.manager.state(id)));
         canvas["groups"] = self.graph.get("groups").cloned().unwrap_or(json!([]));
+        canvas["fills"] = self.graph.get("fills").cloned().unwrap_or(json!({}));
         // the list page's PC bar (Python `PcBar`): its state and text
         let (state, text) = self.pc_status();
         canvas["pc_status"] = json!([state, text]);
@@ -2257,6 +2260,26 @@ impl Controller {
                     Err(e) => Err(format!("{}\n{e}", tr("Cannot change the number"))),
                 }
             }
+            // a pass-through lane's name (its key is "lane:<relay id>:<inputs|outputs>:<index>")
+            "rename" if s("key").starts_with("lane:") => {
+                let key = s("key");
+                let mut it = key["lane:".len()..].splitn(3, ':');
+                let (rid, side, i) = (it.next().unwrap_or(""), it.next().unwrap_or(""), it.next().unwrap_or(""));
+                let side = if side == "outputs" { "outputs" } else { "inputs" };
+                if !edit::rename_lane(&mut self.graph, rid, side, i.parse().unwrap_or(usize::MAX), &s("name")) {
+                    self.send_canvas();
+                    return;
+                }
+                Ok(())
+            }
+            // a group port's name (it may repeat)
+            "rename" if edit::port_of(&self.graph, &s("key")).is_some() => {
+                if !edit::set_port_name(&mut self.graph, &s("key"), &s("name")) {
+                    self.send_canvas();
+                    return;
+                }
+                Ok(())
+            }
             // a canvas group's title (its key is "group:<id>")
             "rename" if s("key").starts_with("group:") => {
                 if !edit::rename_group(&mut self.graph, &s("key")["group:".len()..], &s("name")) {
@@ -2270,8 +2293,26 @@ impl Controller {
                 let keys: Vec<String> =
                     v["keys"].as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect();
                 let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
-                if edit::group_blocks(&mut self.graph, &refs).is_none() {
+                let Some(gid) = edit::group_blocks(&mut self.graph, &refs) else {
                     self.broadcast(&json!({"ev": "error", "message": tr("Select two blocks or more")}));
+                    return;
+                };
+                self.auto_ports(&gid);
+                Ok(())
+            }
+            // a port added to a group's edge (from its header): "in" / "out", where the window placed it
+            "group_port_add" => {
+                if edit::add_group_port(&mut self.graph, &s("id"), &s("side"), f("x"), f("y")).is_none() {
+                    return;
+                }
+                Ok(())
+            }
+            // blocks' fill colour ("" = by kind)
+            "fill" => {
+                let keys: Vec<String> =
+                    v["keys"].as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect();
+                let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+                if !edit::set_fill(&mut self.graph, &refs, &s("color")) {
                     return;
                 }
                 Ok(())
@@ -2281,6 +2322,7 @@ impl Controller {
                 if !edit::add_to_group(&mut self.graph, &s("id"), &s("key")) {
                     return;
                 }
+                self.auto_ports(&s("id"));
                 Ok(())
             }
             "ungroup" | "group_color" | "group_collapse" => {
@@ -2455,6 +2497,8 @@ impl Controller {
             a if a.starts_with("lane.add.") => edit::add_lane(&mut self.graph, &bid, &a["lane.add.".len()..]),
             "lane.mode.straight" => edit::set_relay_routed(&mut self.graph, &bid, false),
             "lane.mode.routed" => edit::set_relay_routed(&mut self.graph, &bid, true),
+            "relay.fold" => edit::set_relay_folded(&mut self.graph, &bid, true),
+            "relay.open" => edit::set_relay_folded(&mut self.graph, &bid, false),
             a if a.starts_with("lane.del.") => edit::remove_lane(&mut self.graph, &bid, &a["lane.del.".len()..]),
             a if a.starts_with("member.") => {
                 self.platform_command(&json!({"cmd": "select_member", "group": bid, "member": &a["member.".len()..]}));
@@ -2464,6 +2508,76 @@ impl Controller {
         };
         if changed {
             self.graph_changed();
+        }
+    }
+
+    /// Every link crossing group gid's edge gets a port (Rust app only): links into one inner input share a port,
+    /// named after the block inside; a link that cannot run through a pass-through (an outbound's via, a group
+    /// outbound's member) stays as it is.
+    fn auto_ports(&mut self, gid: &str) {
+        self.rebuild();
+        let Some(row) =
+            self.graph.get("groups").and_then(Value::as_array).and_then(|a| a.iter().find(|x| x["id"] == json!(gid)))
+        else {
+            return;
+        };
+        let strs = |v: &Value| -> HashSet<String> {
+            v.as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect()
+        };
+        let members = strs(&row["members"]);
+        let mut ports = strs(&row["ports"]["in"]);
+        ports.extend(strs(&row["ports"]["out"]));
+        let inside = |k: &str| members.contains(k) || ports.contains(k);
+        let node = |k: &str| self.view.nodes.iter().find(|n| n.key == k);
+        let inner: Vec<&canvas::Node> = self.view.nodes.iter().filter(|n| members.contains(&n.key)).collect();
+        if inner.is_empty() {
+            return;
+        }
+        let x0 = inner.iter().map(|n| n.x).fold(f64::MAX, f64::min);
+        let x1 = inner.iter().map(|n| n.x + if n.kind == 1 { 280.0 } else if n.open { 400.0 } else { 260.0 }).fold(f64::MIN, f64::max);
+        // (inner input -> outside sources), (inner output -> outside input)
+        let mut incoming: Vec<((String, usize), Vec<(String, usize)>)> = vec![];
+        let mut outgoing: Vec<((String, usize), (String, usize))> = vec![];
+        for l in &self.view.links {
+            let (a, b) = (inside(&l.from), inside(&l.to));
+            if !a && b && !ports.contains(&l.to) {
+                let k = (l.to.clone(), l.inp);
+                match incoming.iter_mut().find(|(t, _)| *t == k) {
+                    Some((_, srcs)) => srcs.push((l.from.clone(), l.out)),
+                    None => incoming.push((k, vec![(l.from.clone(), l.out)])),
+                }
+            } else if a && !b && !ports.contains(&l.from) {
+                outgoing.push(((l.from.clone(), l.out), (l.to.clone(), l.inp)));
+            }
+        }
+        // a port's name: the inner block, and its port when it has several
+        let label = |key: &str, k: usize, input: bool| -> String {
+            let Some(n) = node(key) else { return String::new() };
+            let (count, labels) = if input { (n.ins, &n.in_labels) } else { (n.outs, &n.out_labels) };
+            match labels.get(k).filter(|_| count > 1) {
+                Some(l) => format!("{}: {l}", n.title),
+                None => n.title.clone(),
+            }
+        };
+        let todo: Vec<(&str, (String, usize), Vec<(String, usize)>, (String, usize))> = incoming
+            .into_iter()
+            .map(|(to, srcs)| ("in", to.clone(), srcs, to))
+            .chain(outgoing.into_iter().map(|(from, to)| ("out", from.clone(), vec![from], to)))
+            .collect();
+        for (side, (key, k), srcs, (to, inp)) in todo {
+            let name = label(&key, k, side == "in");
+            let y = node(&key).map_or(0.0, |n| n.y) + 56.0 + k as f64 * 28.0;
+            let x = if side == "in" { x0 - 220.0 } else { x1 + 60.0 };
+            let before = self.graph.clone();
+            let Some(p) = edit::add_group_port(&mut self.graph, gid, side, x, y) else { continue };
+            if !name.is_empty() {
+                edit::set_port_name(&mut self.graph, &p, &name);
+            }
+            let ok = srcs.iter().all(|(f, o)| edit::connect(&mut self.graph, f, *o, &p, 0).is_ok())
+                && edit::connect(&mut self.graph, &p, 0, &to, inp).is_ok();
+            if !ok {
+                self.graph = before;
+            }
         }
     }
 
@@ -2643,8 +2757,8 @@ impl Controller {
                 };
                 self.send_to(n, &msg);
             }
-            "move" | "connect" | "disconnect" | "lane_map" | "delete" | "duplicate" | "rename" | "color" | "group"
-            | "ungroup" | "group_color" | "group_collapse" | "group_add" => self.edit(cmd, v),
+            "move" | "connect" | "disconnect" | "lane_map" | "delete" | "duplicate" | "rename" | "color" | "fill" | "group"
+            | "ungroup" | "group_color" | "group_collapse" | "group_add" | "group_port_add" => self.edit(cmd, v),
             "add" => {
                 // (Python opens the editor for a new outbound other than Direct, and for a router / IF)
                 if let Some(open) = self.add_block(v) {

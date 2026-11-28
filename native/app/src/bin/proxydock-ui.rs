@@ -484,18 +484,9 @@ fn groups_follow(app: &App, models: &Models, rects: &HashMap<i32, (f32, f32, f32
     });
     let nodes: Vec<NodeData> = models.nodes.iter().collect();
     let groups = GROUPS.with(|g| g.borrow().clone());
-    for (i, (_, members, collapsed)) in groups.iter().enumerate() {
+    for (i, (_, members, _)) in groups.iter().enumerate() {
         let Some(mut row) = models.groups.row_data(i) else { continue };
-        let (x, y, mut w, h) = group_bounds(&nodes, members);
-        // collapsed: the band over the stand-in block is as wide as that block, not as the hidden members
-        if *collapsed
-            && let Some(sw) = nodes
-                .iter()
-                .find(|n| n.kind == 5 && (n.x - x).abs() < 0.5 && (n.y - (y + GROUP_HEAD + 4.0)).abs() < 0.5)
-                .and_then(|n| SIZES.with(|s| s.borrow().get(&n.id).map(|z| z.0)))
-        {
-            w = sw;
-        }
+        let (x, y, w, h) = group_bounds(&nodes, members);
         if (row.x - x).abs() > 0.5
             || (row.y - y).abs() > 0.5
             || (row.width - w).abs() > 0.5
@@ -512,7 +503,14 @@ fn groups_follow(app: &App, models: &Models, rects: &HashMap<i32, (f32, f32, f32
     if app.get_sel_count() != sel_count {
         app.set_sel_count(sel_count);
     }
-    let sel = models.groups.iter().find(|g| g.selected);
+    // the selected group: its sheet, or (collapsed) the block standing in for it
+    let sel = models.groups.iter().find(|g| g.selected).or_else(|| {
+        let keys = models.keys.borrow();
+        let key = nodes.iter().find(|n| n.selected && n.kind == 5).and_then(|n| keys.get(n.id as usize - 1))?;
+        let core = key.strip_prefix("group:")?;
+        let i = groups.iter().position(|g| g.0 == core)?;
+        models.groups.row_data(i)
+    });
     let (gid, collapsed) = sel.map_or((0, false), |g| (g.id, g.collapsed));
     if app.get_group_sel() != gid || app.get_group_sel_collapsed() != collapsed {
         app.set_group_sel(gid);
@@ -541,7 +539,7 @@ fn drop_preview(app: &App, models: &Models) {
     let ds = app.global::<DragState>();
     let node = ds.get_dragged_node_id();
     let dragging = ds.get_is_dragging() && node != 0;
-    let hit = dragging.then(|| models.nodes.iter().find(|n| n.id == node && n.kind != 5)).flatten().and_then(|n| {
+    let hit = dragging.then(|| models.nodes.iter().find(|n| n.id == node && n.kind < 5)).flatten().and_then(|n| {
         let (w, h) = SIZES.with(|s| s.borrow().get(&n.id).copied().unwrap_or((260.0, 120.0)));
         let rect = (n.x + ds.get_drag_offset_x(), n.y + ds.get_drag_offset_y(), w, h);
         drop_group(&models.groups, n.group_id, rect).map(|g| (g, rect))
@@ -1068,6 +1066,7 @@ impl Models {
                 out_labels: strings(&n["out_labels"]),
                 wires: ModelRc::new(VecModel::from(wires)),
                 routed: n["routed"] == json!(true),
+                open: n["open"] == json!(true),
                 card: card.into(),
                 state: state.into(),
                 state_text: node_state_text(state, &error),
@@ -1075,6 +1074,11 @@ impl Models {
                 autostart: n["autostart"] == json!(true),
                 auto_restart: n["auto_restart"] == json!(true),
                 group_id: 0,
+                fill: c["fills"]
+                    .get(n["key"].as_str().unwrap_or(""))
+                    .and_then(Value::as_str)
+                    .and_then(hex_color)
+                    .unwrap_or(Color::from_argb_u8(0, 0, 0, 0)),
                 swatch: hex_color(n["swatch"].as_str().unwrap_or("")).unwrap_or(WIRE),
                 own_color: n["color"].as_str().is_some_and(|c| !c.is_empty()),
                 out_colors: ModelRc::new(VecModel::from(
@@ -1104,14 +1108,32 @@ impl Models {
         // canvas groups: each block's group, the rows (bounds are fitted once the blocks are measured)
         let groups_raw: Vec<&Value> = c["groups"].as_array().into_iter().flatten().collect();
         let mut group_rows: Vec<(String, Vec<i32>, bool)> = vec![];
+        // each group's blocks (not counting its ports) and its ports: (port block, name) in and out
+        let mut block_counts: Vec<usize> = vec![];
+        let mut group_ports: Vec<[Vec<(i32, String)>; 2]> = vec![];
         for (gi, gr) in groups_raw.iter().enumerate() {
-            let members: Vec<i32> = gr["members"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .filter_map(|k| ids.get(k).copied())
-                .collect();
+            let ids_of = |v: &Value| -> Vec<i32> {
+                v.as_array().into_iter().flatten().filter_map(Value::as_str).filter_map(|k| ids.get(k).copied()).collect()
+            };
+            let mut members = ids_of(&gr["members"]);
+            block_counts.push(members.len());
+            let mut sides: [Vec<(i32, String)>; 2] = [vec![], vec![]];
+            for (side, k) in ["in", "out"].iter().enumerate() {
+                for pid in ids_of(&gr["ports"][*k]) {
+                    // a port: a small chip with its name, its outer dot on the group's edge
+                    if let Some(n) = nodes.iter_mut().find(|n| n.id == pid) {
+                        n.kind = 6;
+                        n.detail = SharedString::from(*k);
+                        n.in_labels = ModelRc::default();
+                        n.out_labels = ModelRc::default();
+                        n.lines = ModelRc::default();
+                        n.wires = ModelRc::default();
+                        sides[side].push((pid, n.title.to_string()));
+                    }
+                    members.push(pid);
+                }
+            }
+            group_ports.push(sides);
             for n in nodes.iter_mut().filter(|n| members.contains(&n.id)) {
                 n.group_id = gi as i32 + 1;
             }
@@ -1152,8 +1174,17 @@ impl Models {
                 continue;
             }
             let sid = nodes.len() as i32 + 1;
-            let mut ins: Vec<(i32, String)> = vec![]; // member pin, label
-            let mut outs: Vec<(i32, String)> = vec![];
+            // member pin, label: the group's ports first, in order (an unwired one too), then any other link
+            // crossing its edge
+            let mut ins: Vec<(i32, String)> = group_ports[gi][0].iter().map(|(p, t)| (pin_in(*p, 0), t.clone())).collect();
+            let mut outs: Vec<(i32, String)> =
+                group_ports[gi][1].iter().map(|(p, t)| (pin_out(*p, 0), t.clone())).collect();
+            for (k, (p, _)) in ins.iter().enumerate() {
+                standin_pins.insert(pin_in(sid, k as i32), *p);
+            }
+            for (k, (p, _)) in outs.iter().enumerate() {
+                standin_pins.insert(pin_out(sid, k as i32), *p);
+            }
             let title_of = |id: i32| nodes.iter().find(|n| n.id == id).map(|n| n.title.to_string()).unwrap_or_default();
             for (k, l) in raw_links.iter().enumerate() {
                 let (Some(a), Some(b)) = (
@@ -1192,7 +1223,7 @@ impl Models {
             }
             let r = &rows[gi];
             let lines = vec![InfoLine {
-                text: tr("{count} blocks").replace("{count}", &members.len().to_string()).into(),
+                text: tr("{count} blocks").replace("{count}", &block_counts[gi].to_string()).into(),
                 tone: 2,
             }];
             nodes.push(NodeData {
@@ -1200,7 +1231,7 @@ impl Models {
                 title: r.title.clone(),
                 kind: 5,
                 x: r.x,
-                y: r.y + GROUP_HEAD + 4.0,
+                y: r.y,
                 ins: ins.len().min(31) as i32,
                 outs: outs.len().min(31) as i32,
                 in_labels: ModelRc::new(VecModel::from(
@@ -1211,6 +1242,7 @@ impl Models {
                 )),
                 lines: ModelRc::new(VecModel::from(lines)),
                 swatch: r.color,
+                fill: r.color,
                 ..Default::default()
             });
             ids.insert(format!("group:{}", group_rows[gi].0), sid);
@@ -2688,7 +2720,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 // a single block dropped onto another group's box joins that group
                 if let Dragged::Node(id) = dragged {
                     let selected = nodes.iter().filter(|n| n.selected).count();
-                    if let Some(n) = nodes.iter().find(|n| n.id == id && n.kind != 5).filter(|_| selected <= 1) {
+                    if let Some(n) = nodes.iter().find(|n| n.id == id && n.kind < 5).filter(|_| selected <= 1) {
                         let (w, h) = SIZES.with(|s| s.borrow().get(&n.id).copied().unwrap_or((260.0, 120.0)));
                         if let Some(g) = drop_group(&groups, n.group_id, (n.x, n.y, w, h)) {
                             send(json!({"cmd": "group_add", "id": group_key(g.id), "key": key_of(n.id)}));
@@ -2797,6 +2829,19 @@ fn main() -> Result<(), slint::PlatformError> {
             let send_c = send.clone();
             app.global::<NodeEditorEvents>().on_group_collapse_requested(move |gid, collapsed| {
                 send_c(json!({"cmd": "group_collapse", "id": group_key(gid), "collapsed": collapsed}));
+            });
+            // the header's "Add input port" / "Add output port": a port at the bottom of the box's left / right side
+            app.global::<GroupStyleDefaults>().set_header_actions(ModelRc::new(VecModel::from(vec![
+                SharedString::from(tr("Add input port")),
+                SharedString::from(tr("Add output port")),
+            ])));
+            let (send_p, g3) = (send.clone(), groups.clone());
+            app.global::<NodeEditorEvents>().on_group_action_requested(move |gid, i| {
+                let Some(row) = g3.iter().find(|g| g.id == gid) else { return };
+                let side = if i == 0 { "in" } else { "out" };
+                let x = if i == 0 { row.x + GROUP_PAD } else { row.x + row.width - GROUP_PAD - 180.0 };
+                let y = row.y + row.height - GROUP_PAD;
+                send_p(json!({"cmd": "group_port_add", "id": group_key(gid), "side": side, "x": x, "y": y}));
             });
             let (send_r, weak_r) = (send.clone(), app.as_weak());
             let _ = send_r;
@@ -3023,10 +3068,22 @@ fn main() -> Result<(), slint::PlatformError> {
                 send4(m);
             }
         });
-        // a block double-clicked: its editor (Python)
-        let (send5, key_of5) = (send.clone(), key_of.clone());
+        // a block double-clicked: its editor (Python); a group's port: its name; a collapsed group: expanded
+        let (send5, key_of5, models5, weak5) = (send.clone(), key_of.clone(), models.clone(), app.as_weak());
         app.global::<NodeEditorEvents>().on_node_double_clicked(move |node| {
             let key = key_of5(node);
+            if let Some(gid) = key.strip_prefix("group:") {
+                send5(json!({"cmd": "group_collapse", "id": gid, "collapsed": false}));
+                return;
+            }
+            if let Some(n) = models5.nodes.iter().find(|n| n.id == node && n.kind == 6) {
+                let Some(a) = weak5.upgrade() else { return };
+                RENAME_KEY.with(|k| *k.borrow_mut() = key);
+                a.set_rename_text(n.title.clone());
+                a.set_rename_title(tr("Port name").into());
+                a.set_rename_open(true);
+                return;
+            }
             if key != "pc" {
                 send5(json!({"cmd": "edit_open", "id": key}));
             }
@@ -3099,6 +3156,10 @@ fn main() -> Result<(), slint::PlatformError> {
                 move |color: String| {
                     if let Some(gid) = key.strip_prefix("group:") {
                         send(json!({"cmd": "group_color", "id": gid, "color": color}));
+                        return;
+                    }
+                    if let Some(keys) = key.strip_prefix("fill:") {
+                        send(json!({"cmd": "fill", "keys": keys.split(',').collect::<Vec<_>>(), "color": color}));
                         return;
                     }
                     let mut msg = json!({"cmd": "color", "key": key, "color": color});
@@ -3215,10 +3276,35 @@ fn main() -> Result<(), slint::PlatformError> {
                         models7.nodes.iter().filter(|n| key_of7(n.id) == key).map(|n| n.title.to_string()).collect();
                     ask_delete(&weak7, &names, json!({"cmd": "delete", "keys": [key], "links": []}));
                 }
+                // "Block colour": the selection, with this block; the palette in the middle of the window
+                "fill" => {
+                    let Some(a) = weak7.upgrade() else { return };
+                    let mut keys: Vec<String> =
+                        models7.nodes.iter().filter(|n| n.selected && n.kind != 5).map(|n| key_of7(n.id)).collect();
+                    if !keys.contains(&key) {
+                        keys = vec![key.clone()];
+                    }
+                    let first = models7.nodes.iter().find(|n| key_of7(n.id) == key);
+                    let cur = first.as_ref().map(|n| n.fill).filter(|c| c.alpha() > 0);
+                    let hex = cur.map(|c| format!("#{:02x}{:02x}{:02x}", c.red(), c.green(), c.blue())).unwrap_or_default();
+                    PALETTE_FOR.with(|p| *p.borrow_mut() = (format!("fill:{}", keys.join(",")), String::new(), hex.clone()));
+                    a.set_palette_title(if keys.len() == 1 {
+                        first.map(|n| n.title.clone()).unwrap_or_default()
+                    } else {
+                        tr("{count} blocks").replace("{count}", &keys.len().to_string()).into()
+                    });
+                    a.set_palette_current(PALETTE.iter().position(|(h, _)| *h == hex).map_or(-1, |i| i as i32));
+                    a.set_palette_auto_current(cur.is_none());
+                    a.set_t_palette_auto(tr("Default").into());
+                    let size = a.window().size().to_logical(a.window().scale_factor());
+                    a.set_palette_x(size.width / 2.0 - 150.0);
+                    a.set_palette_y(size.height / 3.0);
+                    a.set_palette_open(true);
+                }
                 // "Group blocks": the selection, with this block
                 "group.make" => {
                     let mut keys: Vec<String> =
-                        models7.nodes.iter().filter(|n| n.selected && n.kind != 5).map(|n| key_of7(n.id)).collect();
+                        models7.nodes.iter().filter(|n| n.selected && n.kind < 5).map(|n| key_of7(n.id)).collect();
                     if !keys.contains(&key) {
                         keys.push(key.clone());
                     }
@@ -3241,6 +3327,24 @@ fn main() -> Result<(), slint::PlatformError> {
                             app.set_canvas_pan_y(app.get_height_() / 2.0 - (n.y + 34.0) * z);
                         }
                     }
+                }
+                // a pass-through lane's chip double-clicked: "lane.rename.<inputs|outputs>.<index>", the rename box
+                a if a.starts_with("lane.rename.") => {
+                    let Some(a_) = weak7.upgrade() else { return };
+                    let Some((side, i)) = a["lane.rename.".len()..].split_once('.') else { return };
+                    let i: usize = i.parse().unwrap_or(0);
+                    let cur = models7
+                        .nodes
+                        .iter()
+                        .find(|n| key_of7(n.id) == key)
+                        .and_then(|n| if side == "outputs" { n.out_labels.row_data(i) } else { n.in_labels.row_data(i) })
+                        .unwrap_or_default();
+                    // (a lane without a name shows its number: the box starts empty)
+                    let cur = if cur.parse::<usize>().is_ok_and(|k| k == i + 1) { SharedString::new() } else { cur };
+                    RENAME_KEY.with(|k| *k.borrow_mut() = format!("lane:{key}:{side}:{i}"));
+                    a_.set_rename_text(cur);
+                    a_.set_rename_title(tr("Lane name").into());
+                    a_.set_rename_open(true);
                 }
                 // a pass-through's inside wire dragged on the block: "lane.wire.<input>.<output or -1>"
                 a if a.starts_with("lane.wire.") => {
@@ -3484,7 +3588,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let (models4, key_of4, send4) = (models.clone(), key_of.clone(), send.clone());
         app.on_group_make(move || {
             let keys: Vec<String> =
-                models4.nodes.iter().filter(|n| n.selected && n.kind != 5).map(|n| key_of4(n.id)).collect();
+                models4.nodes.iter().filter(|n| n.selected && n.kind < 5).map(|n| key_of4(n.id)).collect();
             send4(json!({"cmd": "group", "keys": keys}));
         });
         let weak = app.as_weak();

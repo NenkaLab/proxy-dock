@@ -5,7 +5,7 @@ import {
     NodeEditor, BaseNode, Pin, PinTypes, NodeEditorEvents, NodeEditorInternalCallbacks, NodeEditorComputations, LinkData, GroupData, GroupStyleDefaults, DragState, PinGrab,
 } from "@nodeeditor";
 
-export { PinTypes, NodeEditorEvents, NodeEditorInternalCallbacks, NodeEditorComputations, DragState, PinGrab }
+export { PinTypes, NodeEditorEvents, NodeEditorInternalCallbacks, NodeEditorComputations, DragState, PinGrab, GroupStyleDefaults }
 import "../../../fonts/PretendardVariable.ttf";
 import "../../../fonts/JetBrainsMono.ttf";
 
@@ -109,6 +109,8 @@ export struct NodeData {
     wires: [Wire],
     // pass-through: wired freely (its inputs and outputs added to apart)
     routed: bool,
+    // pass-through: open as a box (named lanes, wiring edited inside); folded = the small block
+    open: bool,
     // a card block: its id and state ("running" / "starting" / "stopped" / "error"), else ""
     card: string,
     state: string,
@@ -127,6 +129,8 @@ export struct NodeData {
     out-colors: [OutColor],
     // its canvas group (0 = none); a collapsed group's stand-in block has kind 5
     group-id: int,
+    // its fill colour (a group's stand-in: the group's colour); transparent = by kind
+    fill: color,
     // traffic through the block right now ("" when none)
     rate: string,
     // an outbound block's latency: "123 ms", "✕", "…" ("" = none); tone 0 testing, 1 fast, 2 slow, 3 very slow / failed
@@ -358,6 +362,31 @@ component NodeChip inherits Rectangle {
     chip-ta := TouchArea { clicked => { root.clicked(); } }
 }
 
+// a pass-through lane's name on its box: a chip; double-click to rename the lane
+component LaneChip inherits Rectangle {
+    in property <string> text;
+    in property <bool> right;
+    in property <color> fg;
+    callback renamed();
+    height: 26px;
+    border-radius: 13px;
+    background: chip-ta.has-hover ? root.fg.with-alpha(0.14) : root.fg.with-alpha(0.08);
+    Text {
+        x: 10px;
+        width: parent.width - 20px;
+        horizontal-alignment: root.right ? TextHorizontalAlignment.right : TextHorizontalAlignment.left;
+        vertical-alignment: center;
+        text: root.text;
+        font-size: 12px * Type.scale;
+        font-weight: 500;
+        color: root.fg;
+        overflow: elide;
+    }
+    chip-ta := TouchArea {
+        double-clicked => { root.renamed(); }
+    }
+}
+
 component ProxyNode inherits BaseNode {
     in property <string> title;
     in property <string> detail;
@@ -368,6 +397,7 @@ component ProxyNode inherits BaseNode {
     in property <[string]> out-labels;
     in property <[Wire]> wires;
     in property <bool> routed;
+    in property <bool> open;
     in property <string> state;
     in property <string> state-text;
     in property <[InfoLine]> lines;
@@ -397,21 +427,26 @@ component ProxyNode inherits BaseNode {
     callback menu-action(string);
 
     // layout: the title row, the info lines (and a card's state, the traffic), then a row per port with its name
-    property <length> top: 44px;
+    // (6: a group's port, a chip with its name: no info lines, its one lane level with the name)
+    property <bool> port: root.kind == 6;
+    property <length> top: root.port ? 0px : 44px;
     property <length> line-h: 12px * Type.scale * 1.5;
-    property <length> lane-h: 28px;
-    property <length> inset: 40px;
+    // a pass-through (not a wireless half): open, a box with a named chip per lane and its wiring between them
+    property <bool> relay: root.kind == 3 && root.detail == "";
+    property <bool> box: root.relay && root.open;
+    property <length> lane-h: root.box ? 36px : 28px;
+    property <length> inset: root.box ? 128px : 40px;
     property <int> rows: max(ins, outs);
-    property <bool> lanes: kind == 1 || (kind == 3 && (ins > 1 || outs > 1 || wires.length > 0));
+    property <bool> lanes: kind == 1 || root.box || (kind == 3 && (ins > 1 || outs > 1 || wires.length > 0));
     // blocks traffic passes keep a line for its speed (faded while there is none), so they keep their size
     property <bool> shows-rate: root.kind <= 3;
     property <int> line-count: root.lines.length + (root.state != "" ? 1 : 0) + (root.shows-rate ? 1 : 0);
     // a card: Run / At start / Auto-restart chips; an IF in switch mode: its on / off buttons (Python's block widgets)
     property <bool> chips: root.state != "" || root.has-switch;
     property <length> chips-top: root.top + root.line-count * root.line-h + 6px;
-    property <length> ports-top: root.chips-top + (root.chips ? 40px : 4px);
+    property <length> ports-top: root.chips-top + (root.chips ? 40px : 4px) + root.head-h;
     // the block grows to fit its chips (measured as all on: with their check, so a click never resizes it)
-    property <length> base-width: kind == 0 ? 260px : kind == 1 ? 280px : kind == 3 ? 220px : 260px;
+    property <length> base-width: kind == 0 ? 260px : kind == 1 ? 280px : root.box ? 400px : kind == 3 ? 220px : root.port ? 180px : 260px;
     property <length> card-chips-w: root.state != "" ? card-measure.preferred-width + 32px : 0px;
     property <length> switch-chips-w: root.has-switch ? 2 * max(on-measure.preferred-width, off-measure.preferred-width) + 6px + 32px : 0px;
     node-width: max(root.base-width, root.card-chips-w, root.switch-chips-w);
@@ -424,18 +459,21 @@ component ProxyNode inherits BaseNode {
     }
     on-measure := NodeChip { visible: false; text: CanvasText.switched-on; on: true; }
     off-measure := NodeChip { visible: false; text: CanvasText.switched-off; on: true; }
-    // a pass-through (not a wireless half): its inside wires are dragged on the block, a footer adds a lane
-    property <bool> lane-edit: root.kind == 3 && root.lanes && root.detail == "";
-    property <length> foot-h: root.lane-edit ? 36px : 0px;
-    node-height: root.ports-top + (root.rows > 0 ? root.rows * root.lane-h + 8px : 0px) + root.foot-h;
+    // an open pass-through: its inside wires are dragged on the box, the buttons under its title add lanes
+    // (folded, the wiring is only shown)
+    property <bool> lane-edit: root.box;
+    property <length> head-h: root.lane-edit ? 36px : 0px;
+    node-height: root.ports-top + (root.rows > 0 ? root.rows * root.lane-h + 8px : 0px);
 
-    // (5: a collapsed group standing in for its blocks, in the group's colour)
-    in property <color> group-color: transparent;
-    property <color> container: kind == 0 ? M3.green-container : kind == 1 ? M3.tertiary-container
-        : kind == 3 ? M3.secondary-container : kind == 4 ? M3.surface-container-highest
-        : kind == 5 ? (root.group-color.alpha > 0 ? root.group-color.mix(M3.surface-container-high, 0.35) : M3.surface-container-highest) : M3.primary-container;
-    property <color> on-container: kind == 0 ? M3.on-green-container : kind == 1 ? M3.on-tertiary-container
-        : kind == 3 ? M3.on-secondary-container : kind == 4 || kind == 5 ? M3.on-surface : M3.on-primary-container;
+    // a fill colour chosen for the block (5, a collapsed group standing in for its blocks: the group's colour)
+    in property <color> fill: transparent;
+    property <bool> filled: root.fill.alpha > 0;
+    property <color> container: root.filled ? root.fill.mix(M3.surface-container-high, 0.35)
+        : kind == 0 ? M3.green-container : kind == 1 ? M3.tertiary-container
+        : kind == 3 ? M3.secondary-container : kind >= 4 ? M3.surface-container-highest : M3.primary-container;
+    property <color> on-container: root.filled || kind >= 4 ? M3.on-surface
+        : kind == 0 ? M3.on-green-container : kind == 1 ? M3.on-tertiary-container
+        : kind == 3 ? M3.on-secondary-container : M3.on-primary-container;
 
     // y of the centre of port row n
     pure function lane-y(n: int) -> length {
@@ -452,7 +490,7 @@ component ProxyNode inherits BaseNode {
         height: 100%;
         background: root.container;
         // selected blocks morph to a rounder shape (expressive shape change)
-        border-radius: root.selected ? 28px : 18px;
+        border-radius: root.port ? root.node-height / 2 : root.selected ? 28px : 18px;
         border-width: root.selected ? 3px : 0px;
         border-color: M3.primary;
         drop-shadow-blur: root.selected ? 12px : 3px;
@@ -469,8 +507,8 @@ component ProxyNode inherits BaseNode {
                 : root.state == "error" ? M3.error : root.on-container.with-alpha(0.35);
         }
         Text {
-            x: root.state != "" ? 34px : 20px; y: 12px;
-            width: root.node-width - self.x - (root.state != "" ? 84px : root.kind <= 3 ? 52px : 14px)
+            x: root.state != "" ? 34px : 20px; y: root.port ? (root.node-height - self.height) / 2 : 12px;
+            width: root.node-width - self.x - (root.state != "" ? 84px : root.relay ? 84px : root.kind <= 3 || root.kind == 5 ? 52px : 14px)
                 - (root.kind <= 2 ? 28px : 0px) - (root.badge != "" ? badge-pill.width + 6px : 0px);
             text: root.title;
             font-size: 16px * Type.scale;
@@ -623,6 +661,32 @@ component ProxyNode inherits BaseNode {
             }
             edit-ta := TouchArea { clicked => { root.edit(); } }
         }
+        // a pass-through: fold the box to a small block / open it again
+        if root.relay: Rectangle {
+            x: root.node-width - 76px; y: 8px;
+            width: 32px; height: 32px; border-radius: 16px;
+            background: fold-ta.has-hover ? root.on-container.with-alpha(0.14) : transparent;
+            Image {
+                width: 20px;
+                height: 20px;
+                source: root.open ? @image-url("icons/unfold_less.svg") : @image-url("icons/unfold_more.svg");
+                colorize: root.on-container;
+            }
+            fold-ta := TouchArea { clicked => { root.menu-action(root.open ? "relay.fold" : "relay.open"); } }
+        }
+        // a collapsed group's stand-in: expand it again (its members come back where they were)
+        if root.kind == 5: Rectangle {
+            x: root.node-width - 44px; y: 8px;
+            width: 32px; height: 32px; border-radius: 16px;
+            background: expand-ta.has-hover ? root.on-container.with-alpha(0.14) : transparent;
+            Image {
+                width: 20px;
+                height: 20px;
+                source: @image-url("icons/unfold_more.svg");
+                colorize: root.on-container;
+            }
+            expand-ta := TouchArea { clicked => { root.edit(); } }
+        }
         // a card: run / stop in the corner
         if root.state != "": Rectangle {
             x: root.node-width - 44px; y: 8px;
@@ -734,7 +798,7 @@ component ProxyNode inherits BaseNode {
     for btn[k] in root.lane-edit ? (root.routed ? 2 : 1) : 0: Rectangle {
         property <length> w: (root.node-width - 24px - (root.routed ? 8px : 0px)) / (root.routed ? 2 : 1);
         x: 12px + k * (self.w + 8px);
-        y: root.node-height - root.foot-h;
+        y: root.ports-top - root.head-h - 2px;
         width: self.w;
         height: 28px;
         border-radius: 14px;
@@ -761,8 +825,26 @@ component ProxyNode inherits BaseNode {
         add-ta := TouchArea { clicked => { root.menu-action(k == 0 ? "lane.add.inputs" : "lane.add.outputs"); } }
     }
 
+    // an open pass-through: each lane's name on a chip (double-click to rename it)
+    for label[i] in root.box ? root.in-labels : []: LaneChip {
+        x: 14px;
+        y: root.lane-y(i) - self.height / 2;
+        width: root.inset - 30px;
+        text: label;
+        fg: root.on-container;
+        renamed => { root.menu-action("lane.rename.inputs." + i); }
+    }
+    for label[o] in root.box ? root.out-labels : []: LaneChip {
+        x: root.node-width - root.inset + 16px;
+        y: root.lane-y(o) - self.height / 2;
+        width: root.inset - 30px;
+        text: label;
+        right: true;
+        fg: root.on-container;
+        renamed => { root.menu-action("lane.rename.outputs." + o); }
+    }
     // each port's name, small, inside the block next to its dot (M3 Label Small)
-    for label[i] in root.in-labels: Text {
+    for label[i] in root.box ? [] : root.in-labels: Text {
         x: 16px;
         y: root.lane-y(i) - self.height / 2;
         width: root.node-width / 2 - 20px;
@@ -794,7 +876,7 @@ component ProxyNode inherits BaseNode {
         }
     }
     // (a Router's colour dot sits right of its name, next to the port)
-    for label[o] in root.out-labels: Text {
+    for label[o] in root.box ? [] : root.out-labels: Text {
         x: root.node-width / 2 + 4px;
         y: root.lane-y(o) - self.height / 2;
         width: root.node-width / 2 - (root.kind == 1 ? 42px : 20px);
@@ -4139,6 +4221,9 @@ export component App inherits Window {
         GroupStyleDefaults.sheet-color = M3.primary;
         GroupStyleDefaults.border-color-selected = M3.primary;
         GroupStyleDefaults.title-color = M3.on-surface;
+        // collapsed: only the stand-in block shows (it has the expand button), no band above it
+        GroupStyleDefaults.collapsed-hidden = true;
+        GroupStyleDefaults.collapse-icon = @image-url("icons/unfold_less.svg");
     }
     // canvas
     in property <[NodeData]> nodes;
@@ -4731,13 +4816,14 @@ export component App inherits Window {
                                 swatch: node.swatch;
                                 own-color: node.own-color;
                                 group-id: node.group-id;
-                                group-color: node.swatch;
+                                fill: node.fill;
                                 out-colors: node.out-colors;
                                 pick-color(out, x, y) => { root.open-palette(node.id, out, x, y); }
                                 edit-number => { root.edit-number(node.id); }
                                 set-switch(on) => { root.set-switch(root.node-key(node.id), on); }
                                 wires: node.wires;
                                 routed: node.routed;
+                                open: node.open;
                                 state: node.state;
                                 rate: node.rate;
                                 badge: node.badge;

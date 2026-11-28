@@ -175,6 +175,8 @@ export global NodeEditorEvents {
     /// The host applies it to its group row (`wire_groups!` does this); the
     /// target value, not a toggle, keeps a repeated request idempotent.
     callback group-collapse-requested(/* group-id */ int, /* collapsed */ bool);
+    /// One of `GroupStyleDefaults.header-actions` was clicked on an expanded sheet's header.
+    callback group-action-requested(/* group-id */ int, /* action index */ int);
 }
 
 /// Internal callback registry for BaseNode/Pin → Rust communication.
@@ -610,6 +612,15 @@ export global GroupStyleDefaults {
     in-out property <color> border-color-selected: #ffffff;
     in-out property <color> title-color: #ffffff;
     in-out property <length> title-font-size: 14px;
+    /// A collapsed sheet draws nothing and takes no input (the host shows a
+    /// stand-in node for the group instead of the header band).
+    in-out property <bool> collapsed-hidden: false;
+    /// The collapse toggle's icon (colourised with title-color); without one
+    /// the toggle is a text arrow.
+    in-out property <image> collapse-icon;
+    /// Buttons on an expanded sheet's header, left of the collapse toggle (their text); a click is
+    /// `NodeEditorEvents.group-action-requested(group, index)`.
+    in-out property <[string]> header-actions;
 }
 
 /// Minimap component for bird's-eye view of the node graph.
@@ -1152,6 +1163,10 @@ export component BaseNode inherits Rectangle {
         if reported-node-id != node-id {
             if reported-node-id != 0 {
                 NodeEditorInternalCallbacks.remove-node(reported-node-id);
+                // A reused repeater row may retire an id that another row has
+                // already claimed in this same model swap: have every live
+                // component publish itself again so nothing it owned is lost.
+                GeometryVersion.projection-version += 1;
             }
             reported-node-id = node-id;
         }
@@ -1353,6 +1368,8 @@ export component Pin inherits Rectangle {
         if reported-pin-id != pin-id {
             if reported-pin-id > 0 {
                 NodeEditorInternalCallbacks.remove-pin(reported-pin-id);
+                // (see BaseNode.report-geometry: another pin may own that id now)
+                GeometryVersion.projection-version += 1;
             }
             reported-pin-id = pin-id;
         }
@@ -1520,7 +1537,7 @@ export component BaseGroup inherits Rectangle {
     property <length> world-pos-x: world-x + persistent-offset-x + (root.follows-shared-drag ? DragState.drag-offset-x : drag-area.offset-x);
     property <length> world-pos-y: world-y + persistent-offset-y + (root.follows-shared-drag ? DragState.drag-offset-y : drag-area.offset-y);
     /// The rendered height: the header band while collapsed.
-    out property <length> displayed-height: root.collapsed ? root.header-height : root.group-height;
+    out property <length> displayed-height: root.collapsed ? (GroupStyleDefaults.collapsed-hidden ? 0px : root.header-height) : root.group-height;
     out property <length> screen-x: world-pos-x * ViewportState.zoom + ViewportState.pan-x;
     out property <length> screen-y: world-pos-y * ViewportState.zoom + ViewportState.pan-y;
     out property <bool> hovered: drag-area.has-hover;
@@ -1531,6 +1548,7 @@ export component BaseGroup inherits Rectangle {
     height: displayed-height;
     background: transparent;
     clip: false;
+    visible: !(root.collapsed && GroupStyleDefaults.collapsed-hidden);
 
     // The displayed rectangle is what marquee selection and the minimap see:
     // a collapsed sheet contributes its band, not its expanded bounds.
@@ -1681,10 +1699,38 @@ export component GroupSheet inherits BaseGroup {
         border-bottom-left-radius: root.collapsed ? GroupStyleDefaults.border-radius : 0px;
         border-bottom-right-radius: root.collapsed ? GroupStyleDefaults.border-radius : 0px;
 
+        actions := HorizontalLayout {
+            x: parent.width - root.header-height - self.width;
+            y: 4px;
+            height: root.header-height - 8px;
+            spacing: 6px;
+            visible: !root.collapsed && self.width + 80px < parent.width - root.header-height;
+            for a[i] in GroupStyleDefaults.header-actions: Rectangle {
+                width: action-text.preferred-width + 20px;
+                border-radius: self.height / 2;
+                border-width: 1px;
+                border-color: GroupStyleDefaults.title-color.with-alpha(0.35);
+                background: action-ta.has-hover ? GroupStyleDefaults.title-color.with-alpha(0.12) : transparent;
+                action-text := Text {
+                    text: a;
+                    color: GroupStyleDefaults.title-color;
+                    font-size: GroupStyleDefaults.title-font-size - 2px;
+                    vertical-alignment: center;
+                }
+                action-ta := TouchArea {
+                    pointer-event(event) => {
+                        if event.kind == PointerEventKind.down {
+                            NodeEditorInternalCallbacks.take-editor-focus();
+                        }
+                    }
+                    clicked => { NodeEditorEvents.group-action-requested(root.group-id, i); }
+                }
+            }
+        }
         Text {
             x: 10px;
             y: 0;
-            width: parent.width - root.header-height - 10px;
+            width: parent.width - root.header-height - 10px - (actions.visible ? actions.width + 6px : 0px);
             height: 100%;
             vertical-alignment: center;
             text: root.title;
@@ -1710,7 +1756,15 @@ export component GroupSheet inherits BaseGroup {
             clicked => {
                 NodeEditorEvents.group-collapse-requested(root.group-id, !root.collapsed);
             }
-            Text {
+            if GroupStyleDefaults.collapse-icon.width > 0: Image {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: 20px;
+                height: 20px;
+                source: GroupStyleDefaults.collapse-icon;
+                colorize: GroupStyleDefaults.title-color;
+            }
+            if GroupStyleDefaults.collapse-icon.width == 0: Text {
                 width: 100%;
                 height: 100%;
                 horizontal-alignment: center;

@@ -318,12 +318,67 @@ pub fn add_to_group(g: &mut Obj, gid: &str, key: &str) -> bool {
     true
 }
 
-/// the group goes, its blocks stay where they are
+/// the group goes, its blocks stay where they are; its ports go too, what ran through them joined up
 pub fn ungroup(g: &mut Obj, gid: &str) -> bool {
+    let ports: Vec<String> = group_mut(g, gid)
+        .map(|x| {
+            ["in", "out"]
+                .iter()
+                .flat_map(|k| x["ports"][k].as_array().cloned().unwrap_or_default())
+                .filter_map(|p| p.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    for p in &ports {
+        delete(g, p);
+    }
     let before = g.get("groups").and_then(Value::as_array).map_or(0, Vec::len);
     groups_mut(g).retain(|x| x["id"] != json!(gid));
     graph::clean_groups(g);
     g.get("groups").and_then(Value::as_array).map_or(0, Vec::len) != before
+}
+
+/// A new port on side `side` ("in" / "out") of group gid at x, y: a pass-through with one lane named
+/// "Input n" / "Output n"; its id.
+pub fn add_group_port(g: &mut Obj, gid: &str, side: &str, x: f64, y: f64) -> Option<String> {
+    let side = if side == "out" { "out" } else { "in" };
+    let count = group_mut(g, gid)?["ports"][side].as_array().map_or(0, Vec::len);
+    let name = tr(if side == "in" { "Input {n}" } else { "Output {n}" }).replace("{n}", &(count + 1).to_string());
+    let n = graph::validate_relay_node(&json!({
+        "id": crate::ids::new_id(), "name": name, "pos": [x, y], "inputs": [Value::Object(graph::new_lane("out"))]
+    }));
+    let id = push(g, "relays", n);
+    let row = group_mut(g, gid)?;
+    if !row["ports"].is_object() {
+        row["ports"] = json!({"in": [], "out": []});
+    }
+    if !row["ports"][side].is_array() {
+        row["ports"][side] = json!([]);
+    }
+    row["ports"][side].as_array_mut().unwrap().push(json!(id));
+    graph::clean_groups(g);
+    Some(id)
+}
+
+/// A group port's name (names may repeat, unlike blocks'); false when empty or the same.
+pub fn set_port_name(g: &mut Obj, rid: &str, name: &str) -> bool {
+    let name = crate::py::head(crate::py::strip(name), 40);
+    match node_mut(g, "relays", rid) {
+        Some(n) if !name.is_empty() && n["name"] != json!(name) => {
+            n["name"] = json!(name);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// the group whose port relay `rid` is, and its side ("in" / "out")
+pub fn port_of(g: &Obj, rid: &str) -> Option<(String, &'static str)> {
+    g.get("groups").and_then(Value::as_array).into_iter().flatten().find_map(|x| {
+        let has = |k: &str| x["ports"][k].as_array().is_some_and(|a| a.iter().any(|p| p == rid));
+        let side = if has("in") { "in" } else if has("out") { "out" } else { return None };
+        Some((x["id"].as_str()?.to_string(), side))
+    })
 }
 
 pub fn rename_group(g: &mut Obj, gid: &str, name: &str) -> bool {
@@ -356,6 +411,79 @@ pub fn set_group_collapsed(g: &mut Obj, gid: &str, collapsed: bool) -> bool {
         }
         _ => false,
     }
+}
+
+/// the fill colour of blocks `keys` ("" = by kind); false when nothing changed
+pub fn set_fill(g: &mut Obj, keys: &[&str], color: &str) -> bool {
+    let color = graph::valid_color(Some(&json!(color)));
+    let valid = graph::canvas_keys(g);
+    if !g.get("fills").is_some_and(Value::is_object) {
+        g.insert("fills".into(), json!({}));
+    }
+    let fills = g.get_mut("fills").and_then(Value::as_object_mut).unwrap();
+    let mut changed = false;
+    for k in keys.iter().filter(|k| valid.contains(**k)) {
+        let before = fills.get(*k).cloned().unwrap_or(json!(""));
+        if before != json!(color) {
+            changed = true;
+            if color.is_empty() {
+                fills.remove(*k);
+            } else {
+                fills.insert(k.to_string(), json!(color));
+            }
+        }
+    }
+    graph::clean_fills(g);
+    changed
+}
+
+/// Name lane `index` of side `side` ("inputs" / "outputs") of pass-through rid ("" = its number again).
+pub fn rename_lane(g: &mut Obj, rid: &str, side: &str, index: usize, name: &str) -> bool {
+    let Some(lane) = graph::find(g, rid)
+        .filter(|(k, n)| *k == "relay" && n["wireless"] != json!(true))
+        .and_then(|(_, n)| n[side].get(index)?["id"].as_str().map(String::from))
+    else {
+        return false;
+    };
+    let name = crate::py::head(crate::py::strip(name), 40);
+    if !g.get("lane_names").is_some_and(Value::is_object) {
+        g.insert("lane_names".into(), json!({}));
+    }
+    let names = g.get_mut("lane_names").and_then(Value::as_object_mut).unwrap();
+    let before = names.get(&lane).cloned().unwrap_or(json!(""));
+    if before == json!(name) {
+        return false;
+    }
+    if name.is_empty() {
+        names.remove(&lane);
+    } else {
+        names.insert(lane, json!(name));
+    }
+    graph::clean_relay_ui(g);
+    true
+}
+
+/// Fold pass-through rid to its small block (false: open it as a box with its lanes and inside wiring).
+pub fn set_relay_folded(g: &mut Obj, rid: &str, folded: bool) -> bool {
+    if !graph::find(g, rid).is_some_and(|(k, n)| k == "relay" && n["wireless"] != json!(true)) {
+        return false;
+    }
+    if !g.get("relays_folded").is_some_and(Value::is_array) {
+        g.insert("relays_folded".into(), json!([]));
+    }
+    let list = g.get_mut("relays_folded").and_then(Value::as_array_mut).unwrap();
+    let has = list.iter().any(|x| x == rid);
+    if has == folded {
+        graph::clean_relay_ui(g);
+        return false;
+    }
+    if folded {
+        list.push(json!(rid));
+    } else {
+        list.retain(|x| x != rid);
+    }
+    graph::clean_relay_ui(g);
+    true
 }
 
 /// the group a block is in
@@ -1003,7 +1131,7 @@ pub fn block_menu(g: &Obj, key: &str) -> Value {
     let menu = |head: Vec<Value>, sub_title: String, sub: Vec<Value>, cut: bool, tail: bool| json!({"head": head, "sub_title": sub_title, "sub": sub, "cut": cut, "tail": tail});
     if key == "pc" {
         return menu(
-            vec![item("pc.restore", tr("Restore previous")), item("pc.off", tr("Off (default)"))],
+            vec![item("pc.restore", tr("Restore previous")), item("pc.off", tr("Off (default)")), item("fill", tr("Block colour"))],
             String::new(),
             vec![],
             false,
@@ -1012,6 +1140,11 @@ pub fn block_menu(g: &Obj, key: &str) -> Value {
     }
     let (bid, out_half) = block_of(key);
     let Some((kind, b)) = graph::find(g, bid) else { return menu(vec![], String::new(), vec![], false, false) };
+    // a group's port: its colour, cut its links, delete it (double-click renames it)
+    if port_of(g, bid).is_some() {
+        let head = vec![item("fill", tr("Block colour")), item("delete", tr("Delete"))];
+        return menu(head, String::new(), vec![], true, false);
+    }
     let mut head = vec![item("edit", tr("Edit"))];
     if b["wireless"] == json!(true) {
         if b["broken"].as_str().is_some_and(|s| !s.is_empty()) {
@@ -1022,6 +1155,7 @@ pub fn block_menu(g: &Obj, key: &str) -> Value {
                 tr("Go to the partner"),
             ));
         }
+        head.push(item("fill", tr("Block colour")));
         return menu(head, String::new(), vec![], false, true);
     }
     let (mut sub_title, mut sub) = (String::new(), vec![]);
@@ -1091,6 +1225,7 @@ pub fn block_menu(g: &Obj, key: &str) -> Value {
         }
         _ => {}
     }
+    head.push(item("fill", tr("Block colour")));
     head.push(item("group.make", tr("Group blocks")));
     menu(head, sub_title, sub, true, true)
 }
@@ -1344,5 +1479,50 @@ mod tests {
         let n = graph::find(&g, &id).unwrap().1;
         assert_eq!(n["inbound"]["port"], 1081); // 1080 is taken by A
         assert_eq!(unique_name(&g, "A"), "A 2");
+    }
+
+    #[test]
+    fn group_ports_run_through_and_join_up_on_ungroup() {
+        let mut g = sample();
+        connect(&mut g, "a", 0, "h", 0).unwrap();
+        let gid = group_blocks(&mut g, &["h", "w"]).unwrap();
+        // a port: a one-lane pass-through, named, not a member; the link from outside runs through it
+        let p = add_group_port(&mut g, &gid, "in", 0.0, 0.0).unwrap();
+        assert_eq!(graph::find(&g, &p).unwrap().1["name"], json!(tr("Input {n}").replace("{n}", "1")));
+        assert_eq!(port_of(&g, &p), Some((gid.clone(), "in")));
+        assert!(!g["groups"][0]["members"].as_array().unwrap().contains(&json!(p)));
+        connect(&mut g, "a", 0, &p, 0).unwrap();
+        connect(&mut g, &p, 0, "h", 0).unwrap();
+        let lane = graph::find(&g, &p).unwrap().1["inputs"][0]["id"].clone();
+        assert_eq!(graph::find(&g, "a").unwrap().1["target"], lane);
+        // the runtime sees the link as it was (no cost)
+        assert_eq!(graph::without_relays(&g)["inbounds"][0]["target"], json!("h"));
+        // an empty port is fine; names may repeat
+        let q = add_group_port(&mut g, &gid, "out", 0.0, 0.0).unwrap();
+        assert!(set_port_name(&mut g, &q, "X") && set_port_name(&mut g, &p, "X"));
+        // ungrouped: the ports go, what ran through them joined up
+        assert!(ungroup(&mut g, &gid));
+        assert!(graph::find(&g, &p).is_none() && graph::find(&g, &q).is_none());
+        assert_eq!(graph::find(&g, "a").unwrap().1["target"], json!("h"));
+    }
+
+    #[test]
+    fn fills_and_lane_names() {
+        let mut g = sample();
+        assert!(set_fill(&mut g, &["a", "rl", "nope"], "#e5534b"));
+        assert!(!set_fill(&mut g, &["a"], "#e5534b"));
+        assert_eq!(g["fills"], json!({"a": "#e5534b", "rl": "#e5534b"}));
+        assert!(set_fill(&mut g, &["a", "rl"], ""));
+        assert!(!g.contains_key("fills"), "no fills: no key");
+        // lane names and folding, cleaned with the blocks
+        assert!(rename_lane(&mut g, "rl", "inputs", 1, "web"));
+        assert!(!rename_lane(&mut g, "rl", "inputs", 9, "x"));
+        assert!(set_relay_folded(&mut g, "rl", true) && !set_relay_folded(&mut g, "rl", true));
+        let again = graph::validate(&Value::Object(g.clone()));
+        assert_eq!(again["lane_names"].as_object().unwrap().len(), 1);
+        assert_eq!(again["relays_folded"], json!(["rl"]));
+        delete(&mut g, "rl");
+        graph::clean_relay_ui(&mut g);
+        assert!(!g.contains_key("lane_names") && !g.contains_key("relays_folded"));
     }
 }

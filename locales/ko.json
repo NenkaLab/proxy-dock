@@ -1191,5 +1191,10 @@
  "This Mac cannot run virtual machines": "이 Mac은 가상 머신을 실행할 수 없습니다",
  "vmnet could not bridge {card} (status {status}); ProxyDock must run the helper as root": "vmnet이 {card}을(를) 브리지하지 못했습니다 (상태 {status}). 도우미가 root로 실행되어야 합니다",
  "ProxyDock is on - turn off": "ProxyDock 켜짐 - 끄기",
- "ProxyDock is off - turn on": "ProxyDock 꺼짐 - 켜기"
+ "ProxyDock is off - turn on": "ProxyDock 꺼짐 - 켜기",
+ "Block colour": "블록 색",
+ "Lane name": "레인 이름",
+ "Port name": "포트 이름",
+ "Add input port": "입력 포트 추가",
+ "Add output port": "출력 포트 추가"
 }

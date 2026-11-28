@@ -1191,5 +1191,10 @@
  "This Mac cannot run virtual machines": "Dieser Mac kann keine virtuellen Maschinen ausführen",
  "vmnet could not bridge {card} (status {status}); ProxyDock must run the helper as root": "vmnet konnte {card} nicht überbrücken (Status {status}); der Helfer muss als root laufen",
  "ProxyDock is on - turn off": "ProxyDock ist an - ausschalten",
- "ProxyDock is off - turn on": "ProxyDock ist aus - einschalten"
+ "ProxyDock is off - turn on": "ProxyDock ist aus - einschalten",
+ "Block colour": "Blockfarbe",
+ "Lane name": "Spurname",
+ "Port name": "Anschlussname",
+ "Add input port": "Eingang hinzufügen",
+ "Add output port": "Ausgang hinzufügen"
 }

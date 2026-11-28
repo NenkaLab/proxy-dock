@@ -1191,5 +1191,10 @@
  "This Mac cannot run virtual machines": "この Mac は仮想マシンを実行できません",
  "vmnet could not bridge {card} (status {status}); ProxyDock must run the helper as root": "vmnet が {card} をブリッジできませんでした (状態 {status})。ヘルパーを root で実行する必要があります",
  "ProxyDock is on - turn off": "ProxyDock オン - オフにする",
- "ProxyDock is off - turn on": "ProxyDock オフ - オンにする"
+ "ProxyDock is off - turn on": "ProxyDock オフ - オンにする",
+ "Block colour": "ブロックの色",
+ "Lane name": "レーン名",
+ "Port name": "ポート名",
+ "Add input port": "入力ポートを追加",
+ "Add output port": "出力ポートを追加"
 }

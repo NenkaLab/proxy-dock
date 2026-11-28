@@ -746,7 +746,80 @@ pub fn validate(raw: &Value) -> Obj {
         g.insert("groups".into(), Value::Array(groups.clone()));
         clean_groups(&mut g);
     }
+    // block fill colours (Rust app only, like groups): {canvas key: colour}
+    if let Some(fills) = r.get("fills").and_then(Value::as_object) {
+        g.insert("fills".into(), Value::Object(fills.clone()));
+        clean_fills(&mut g);
+    }
+    // pass-through boxes (Rust app only): lane names {lane id: name}, the folded ones [relay id]
+    for k in ["lane_names", "relays_folded"] {
+        if let Some(v) = r.get(k) {
+            g.insert(k.into(), v.clone());
+        }
+    }
+    clean_relay_ui(&mut g);
     g
+}
+
+/// Pass-through lane names {lane id: name} and folded pass-throughs [relay id]: lanes and blocks that are gone
+/// and empty names are dropped; none = no key.
+pub fn clean_relay_ui(g: &mut Obj) {
+    let relays: Vec<Value> = list(g, "relays").into_iter().filter(|r| r["wireless"] != json!(true)).cloned().collect();
+    let lanes: HashSet<String> = relays
+        .iter()
+        .flat_map(|r| ["inputs", "outputs"].map(|s| r[s].as_array().cloned().unwrap_or_default()))
+        .flatten()
+        .filter_map(|l| l["id"].as_str().map(String::from))
+        .collect();
+    let names: Obj = g
+        .get("lane_names")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter(|(k, _)| lanes.contains(k.as_str()))
+        .filter_map(|(k, v)| {
+            let name = crate::py::head(crate::py::strip(v.as_str()?), 40);
+            (!name.is_empty()).then(|| (k.clone(), json!(name)))
+        })
+        .collect();
+    if names.is_empty() {
+        g.remove("lane_names");
+    } else {
+        g.insert("lane_names".into(), Value::Object(names));
+    }
+    let ids: HashSet<&str> = relays.iter().filter_map(|r| r["id"].as_str()).collect();
+    let mut seen = HashSet::new();
+    let folded: Vec<Value> = g
+        .get("relays_folded")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|id| ids.contains(id) && seen.insert(id.to_string()))
+        .map(|id| json!(id))
+        .collect();
+    if folded.is_empty() {
+        g.remove("relays_folded");
+    } else {
+        g.insert("relays_folded".into(), Value::Array(folded));
+    }
+}
+
+/// Block fill colours {canvas key: colour}: blocks that are gone and empty colours are dropped; none = no key.
+pub fn clean_fills(g: &mut Obj) {
+    let Some(raw) = g.get("fills").and_then(Value::as_object).cloned() else { return };
+    let keys = canvas_keys(g);
+    let out: Obj = raw
+        .iter()
+        .filter(|(k, _)| keys.contains(k.as_str()))
+        .map(|(k, v)| (k.clone(), json!(valid_color(Some(v)))))
+        .filter(|(_, v)| v != &json!(""))
+        .collect();
+    if out.is_empty() {
+        g.remove("fills");
+    } else {
+        g.insert("fills".into(), Value::Object(out));
+    }
 }
 
 /// The canvas keys a group can hold: blocks, the output half of a wireless pair ("<id>/out"), the PC block.
@@ -762,14 +835,38 @@ pub fn canvas_keys(g: &Obj) -> HashSet<String> {
     keys
 }
 
-/// Canvas groups as rows {id, name, color, members, collapsed}: members that are gone are dropped (and a block
-/// is in one group only), a group left with none goes; no groups = no key.
+/// Canvas groups as rows {id, name, color, members, collapsed, ports: {in, out}}: members that are gone are
+/// dropped (and a block is in one group only), a group left with none goes; no groups = no key. A port is a
+/// pass-through with one lane (its outer end on the group's edge, its inner end inside), in one group only and
+/// never a member.
 pub fn clean_groups(g: &mut Obj) {
     let Some(raw) = g.get("groups").and_then(Value::as_array).cloned() else { return };
     let keys = canvas_keys(g);
+    let lane1: HashSet<String> = list(g, "relays")
+        .iter()
+        .filter(|r| r["wireless"] != json!(true))
+        .filter_map(|r| r["id"].as_str().map(String::from))
+        .collect();
     let mut taken: HashSet<String> = HashSet::new();
+    // ports first: a port relay is never also a member
+    let mut ports_of: Vec<(Vec<Value>, Vec<Value>)> = vec![];
+    for x in raw.iter() {
+        let mut side = |k: &str| -> Vec<Value> {
+            x["ports"][k]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .filter(|p| lane1.contains(*p) && taken.insert(p.to_string()))
+                .map(|p| json!(p))
+                .collect()
+        };
+        let i = side("in");
+        let o = side("out");
+        ports_of.push((i, o));
+    }
     let mut out = vec![];
-    for x in raw.iter().filter_map(Value::as_object) {
+    for (x, (pin, pout)) in raw.iter().zip(ports_of).filter_map(|(x, p)| Some((x.as_object()?, p))) {
         let members: Vec<Value> = x
             .get("members")
             .and_then(Value::as_array)
@@ -788,6 +885,7 @@ pub fn clean_groups(g: &mut Obj) {
             "color": valid_color(x.get("color")),
             "members": members,
             "collapsed": x.get("collapsed") == Some(&json!(true)),
+            "ports": {"in": pin, "out": pout},
         }));
     }
     if out.is_empty() {
