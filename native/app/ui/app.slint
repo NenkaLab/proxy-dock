@@ -131,6 +131,8 @@ export struct NodeData {
     group-id: int,
     // its fill colour (a group's stand-in: the group's colour); transparent = by kind
     fill: color,
+    // stacking order: what was selected last is on top (its group with it)
+    z: float,
     // traffic through the block right now ("" when none)
     rate: string,
     // an outbound block's latency: "123 ms", "✕", "…" ("" = none); tone 0 testing, 1 fast, 2 slow, 3 very slow / failed
@@ -4863,6 +4865,7 @@ export component App inherits Window {
                                 own-color: node.own-color;
                                 group-id: node.group-id;
                                 fill: node.fill;
+                                z: node.z;
                                 out-colors: node.out-colors;
                                 pick-color(out, x, y) => { root.open-palette(node.id, out, x, y); }
                                 edit-number => { root.edit-number(node.id); }

@@ -651,6 +651,147 @@ fn settle_groups(
     }
 }
 
+// --- stacking: the block or group selected last is drawn on top; in a group, its block selected last ---
+
+#[derive(Default)]
+struct Raise {
+    counter: u64,
+    /// when each group ("group:<id>") or block in no group (its key) was last raised
+    entity: HashMap<String, u64>,
+    /// when each block in a group was last raised among its group's blocks
+    member: HashMap<String, u64>,
+    /// what was selected at the last look (node ids, group row ids)
+    selected: (Vec<i32>, Vec<i32>),
+}
+
+thread_local! {
+    static RAISE: std::cell::RefCell<Raise> = std::cell::RefCell::new(Raise::default());
+}
+
+/// Raise what has just been selected (a block in a group raises the group too); true when anything rose.
+fn raise_selection(models: &Models) -> bool {
+    let nodes: Vec<i32> = models.nodes.iter().filter(|n| n.selected).map(|n| n.id).collect();
+    let groups: Vec<i32> = models.groups.iter().filter(|g| g.selected).map(|g| g.id).collect();
+    let keys = models.keys.borrow();
+    let core = |gid: i32| GROUPS.with(|g| g.borrow().get(gid as usize - 1).map(|x| x.0.clone()));
+    RAISE.with(|r| {
+        let mut r = r.borrow_mut();
+        if r.selected == (nodes.clone(), groups.clone()) {
+            return false;
+        }
+        let (old_nodes, old_groups) = r.selected.clone();
+        let mut rose = false;
+        for gid in groups.iter().filter(|g| !old_groups.contains(g)) {
+            if let Some(c) = core(*gid) {
+                r.counter += 1;
+                let t = r.counter;
+                r.entity.insert(format!("group:{c}"), t);
+                rose = true;
+            }
+        }
+        for id in nodes.iter().filter(|n| !old_nodes.contains(n)) {
+            let Some(n) = models.nodes.iter().find(|n| n.id == *id) else { continue };
+            let Some(key) = keys.get(*id as usize - 1).cloned() else { continue };
+            r.counter += 1;
+            let t = r.counter;
+            match (n.group_id > 0).then(|| core(n.group_id)).flatten() {
+                Some(c) => {
+                    r.entity.insert(format!("group:{c}"), t);
+                    r.member.insert(key, t);
+                }
+                None => {
+                    r.entity.insert(key, t);
+                }
+            }
+            rose = true;
+        }
+        r.selected = (nodes, groups);
+        rose
+    })
+}
+
+/// Each block's, group sheet's and link's `z` from when they were raised: groups and blocks in no group are
+/// stacked by when they were last raised (a group's sheet just under its blocks, which are stacked among
+/// themselves); a link sits just under the lower of its two blocks.
+fn apply_z(models: &Models) {
+    let keys = models.keys.borrow().clone();
+    let cores: Vec<String> = GROUPS.with(|g| g.borrow().iter().map(|x| x.0.clone()).collect());
+    let nodes: Vec<NodeData> = models.nodes.iter().collect();
+    let key = |id: i32| keys.get(id as usize - 1).cloned().unwrap_or_default();
+    // the stack a block belongs to: its group's, or its own (a collapsed group's stand-in has its group's key)
+    let entity_of = |n: &NodeData| -> String {
+        if n.group_id > 0
+            && let Some(c) = cores.get(n.group_id as usize - 1)
+        {
+            return format!("group:{c}");
+        }
+        key(n.id)
+    };
+    let (entity_t, member_t) = RAISE.with(|r| {
+        let r = r.borrow();
+        (r.entity.clone(), r.member.clone())
+    });
+    let mut entities: Vec<String> = cores.iter().map(|c| format!("group:{c}")).collect();
+    for n in &nodes {
+        let e = entity_of(n);
+        if !entities.contains(&e) {
+            entities.push(e);
+        }
+    }
+    let mut order: Vec<(u64, usize)> =
+        entities.iter().enumerate().map(|(i, e)| (entity_t.get(e).copied().unwrap_or(0), i)).collect();
+    order.sort();
+    let rank: HashMap<String, f32> =
+        order.iter().enumerate().map(|(r, (_, i))| (entities[*i].clone(), r as f32)).collect();
+    // in a group: its blocks by when they were raised
+    let mut member_rank: HashMap<i32, f32> = HashMap::new();
+    for gid in 1..=cores.len() as i32 {
+        let mut m: Vec<(u64, i32)> = nodes
+            .iter()
+            .filter(|n| n.group_id == gid)
+            .map(|n| (member_t.get(&key(n.id)).copied().unwrap_or(0), n.id))
+            .collect();
+        m.sort();
+        for (r, (_, id)) in m.iter().enumerate() {
+            member_rank.insert(*id, r as f32 + 1.0);
+        }
+    }
+    let z_of = |n: &NodeData| -> f32 {
+        1.0 + rank.get(&entity_of(n)).copied().unwrap_or(0.0) * 1000.0 + member_rank.get(&n.id).copied().unwrap_or(0.0)
+    };
+    let mut z_by_id: HashMap<i32, f32> = HashMap::new();
+    for i in 0..models.nodes.row_count() {
+        let Some(mut n) = models.nodes.row_data(i) else { continue };
+        let z = z_of(&n);
+        z_by_id.insert(n.id, z);
+        if n.z != z {
+            n.z = z;
+            models.nodes.set_row_data(i, n);
+        }
+    }
+    for i in 0..models.groups.row_count() {
+        let Some(mut g) = models.groups.row_data(i) else { continue };
+        let c = cores.get(i).cloned().unwrap_or_default();
+        let z = 0.5 + rank.get(&format!("group:{c}")).copied().unwrap_or(0.0) * 1000.0;
+        if g.z != z {
+            g.z = z;
+            models.groups.set_row_data(i, g);
+        }
+    }
+    let meta = models.link_meta.borrow();
+    for i in 0..models.links.row_count() {
+        let Some(mut l) = models.links.row_data(i) else { continue };
+        let Some(&(_, a, b)) = meta.get(i) else { continue };
+        let za = z_by_id.get(&a).copied().unwrap_or(1.0);
+        let zb = z_by_id.get(&b).copied().unwrap_or(1.0);
+        let z = za.min(zb) - 0.25;
+        if l.z != z {
+            l.z = z;
+            models.links.set_row_data(i, l);
+        }
+    }
+}
+
 /// the core's id of group row `gid`
 fn group_key(gid: i32) -> String {
     GROUPS.with(|g| g.borrow().get((gid - 1).max(0) as usize).map(|x| x.0.clone()).unwrap_or_default())
@@ -1125,6 +1266,7 @@ impl Models {
                 .collect();
             nodes.push(NodeData {
                 id,
+                z: 0.0,
                 title: n["title"].as_str().unwrap_or("").into(),
                 detail: n["detail"].as_str().unwrap_or("").into(),
                 kind: n["kind"].as_i64().unwrap_or(2) as i32,
@@ -1233,6 +1375,7 @@ impl Models {
                     color: hex_color(gr["color"].as_str().unwrap_or("")).unwrap_or(Color::from_argb_u8(0, 0, 0, 0)),
                     collapsed: group_rows[gi].2,
                     selected: selected_groups.contains(&group_rows[gi].0),
+                    z: 0.0,
                 }
             })
             .collect();
@@ -2860,6 +3003,9 @@ fn main() -> Result<(), slint::PlatformError> {
                 pair_focus(&a, &models, &rects);
                 mix_dots(&a, &models, &rects);
                 groups_follow(&a, &models, &rects);
+                if raise_selection(&models) {
+                    apply_z(&models);
+                }
                 settle_groups(&models, &rects, &|v| send_s(v), &|id| key_of_s(id));
             });
             std::mem::forget(t);
@@ -4091,6 +4237,7 @@ fn main() -> Result<(), slint::PlatformError> {
                                 show_latency(&app, &m, &v["latency"]);
                                 m.set_canvas(&v["canvas"]);
                                 reproject(&app, &m);
+                                apply_z(&m);
                                 app.set_pc_state(v["canvas"]["pc_status"][0].as_str().unwrap_or("off").into());
                                 app.set_pc_text(v["canvas"]["pc_status"][1].as_str().unwrap_or("").into());
                                 show_settings(&app, &v["settings"]);
@@ -4120,6 +4267,7 @@ fn main() -> Result<(), slint::PlatformError> {
                                 );
                                 m.set_canvas(&v["canvas"]);
                                 reproject(&app, &m);
+                                apply_z(&m);
                                 app.set_pc_state(v["canvas"]["pc_status"][0].as_str().unwrap_or("off").into());
                                 app.set_pc_text(v["canvas"]["pc_status"][1].as_str().unwrap_or("").into());
                                 log_sources(

@@ -535,6 +535,8 @@ export struct LinkData {
     /// Draw the link faded to the editor's `dimmed-link-alpha`, e.g. to set apart
     /// what an application's focus excludes. Default `false`.
     dimmed: bool,
+    /// Stacking order among the editor's sheets, links and children (Slint `z`); default 0.
+    z: float,
 }
 
 /// The colour a link is drawn in: the one rule `NodeEditor`'s link repeater applies.
@@ -594,6 +596,8 @@ export struct GroupData {
     collapsed: bool,
     /// Selection is per-row data like a node's; the editor never writes it.
     selected: bool,
+    /// Stacking order among the editor's sheets, links and children (Slint `z`); default 0.
+    z: float,
 }
 
 /// Styling for the default `GroupSheet`. Override these properties to
