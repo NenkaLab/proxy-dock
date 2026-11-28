@@ -66,7 +66,7 @@ fn obj(v: Value) -> Map<String, Value> {
 pub fn global_defaults() -> Map<String, Value> {
     obj(json!({
         "language": "en", "theme": "auto", "theme_color": "", "ui_scale": 100, "text_size": 115, "ui_font": "", "mono_font": "",
-        "disable_ligatures": false, "log_font_size": 10, "close_exits": false, "log_to_file": false,
+        "disable_ligatures": false, "log_font_size": 10, "close_exits": false, "flow_fins": true, "log_to_file": false,
         "engine": "sing-box", "run_as_admin": false, "singbox_path": "", "hysteria_path": "", "singbox_latest": false,
         "test_sites": [],
         "check_updates": true, "update_checked": 0,

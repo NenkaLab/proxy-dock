@@ -345,9 +345,9 @@ struct Controller {
     tooltip: String,
     /// the block each window is editing: (kind, draft)
     drafts: HashMap<u64, (&'static str, Value)>,
-    /// per (card, exit block): up + down bytes at the last tick (for the per-link rates)
-    flow_last: HashMap<(String, String), f64>,
-    /// the per-link rates last sent (bytes/s; all zero = nothing flowing)
+    /// per (card, exit block): up bytes, down bytes and connections opened, at the last tick (for the per-link rates)
+    flow_last: HashMap<(String, String), [f64; 3]>,
+    /// the per-link up + down rates and new connections last sent (all zero = nothing flowing)
     flow_sent: Vec<f64>,
     /// editor buttons whose work is running: (window, action)
     busy: std::collections::HashSet<(u64, String)>,
@@ -575,7 +575,7 @@ impl Controller {
                 "dns_via_outbound": g["dns_via_outbound"], "log_to_file": g["log_to_file"],
                 "language": index(&codes, &g["language"]), "theme": index(&config::THEMES, &g["theme"]), "ui_scale": scale,
                 "theme_color": g["theme_color"],
-                "log_font_size": g["log_font_size"], "close_exits": g["close_exits"], "singbox_latest": g["singbox_latest"],
+                "log_font_size": g["log_font_size"], "close_exits": g["close_exits"], "flow_fins": g["flow_fins"], "singbox_latest": g["singbox_latest"],
                 "run_as_admin": g["run_as_admin"], "check_updates": g["check_updates"],
                 "text_size": config::TEXT_SIZES.iter().position(|x| Some(*x) == g["text_size"].as_i64()).unwrap_or(1),
                 "ui_font": g["ui_font"], "mono_font": g["mono_font"],
@@ -935,6 +935,7 @@ impl Controller {
             "dns_via_outbound",
             "log_to_file",
             "close_exits",
+            "flow_fins",
             "singbox_latest",
             "run_as_admin",
             "check_updates",
@@ -3285,33 +3286,41 @@ impl Controller {
         self.send_to(client, &json!({"ev": "route", "links": links, "error": error}));
     }
 
-    /// bytes per second on each canvas link over the last tick: each running card's traffic to each exit block
-    /// (from its sing-box connections) counted on the links of that card's way to the exit
+    /// bytes per second going up (toward the exit) and down (back to the card), and connections opened, on each
+    /// canvas link over the last tick: each running card's traffic to each exit block (from its sing-box
+    /// connections) counted on the links of that card's way to the exit
     fn send_flow(&mut self) {
-        let mut rates = vec![0.0f64; self.view.links.len()];
-        let mut now: HashMap<(String, String), f64> = HashMap::new();
+        let n = self.view.links.len();
+        let (mut up, mut down, mut conns) = (vec![0.0f64; n], vec![0.0f64; n], vec![0.0f64; n]);
+        let mut now: HashMap<(String, String), [f64; 3]> = HashMap::new();
         for p in &self.proxies {
             let id = p["id"].as_str().unwrap_or("");
-            for (exit, (up, down)) in self.manager.exit_totals(id) {
-                now.insert((id.to_string(), exit), up + down);
+            for (exit, (u, d)) in self.manager.exit_totals(id) {
+                now.entry((id.to_string(), exit)).or_default()[..2].copy_from_slice(&[u, d]);
+            }
+            for (exit, c) in self.manager.exit_conns(id) {
+                now.entry((id.to_string(), exit)).or_default()[2] = c as f64;
             }
         }
         for (key, total) in &now {
             let before = self.flow_last.get(key).copied().unwrap_or(*total);
-            let rate = (total - before).max(0.0);
-            if rate > 0.0 {
+            let delta: Vec<f64> = (0..3).map(|k| (total[k] - before[k]).max(0.0)).collect();
+            if delta.iter().any(|d| *d > 0.0) {
                 for li in self.view.paths.get(key).into_iter().flatten() {
-                    rates[*li] += rate;
+                    up[*li] += delta[0];
+                    down[*li] += delta[1];
+                    conns[*li] += delta[2];
                 }
             }
         }
         self.flow_last = now;
+        let sent: Vec<f64> = (0..n).map(|i| up[i] + down[i] + conns[i]).collect();
         // nothing flowing now and nothing shown: no message
-        if rates.iter().all(|r| *r == 0.0) && self.flow_sent.iter().all(|r| *r == 0.0) {
+        if sent.iter().all(|r| *r == 0.0) && self.flow_sent.iter().all(|r| *r == 0.0) {
             return;
         }
-        self.broadcast(&json!({"ev": "flow", "links": rates}));
-        self.flow_sent = rates;
+        self.broadcast(&json!({"ev": "flow", "up": up, "down": down, "conns": conns}));
+        self.flow_sent = sent;
     }
 }
 

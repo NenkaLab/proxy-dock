@@ -1196,5 +1196,7 @@
  "Lane name": "レーン名",
  "Port name": "ポート名",
  "Add input port": "入力ポートを追加",
- "Add output port": "出力ポートを追加"
+ "Add output port": "出力ポートを追加",
+ "Flow fins": "フローフィン",
+ "Fins beside the canvas links show traffic going up (above) and coming down (below)": "キャンバスの線の横のひれで、上り(上側)と下り(下側)の通信を表示します"
 }

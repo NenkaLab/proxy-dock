@@ -1196,5 +1196,7 @@
  "Lane name": "Nom de la voie",
  "Port name": "Nom du port",
  "Add input port": "Ajouter un port d'entrée",
- "Add output port": "Ajouter un port de sortie"
+ "Add output port": "Ajouter un port de sortie",
+ "Flow fins": "Ailerons de flux",
+ "Fins beside the canvas links show traffic going up (above) and coming down (below)": "Des ailerons le long des liens du canevas montrent le trafic montant (au-dessus) et descendant (en dessous)"
 }

@@ -1196,5 +1196,7 @@
  "Lane name": "Nombre del carril",
  "Port name": "Nombre del puerto",
  "Add input port": "Añadir puerto de entrada",
- "Add output port": "Añadir puerto de salida"
+ "Add output port": "Añadir puerto de salida",
+ "Flow fins": "Aletas de flujo",
+ "Fins beside the canvas links show traffic going up (above) and coming down (below)": "Aletas junto a los enlaces del lienzo muestran el tráfico de subida (arriba) y de bajada (abajo)"
 }

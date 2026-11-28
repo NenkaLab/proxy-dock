@@ -177,6 +177,8 @@ struct State {
     /// outbound tag a connection left through (chains[0]) -> [up, down] so far / in this poll only
     tag_bytes: HashMap<String, (f64, f64)>,
     tick_tags: HashMap<String, (f64, f64)>,
+    /// outbound tag -> connections seen opening through it so far (the canvas's request dots)
+    tag_conns: HashMap<String, u64>,
     raw_tail: VecDeque<String>,
     /// the latest connections' (client, destination, outbound tag), newest last: the way a log line's
     /// connection took (`Engine::route_of`); and the connection ids already in it
@@ -520,6 +522,7 @@ impl Engine {
                 last_totals: (0, 0),
                 live: HashMap::new(),
                 tag_bytes: HashMap::new(),
+                tag_conns: HashMap::new(),
                 tick_tags: HashMap::new(),
                 raw_tail: VecDeque::new(),
                 routes: VecDeque::new(),
@@ -623,6 +626,18 @@ impl Engine {
                 let e = out.entry(block).or_default();
                 e.0 += up;
                 e.1 += down;
+            }
+        }
+        out
+    }
+
+    /// {outbound block id: connections opened so far} from this card's connections (those seen open at a poll)
+    pub fn exit_conns(&self) -> HashMap<String, u64> {
+        let st = self.shared.state.lock().unwrap();
+        let mut out: HashMap<String, u64> = HashMap::new();
+        for (tag, n) in &st.tag_conns {
+            if let Some(block) = sbc::exit_of_tag(&st.proxy, tag) {
+                *out.entry(block).or_default() += n;
             }
         }
         out
@@ -923,6 +938,9 @@ fn track(st: &mut State, conns: &[Value], shared: &Shared) -> Vec<String> {
         let down = c["download"].as_u64().unwrap_or(0);
         let tag = c["chains"].as_array().and_then(|a| a.first()).and_then(Value::as_str).unwrap_or("").to_string();
         let (pu, pd) = st.live.get(cid).map(|e| (e.up, e.down)).unwrap_or((0, 0));
+        if !st.live.contains_key(cid) {
+            *st.tag_conns.entry(tag.clone()).or_default() += 1;
+        }
         let got = st.tick_tags.entry(tag).or_default();
         got.0 += up.saturating_sub(pu) as f64;
         got.1 += down.saturating_sub(pd) as f64;

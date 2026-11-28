@@ -189,7 +189,7 @@ export struct SettingsText {
     engine: string, latest: string, latest-badge: string, latest-desc: string,
     logs: string, logfile: string, open-folder: string,
     display: string, language: string, language-desc: string, theme: string, theme-desc: string,
-    scale: string, scale-desc: string, logsize: string, logsize-desc: string, close: string, close-desc: string,
+    scale: string, scale-desc: string, logsize: string, logsize-desc: string, close: string, close-desc: string, fins: string, fins-desc: string,
     text-size: string, text-size-desc: string, fonts: string, ui-font: string, ui-font-desc: string,
     mono-font: string, mono-font-desc: string,
     startup: string, login: string, login-desc: string, hidden: string, hidden-desc: string, admin: string, admin-desc: string,
@@ -265,8 +265,10 @@ export struct BlockRow {
     menu-tail: bool,
 }
 
-// a dot moving along a link with traffic (world coordinates; size in world px)
-export struct FlowDot { x: float, y: float, size: float, color: color }
+// a mark moving along a link with traffic (world coordinates; size in world px): a dot, or with `arrow` (path
+// commands in a size x size box) a fin beside the line
+// z: just over its link (links sit over z 0)
+export struct FlowDot { x: float, y: float, size: float, color: color, arrow: string, z: float }
 
 export struct LogRow {
     text: string,
@@ -2133,6 +2135,8 @@ export global Settings {
     in-out property <int> scale;
     in-out property <int> logsize: 10;
     in-out property <bool> close;
+    // the fins beside the canvas links (Settings > Display)
+    in-out property <bool> fins: true;
     in-out property <bool> latest;
     in-out property <bool> admin;
     in property <bool> saved-admin;
@@ -2194,9 +2198,10 @@ export global Settings {
     in property <int> saved-scale;
     in property <int> saved-logsize;
     in property <bool> saved-close;
+    in property <bool> saved-fins: true;
     in property <bool> saved-latest;
     out property <bool> dirty: admin != saved-admin || check-updates != saved-check-updates || text-size != saved-text-size || ui-font != saved-ui-font
-        || mono-font != saved-mono-font || allowed != saved-allowed || private != saved-private || timeout != saved-timeout || logconn != saved-logconn || logclose != saved-logclose || dns != saved-dns || dnsvia != saved-dnsvia || logfile != saved-logfile || language != saved-language || theme != saved-theme || theme-color != saved-theme-color || scale != saved-scale || logsize != saved-logsize || close != saved-close || latest != saved-latest;
+        || mono-font != saved-mono-font || allowed != saved-allowed || private != saved-private || timeout != saved-timeout || logconn != saved-logconn || logclose != saved-logclose || dns != saved-dns || dnsvia != saved-dnsvia || logfile != saved-logfile || language != saved-language || theme != saved-theme || theme-color != saved-theme-color || scale != saved-scale || logsize != saved-logsize || close != saved-close || fins != saved-fins || latest != saved-latest;
     public function revert() {
         self.allowed = self.saved-allowed;
         self.private = self.saved-private;
@@ -2215,6 +2220,7 @@ export global Settings {
         self.scale = self.saved-scale;
         self.logsize = self.saved-logsize;
         self.close = self.saved-close;
+        self.fins = self.saved-fins;
         self.latest = self.saved-latest;
         self.admin = self.saved-admin;
         self.check-updates = self.saved-check-updates;
@@ -3021,6 +3027,11 @@ component SettingsDisplay inherits SettingsSection {
             maximum: 20;
             value <=> Settings.logsize;
         }
+    }
+    SettingRow {
+        label: Settings.text.fins;
+        desc: Settings.text.fins-desc;
+        AppSwitch { checked <=> Settings.fins; }
     }
     SettingRow {
         label: Settings.text.close;
@@ -4808,14 +4819,26 @@ export component App inherits Window {
                             background-color: M3.dark ? #1a1a1a : M3.surface-container-low;
                             grid-color: M3.dark ? #404040 : M3.outline-variant.with-alpha(0.7);
                             max-zoom: 2.0;
-                            // over the links, under the blocks
+                            // over their links, under the blocks
                             for d in root.flow-dots: Rectangle {
+                                z: d.z;
                                 x: (d.x - d.size / 2) * 1px;
                                 y: (d.y - d.size / 2) * 1px;
                                 width: d.size * 1px;
                                 height: d.size * 1px;
                                 border-radius: d.size / 2 * 1px;
-                                background: d.color;
+                                background: d.arrow == "" ? d.color : transparent;
+                                // (a fin beside the line: its foot joins the line's edge)
+                                if d.arrow != "": Path {
+                                    width: 100%;
+                                    height: 100%;
+                                    viewbox-x: 0;
+                                    viewbox-y: 0;
+                                    viewbox-width: d.size;
+                                    viewbox-height: d.size;
+                                    commands: d.arrow;
+                                    fill: d.color;
+                                }
                             }
                             // (animated: it grows to take the block in, and back when the drag goes elsewhere)
                             Rectangle {

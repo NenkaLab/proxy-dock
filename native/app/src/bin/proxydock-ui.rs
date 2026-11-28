@@ -454,6 +454,8 @@ fn pair_focus(app: &App, models: &Models, rects: &HashMap<i32, (f32, f32, f32, f
                 y: u * u * y0 + 2.0 * u * t * my + t * t * y1,
                 size: 5.0,
                 color,
+                arrow: SharedString::new(),
+                z: 0.0,
             }
         })
         .collect();
@@ -823,7 +825,14 @@ fn mix_dots(app: &App, models: &Models, rects: &HashMap<i32, (f32, f32, f32, f32
                 let mut d = carry;
                 while d < seg {
                     let t = d / seg.max(0.001);
-                    dots.push(FlowDot { x: x0 + (x1 - x0) * t, y: y0 + (y1 - y0) * t, size: 4.0, color: *color });
+                    dots.push(FlowDot {
+                        x: x0 + (x1 - x0) * t,
+                        y: y0 + (y1 - y0) * t,
+                        size: 4.0,
+                        color: *color,
+                        arrow: SharedString::new(),
+                        z: 0.0,
+                    });
                     d += 10.0;
                 }
                 carry = d - seg;
@@ -1220,8 +1229,8 @@ struct Models {
     link_meta: std::cell::RefCell<Vec<(Color, i32, i32)>>,
     /// canvas key of each block (node id - 1)
     keys: std::cell::RefCell<Vec<String>>,
-    /// bytes per second on each link (same order as `links`), for the moving dots
-    rates: std::cell::RefCell<Vec<f64>>,
+    /// per link (same order as `links`): bytes per second up and down, for the moving dots
+    rates: std::cell::RefCell<Vec<(f64, f64)>>,
     /// each block's right-click menu by its key (the list page's ⋯ buttons)
     menus: std::cell::RefCell<HashMap<String, Value>>,
     /// the list page's outbound blocks and routers
@@ -1570,8 +1579,10 @@ impl Models {
         }
     }
 
-    /// bytes per second on each link: links with traffic get wider and brighter, blocks show what passes them
-    fn set_flow(&self, rates: &[Value]) {
+    /// bytes per second up and down and connections opened on each link: links with traffic get wider and
+    /// brighter, blocks show what passes them, each new connection sends a small dot along its links
+    fn set_flow(&self, v: &Value) {
+        let at = |k: &str, i: usize| v[k].get(i).and_then(Value::as_f64).unwrap_or(0.0);
         let meta = self.link_meta.borrow();
         let mut per_node: HashMap<i32, (f64, f64)> = HashMap::new(); // (in, out)
         let mut link_rates = self.rates.borrow_mut();
@@ -1579,8 +1590,14 @@ impl Models {
         for i in 0..self.links.row_count() {
             let Some(mut l) = self.links.row_data(i) else { continue };
             let Some((color, a, b)) = meta.get(i).copied() else { continue };
-            let r = rates.get(l.id as usize - 1).and_then(Value::as_f64).unwrap_or(0.0);
-            link_rates.push(r);
+            let j = l.id as usize - 1;
+            let (up, down) = (at("up", j), at("down", j));
+            let r = up + down;
+            link_rates.push((up, down));
+            let conns = at("conns", j);
+            if conns > 0.0 {
+                add_pulses(i, conns);
+            }
             per_node.entry(a).or_default().1 += r;
             per_node.entry(b).or_default().0 += r;
             // 2 px idle; with traffic 3..8 px on a log scale (1 KB/s .. 100 MB/s)
@@ -1823,14 +1840,41 @@ type CurveOf = Box<dyn Fn(i32, i32) -> Option<slint_node_editor::path::CubicBezi
 thread_local! {
     /// a link's curve on the canvas (world units) by its two pins
     static CURVE: std::cell::RefCell<Option<CurveOf>> = const { std::cell::RefCell::new(None) };
-    /// the moving dots: their timer, each link's offset along its curve, the last tick and the dots' buffer
+    /// the moving dots: their timer and state
     static FLOW_TIMER: slint::Timer = slint::Timer::default();
-    static FLOW_STATE: std::cell::RefCell<(Vec<f32>, Option<std::time::Instant>, Vec<FlowDot>)> = const { std::cell::RefCell::new((Vec::new(), None, Vec::new())) };
+    static FLOW_STATE: std::cell::RefCell<FlowAnim> = std::cell::RefCell::new(FlowAnim::default());
 }
 
-/// Dots along the links that carry traffic, moving toward the exit (faster with more traffic), 20 frames a second. They run only
-/// while the canvas is shown, the window is not minimised and some link has traffic: the timer stops itself
-/// otherwise and the next "flow" (every second) starts it again.
+#[derive(Default)]
+struct FlowAnim {
+    /// each link's offset along its curve: the dots going up (toward the exit) and coming down (back to the card)
+    up: Vec<f32>,
+    down: Vec<f32>,
+    last: Option<std::time::Instant>,
+    /// dots for new connections: (link index, distance along it; below 0 = still waiting to start)
+    pulses: Vec<(usize, f32)>,
+    dots: Vec<FlowDot>,
+}
+
+/// new-connection dots run at this speed (world px/s), at most this many on a link per second (spread over the second)
+const PULSE_SPEED: f32 = 320.0;
+const PULSES_PER_TICK: f64 = 4.0;
+
+/// `count` connections opened on link `i` in the last second: as many dots, spread over the next second
+fn add_pulses(i: usize, count: f64) {
+    let n = count.min(PULSES_PER_TICK).round().max(1.0) as usize;
+    FLOW_STATE.with(|st| {
+        let mut st = st.borrow_mut();
+        for k in 0..n {
+            st.pulses.push((i, -(k as f32 / n as f32) * PULSE_SPEED));
+        }
+    });
+}
+
+/// Marks along the links, 20 frames a second: fins on one side of the line in its colour for bytes going up
+/// (toward the exit), fins on the other side in a darker shade for bytes coming down (back to the card), both
+/// faster with more traffic, and a small pale dot on the line for each new connection. They run only while the canvas is shown, the window is not minimised and something moves: the timer
+/// stops itself otherwise and the next "flow" (every second) starts it again.
 fn start_flow_dots(app: &App) {
     if FLOW_TIMER.with(|t| t.running()) {
         return;
@@ -1841,13 +1885,95 @@ fn start_flow_dots(app: &App) {
             let Some(app) = weak.upgrade() else { return };
             if !flow_dots_tick(&app) {
                 FLOW_TIMER.with(|t| t.stop());
-                FLOW_STATE.with(|s| s.borrow_mut().1 = None);
+                FLOW_STATE.with(|s| {
+                    let mut s = s.borrow_mut();
+                    s.last = None;
+                    s.pulses.clear();
+                });
                 if app.get_flow_dots().row_count() > 0 {
                     app.set_flow_dots(ModelRc::default());
                 }
             }
         });
     });
+}
+
+/// a link's curve as 24 straight pieces, with the length up to each point
+struct Polyline {
+    pts: [(f32, f32); 25],
+    lens: [f32; 25],
+}
+
+impl Polyline {
+    fn of(curve: &slint_node_editor::path::CubicBezier) -> Self {
+        let mut p = Polyline { pts: [(0.0, 0.0); 25], lens: [0.0; 25] };
+        for k in 0..25 {
+            p.pts[k] = curve.eval(k as f32 / 24.0);
+            if k > 0 {
+                let (dx, dy) = (p.pts[k].0 - p.pts[k - 1].0, p.pts[k].1 - p.pts[k - 1].1);
+                p.lens[k] = p.lens[k - 1] + (dx * dx + dy * dy).sqrt();
+            }
+        }
+        p
+    }
+
+    fn total(&self) -> f32 {
+        self.lens[24]
+    }
+
+    /// the curve's direction (a unit vector) `d` along it
+    fn dir(&self, d: f32) -> (f32, f32) {
+        let k = (1..25).find(|k| self.lens[*k] >= d).unwrap_or(24);
+        let (a, b) = (self.pts[k - 1], self.pts[k]);
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let len = (dx * dx + dy * dy).sqrt().max(1e-3);
+        (dx / len, dy / len)
+    }
+
+    /// the point `d` along the curve (from its start)
+    fn at(&self, d: f32) -> (f32, f32) {
+        let k = (1..25).find(|k| self.lens[*k] >= d).unwrap_or(24);
+        let seg = (self.lens[k] - self.lens[k - 1]).max(1e-3);
+        let f = ((d - self.lens[k - 1]) / seg).clamp(0.0, 1.0);
+        let (a, b) = (self.pts[k - 1], self.pts[k]);
+        (a.0 + (b.0 - a.0) * f, a.1 + (b.1 - a.1) * f)
+    }
+}
+
+/// `c` mixed with white (`f` 0 = c, 1 = white)
+fn toward_white(c: Color, f: f32) -> Color {
+    let m = |v: u8| (v as f32 + (255.0 - v as f32) * f).round() as u8;
+    Color::from_rgb_u8(m(c.red()), m(c.green()), m(c.blue()))
+}
+
+/// a flow triangle's size (world px): wider than the widest line (8)
+const ARROW: f32 = 30.0;
+
+/// A shark fin standing on the line's right side as it moves along (dx, dy) (a unit vector): its foot under the
+/// line (`width` is the line's), its tip leaning back, its front edge curved. In an ARROW x ARROW box
+/// centred on the point on the line (the Path's view box). Bytes going up move toward the exit and bytes coming
+/// down the other way, so on a line running left to right the ones going up stand above it and the others below.
+fn arrow_path(dx: f32, dy: f32, width: f32) -> String {
+    let c = ARROW / 2.0;
+    // right of the way it moves (y grows downward): left to right -> up
+    let (nx, ny) = (dy, -dx);
+    // its foot starts at the line's middle: the fin is drawn under the line, which covers the overlap (no gap
+    // at the edge, and a darker fin does not cut into the line)
+    let edge = width / 2.0;
+    let at = |along: f32, out: f32| (c + dx * along + nx * out, c + dy * along + ny * out);
+    let front = at(8.0, 0.0);
+    let back = at(-7.0, 0.0);
+    let tip = at(-4.0, edge + 9.0);
+    let bend = at(4.0, edge + 7.0);
+    format!(
+        "M {:.1} {:.1} Q {:.1} {:.1} {:.1} {:.1} L {:.1} {:.1} Z",
+        front.0, front.1, bend.0, bend.1, tip.0, tip.1, back.0, back.1
+    )
+}
+
+/// a colour's lightness (0 black .. 1 white)
+fn luma(c: Color) -> f32 {
+    (0.2126 * c.red() as f32 + 0.7152 * c.green() as f32 + 0.0722 * c.blue() as f32) / 255.0
 }
 
 /// One frame of the dots; false when there is nothing to move (or nothing to show it on)
@@ -1858,71 +1984,103 @@ fn flow_dots_tick(app: &App) -> bool {
     }
     let Some(m) = MODELS.with(|m| m.borrow().clone()) else { return false };
     let rates = m.rates.borrow();
-    if !rates.iter().any(|r| *r > 0.0) {
-        return false;
-    }
+    // (off in Settings > Display: only the new connections' dots)
+    let fins = FLOW_FINS.with(|f| f.get());
     FLOW_STATE.with(|st| {
         let mut st = st.borrow_mut();
-        let (offsets, last, dots) = &mut *st;
+        if !(fins && rates.iter().any(|(u, d)| *u > 0.0 || *d > 0.0)) && st.pulses.is_empty() {
+            return false;
+        }
+        let st = &mut *st;
         let now = std::time::Instant::now();
-        let dt = last.map_or(0.0, |l| (now - l).as_secs_f32().min(0.1));
-        *last = Some(now);
-        offsets.resize(rates.len(), 0.0);
-        dots.clear();
+        let dt = st.last.map_or(0.0, |l| (now - l).as_secs_f32().min(0.1));
+        st.last = Some(now);
+        st.up.resize(rates.len(), 0.0);
+        st.down.resize(rates.len(), 0.0);
+        st.dots.clear();
         CURVE.with(|c| {
             let c = c.borrow();
-            let Some(curve_of) = c.as_ref() else { return };
-            let mut pts = [(0.0f32, 0.0f32); 25];
-            let mut lens = [0.0f32; 25];
-            for (i, r) in rates.iter().enumerate() {
-                if *r <= 0.0 {
+            let Some(curve_of) = c.as_ref() else {
+                st.pulses.clear();
+                return;
+            };
+            let line = |i: usize| {
+                let l = m.links.row_data(i)?;
+                let curve = curve_of(l.start_pin_id, l.end_pin_id)?;
+                let p = Polyline::of(&curve);
+                // (just over its own link, under the blocks it joins)
+                (p.total() >= 1.0).then_some((l.color, l.z + 0.01, l.line_width, p))
+            };
+            // 1 KB/s .. 100 MB/s on a log scale (the line is 3..8 wide then)
+            let scale = |r: f64| ((r.max(1024.0).log10() - 3.0) / 5.0).clamp(0.0, 1.0) as f32;
+            for (i, (up, down)) in rates.iter().enumerate() {
+                if *up <= 0.0 && *down <= 0.0 {
                     continue;
                 }
-                let Some(l) = m.links.row_data(i) else { continue };
-                let Some(curve) = curve_of(l.start_pin_id, l.end_pin_id) else { continue };
-                // the curve as 24 straight pieces, with the length up to each point
-                for k in 0..pts.len() {
-                    pts[k] = curve.eval(k as f32 / 24.0);
-                    if k > 0 {
-                        let (dx, dy) = (pts[k].0 - pts[k - 1].0, pts[k].1 - pts[k - 1].1);
-                        lens[k] = lens[k - 1] + (dx * dx + dy * dy).sqrt();
+                let Some((color, z, width, p)) = line(i) else { continue };
+                let total = p.total();
+                // coming down: darker than the line, or lighter when the line is already dark
+                let back = if luma(color) < 0.35 { color.brighter(0.8) } else { color.darker(1.0) };
+                for (rate, going_up) in [(*up, true), (*down, false)] {
+                    if rate <= 0.0 || !fins {
+                        continue;
                     }
-                }
-                let total = lens[24];
-                if total < 1.0 {
-                    continue;
-                }
-                // 1 KB/s .. 100 MB/s on a log scale: speed 40..200 world px/s, size 7..12 (wider than the line: 3..8)
-                let t = ((r.max(1024.0).log10() - 3.0) / 5.0).clamp(0.0, 1.0) as f32;
-                offsets[i] = (offsets[i] + (40.0 + 160.0 * t) * dt) % SPACING;
-                let color = l.color.brighter(0.6);
-                let mut d = offsets[i];
-                let mut k = 1;
-                while d < total {
-                    while k < 24 && lens[k] < d {
-                        k += 1;
+                    let t = scale(rate);
+                    let off = if going_up { &mut st.up[i] } else { &mut st.down[i] };
+                    *off = (*off + (40.0 + 160.0 * t) * dt) % SPACING;
+                    // the two ways start half a spacing apart, so they pass between each other
+                    let mut d = if going_up { *off } else { (*off + SPACING / 2.0) % SPACING };
+                    while d < total {
+                        let at = if going_up { d } else { total - d };
+                        let (x, y) = p.at(at);
+                        let (dx, dy) = p.dir(at);
+                        let (dx, dy) = if going_up { (dx, dy) } else { (-dx, -dy) };
+                        st.dots.push(FlowDot {
+                            x,
+                            y,
+                            size: ARROW,
+                            color: if going_up { color } else { back },
+                            arrow: arrow_path(dx, dy, width).into(),
+                            // (under its line: see arrow_path)
+                            z: z - 0.02,
+                        });
+                        d += SPACING;
                     }
-                    let seg = (lens[k] - lens[k - 1]).max(1e-3);
-                    let f = ((d - lens[k - 1]) / seg).clamp(0.0, 1.0);
-                    let (a, b) = (pts[k - 1], pts[k]);
-                    dots.push(FlowDot {
-                        x: a.0 + (b.0 - a.0) * f,
-                        y: a.1 + (b.1 - a.1) * f,
-                        size: 7.0 + 5.0 * t,
-                        color,
-                    });
-                    d += SPACING;
                 }
             }
+            // new connections: one run along their link, then gone
+            let mut kept = Vec::with_capacity(st.pulses.len());
+            for (i, d) in std::mem::take(&mut st.pulses) {
+                let d = d + PULSE_SPEED * dt;
+                let Some((color, z, _, p)) = line(i) else { continue };
+                if d >= p.total() {
+                    continue;
+                }
+                if d >= 0.0 {
+                    let (x, y) = p.at(d);
+                    st.dots.push(FlowDot {
+                        x,
+                        y,
+                        size: 8.0,
+                        color: toward_white(color, 0.7),
+                        arrow: SharedString::new(),
+                        z,
+                    });
+                }
+                kept.push((i, d));
+            }
+            st.pulses = kept;
         });
-        app.set_flow_dots(ModelRc::new(VecModel::from(dots.clone())));
-    });
-    true
+        app.set_flow_dots(ModelRc::new(VecModel::from(st.dots.clone())));
+        true
+    })
 }
 
 thread_local! {
     /// latency badges by block key: (text, tone)
     static BADGES: std::cell::RefCell<HashMap<String, (String, i32)>> = std::cell::RefCell::new(HashMap::new());
+    /// Settings > Display > "Flow fins": the fins beside the canvas links
+    static FLOW_FINS: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
     /// "Quit with the X button"
     static CLOSE_EXITS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static TOAST_SEQ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
@@ -2404,6 +2562,7 @@ fn show_settings(app: &App, v: &Value) {
     st.set_scale(i("ui_scale"));
     st.set_logsize(i("log_font_size"));
     st.set_close(b("close_exits"));
+    st.set_fins(b("flow_fins"));
     st.set_latest(b("singbox_latest"));
     st.set_saved_allowed(vals["allowed_domains"].as_str().unwrap_or("").into());
     st.set_saved_private(b("block_private"));
@@ -2421,6 +2580,7 @@ fn show_settings(app: &App, v: &Value) {
     st.set_saved_scale(i("ui_scale"));
     st.set_saved_logsize(i("log_font_size"));
     st.set_saved_close(b("close_exits"));
+    st.set_saved_fins(b("flow_fins"));
     st.set_saved_latest(b("singbox_latest"));
     st.set_saved_admin(b("run_as_admin"));
     st.set_check_updates(b("check_updates"));
@@ -2491,6 +2651,7 @@ fn show_settings(app: &App, v: &Value) {
     apply_theme_color(app, &tc);
     app.set_log_px(i("log_font_size") as f32 * 1.2);
     CLOSE_EXITS.with(|c| c.set(b("close_exits")));
+    FLOW_FINS.with(|c| c.set(b("flow_fins")));
 }
 
 /// the core's latency badges and the test's progress
@@ -2666,6 +2827,8 @@ fn settings_text() -> SettingsText {
         logsize_desc: t("Font size of the log and license views (pt)"),
         close: t("Quit with the X button"),
         close_desc: t("When off, the app keeps running in the tray after X"),
+        fins: t("Flow fins"),
+        fins_desc: t("Fins beside the canvas links show traffic going up (above) and coming down (below)"),
         text_size: t("Text size"),
         text_size_desc: t("Size of the text in menus and pages (applies right away)"),
         fonts: t("Fonts"),
@@ -3992,7 +4155,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 "log_connections": st.get_logconn(), "log_close": st.get_logclose(), "dns_server": st.get_dns().as_str(),
                 "dns_via_outbound": st.get_dnsvia(), "log_to_file": st.get_logfile(), "language": st.get_language(),
                 "theme": st.get_theme(), "ui_scale": st.get_scale(), "log_font_size": st.get_logsize(),
-                "close_exits": st.get_close(), "singbox_latest": st.get_latest(), "run_as_admin": st.get_admin(), "check_updates": st.get_check_updates(),
+                "close_exits": st.get_close(), "flow_fins": st.get_fins(), "singbox_latest": st.get_latest(), "run_as_admin": st.get_admin(), "check_updates": st.get_check_updates(),
                 "text_size": st.get_text_size(), "theme_color": st.get_theme_color().as_str(),
                 "ui_font": FONTS.with(|f| f.borrow().ui.get((st.get_ui_font() - 1).max(-1) as usize).cloned().filter(|_| st.get_ui_font() > 0).unwrap_or_default()),
                 "mono_font": FONTS.with(|f| f.borrow().mono.get((st.get_mono_font() - 1).max(-1) as usize).cloned().filter(|_| st.get_mono_font() > 0).unwrap_or_default()),
@@ -4268,7 +4431,7 @@ fn main() -> Result<(), slint::PlatformError> {
                                 }
                             }
                             "flow" => {
-                                m.set_flow(v["links"].as_array().map(Vec::as_slice).unwrap_or(&[]));
+                                m.set_flow(&v);
                                 start_flow_dots(&app);
                             }
                             "graph" => {

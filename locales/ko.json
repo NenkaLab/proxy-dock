@@ -1196,5 +1196,7 @@
  "Lane name": "레인 이름",
  "Port name": "포트 이름",
  "Add input port": "입력 포트 추가",
- "Add output port": "출력 포트 추가"
+ "Add output port": "출력 포트 추가",
+ "Flow fins": "흐름 지느러미",
+ "Fins beside the canvas links show traffic going up (above) and coming down (below)": "캔버스 줄 옆의 지느러미로 올라가는 트래픽(위)과 내려오는 트래픽(아래)을 보여 줍니다"
 }

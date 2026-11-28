@@ -1196,5 +1196,7 @@
  "Lane name": "Spurname",
  "Port name": "Anschlussname",
  "Add input port": "Eingang hinzufügen",
- "Add output port": "Ausgang hinzufügen"
+ "Add output port": "Ausgang hinzufügen",
+ "Flow fins": "Flussflossen",
+ "Fins beside the canvas links show traffic going up (above) and coming down (below)": "Flossen neben den Verbindungen im Canvas zeigen ausgehenden (oben) und eingehenden (unten) Verkehr"
 }

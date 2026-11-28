@@ -414,6 +414,10 @@ impl HyEngine {
         self.inner.exit_totals()
     }
 
+    pub fn exit_conns(&self) -> HashMap<String, u64> {
+        self.inner.exit_conns()
+    }
+
     pub fn stop(&mut self) {
         self.shared.stopping.store(true, Ordering::SeqCst);
         let c = self.child.lock().unwrap().take();

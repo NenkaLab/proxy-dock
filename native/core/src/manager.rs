@@ -98,6 +98,12 @@ impl Card {
             Card::Hysteria(e) => e.exit_totals(),
         }
     }
+    fn exit_conns(&self) -> HashMap<String, u64> {
+        match self {
+            Card::SingBox(e) => e.exit_conns(),
+            Card::Hysteria(e) => e.exit_conns(),
+        }
+    }
     fn needs_restart(&self, proxy: &Value, glob: &Glob) -> bool {
         match self {
             Card::SingBox(e) => e.needs_restart(proxy, glob),
@@ -307,6 +313,11 @@ impl Manager {
     /// {outbound block id: (up, down)} of a running card
     pub fn exit_totals(&self, id: &str) -> HashMap<String, (f64, f64)> {
         self.shared.lock().unwrap().running.get(id).map(|r| r.engine.exit_totals()).unwrap_or_default()
+    }
+
+    /// {outbound block id: connections opened so far} of a running card
+    pub fn exit_conns(&self, id: &str) -> HashMap<String, u64> {
+        self.shared.lock().unwrap().running.get(id).map(|r| r.engine.exit_conns()).unwrap_or_default()
     }
 }
 

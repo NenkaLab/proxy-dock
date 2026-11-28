@@ -1196,5 +1196,7 @@
  "Lane name": "通道名称",
  "Port name": "端口名称",
  "Add input port": "添加输入端口",
- "Add output port": "添加输出端口"
+ "Add output port": "添加输出端口",
+ "Flow fins": "流量鳍",
+ "Fins beside the canvas links show traffic going up (above) and coming down (below)": "在画布连线旁用鳍显示上行(上侧)和下行(下侧)流量"
 }
