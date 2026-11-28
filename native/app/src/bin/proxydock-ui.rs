@@ -612,6 +612,45 @@ thread_local! {
     static EDITOR_CTRL: std::cell::RefCell<Option<slint_node_editor::NodeEditorController>> = const { std::cell::RefCell::new(None) };
 }
 
+thread_local! {
+    /// when a group command was sent: once its canvas is in and measured, blocks under a group's box move out
+    static SETTLE_AT: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
+}
+
+/// After a group was made or grew (a port added): a block in no group that its box now covers moves to just
+/// below the box, so the box never seems to hold a block that is not in it.
+fn settle_groups(
+    models: &Models,
+    rects: &HashMap<i32, (f32, f32, f32, f32)>,
+    send: &dyn Fn(Value),
+    key_of: &dyn Fn(i32) -> String,
+) {
+    let Some(at) = SETTLE_AT.with(|t| t.get()) else { return };
+    if at.elapsed() < std::time::Duration::from_millis(450) {
+        return;
+    }
+    SETTLE_AT.with(|t| t.set(None));
+    let boxes: Vec<GroupData> = models.groups.iter().filter(|g| !g.collapsed && g.width > 0.0).collect();
+    let mut moved = vec![];
+    for i in 0..models.nodes.row_count() {
+        let Some(mut n) = models.nodes.row_data(i) else { continue };
+        if n.group_id != 0 || n.kind >= 5 {
+            continue;
+        }
+        let Some(&(x, y, w, h)) = rects.get(&n.id) else { continue };
+        let Some(b) = boxes.iter().find(|b| x < b.x + b.width && x + w > b.x && y < b.y + b.height && y + h > b.y)
+        else {
+            continue;
+        };
+        n.y = b.y + b.height + 24.0;
+        moved.push(json!({"key": key_of(n.id), "x": n.x, "y": n.y}));
+        models.nodes.set_row_data(i, n);
+    }
+    if !moved.is_empty() {
+        send(json!({"cmd": "move", "blocks": moved}));
+    }
+}
+
 /// the core's id of group row `gid`
 fn group_key(gid: i32) -> String {
     GROUPS.with(|g| g.borrow().get((gid - 1).max(0) as usize).map(|x| x.0.clone()).unwrap_or_default())
@@ -2801,6 +2840,7 @@ fn main() -> Result<(), slint::PlatformError> {
         {
             // a selected wireless pair: focus on it
             let (controller, weak, models) = (controller.clone(), app.as_weak(), models.clone());
+            let (send_s, key_of_s) = (send.clone(), key_of.clone());
             let t = slint::Timer::default();
             t.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(150), move || {
                 let Some(a) = weak.upgrade() else { return };
@@ -2820,6 +2860,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 pair_focus(&a, &models, &rects);
                 mix_dots(&a, &models, &rects);
                 groups_follow(&a, &models, &rects);
+                settle_groups(&models, &rects, &|v| send_s(v), &|id| key_of_s(id));
             });
             std::mem::forget(t);
         }
@@ -2885,13 +2926,33 @@ fn main() -> Result<(), slint::PlatformError> {
                 SharedString::from(tr("Add input port")),
                 SharedString::from(tr("Add output port")),
             ])));
-            let (send_p, g3) = (send.clone(), groups.clone());
+            let (send_p, g3, models_p, key_of_p) = (send.clone(), groups.clone(), models.clone(), key_of.clone());
             app.global::<NodeEditorEvents>().on_group_action_requested(move |gid, i| {
                 let Some(row) = g3.iter().find(|g| g.id == gid) else { return };
                 let side = if i == 0 { "in" } else { "out" };
-                let x = if i == 0 { row.x + GROUP_PAD } else { row.x + row.width - GROUP_PAD - 180.0 };
-                let y = row.y + row.height - GROUP_PAD;
+                let size = |id: i32| SIZES.with(|s| s.borrow().get(&id).copied().unwrap_or((180.0, 46.0)));
+                // a new port goes under the ports already on that side; the first input port takes the blocks'
+                // place on the left (they move right), the first output port goes right of the blocks
+                let nodes: Vec<NodeData> = models_p.nodes.iter().collect();
+                let same: Vec<&NodeData> =
+                    nodes.iter().filter(|n| n.kind == 6 && n.group_id == gid && n.detail == side).collect();
+                let (x, y) = if let Some(last) = same.iter().max_by(|a, b| (a.y + size(a.id).1).total_cmp(&(b.y + size(b.id).1))) {
+                    (last.x, last.y + size(last.id).1 + 12.0)
+                } else if side == "in" {
+                    let members: Vec<&NodeData> = nodes.iter().filter(|n| n.group_id == gid && n.kind != 6).collect();
+                    let moved: Vec<Value> = members
+                        .iter()
+                        .map(|n| json!({"key": key_of_p(n.id), "x": n.x + 220.0, "y": n.y}))
+                        .collect();
+                    if !moved.is_empty() {
+                        send_p(json!({"cmd": "move", "blocks": moved}));
+                    }
+                    (row.x + GROUP_PAD, row.y + GROUP_HEAD + GROUP_PAD)
+                } else {
+                    (row.x + row.width - GROUP_PAD + 40.0, row.y + GROUP_HEAD + GROUP_PAD)
+                };
                 send_p(json!({"cmd": "group_port_add", "id": group_key(gid), "side": side, "x": x, "y": y}));
+                SETTLE_AT.with(|t| t.set(Some(std::time::Instant::now())));
             });
             let (send_r, weak_r) = (send.clone(), app.as_weak());
             let _ = send_r;
@@ -3359,6 +3420,7 @@ fn main() -> Result<(), slint::PlatformError> {
                         keys.push(key.clone());
                     }
                     send7(json!({"cmd": "group", "keys": keys}));
+                    SETTLE_AT.with(|t| t.set(Some(std::time::Instant::now())));
                 }
                 a if a.starts_with("wireless.partner.") => {
                     let id = key.strip_suffix("/out").unwrap_or(&key).to_string();
@@ -3641,6 +3703,7 @@ fn main() -> Result<(), slint::PlatformError> {
             let keys: Vec<String> =
                 models4.nodes.iter().filter(|n| n.selected && n.kind < 5).map(|n| key_of4(n.id)).collect();
             send4(json!({"cmd": "group", "keys": keys}));
+            SETTLE_AT.with(|t| t.set(Some(std::time::Instant::now())));
         });
         let weak = app.as_weak();
         // a wireless pair's number: the rename box with the number
