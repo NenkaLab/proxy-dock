@@ -347,7 +347,9 @@ pub fn drop_empty_groups(g: &mut Obj) -> bool {
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter(|x| !x["members"].as_array().is_some_and(|m| m.iter().any(|k| k.as_str().is_some_and(|k| keys.contains(k)))))
+        .filter(|x| {
+            !x["members"].as_array().is_some_and(|m| m.iter().any(|k| k.as_str().is_some_and(|k| keys.contains(k))))
+        })
         .filter_map(|x| x["id"].as_str().map(String::from))
         .collect();
     for gid in &empty {
@@ -394,7 +396,13 @@ pub fn set_port_name(g: &mut Obj, rid: &str, name: &str) -> bool {
 pub fn port_of(g: &Obj, rid: &str) -> Option<(String, &'static str)> {
     g.get("groups").and_then(Value::as_array).into_iter().flatten().find_map(|x| {
         let has = |k: &str| x["ports"][k].as_array().is_some_and(|a| a.iter().any(|p| p == rid));
-        let side = if has("in") { "in" } else if has("out") { "out" } else { return None };
+        let side = if has("in") {
+            "in"
+        } else if has("out") {
+            "out"
+        } else {
+            return None;
+        };
         Some((x["id"].as_str()?.to_string(), side))
     })
 }
@@ -1149,7 +1157,11 @@ pub fn block_menu(g: &Obj, key: &str) -> Value {
     let menu = |head: Vec<Value>, sub_title: String, sub: Vec<Value>, cut: bool, tail: bool| json!({"head": head, "sub_title": sub_title, "sub": sub, "cut": cut, "tail": tail});
     if key == "pc" {
         return menu(
-            vec![item("pc.restore", tr("Restore previous")), item("pc.off", tr("Off (default)")), item("fill", tr("Block colour"))],
+            vec![
+                item("pc.restore", tr("Restore previous")),
+                item("pc.off", tr("Off (default)")),
+                item("fill", tr("Block colour")),
+            ],
             String::new(),
             vec![],
             false,

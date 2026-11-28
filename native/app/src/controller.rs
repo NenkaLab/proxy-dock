@@ -9,6 +9,9 @@ use proxydock_core::manager::{self, Events, Manager, State};
 use proxydock_core::{config, edit, form, graph, log};
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet, VecDeque};
+
+/// a canvas block's port: the block's key and the port's index (auto ports)
+type PortRef = (String, usize);
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -2535,10 +2538,21 @@ impl Controller {
             return;
         }
         let x0 = inner.iter().map(|n| n.x).fold(f64::MAX, f64::min);
-        let x1 = inner.iter().map(|n| n.x + if n.kind == 1 { 280.0 } else if n.open { 400.0 } else { 260.0 }).fold(f64::MIN, f64::max);
+        let x1 = inner
+            .iter()
+            .map(|n| {
+                n.x + if n.kind == 1 {
+                    280.0
+                } else if n.open {
+                    400.0
+                } else {
+                    260.0
+                }
+            })
+            .fold(f64::MIN, f64::max);
         // (inner input -> outside sources), (inner output -> outside input)
-        let mut incoming: Vec<((String, usize), Vec<(String, usize)>)> = vec![];
-        let mut outgoing: Vec<((String, usize), (String, usize))> = vec![];
+        let mut incoming: Vec<(PortRef, Vec<PortRef>)> = vec![];
+        let mut outgoing: Vec<(PortRef, PortRef)> = vec![];
         for l in &self.view.links {
             let (a, b) = (inside(&l.from), inside(&l.to));
             if !a && b && !ports.contains(&l.to) {
@@ -2560,7 +2574,7 @@ impl Controller {
                 None => n.title.clone(),
             }
         };
-        let todo: Vec<(&str, (String, usize), Vec<(String, usize)>, (String, usize))> = incoming
+        let todo: Vec<(&str, PortRef, Vec<PortRef>, PortRef)> = incoming
             .into_iter()
             .map(|(to, srcs)| ("in", to.clone(), srcs, to))
             .chain(outgoing.into_iter().map(|(from, to)| ("out", from.clone(), vec![from], to)))
@@ -2768,8 +2782,10 @@ impl Controller {
                 };
                 self.send_to(n, &msg);
             }
-            "move" | "connect" | "disconnect" | "lane_map" | "delete" | "duplicate" | "rename" | "color" | "fill" | "group"
-            | "ungroup" | "group_color" | "group_collapse" | "group_add" | "group_port_add" => self.edit(cmd, v),
+            "move" | "connect" | "disconnect" | "lane_map" | "delete" | "duplicate" | "rename" | "color" | "fill"
+            | "group" | "ungroup" | "group_color" | "group_collapse" | "group_add" | "group_port_add" => {
+                self.edit(cmd, v)
+            }
             "add" => {
                 // (Python opens the editor for a new outbound other than Direct, and for a router / IF)
                 if let Some(open) = self.add_block(v) {

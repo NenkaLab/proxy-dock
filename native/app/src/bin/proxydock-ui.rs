@@ -1326,7 +1326,12 @@ impl Models {
         let mut group_ports: Vec<[Vec<(i32, String)>; 2]> = vec![];
         for (gi, gr) in groups_raw.iter().enumerate() {
             let ids_of = |v: &Value| -> Vec<i32> {
-                v.as_array().into_iter().flatten().filter_map(Value::as_str).filter_map(|k| ids.get(k).copied()).collect()
+                v.as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .filter_map(|k| ids.get(k).copied())
+                    .collect()
             };
             let mut members = ids_of(&gr["members"]);
             block_counts.push(members.len());
@@ -1390,7 +1395,8 @@ impl Models {
             let sid = nodes.len() as i32 + 1;
             // member pin, label: the group's ports first, in order (an unwired one too), then any other link
             // crossing its edge
-            let mut ins: Vec<(i32, String)> = group_ports[gi][0].iter().map(|(p, t)| (pin_in(*p, 0), t.clone())).collect();
+            let mut ins: Vec<(i32, String)> =
+                group_ports[gi][0].iter().map(|(p, t)| (pin_in(*p, 0), t.clone())).collect();
             let mut outs: Vec<(i32, String)> =
                 group_ports[gi][1].iter().map(|(p, t)| (pin_out(*p, 0), t.clone())).collect();
             for (k, (p, _)) in ins.iter().enumerate() {
@@ -3082,14 +3088,14 @@ fn main() -> Result<(), slint::PlatformError> {
                 let nodes: Vec<NodeData> = models_p.nodes.iter().collect();
                 let same: Vec<&NodeData> =
                     nodes.iter().filter(|n| n.kind == 6 && n.group_id == gid && n.detail == side).collect();
-                let (x, y) = if let Some(last) = same.iter().max_by(|a, b| (a.y + size(a.id).1).total_cmp(&(b.y + size(b.id).1))) {
+                let (x, y) = if let Some(last) =
+                    same.iter().max_by(|a, b| (a.y + size(a.id).1).total_cmp(&(b.y + size(b.id).1)))
+                {
                     (last.x, last.y + size(last.id).1 + 12.0)
                 } else if side == "in" {
                     let members: Vec<&NodeData> = nodes.iter().filter(|n| n.group_id == gid && n.kind != 6).collect();
-                    let moved: Vec<Value> = members
-                        .iter()
-                        .map(|n| json!({"key": key_of_p(n.id), "x": n.x + 220.0, "y": n.y}))
-                        .collect();
+                    let moved: Vec<Value> =
+                        members.iter().map(|n| json!({"key": key_of_p(n.id), "x": n.x + 220.0, "y": n.y})).collect();
                     if !moved.is_empty() {
                         send_p(json!({"cmd": "move", "blocks": moved}));
                     }
@@ -3543,8 +3549,10 @@ fn main() -> Result<(), slint::PlatformError> {
                     }
                     let first = models7.nodes.iter().find(|n| key_of7(n.id) == key);
                     let cur = first.as_ref().map(|n| n.fill).filter(|c| c.alpha() > 0);
-                    let hex = cur.map(|c| format!("#{:02x}{:02x}{:02x}", c.red(), c.green(), c.blue())).unwrap_or_default();
-                    PALETTE_FOR.with(|p| *p.borrow_mut() = (format!("fill:{}", keys.join(",")), String::new(), hex.clone()));
+                    let hex =
+                        cur.map(|c| format!("#{:02x}{:02x}{:02x}", c.red(), c.green(), c.blue())).unwrap_or_default();
+                    PALETTE_FOR
+                        .with(|p| *p.borrow_mut() = (format!("fill:{}", keys.join(",")), String::new(), hex.clone()));
                     a.set_palette_title(if keys.len() == 1 {
                         first.map(|n| n.title.clone()).unwrap_or_default()
                     } else {
@@ -3595,7 +3603,9 @@ fn main() -> Result<(), slint::PlatformError> {
                         .nodes
                         .iter()
                         .find(|n| key_of7(n.id) == key)
-                        .and_then(|n| if side == "outputs" { n.out_labels.row_data(i) } else { n.in_labels.row_data(i) })
+                        .and_then(
+                            |n| if side == "outputs" { n.out_labels.row_data(i) } else { n.in_labels.row_data(i) },
+                        )
                         .unwrap_or_default();
                     // (a lane without a name shows its number: the box starts empty)
                     let cur = if cur.parse::<usize>().is_ok_and(|k| k == i + 1) { SharedString::new() } else { cur };

@@ -764,7 +764,7 @@ pub fn validate(raw: &Value) -> Obj {
 /// Pass-through lane names {lane id: name} and folded pass-throughs [relay id]: lanes and blocks that are gone
 /// and empty names are dropped; none = no key.
 pub fn clean_relay_ui(g: &mut Obj) {
-    let relays: Vec<Value> = list(g, "relays").into_iter().filter(|r| r["wireless"] != json!(true)).cloned().collect();
+    let relays: Vec<Value> = list(g, "relays").iter().filter(|r| r["wireless"] != json!(true)).cloned().collect();
     let lanes: HashSet<String> = relays
         .iter()
         .flat_map(|r| ["inputs", "outputs"].map(|s| r[s].as_array().cloned().unwrap_or_default()))
