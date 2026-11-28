@@ -27,7 +27,8 @@ def main():
         py = run([sys.executable, os.path.join(HERE, "py_dump_config.py"), path])
         rust = run([exe, path])
         rust.pop("undecryptable", None)
-        rust.get("global", {}).pop("theme_color", None)  # (Rust app only)
+        for k in ("theme_color", "flow_fins"):  # (Rust app only)
+            rust.get("global", {}).pop(k, None)
         problems = []
         walk(py, rust, "$", problems)
         if problems:

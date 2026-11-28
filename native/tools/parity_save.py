@@ -58,8 +58,9 @@ def main():
             raise RuntimeError(r.stderr[-800:])
         a = opened(open(py_out, encoding="utf-8").read())
         b = opened(open(rs_out, encoding="utf-8").read())
-        # (the Rust app's own setting, which the Python app does not have: its default line left out)
+        # (the Rust app's own settings, which the Python app does not have: their default lines left out)
         b = re.sub(r'\n\s*"theme_color": "",', "", b)
+        b = re.sub(r'\n\s*"flow_fins": true,', "", b)
         if a == b:
             same += 1
             continue

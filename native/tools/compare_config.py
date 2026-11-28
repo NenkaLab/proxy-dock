@@ -30,7 +30,8 @@ def main():
     with open(sys.argv[2], encoding="utf-8") as f:
         rust = json.load(f)
     rust.pop("undecryptable", None)
-    rust.get("global", {}).pop("theme_color", None)  # (Rust app only)
+    for k in ("theme_color", "flow_fins"):  # (Rust app only)
+        rust.get("global", {}).pop(k, None)
     problems = []
     walk(py, rust, "$", problems)
     if problems:
