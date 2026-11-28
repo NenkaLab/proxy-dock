@@ -1732,6 +1732,7 @@ impl Controller {
     fn graph_changed(&mut self) {
         let old: HashMap<String, Value> =
             self.proxies.iter().map(|p| (p["id"].as_str().unwrap_or("").to_string(), p.clone())).collect();
+        edit::drop_empty_groups(&mut self.graph);
         graph::clean_groups(&mut self.graph);
         graph::clean_fills(&mut self.graph);
         graph::clean_relay_ui(&mut self.graph);

@@ -3583,7 +3583,8 @@ fn main() -> Result<(), slint::PlatformError> {
             let keys: Vec<String> = models2
                 .nodes
                 .iter()
-                .filter(|n| n.selected && n.kind != 5)
+                // (a group's port belongs to its group: not copied on its own)
+                .filter(|n| n.selected && n.kind < 5)
                 .map(|n| key_of2(n.id))
                 .filter(|k| k != "pc")
                 .collect();

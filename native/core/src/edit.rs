@@ -338,6 +338,24 @@ pub fn ungroup(g: &mut Obj, gid: &str) -> bool {
     g.get("groups").and_then(Value::as_array).map_or(0, Vec::len) != before
 }
 
+/// Groups left without blocks go, and their ports with them (what ran through a port joined up); true when any
+/// went. Run before `graph::clean_groups`, which would drop such a group but leave its ports behind.
+pub fn drop_empty_groups(g: &mut Obj) -> bool {
+    let keys = graph::canvas_keys(g);
+    let empty: Vec<String> = g
+        .get("groups")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|x| !x["members"].as_array().is_some_and(|m| m.iter().any(|k| k.as_str().is_some_and(|k| keys.contains(k)))))
+        .filter_map(|x| x["id"].as_str().map(String::from))
+        .collect();
+    for gid in &empty {
+        ungroup(g, gid);
+    }
+    !empty.is_empty()
+}
+
 /// A new port on side `side` ("in" / "out") of group gid at x, y: a pass-through with one lane named
 /// "Input n" / "Output n"; its id.
 pub fn add_group_port(g: &mut Obj, gid: &str, side: &str, x: f64, y: f64) -> Option<String> {
@@ -1505,6 +1523,23 @@ mod tests {
         assert!(ungroup(&mut g, &gid));
         assert!(graph::find(&g, &p).is_none() && graph::find(&g, &q).is_none());
         assert_eq!(graph::find(&g, "a").unwrap().1["target"], json!("h"));
+    }
+
+    #[test]
+    fn a_group_without_blocks_takes_its_ports() {
+        let mut g = sample();
+        connect(&mut g, "a", 0, "h", 0).unwrap();
+        let gid = group_blocks(&mut g, &["h", "w"]).unwrap();
+        let p = add_group_port(&mut g, &gid, "in", 0.0, 0.0).unwrap();
+        connect(&mut g, "a", 0, &p, 0).unwrap();
+        connect(&mut g, &p, 0, "h", 0).unwrap();
+        assert!(!drop_empty_groups(&mut g));
+        delete(&mut g, "w");
+        assert!(!drop_empty_groups(&mut g), "one block left: still a group");
+        // the last block deleted: the group and its port go
+        g.get_mut("groups").unwrap()[0]["members"] = json!([]);
+        assert!(drop_empty_groups(&mut g));
+        assert!(graph::find(&g, &p).is_none() && !g.contains_key("groups"));
     }
 
     #[test]
